@@ -25,7 +25,10 @@ const env = {
     secret: required('JWT_SECRET'),
     expiresIn: process.env.JWT_EXPIRES || '8h',
   },
-  corsOrigin: process.env.CORS_ORIGIN || 'http://localhost:3000',
+  corsOrigin: [
+    "http://localhost:3000",
+    "https://mes.thuanhunglongan.com",
+  ] || 'http://localhost:3000',
 };
 
 module.exports = env;
