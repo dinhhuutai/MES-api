@@ -27,19 +27,35 @@ function buildKeys(r) {
 
 async function fetchErp(fromDate) {
   const url = `${env.erp.phieuNhanVaiUrl}?fromDate=${encodeURIComponent(fromDate)}`;
+  const timeoutMs = env.erp.syncTimeoutMs || 600000;
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 30000);
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  const t0 = Date.now();
+  console.log(`[erp-sync] → GET ${url} (timeout ${Math.round(timeoutMs / 1000)}s)`);
   try {
-    const res = await fetch(url, { signal: ctrl.signal });
+    const res = await fetch(url, {
+      signal: ctrl.signal,
+      headers: { Accept: 'application/json', ...(env.erp.apiHeaders || {}) },
+    });
     if (!res.ok) throw new AppError(`ERP trả về HTTP ${res.status}`, { status: 502, errorCode: 'ERP_HTTP' });
     const json = await res.json();
     if (!json || json.success === false) {
       throw new AppError(json?.message || 'ERP trả về lỗi', { status: 502, errorCode: 'ERP_ERROR' });
     }
-    return Array.isArray(json.data) ? json.data : [];
+    const data = Array.isArray(json.data) ? json.data : [];
+    console.log(`[erp-sync] ← HTTP ${res.status} sau ${Math.round((Date.now() - t0) / 1000)}s · ${data.length} bản ghi`);
+    return data;
   } catch (e) {
-    if (e.name === 'AbortError') throw new AppError('ERP timeout (30s)', { status: 504, errorCode: 'ERP_TIMEOUT' });
-    throw e;
+    const secs = Math.round((Date.now() - t0) / 1000);
+    if (e.name === 'AbortError') {
+      console.error(`[erp-sync] ✗ Timeout sau ${secs}s`);
+      throw new AppError(`ERP timeout (${Math.round(timeoutMs / 1000)}s)`, { status: 504, errorCode: 'ERP_TIMEOUT' });
+    }
+    if (e instanceof AppError) throw e;
+    // Lỗi mạng (fetch failed) — Node bọc nguyên nhân thật trong e.cause.
+    const cause = e.cause ? ` (${e.cause.code || e.cause.message})` : '';
+    console.error(`[erp-sync] ✗ ${e.message}${cause} sau ${secs}s — URL: ${url}`);
+    throw new AppError(`Không gọi được ERP: ${e.message}${cause}`, { status: 502, errorCode: 'ERP_FETCH_FAILED' });
   } finally {
     clearTimeout(timer);
   }

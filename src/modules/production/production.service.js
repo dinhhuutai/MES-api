@@ -108,6 +108,21 @@ async function printTem(phieuId, soLuong, actorId) {
   return getRun(phieu.lenh_san_xuat_id);
 }
 
+// In lại tem (kèm lý do) — ghi log_tem, tem không đổi số lượng.
+async function reprintTem(temId, lyDo, actorId) {
+  if (!lyDo || !lyDo.trim()) throw new AppError('Nhập lý do in lại tem', { status: 422, errorCode: 'NO_LY_DO' });
+  const ctx = await repo.getTemContext(temId);
+  if (!ctx) throw new AppError('Tem không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  const soLan = await repo.nextReprint(temId);
+  await repo.logReprint(temId, ctx.ma_tem, lyDo.trim(), soLan, actorId);
+  sockets.emit('production:updated', { lenhId: ctx.lenh_san_xuat_id, action: 'reprint', temId });
+  return getRun(ctx.lenh_san_xuat_id);
+}
+
+async function temLogs(phieuId) {
+  return repo.listTemLogByPhieu(phieuId);
+}
+
 async function finishRun(phieuId, actorId) {
   const phieu = await repo.getPhieuById(phieuId);
   if (!phieu) throw new AppError('Phiếu sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
@@ -163,7 +178,7 @@ async function confirmDry(temId, actorId) {
 }
 
 module.exports = {
-  listCandidates, getRun, startProduction, printTem, finishRun, monitor,
+  listCandidates, getRun, startProduction, printTem, reprintTem, temLogs, finishRun, monitor,
   getXePhoi, listTemChoPhoi, addToXe, adjustPhoi, listDrying, confirmDry,
   stopLine, resumeLine,
 };

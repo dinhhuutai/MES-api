@@ -25,7 +25,21 @@ const erpsyncRoutes = require('./modules/erpsync/erpsync.routes');
 
 const app = express();
 
-app.use(cors({ origin: env.corsOrigin, credentials: true }));
+// CORS: phản chiếu origin nếu nằm trong danh sách cho phép (hỗ trợ credentials).
+const corsOptions = {
+  origin(origin, cb) {
+    // Cho phép request không có Origin (server-to-server, health check, curl).
+    if (!origin || env.corsOrigin.includes(origin)) return cb(null, true);
+    console.warn(`[cors] Từ chối origin: ${origin} (cho phép: ${env.corsOrigin.join(', ')})`);
+    return cb(null, false);
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+};
+app.use(cors(corsOptions));
+// Trả lời preflight cho mọi route (Express 5: dùng regex thay cho '*').
+app.options(/.*/, cors(corsOptions));
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true }));
 

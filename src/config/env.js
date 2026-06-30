@@ -25,10 +25,11 @@ const env = {
     secret: required('JWT_SECRET'),
     expiresIn: process.env.JWT_EXPIRES || '8h',
   },
-  corsOrigin: [
-    "http://localhost:3000",
-    "https://mes.thuanhunglongan.com",
-  ] || 'http://localhost:3000',
+  // Danh sách origin được phép (frontend). Cấu hình qua .env CORS_ORIGIN (ngăn cách bằng dấu phẩy).
+  corsOrigin: (process.env.CORS_ORIGIN || 'http://localhost:3000,https://mes.thuanhunglongan.com')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean),
   upload: {
     // Thư mục gốc lưu file trên ổ đĩa server (đã cấu hình sẵn).
     root: process.env.UPLOAD_ROOT || 'D:/uploads',
@@ -45,6 +46,13 @@ const env = {
     syncIntervalMin: parseInt(process.env.ERP_SYNC_INTERVAL_MIN || '60', 10),
     // Cửa sổ lấy dữ liệu: fromDate = hiện tại - N ngày (proc ERP lấy bản ghi tạo TỪ mốc này).
     syncLookbackDays: parseInt(process.env.ERP_SYNC_LOOKBACK_DAYS || '60', 10),
+    // Timeout chờ ERP trả về (ms) — ERP chạy proc lâu nên để lớn. Mặc định 10 phút.
+    syncTimeoutMs: parseInt(process.env.ERP_SYNC_TIMEOUT_MS || '600000', 10),
+    // Header gửi kèm khi gọi ERP (JSON). Mặc định theo quy ước nội bộ X-Internal-Request: WEBAPP.
+    apiHeaders: (() => {
+      try { return JSON.parse(process.env.ERP_API_HEADERS || '{"X-Internal-Request":"WEBAPP"}'); }
+      catch { return { 'X-Internal-Request': 'WEBAPP' }; }
+    })(),
   },
 };
 

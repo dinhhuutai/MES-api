@@ -118,10 +118,52 @@ async function getPhieuById(phieuId) {
 
 async function getTemsByPhieu(phieuId) {
   const { rows } = await query(
-    'SELECT id, ma_tem, so_luong, trang_thai, created_date FROM tem WHERE phieu_san_xuat_id=$1 ORDER BY created_date',
+    `SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.created_date,
+            (SELECT COALESCE(MAX(lt.so_lan_in),1) FROM log_tem lt WHERE lt.tem_id = t.id)::int AS so_lan_in
+     FROM tem t WHERE t.phieu_san_xuat_id=$1 ORDER BY t.created_date`,
     [phieuId]
   );
   return rows;
+}
+
+// Ngữ cảnh tem (để in lại + reload đúng lệnh).
+async function getTemContext(temId) {
+  const { rows } = await query(
+    `SELECT t.id, t.ma_tem, ps.lenh_san_xuat_id, ps.trang_thai AS phieu_trang_thai
+     FROM tem t JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id WHERE t.id=$1`,
+    [temId]
+  );
+  return rows[0] || null;
+}
+
+// Lịch sử in tem của 1 phiếu (in lần đầu + in lại), mới nhất trước.
+async function listTemLogByPhieu(phieuId) {
+  const { rows } = await query(
+    `SELECT lt.id, lt.ma_tem, lt.so_lan_in, lt.ly_do_in_lai, lt.tg_in, nd.ho_ten AS nguoi
+     FROM log_tem lt
+     JOIN tem t ON t.id = lt.tem_id
+     LEFT JOIN nguoi_dung nd ON nd.id = lt.nguoi_in_id
+     WHERE t.phieu_san_xuat_id = $1
+     ORDER BY lt.tg_in DESC, lt.so_lan_in DESC`,
+    [phieuId]
+  );
+  return rows;
+}
+
+async function nextReprint(temId) {
+  const { rows } = await query(
+    'SELECT COALESCE(MAX(so_lan_in),0)+1 AS lan FROM log_tem WHERE tem_id=$1',
+    [temId]
+  );
+  return rows[0].lan;
+}
+
+async function logReprint(temId, maTem, lyDo, soLan, actorId) {
+  await query(
+    `INSERT INTO log_tem (tem_id, ma_tem, nguoi_in_id, tg_in, so_lan_in, ly_do_in_lai, created_by)
+     VALUES ($1,$2,$3,CURRENT_TIMESTAMP,$4,$5,$3)`,
+    [temId, maTem, actorId, soLan, lyDo || null]
+  );
 }
 
 async function nextMaTem() {
@@ -326,7 +368,8 @@ async function listNgungByPhieu(phieuId) {
 
 module.exports = {
   listProductionCandidates, getPrintedTotal, getDefaultXePhoi, nextMaPhieu, createPhieu, setLenhTrangThai, getLenhBasic,
-  getActivePhieu, getPhieuById, getTemsByPhieu, nextMaTem, createTem, logTemPrint, finishPhieu,
+  getActivePhieu, getPhieuById, getTemsByPhieu, getTemContext, listTemLogByPhieu, nextReprint, logReprint,
+  nextMaTem, createTem, logTemPrint, finishPhieu,
   monitorRunning, monitorQueue, listXePhoi, listCurrentPhoi, listTemChoPhoi, addTemToXe, adjustPhoi,
   listDryingTems, confirmDry, getTemBasic,
   getActiveNgung, startNgung, resumeNgung, listNgungByPhieu,
