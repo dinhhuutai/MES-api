@@ -17,9 +17,24 @@ async function getPhanIn(id) {
 }
 
 async function setLoiNhuan(id, loiNhuan, actorId) {
-  const ok = await repo.setLoiNhuan(id, loiNhuan, actorId);
-  if (!ok) throw new AppError('Phần in không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  const old = await repo.findById(id);
+  if (!old) throw new AppError('Phần in không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  await repo.setLoiNhuan(id, loiNhuan, actorId);
+  await repo.logProfitChange(id, old.loi_nhuan ?? null, loiNhuan, actorId);
   return getPhanIn(id);
 }
 
-module.exports = { listPhanIn, getPhanIn, setLoiNhuan };
+const fmtMoney = (v) => (v === null || v === undefined || v === '' ? '—' : Number(v).toLocaleString('vi-VN'));
+
+async function profitHistory(date) {
+  const rows = await repo.profitHistoryByDate(date);
+  return rows.map((r) => ({
+    tg: r.tg,
+    nguoi: r.nguoi || '—',
+    hanh_dong: 'Đặt lợi nhuận',
+    doi_tuong: [r.ma_phan, r.ma_hang].filter(Boolean).join(' · '),
+    chi_tiet: `${fmtMoney(r.cu)} → ${fmtMoney(r.moi)} ₫`,
+  }));
+}
+
+module.exports = { listPhanIn, getPhanIn, setLoiNhuan, profitHistory };

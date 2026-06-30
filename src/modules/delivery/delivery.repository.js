@@ -1,6 +1,7 @@
 'use strict';
 
 const { query } = require('../../config/db');
+const { lenhPhanInMatch } = require('../../utils/search');
 
 const DON_SUB = (col, alias) => `(SELECT string_agg(DISTINCT ${col}, ', ')
     FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
@@ -24,7 +25,8 @@ async function listTemSanSang({ search = '' }) {
      JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
      WHERE t.trang_thai = 'OQC_DAT'
        AND NOT EXISTS (SELECT 1 FROM giao_hang_tem gt WHERE gt.tem_id = t.id)
-       AND ($1 = '' OR t.ma_tem ILIKE '%'||$1||'%' OR ls.ma_lenh_san_xuat ILIKE '%'||$1||'%')
+       AND ($1 = '' OR t.ma_tem ILIKE '%'||$1||'%' OR ls.ma_lenh_san_xuat ILIKE '%'||$1||'%'
+            OR ${lenhPhanInMatch('ls.id', '$1')})
      ORDER BY t.created_date`,
     [search]
   );
@@ -98,7 +100,11 @@ async function listGiaoHang({ search = '' }) {
      FROM giao_hang gh
      LEFT JOIN don_hang dh ON dh.id = gh.don_hang_id
      LEFT JOIN khach_hang kh ON kh.id = dh.khach_hang_id
-     WHERE ($1 = '' OR gh.ma_phieu_giao ILIKE '%'||$1||'%' OR kh.ten_khach_hang ILIKE '%'||$1||'%')
+     WHERE ($1 = '' OR gh.ma_phieu_giao ILIKE '%'||$1||'%' OR kh.ten_khach_hang ILIKE '%'||$1||'%'
+            OR EXISTS (SELECT 1 FROM giao_hang_tem gt_s
+                       JOIN tem t_s ON t_s.id = gt_s.tem_id
+                       JOIN phieu_san_xuat ps_s ON ps_s.id = t_s.phieu_san_xuat_id
+                       WHERE gt_s.giao_hang_id = gh.id AND ${lenhPhanInMatch('ps_s.lenh_san_xuat_id', '$1')}))
      ORDER BY gh.created_date DESC`,
     [search]
   );

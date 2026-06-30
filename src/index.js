@@ -6,6 +6,7 @@ const app = require('./app');
 const env = require('./config/env');
 const sockets = require('./sockets');
 const { pool } = require('./config/db');
+const { startErpSyncJob } = require('./jobs/erpSync.job');
 
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -30,6 +31,7 @@ async function start() {
   }
   server.listen(env.port, () => {
     console.log(`[server] THLA MES API chạy tại http://localhost:${env.port} (${env.nodeEnv})`);
+    startErpSyncJob();
   });
 }
 

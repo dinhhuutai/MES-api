@@ -11,7 +11,8 @@ const BASE_JOINS = `
 function buildWhere(search, missingProfit) {
   let cond = `($1 = '' OR pin.ma_phan ILIKE '%'||$1||'%' OR kh.ten_khach_hang ILIKE '%'||$1||'%'
               OR dh.ma_don_hang ILIKE '%'||$1||'%' OR mh.ma_hang ILIKE '%'||$1||'%'
-              OR pin.mau_vai ILIKE '%'||$1||'%')`;
+              OR pin.mau_vai ILIKE '%'||$1||'%' OR pin.kich_vai ILIKE '%'||$1||'%'
+              OR pin.kich_phim ILIKE '%'||$1||'%')`;
   if (missingProfit) cond += ' AND pin.loi_nhuan IS NULL';
   return cond;
 }
@@ -76,4 +77,30 @@ async function setLoiNhuan(id, loiNhuan, actorId) {
   return rowCount > 0;
 }
 
-module.exports = { list, findById, listDotVai, setLoiNhuan };
+// Ghi lịch sử đặt lợi nhuận vào audit_log (forward-only).
+async function logProfitChange(id, oldVal, newVal, actorId) {
+  await query(
+    `INSERT INTO audit_log
+       (ten_bang, id_ban_ghi, hanh_dong, gia_tri_cu, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('phan_in', $1, 'SET_LOI_NHUAN', $2::jsonb, $3::jsonb, $4, CURRENT_TIMESTAMP, $4)`,
+    [String(id), JSON.stringify({ loi_nhuan: oldVal ?? null }), JSON.stringify({ loi_nhuan: newVal ?? null }), actorId]
+  );
+}
+
+async function profitHistoryByDate(date) {
+  const { rows } = await query(
+    `SELECT a.thoi_gian AS tg, nd.ho_ten AS nguoi, pin.ma_phan, mh.ma_hang,
+            a.gia_tri_cu->>'loi_nhuan' AS cu, a.gia_tri_moi->>'loi_nhuan' AS moi
+     FROM audit_log a
+     JOIN phan_in pin ON pin.id = a.id_ban_ghi::uuid
+     JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+     LEFT JOIN nguoi_dung nd ON nd.id = a.nguoi_thuc_hien_id
+     WHERE a.ten_bang = 'phan_in' AND a.hanh_dong = 'SET_LOI_NHUAN'
+       AND (a.thoi_gian AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
+     ORDER BY a.thoi_gian DESC`,
+    [date]
+  );
+  return rows;
+}
+
+module.exports = { list, findById, listDotVai, setLoiNhuan, logProfitChange, profitHistoryByDate };

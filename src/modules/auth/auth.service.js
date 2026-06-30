@@ -4,6 +4,7 @@ const bcrypt = require('bcryptjs');
 const repo = require('./auth.repository');
 const { sign } = require('../../utils/jwt');
 const AppError = require('../../utils/AppError');
+const { saveAvatarFile, removeAvatarFiles } = require('../../utils/avatarStorage');
 
 function toPublicUser(row, roles, permissions) {
   return {
@@ -12,7 +13,10 @@ function toPublicUser(row, roles, permissions) {
     tenDangNhap: row.ten_dang_nhap,
     hoTen: row.ho_ten,
     email: row.email,
+    soDienThoai: row.so_dien_thoai || null,
     chucVu: row.chuc_vu,
+    gioiTinh: row.gioi_tinh || null,
+    avatarUrl: row.avatar_url || null,
     phongBan: row.ten_phong_ban || null,
     roles,
     permissions,
@@ -55,4 +59,23 @@ async function me(userId) {
   return toPublicUser(row, roles, permissions);
 }
 
-module.exports = { login, me };
+async function updateProfile(userId, body) {
+  await repo.updateProfile(userId, body);
+  return me(userId);
+}
+
+async function uploadAvatar(userId, file) {
+  if (!file) throw new AppError('Chưa chọn ảnh', { status: 400, errorCode: 'NO_FILE' });
+  const { url } = await saveAvatarFile(userId, file);
+  await repo.setAvatar(userId, url);
+  return me(userId);
+}
+
+// Đặt lại avatar mặc định: xóa file + set avatar_url = NULL.
+async function resetAvatar(userId) {
+  await removeAvatarFiles(userId);
+  await repo.setAvatar(userId, null);
+  return me(userId);
+}
+
+module.exports = { login, me, updateProfile, uploadAvatar, resetAvatar };

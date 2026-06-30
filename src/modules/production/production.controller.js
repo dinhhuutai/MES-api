@@ -21,6 +21,12 @@ const printTem = asyncHandler(async (req, res) =>
 const finish = asyncHandler(async (req, res) =>
   ok(res, await service.finishRun(req.params.phieuId, req.user.id), 'Đã hoàn tất chạy'));
 
+const stopLine = asyncHandler(async (req, res) =>
+  ok(res, await service.stopLine(req.params.phieuId, req.body.lyDo, req.user.id), 'Đã ngừng chuyền'));
+
+const resumeLine = asyncHandler(async (req, res) =>
+  ok(res, await service.resumeLine(req.params.phieuId, req.user.id), 'Chuyền hoạt động lại'));
+
 const monitor = asyncHandler(async (req, res) => ok(res, await service.monitor()));
 
 const xePhoi = asyncHandler(async (req, res) => ok(res, await service.getXePhoi()));
@@ -41,4 +47,5 @@ const confirmDry = asyncHandler(async (req, res) =>
 module.exports = {
   candidates, getRun, start, printTem, finish, monitor,
   xePhoi, temChoPhoi, themTem, adjustPhoi, drying, confirmDry,
+  stopLine, resumeLine,
 };

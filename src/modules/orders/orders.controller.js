@@ -21,4 +21,9 @@ const setLoiNhuan = asyncHandler(async (req, res) =>
   ok(res, await service.setLoiNhuan(req.params.id, req.body.loiNhuan, req.user.id), 'Đã cập nhật lợi nhuận')
 );
 
-module.exports = { list, getOne, setLoiNhuan };
+const profitHistory = asyncHandler(async (req, res) => {
+  const date = req.query.date || new Date().toISOString().slice(0, 10);
+  return ok(res, await service.profitHistory(date));
+});
+
+module.exports = { list, getOne, setLoiNhuan, profitHistory };

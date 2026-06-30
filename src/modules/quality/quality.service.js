@@ -98,6 +98,106 @@ async function recordOqc(temId, body, actorId) {
   return { tem_id: temId, next };
 }
 
+const q0 = (v) => (v === null || v === undefined ? 0 : v);
+
+async function kcsHistory(date) {
+  const rows = await repo.kcsHistoryByDate(date);
+  return rows.map((r) => ({
+    tg: r.tg, nguoi: r.nguoi || '—',
+    hanh_dong: `KCS${r.ket_qua ? ' · ' + r.ket_qua : ''}`,
+    doi_tuong: r.ma_tem || '',
+    chi_tiet: `Đạt ${q0(r.so_luong_dat)} · Lỗi ${q0(r.so_luong_loi)}`,
+  }));
+}
+
+async function suaHistory(date) {
+  const rows = await repo.suaHistoryByDate(date);
+  return rows.map((r) => ({
+    tg: r.tg, nguoi: r.nguoi || '—', hanh_dong: 'Sửa',
+    doi_tuong: r.ma_tem || '',
+    chi_tiet: `Sửa ${q0(r.so_luong_sua)} · Đạt ${q0(r.so_luong_sua_dat)}`,
+  }));
+}
+
+async function oqcHistory(date) {
+  const rows = await repo.oqcHistoryByDate(date);
+  return rows.map((r) => ({
+    tg: r.tg, nguoi: r.nguoi || '—',
+    hanh_dong: `OQC${r.ket_qua ? ' · ' + r.ket_qua : ''}`,
+    doi_tuong: r.ma_tem || '',
+    chi_tiet: `Đạt ${q0(r.so_luong_dat)} · Lỗi ${q0(r.so_luong_loi)}`,
+  }));
+}
+
+// ----- QC IN-LINE (kiểm tại chuyền — phiếu đang chạy) -----
+async function listInlineCandidates(search) { return repo.listInlineCandidates({ search }); }
+async function listLoaiLoi() { return repo.listLoaiLoiActive(); }
+
+async function recordQcInline(phieuId, body, actorId) {
+  const phieu = await repo.getPhieuRun(phieuId);
+  if (!phieu) throw new AppError('Phiếu sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  if (phieu.trang_thai !== 'DANG_CHAY') {
+    throw new AppError('Chỉ QC in-line phiếu đang chạy', { status: 409, errorCode: 'WRONG_STAGE' });
+  }
+  const soLuongMau = num(body.soLuongMau);
+  const soLuongLoi = num(body.soLuongLoi);
+  if (soLuongMau <= 0) throw new AppError('Nhập số lượng mẫu kiểm', { status: 422, errorCode: 'INVALID_QTY' });
+  if (soLuongLoi > soLuongMau) throw new AppError('SL mẫu lỗi không vượt SL mẫu kiểm', { status: 422, errorCode: 'INVALID_QTY' });
+  const ketQua = body.ketQua === 'KHONG_DAT' ? 'KHONG_DAT' : 'DAT';
+  const loiList = Array.isArray(body.loi) ? body.loi.filter((x) => x && x.loaiLoiId) : [];
+
+  const lanKiem = await repo.nextInlineRound(phieuId);
+  await withTransaction(async (client) => {
+    const qcId = await repo.insertQcInline(client, {
+      phieuId, lenhId: phieu.lenh_san_xuat_id, lanKiem, soLuongMau, soLuongLoi, ketQua,
+      nguyenNhan: body.nguyenNhan, khacPhuc: body.khacPhuc, ghiChu: body.ghiChu,
+    }, actorId);
+    for (const l of loiList) {
+      await repo.insertQcInlineLoi(client, qcId, { loaiLoiId: l.loaiLoiId, soLuong: l.soLuong, ghiChu: l.ghiChu }, actorId);
+    }
+  });
+  sockets.emit('quality:updated', { phieuId, stage: 'QC_INLINE', ketQua });
+  return { phieu_id: phieuId, lan_kiem: lanKiem, ket_qua: ketQua };
+}
+
+async function inlineHistory(date) {
+  const rows = await repo.inlineHistoryByDate(date);
+  return rows.map((r) => ({
+    tg: r.tg, nguoi: r.nguoi || '—',
+    hanh_dong: `QC in-line${r.ket_qua ? ' · ' + (r.ket_qua === 'DAT' ? 'Đạt' : 'Không đạt') : ''}`,
+    doi_tuong: `${r.ma_phan || r.ma_phieu_san_xuat || ''}`,
+    chi_tiet: [
+      `Mẫu ${q0(r.so_luong_mau)} · Lỗi ${q0(r.so_luong_loi)}`,
+      r.loi_list ? `Loại: ${r.loi_list}` : null,
+      r.nguyen_nhan ? `NN: ${r.nguyen_nhan}` : null,
+      r.khac_phuc ? `KP: ${r.khac_phuc}` : null,
+    ].filter(Boolean).join(' · '),
+  }));
+}
+
+// ----- DANH MỤC LỖI -----
+async function listLoaiLoiAll(search) { return repo.listLoaiLoiAll(search || ''); }
+
+async function createLoaiLoi(body, actorId) {
+  if (!body.maLoi || !body.tenLoi) throw new AppError('Nhập mã lỗi và tên lỗi', { status: 422, errorCode: 'MISSING' });
+  const id = await repo.insertLoaiLoi({ maLoi: body.maLoi.trim(), tenLoi: body.tenLoi.trim(), nhomLoi: body.nhomLoi }, actorId);
+  return { id };
+}
+
+async function updateLoaiLoi(id, body, actorId) {
+  if (!body.tenLoi) throw new AppError('Nhập tên lỗi', { status: 422, errorCode: 'MISSING' });
+  await repo.updateLoaiLoi(id, { tenLoi: body.tenLoi.trim(), nhomLoi: body.nhomLoi }, actorId);
+  return { id };
+}
+
+async function toggleLoaiLoi(id, active, actorId) {
+  await repo.setLoaiLoiActive(id, !!active, actorId);
+  return { id };
+}
+
 module.exports = {
   listKcsCandidates, recordKcs, listSuaCandidates, recordSua, listOqcCandidates, recordOqc,
+  kcsHistory, suaHistory, oqcHistory,
+  listInlineCandidates, listLoaiLoi, recordQcInline, inlineHistory,
+  listLoaiLoiAll, createLoaiLoi, updateLoaiLoi, toggleLoaiLoi,
 };

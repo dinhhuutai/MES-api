@@ -16,4 +16,27 @@ const oqcCandidates = asyncHandler(async (req, res) => ok(res, await service.lis
 const recordOqc = asyncHandler(async (req, res) =>
   ok(res, await service.recordOqc(req.params.temId, req.body, req.user.id), 'Đã ghi nhận OQC'));
 
-module.exports = { kcsCandidates, recordKcs, suaCandidates, recordSua, oqcCandidates, recordOqc };
+const today = () => new Date().toISOString().slice(0, 10);
+const kcsHistory = asyncHandler(async (req, res) => ok(res, await service.kcsHistory(req.query.date || today())));
+const suaHistory = asyncHandler(async (req, res) => ok(res, await service.suaHistory(req.query.date || today())));
+const oqcHistory = asyncHandler(async (req, res) => ok(res, await service.oqcHistory(req.query.date || today())));
+
+// QC in-line
+const inlineCandidates = asyncHandler(async (req, res) => ok(res, await service.listInlineCandidates(req.query.search || '')));
+const inlineLoaiLoi = asyncHandler(async (req, res) => ok(res, await service.listLoaiLoi()));
+const inlineHistory = asyncHandler(async (req, res) => ok(res, await service.inlineHistory(req.query.date || today())));
+const recordInline = asyncHandler(async (req, res) =>
+  ok(res, await service.recordQcInline(req.params.phieuId, req.body, req.user.id), 'Đã ghi nhận QC in-line'));
+
+// Danh mục lỗi
+const loaiLoiList = asyncHandler(async (req, res) => ok(res, await service.listLoaiLoiAll(req.query.search || '')));
+const loaiLoiCreate = asyncHandler(async (req, res) => ok(res, await service.createLoaiLoi(req.body, req.user.id), 'Đã thêm loại lỗi'));
+const loaiLoiUpdate = asyncHandler(async (req, res) => ok(res, await service.updateLoaiLoi(req.params.id, req.body, req.user.id), 'Đã cập nhật loại lỗi'));
+const loaiLoiToggle = asyncHandler(async (req, res) => ok(res, await service.toggleLoaiLoi(req.params.id, req.body.active, req.user.id), 'Đã đổi trạng thái'));
+
+module.exports = {
+  kcsCandidates, recordKcs, suaCandidates, recordSua, oqcCandidates, recordOqc,
+  kcsHistory, suaHistory, oqcHistory,
+  inlineCandidates, inlineLoaiLoi, inlineHistory, recordInline,
+  loaiLoiList, loaiLoiCreate, loaiLoiUpdate, loaiLoiToggle,
+};

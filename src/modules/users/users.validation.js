@@ -8,12 +8,14 @@ const createRules = [
   body('matKhau').isLength({ min: 6 }).withMessage('Mật khẩu tối thiểu 6 ký tự'),
   body('hoTen').trim().notEmpty().withMessage('Họ tên bắt buộc'),
   body('email').optional({ values: 'falsy' }).isEmail().withMessage('Email không hợp lệ'),
+  body('gioiTinh').optional({ values: 'falsy' }).isIn(['NAM', 'NU']).withMessage('Giới tính không hợp lệ'),
   body('roleIds').optional().isArray().withMessage('roleIds phải là mảng'),
 ];
 
 const updateRules = [
   body('hoTen').optional().trim().notEmpty().withMessage('Họ tên không được rỗng'),
   body('email').optional({ values: 'falsy' }).isEmail().withMessage('Email không hợp lệ'),
+  body('gioiTinh').optional({ values: 'falsy' }).isIn(['NAM', 'NU']).withMessage('Giới tính không hợp lệ'),
   body('roleIds').optional().isArray().withMessage('roleIds phải là mảng'),
 ];
 

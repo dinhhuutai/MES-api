@@ -14,7 +14,7 @@ async function list({ search = '', active = null, offset = 0, limit = 20 }) {
 
   const dataSql = `
     SELECT u.id, u.ma_user, u.ten_dang_nhap, u.ho_ten, u.email, u.so_dien_thoai, u.chuc_vu,
-           u.trang_thai, u.dang_hoat_dong, u.phong_ban_id, pb.ten_phong_ban,
+           u.gioi_tinh, u.avatar_url, u.trang_thai, u.dang_hoat_dong, u.phong_ban_id, pb.ten_phong_ban,
            COALESCE(array_agg(r.ma_role) FILTER (WHERE r.id IS NOT NULL), '{}') AS roles
     FROM nguoi_dung u
     LEFT JOIN phong_ban pb ON pb.id = u.phong_ban_id
@@ -36,7 +36,7 @@ async function list({ search = '', active = null, offset = 0, limit = 20 }) {
 async function findById(id) {
   const sql = `
     SELECT u.id, u.ma_user, u.ten_dang_nhap, u.ho_ten, u.email, u.so_dien_thoai, u.chuc_vu,
-           u.trang_thai, u.dang_hoat_dong, u.phong_ban_id, pb.ten_phong_ban,
+           u.gioi_tinh, u.avatar_url, u.trang_thai, u.dang_hoat_dong, u.phong_ban_id, pb.ten_phong_ban,
            COALESCE(array_agg(DISTINCT r.id) FILTER (WHERE r.id IS NOT NULL), '{}') AS role_ids
     FROM nguoi_dung u
     LEFT JOIN phong_ban pb ON pb.id = u.phong_ban_id
@@ -66,12 +66,12 @@ async function create(data, actorId) {
   const sql = `
     INSERT INTO nguoi_dung
       (ma_user, ten_dang_nhap, mat_khau_hash, ho_ten, email, so_dien_thoai, chuc_vu,
-       phong_ban_id, trang_thai, dang_hoat_dong, created_by)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+       gioi_tinh, phong_ban_id, trang_thai, dang_hoat_dong, created_by)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
     RETURNING id`;
   const { rows } = await query(sql, [
     data.maUser, data.tenDangNhap, data.matKhauHash, data.hoTen, data.email || null,
-    data.soDienThoai || null, data.chucVu || null, data.phongBanId || null,
+    data.soDienThoai || null, data.chucVu || null, data.gioiTinh || null, data.phongBanId || null,
     data.trangThai || 'ACTIVE', data.dangHoatDong !== false, actorId,
   ]);
   return rows[0].id;
@@ -86,12 +86,14 @@ async function update(id, data, actorId) {
       chuc_vu = $5,
       phong_ban_id = $6,
       trang_thai = COALESCE($7, trang_thai),
+      gioi_tinh = $9,
       updated_by = $8,
       updated_date = CURRENT_TIMESTAMP
     WHERE id = $1`;
   await query(sql, [
     id, data.hoTen ?? null, data.email ?? null, data.soDienThoai ?? null,
     data.chucVu ?? null, data.phongBanId ?? null, data.trangThai ?? null, actorId,
+    data.gioiTinh ?? null,
   ]);
 }
 
