@@ -21,7 +21,7 @@ const qualityRoutes = require('./modules/quality/quality.routes');
 const deliveryRoutes = require('./modules/delivery/delivery.routes');
 const wfconfigRoutes = require('./modules/wfconfig/wfconfig.routes');
 const dashboardRoutes = require('./modules/dashboard/dashboard.routes');
-//const erpsyncRoutes = require('./modules/erpsync/erpsync.routes');
+const erpsyncRoutes = require('./modules/erpsync/erpsync.routes');
 
 const app = express();
 
@@ -52,7 +52,7 @@ app.use('/api/quality', qualityRoutes);
 app.use('/api/giao-hang', deliveryRoutes);
 app.use('/api/wf', wfconfigRoutes);
 app.use('/api/dashboard', dashboardRoutes);
-//app.use('/api/erp', erpsyncRoutes);
+app.use('/api/erp', erpsyncRoutes);
 
 // 404 + error
 app.use(notFound);
