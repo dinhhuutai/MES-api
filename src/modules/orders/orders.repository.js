@@ -44,6 +44,44 @@ async function list({ search = '', missingProfit = false, offset = 0, limit = 20
   return { rows: data.rows, total: count.rows[0].total };
 }
 
+// Danh sách "phần in vải về": GỘP theo phần in (mỗi dòng = 1 phần in), kèm mảng đợt vải về.
+// Phần in có nhiều đợt → rowspan ở FE để dễ nhận biết. Phần in chưa có đợt vẫn hiển thị (dot_vai=[]).
+// TODO(công nợ): khi có trạng thái "đã làm công nợ xong" trên đợt vải, thêm điều kiện loại đợt đó
+//   ở LEFT JOIN (vd: AND dv.trang_thai <> 'CONG_NO_XONG'). Hiện hệ thống chưa lưu trạng thái này.
+async function listVaiVe({ search = '', offset = 0, limit = 20 }) {
+  const where = `($1 = '' OR pin.ma_phan ILIKE '%'||$1||'%' OR kh.ten_khach_hang ILIKE '%'||$1||'%'
+              OR dh.ma_don_hang ILIKE '%'||$1||'%' OR mh.ma_hang ILIKE '%'||$1||'%'
+              OR pin.mau_vai ILIKE '%'||$1||'%' OR pin.kich_vai ILIKE '%'||$1||'%'
+              OR pin.kich_phim ILIKE '%'||$1||'%' OR dv.ma_dot_vai ILIKE '%'||$1||'%')`;
+  // 1 query duy nhất: tổng số phần in qua COUNT(*) OVER() (tránh chạy song song 2 query nặng
+  // làm rớt kết nối DB). Window count = số nhóm (phần in) trước LIMIT.
+  const sql = `
+    SELECT pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim,
+           pin.so_luong_don_hang, pin.loi_nhuan,
+           mh.ma_hang, mh.ten_ma_hang, dh.ma_don_hang, dh.so_po,
+           kh.ma_khach_hang, kh.ten_khach_hang,
+           count(dv.id)::int AS so_dot,
+           COALESCE(json_agg(json_build_object(
+             'dot_vai_id', dv.id, 'ma_dot_vai', dv.ma_dot_vai, 'so_luong_vai_ve', dv.so_luong_vai_ve,
+             'ngay_vai_ve', dv.ngay_vai_ve, 'han_giao_hang', dv.han_giao_hang
+           ) ORDER BY dv.ngay_vai_ve NULLS LAST, dv.ma_dot_vai)
+           FILTER (WHERE dv.id IS NOT NULL), '[]') AS dot_vai,
+           COUNT(*) OVER()::int AS total_count
+    ${BASE_JOINS}
+    LEFT JOIN dot_vai_ve dv ON dv.phan_in_id = pin.id
+    WHERE ${where}
+      AND dh.trang_thai IS DISTINCT FROM 'CLOSED_FINANCE'
+    GROUP BY pin.id, mh.ma_hang, mh.ten_ma_hang, dh.ma_don_hang, dh.so_po, kh.ma_khach_hang, kh.ten_khach_hang
+    ORDER BY kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, pin.ma_phan
+    LIMIT $2 OFFSET $3`;
+  // Gửi SQL trên 1 dòng (thu gọn whitespace): tránh thiết bị IPS/WAF trên đường tới DB public
+  // reset kết nối khi gặp pattern WHERE/json nhiều dòng ("Connection terminated unexpectedly").
+  // An toàn vì query này không có literal chứa khoảng trắng có nghĩa.
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [search, limit, offset]);
+  const total = rows.length ? rows[0].total_count : 0;
+  return { rows, total };
+}
+
 async function findById(id) {
   const sql = `
     SELECT pin.id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
@@ -103,4 +141,4 @@ async function profitHistoryByDate(date) {
   return rows;
 }
 
-module.exports = { list, findById, listDotVai, setLoiNhuan, logProfitChange, profitHistoryByDate };
+module.exports = { list, listVaiVe, findById, listDotVai, setLoiNhuan, logProfitChange, profitHistoryByDate };

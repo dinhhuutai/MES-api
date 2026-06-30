@@ -31,6 +31,28 @@ async function listSyncHistory(limit = 50) {
   return rows;
 }
 
+// ----- Lưu dữ liệu THÔ (task 1) -----
+// items: [{ maDotVai, codePart, boQua, payload(object) }]. Upsert theo ma_dot_vai (1 đợt = 1 dòng raw).
+async function insertRawBatch(syncLogId, items) {
+  if (!items.length) return;
+  const cols = 4; // ma_dot_vai, code_part, bo_qua, payload  (+ erp_sync_log_id chung)
+  const values = [];
+  const params = [syncLogId];
+  items.forEach((it, i) => {
+    const b = i * cols + 2; // $1 = syncLogId
+    values.push(`($${b}, $${b + 1}, $${b + 2}, $${b + 3}::jsonb, $1)`);
+    params.push(it.maDotVai, it.codePart || null, !!it.boQua, JSON.stringify(it.payload));
+  });
+  await query(
+    `INSERT INTO erp_phieu_nhan_vai_raw (ma_dot_vai, code_part, bo_qua, payload, erp_sync_log_id)
+     VALUES ${values.join(',')}
+     ON CONFLICT (ma_dot_vai) DO UPDATE SET
+       code_part = EXCLUDED.code_part, bo_qua = EXCLUDED.bo_qua, payload = EXCLUDED.payload,
+       erp_sync_log_id = EXCLUDED.erp_sync_log_id, updated_date = CURRENT_TIMESTAMP`,
+    params
+  );
+}
+
 // ----- Upsert cây dữ liệu (idempotent theo mã) -----
 async function upsertKhachHang(client, { ma, ten }) {
   const { rows } = await client.query(
@@ -90,6 +112,6 @@ async function upsertDotVai(client, { maDotVai, phanInId, ngayVaiVe, hanGiao, so
 }
 
 module.exports = {
-  createSyncLog, finishSyncLog, listSyncHistory,
+  createSyncLog, finishSyncLog, listSyncHistory, insertRawBatch,
   upsertKhachHang, upsertDonHang, upsertMaHang, upsertPhanIn, upsertDotVai,
 };

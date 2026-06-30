@@ -52,6 +52,8 @@ const env = {
       try { return JSON.parse(process.env.ERP_API_HEADERS || '{"X-Internal-Request":"WEBAPP"}'); }
       catch { return { 'X-Internal-Request': 'WEBAPP' }; }
     })(),
+    // URL forward proxy để ra mạng nội bộ tới ERP (vd http://10.84.40.x:port). Trống = axios tự đọc HTTP_PROXY env.
+    proxyUrl: process.env.ERP_PROXY_URL || null,
   },
 };
 

@@ -15,6 +15,12 @@ const list = asyncHandler(async (req, res) => {
   return ok(res, data);
 });
 
+const listVaiVe = asyncHandler(async (req, res) => {
+  const { page, limit, offset } = getPaging(req.query);
+  const data = await service.listVaiVe({ search: req.query.search || '', page, limit, offset });
+  return ok(res, data);
+});
+
 const getOne = asyncHandler(async (req, res) => ok(res, await service.getPhanIn(req.params.id)));
 
 const setLoiNhuan = asyncHandler(async (req, res) =>
@@ -26,4 +32,4 @@ const profitHistory = asyncHandler(async (req, res) => {
   return ok(res, await service.profitHistory(date));
 });
 
-module.exports = { list, getOne, setLoiNhuan, profitHistory };
+module.exports = { list, listVaiVe, getOne, setLoiNhuan, profitHistory };

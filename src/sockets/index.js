@@ -1,11 +1,14 @@
 'use strict';
 
+const presence = require('./presence');
+
 let ioRef = null;
 
 function init(io) {
   ioRef = io;
   io.on('connection', (socket) => {
     console.log(`[socket] client kết nối: ${socket.id}`);
+    presence.register(io, socket); // theo dõi online + lịch sử điều hướng
     socket.on('disconnect', () => {
       console.log(`[socket] client ngắt: ${socket.id}`);
     });

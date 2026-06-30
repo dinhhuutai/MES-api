@@ -9,6 +9,11 @@ async function listPhanIn({ search, missingProfit, page, limit, offset }) {
   return { items: rows, meta: buildMeta(page, limit, total) };
 }
 
+async function listVaiVe({ search, page, limit, offset }) {
+  const { rows, total } = await repo.listVaiVe({ search, offset, limit });
+  return { items: rows, meta: buildMeta(page, limit, total) };
+}
+
 async function getPhanIn(id) {
   const phanIn = await repo.findById(id);
   if (!phanIn) throw new AppError('Phần in không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
@@ -37,4 +42,4 @@ async function profitHistory(date) {
   }));
 }
 
-module.exports = { listPhanIn, getPhanIn, setLoiNhuan, profitHistory };
+module.exports = { listPhanIn, listVaiVe, getPhanIn, setLoiNhuan, profitHistory };

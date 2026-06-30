@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
+const axios = require('axios');
 const { withTransaction } = require('../../config/db');
 const repo = require('./erpsync.repository');
 const env = require('../../config/env');
@@ -14,31 +15,53 @@ const clean = (v) => (v == null ? '' : String(v).trim());
 // DATE 'YYYY-MM-DD' từ chuỗi ISO (cắt phần ngày, không lệch timezone).
 const toDate = (v) => (v ? String(v).slice(0, 10) : null);
 
-// Khóa định danh ổn định để upsert (tránh trùng khi đồng bộ lặp lại mỗi giờ).
-function buildKeys(r) {
+// Khóa định danh ổn định để upsert.
+// QUY TẮC: 1 bản ghi ERP = 1 đợt vải. ERP trả về nhiều dòng giống hệt nhau (chỉ khác received_qty,
+// thậm chí trùng hoàn toàn) và KHÔNG có id duy nhất. Vì vậy maDotVai = hash(toàn bộ nội dung dòng,
+// gồm received_qty) + CHỈ SỐ THỨ TỰ xuất hiện trong nhóm trùng. `seen` đếm số lần đã gặp nội dung đó
+// trong cùng một lần đồng bộ → mỗi dòng ra một khóa riêng, idempotent khi ERP trả về theo thứ tự ổn định.
+function buildKeys(r, seen) {
   const codePart = clean(r.code_part);
   const phanKey = codePart
     || `A-${md5([r.order_name, r.item_name, r.fabric_color, r.fabric_size, r.film_size].map(clean).join('|'))}`;
-  const dotKey = `ERP-${md5([
-    r.order_name, r.item_name, codePart, r.fabric_color, r.fabric_size, r.film_size, r.created_date,
-  ].map(clean).join('|'))}`;
+  const content = [
+    r.order_name, r.item_name, codePart, r.fabric_color, r.fabric_size, r.film_size,
+    r.created_date, r.received_qty,
+  ].map(clean).join('|');
+  const occ = (seen.get(content) || 0) + 1;
+  seen.set(content, occ);
+  const dotKey = `ERP-${md5(`${content}#${occ}`)}`;
   return { maPhan: phanKey.slice(0, 50), maDotVai: dotKey.slice(0, 50) };
 }
 
+// Cấu hình proxy cho axios: nếu có ERP_PROXY_URL thì dùng tường minh; nếu không trả về undefined
+// để axios TỰ đọc HTTP_PROXY/HTTPS_PROXY/NO_PROXY từ env (giống app cũ chạy được).
+function erpProxy() {
+  if (!env.erp.proxyUrl) return undefined;
+  try {
+    const u = new URL(env.erp.proxyUrl);
+    return { host: u.hostname, port: Number(u.port) || 80, protocol: u.protocol.replace(':', '') };
+  } catch { return undefined; }
+}
+
+// Gọi ERP bằng AXIOS (không phải fetch của Node/undici). Lý do: app cũ dùng axios chạy được vì axios
+// TỰ dùng proxy từ biến môi trường, còn `fetch`(undici) thì KHÔNG → hay timeout UND_ERR_CONNECT_TIMEOUT.
 async function fetchErp(fromDate) {
   const url = `${env.erp.phieuNhanVaiUrl}?fromDate=${encodeURIComponent(fromDate)}`;
   const timeoutMs = env.erp.syncTimeoutMs || 600000;
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   const t0 = Date.now();
   console.log(`[erp-sync] → GET ${url} (timeout ${Math.round(timeoutMs / 1000)}s)`);
   try {
-    const res = await fetch(url, {
-      signal: ctrl.signal,
+    const res = await axios.get(url, {
+      timeout: timeoutMs,
       headers: { Accept: 'application/json', ...(env.erp.apiHeaders || {}) },
+      proxy: erpProxy(),           // undefined → axios tự đọc HTTP_PROXY env
+      validateStatus: () => true,  // tự kiểm status để giữ thông điệp lỗi như cũ
     });
-    if (!res.ok) throw new AppError(`ERP trả về HTTP ${res.status}`, { status: 502, errorCode: 'ERP_HTTP' });
-    const json = await res.json();
+    if (res.status < 200 || res.status >= 300) {
+      throw new AppError(`ERP trả về HTTP ${res.status}`, { status: 502, errorCode: 'ERP_HTTP' });
+    }
+    const json = res.data;
     if (!json || json.success === false) {
       throw new AppError(json?.message || 'ERP trả về lỗi', { status: 502, errorCode: 'ERP_ERROR' });
     }
@@ -47,22 +70,19 @@ async function fetchErp(fromDate) {
     return data;
   } catch (e) {
     const secs = Math.round((Date.now() - t0) / 1000);
-    if (e.name === 'AbortError') {
+    if (e instanceof AppError) throw e;
+    if (e.code === 'ECONNABORTED') {
       console.error(`[erp-sync] ✗ Timeout sau ${secs}s`);
       throw new AppError(`ERP timeout (${Math.round(timeoutMs / 1000)}s)`, { status: 504, errorCode: 'ERP_TIMEOUT' });
     }
-    if (e instanceof AppError) throw e;
-    // Lỗi mạng (fetch failed) — Node bọc nguyên nhân thật trong e.cause.
-    const cause = e.cause ? ` (${e.cause.code || e.cause.message})` : '';
-    console.error(`[erp-sync] ✗ ${e.message}${cause} sau ${secs}s — URL: ${url}`);
-    throw new AppError(`Không gọi được ERP: ${e.message}${cause}`, { status: 502, errorCode: 'ERP_FETCH_FAILED' });
-  } finally {
-    clearTimeout(timer);
+    // Lỗi mạng (ECONNREFUSED/ETIMEDOUT/ENOTFOUND/UND_ERR_*...).
+    const detail = e.code ? ` (${e.code})` : '';
+    console.error(`[erp-sync] ✗ ${e.message}${detail} sau ${secs}s — URL: ${url}`);
+    throw new AppError(`Không gọi được ERP: ${e.message}${detail}`, { status: 502, errorCode: 'ERP_FETCH_FAILED' });
   }
 }
 
-async function processRow(r) {
-  const { maPhan, maDotVai } = buildKeys(r);
+async function processRow(r, maPhan, maDotVai) {
   return withTransaction(async (client) => {
     const khId = await repo.upsertKhachHang(client, { ma: clean(r.customer_name), ten: clean(r.customer_name) });
     const donId = await repo.upsertDonHang(client, { maDon: clean(r.order_name), khachHangId: khId });
@@ -93,12 +113,30 @@ async function syncPhieuNhanVai({ fromDate, actorId = null, tuDong = false } = {
   const logId = await repo.createSyncLog({ nguon: NGUON, fromDate: from, tuDong }, actorId);
   try {
     const rows = await fetchErp(from);
+
+    // Tính khóa định danh cho TỪNG dòng (mỗi bản ghi = 1 đợt; xem buildKeys).
+    const seen = new Map();
+    const prepared = rows.map((r) => {
+      const skip = !clean(r.code_part);
+      const { maPhan, maDotVai } = buildKeys(r, seen);
+      return { r, maPhan, maDotVai, skip };
+    });
+
+    // Task 1: LƯU DỮ LIỆU THÔ trước khi xử lý (gồm cả dòng bị bỏ qua).
+    try {
+      await repo.insertRawBatch(logId, prepared.map((p) => ({
+        maDotVai: p.maDotVai, codePart: clean(p.r.code_part) || null, boQua: p.skip, payload: p.r,
+      })));
+    } catch (e) {
+      console.error(`[erp-sync] ✗ Lưu dữ liệu thô lỗi: ${e.message}`);
+    }
+
     let soMoi = 0; let soCapNhat = 0; let soBoQua = 0; const errors = [];
-    for (const r of rows) {
+    for (const p of prepared) {
       // Bỏ qua dòng không có code_part (theo yêu cầu: code_part = null thì bỏ ra).
-      if (!clean(r.code_part)) { soBoQua += 1; continue; }
+      if (p.skip) { soBoQua += 1; continue; }
       try {
-        const inserted = await processRow(r);
+        const inserted = await processRow(p.r, p.maPhan, p.maDotVai);
         if (inserted) soMoi += 1; else soCapNhat += 1;
       } catch (e) {
         errors.push(e.message);

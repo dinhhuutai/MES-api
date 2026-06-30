@@ -11,6 +11,7 @@ const router = express.Router();
 router.use(auth);
 
 router.get('/', rbac('ORDER_VIEW'), c.list);
+router.get('/vai-ve', rbac('ORDER_VIEW'), c.listVaiVe);
 router.get('/profit-history', rbac('PROFIT_MANAGE'), c.profitHistory);
 router.get('/:id', rbac('ORDER_VIEW'), c.getOne);
 router.patch(
