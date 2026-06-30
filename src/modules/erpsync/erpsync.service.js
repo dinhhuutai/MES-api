@@ -80,10 +80,11 @@ async function processRow(r) {
   });
 }
 
-// fromDate mặc định = hiện tại - N ngày (proc ERP lọc created_date >= fromDate; truyền now sẽ ra 0 bản ghi).
+// fromDate mặc định = THỜI ĐIỂM HIỆN TẠI, định dạng 'YYYY-MM-DDTHH:mm:ss' (giờ local, không hậu tố 'Z' UTC).
 function defaultFrom() {
-  const days = Math.max(1, env.erp.syncLookbackDays || 60);
-  return new Date(Date.now() - days * 86400000).toISOString();
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
 // Đồng bộ phiếu nhận vải từ ERP.
@@ -92,8 +93,10 @@ async function syncPhieuNhanVai({ fromDate, actorId = null, tuDong = false } = {
   const logId = await repo.createSyncLog({ nguon: NGUON, fromDate: from, tuDong }, actorId);
   try {
     const rows = await fetchErp(from);
-    let soMoi = 0; let soCapNhat = 0; const errors = [];
+    let soMoi = 0; let soCapNhat = 0; let soBoQua = 0; const errors = [];
     for (const r of rows) {
+      // Bỏ qua dòng không có code_part (theo yêu cầu: code_part = null thì bỏ ra).
+      if (!clean(r.code_part)) { soBoQua += 1; continue; }
       try {
         const inserted = await processRow(r);
         if (inserted) soMoi += 1; else soCapNhat += 1;
@@ -102,15 +105,18 @@ async function syncPhieuNhanVai({ fromDate, actorId = null, tuDong = false } = {
       }
     }
     const trangThai = errors.length && soMoi + soCapNhat === 0 ? 'LOI' : 'THANH_CONG';
+    const notes = [];
+    if (soBoQua) notes.push(`bỏ qua ${soBoQua} dòng không có code_part`);
+    if (errors.length) notes.push(`lỗi ${errors.length}/${rows.length}: ${errors.slice(0, 3).join(' | ')}`);
     await repo.finishSyncLog(logId, {
       tong: rows.length, soMoi, soCapNhat, soLoi: errors.length, trangThai,
-      thongDiep: errors.length ? `Lỗi ${errors.length}/${rows.length}: ${errors.slice(0, 3).join(' | ')}` : null,
+      thongDiep: notes.length ? notes.join(' · ') : null,
     });
     if (soMoi + soCapNhat > 0) {
       sockets.emit('order:updated', { source: 'erp' });
       sockets.emit('dashboard:refresh', {});
     }
-    return { logId, tong: rows.length, soMoi, soCapNhat, soLoi: errors.length, trangThai };
+    return { logId, tong: rows.length, soMoi, soCapNhat, soBoQua, soLoi: errors.length, trangThai };
   } catch (e) {
     await repo.finishSyncLog(logId, { tong: 0, soMoi: 0, soCapNhat: 0, soLoi: 0, trangThai: 'LOI', thongDiep: e.message });
     throw e;

@@ -8,7 +8,8 @@ const { ok } = require('../../utils/response');
 const syncPhieuNhanVai = asyncHandler(async (req, res) => {
   const fromDate = req.body.fromDate || req.query.fromDate || undefined;
   const result = await service.syncPhieuNhanVai({ fromDate, actorId: req.user.id, tuDong: false });
-  return ok(res, result, `Đồng bộ ERP xong: ${result.soMoi} mới, ${result.soCapNhat} cập nhật, ${result.soLoi} lỗi`);
+  return ok(res, result,
+    `Đồng bộ ERP xong: ${result.soMoi} mới, ${result.soCapNhat} cập nhật, ${result.soBoQua || 0} bỏ qua (không có code_part), ${result.soLoi} lỗi`);
 });
 
 const history = asyncHandler(async (req, res) =>
