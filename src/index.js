@@ -6,7 +6,8 @@ const app = require('./app');
 const env = require('./config/env');
 const sockets = require('./sockets');
 const { pool } = require('./config/db');
-const { startErpSyncJob } = require('./jobs/erpSync.job');
+// [ERP TẮT TẠM] vô hiệu hóa job tự kết nối ERP để kiểm tra. Bỏ comment 2 dòng (đây + startErpSyncJob bên dưới) để bật lại.
+// const { startErpSyncJob } = require('./jobs/erpSync.job');
 
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -31,7 +32,8 @@ async function start() {
   }
   server.listen(env.port, () => {
     console.log(`[server] THLA MES API chạy tại http://localhost:${env.port} (${env.nodeEnv})`);
-    startErpSyncJob();
+    // [ERP TẮT TẠM] không tự đồng bộ ERP. Bỏ comment để bật lại.
+    // startErpSyncJob();
   });
 }
 

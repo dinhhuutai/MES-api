@@ -25,11 +25,10 @@ const env = {
     secret: required('JWT_SECRET'),
     expiresIn: process.env.JWT_EXPIRES || '8h',
   },
-  // Danh sách origin được phép (frontend). Cấu hình qua .env CORS_ORIGIN (ngăn cách bằng dấu phẩy).
-  corsOrigin: (process.env.CORS_ORIGIN || 'http://localhost:3000,https://mes.thuanhunglongan.com')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean),
+  corsOrigin: [
+    "http://localhost:3000",
+    "https://mes.thuanhunglongan.com",
+  ] || 'http://localhost:3000',
   upload: {
     // Thư mục gốc lưu file trên ổ đĩa server (đã cấu hình sẵn).
     root: process.env.UPLOAD_ROOT || 'D:/uploads',

@@ -21,25 +21,11 @@ const qualityRoutes = require('./modules/quality/quality.routes');
 const deliveryRoutes = require('./modules/delivery/delivery.routes');
 const wfconfigRoutes = require('./modules/wfconfig/wfconfig.routes');
 const dashboardRoutes = require('./modules/dashboard/dashboard.routes');
-const erpsyncRoutes = require('./modules/erpsync/erpsync.routes');
+//const erpsyncRoutes = require('./modules/erpsync/erpsync.routes');
 
 const app = express();
 
-// CORS: phản chiếu origin nếu nằm trong danh sách cho phép (hỗ trợ credentials).
-const corsOptions = {
-  origin(origin, cb) {
-    // Cho phép request không có Origin (server-to-server, health check, curl).
-    if (!origin || env.corsOrigin.includes(origin)) return cb(null, true);
-    console.warn(`[cors] Từ chối origin: ${origin} (cho phép: ${env.corsOrigin.join(', ')})`);
-    return cb(null, false);
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-};
-app.use(cors(corsOptions));
-// Trả lời preflight cho mọi route (Express 5: dùng regex thay cho '*').
-app.options(/.*/, cors(corsOptions));
+app.use(cors({ origin: env.corsOrigin, credentials: true }));
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true }));
 
@@ -66,7 +52,7 @@ app.use('/api/quality', qualityRoutes);
 app.use('/api/giao-hang', deliveryRoutes);
 app.use('/api/wf', wfconfigRoutes);
 app.use('/api/dashboard', dashboardRoutes);
-app.use('/api/erp', erpsyncRoutes);
+//app.use('/api/erp', erpsyncRoutes);
 
 // 404 + error
 app.use(notFound);
