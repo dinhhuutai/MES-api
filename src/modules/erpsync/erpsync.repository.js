@@ -20,10 +20,24 @@ async function finishSyncLog(id, { tong, soMoi, soCapNhat, soLoi, trangThai, tho
   );
 }
 
+// Lưu NGUYÊN VĂN chuỗi ERP trả về (TEXT) cho lần đồng bộ này.
+async function saveSyncRaw(logId, rawText) {
+  await query('UPDATE erp_sync_log SET du_lieu_tho = $2 WHERE id = $1',
+    [logId, typeof rawText === 'string' ? rawText : (rawText == null ? null : String(rawText))]);
+}
+
+// Đọc lại chuỗi thô của 1 lần đồng bộ. Cast ::text để luôn trả chuỗi (dù cột là JSONB hay TEXT).
+async function getSyncRaw(logId) {
+  const { rows } = await query('SELECT du_lieu_tho::text AS du_lieu_tho FROM erp_sync_log WHERE id = $1', [logId]);
+  return rows[0] ? (rows[0].du_lieu_tho || null) : null;
+}
+
 async function listSyncHistory(limit = 50) {
   const { rows } = await query(
     `SELECT l.id, l.nguon, l.from_date, l.tg_bd, l.tg_kt, l.tong_ban_ghi, l.so_moi, l.so_cap_nhat,
-            l.so_loi, l.trang_thai, l.tu_dong, l.thong_diep, nd.ho_ten AS nguoi
+            l.so_loi, l.trang_thai, l.tu_dong, l.thong_diep, nd.ho_ten AS nguoi,
+            (l.du_lieu_tho IS NOT NULL) AS co_tho,
+            COALESCE(length(l.du_lieu_tho::text), 0) AS so_ky_tu
      FROM erp_sync_log l LEFT JOIN nguoi_dung nd ON nd.id = l.created_by
      ORDER BY l.tg_bd DESC LIMIT $1`,
     [limit]
@@ -112,6 +126,6 @@ async function upsertDotVai(client, { maDotVai, phanInId, ngayVaiVe, hanGiao, so
 }
 
 module.exports = {
-  createSyncLog, finishSyncLog, listSyncHistory, insertRawBatch,
+  createSyncLog, finishSyncLog, listSyncHistory, insertRawBatch, saveSyncRaw, getSyncRaw,
   upsertKhachHang, upsertDonHang, upsertMaHang, upsertPhanIn, upsertDotVai,
 };

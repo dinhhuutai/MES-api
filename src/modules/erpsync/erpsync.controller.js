@@ -15,4 +15,7 @@ const syncPhieuNhanVai = asyncHandler(async (req, res) => {
 const history = asyncHandler(async (req, res) =>
   ok(res, await service.history(parseInt(req.query.limit || '50', 10))));
 
-module.exports = { syncPhieuNhanVai, history };
+const rawData = asyncHandler(async (req, res) =>
+  ok(res, await service.rawData(req.params.id)));
+
+module.exports = { syncPhieuNhanVai, history, rawData };

@@ -55,19 +55,23 @@ async function fetchErp(fromDate) {
     const res = await axios.get(url, {
       timeout: timeoutMs,
       headers: { Accept: 'application/json', ...(env.erp.apiHeaders || {}) },
-      proxy: erpProxy(),           // undefined → axios tự đọc HTTP_PROXY env
-      validateStatus: () => true,  // tự kiểm status để giữ thông điệp lỗi như cũ
+      proxy: erpProxy(),                  // undefined → axios tự đọc HTTP_PROXY env
+      validateStatus: () => true,         // tự kiểm status để giữ thông điệp lỗi như cũ
+      transformResponse: [(d) => d],      // GIỮ NGUYÊN VĂN chuỗi response (không để axios tự JSON.parse)
     });
     if (res.status < 200 || res.status >= 300) {
       throw new AppError(`ERP trả về HTTP ${res.status}`, { status: 502, errorCode: 'ERP_HTTP' });
     }
-    const json = res.data;
+    const rawText = typeof res.data === 'string' ? res.data : JSON.stringify(res.data); // chuỗi gốc
+    let json;
+    try { json = JSON.parse(rawText); }
+    catch { throw new AppError('ERP trả về không phải JSON', { status: 502, errorCode: 'ERP_BAD_JSON' }); }
     if (!json || json.success === false) {
       throw new AppError(json?.message || 'ERP trả về lỗi', { status: 502, errorCode: 'ERP_ERROR' });
     }
     const data = Array.isArray(json.data) ? json.data : [];
     console.log(`[erp-sync] ← HTTP ${res.status} sau ${Math.round((Date.now() - t0) / 1000)}s · ${data.length} bản ghi`);
-    return data;
+    return { data, rawText };
   } catch (e) {
     const secs = Math.round((Date.now() - t0) / 1000);
     if (e instanceof AppError) throw e;
@@ -112,7 +116,11 @@ async function syncPhieuNhanVai({ fromDate, actorId = null, tuDong = false } = {
   const from = fromDate || defaultFrom();
   const logId = await repo.createSyncLog({ nguon: NGUON, fromDate: from, tuDong }, actorId);
   try {
-    const rows = await fetchErp(from);
+    const { data: rows, rawText } = await fetchErp(from);
+
+    // Lưu NGUYÊN VĂN chuỗi ERP trả về cho lần này (để xem lại "lần đó trả về gì").
+    try { await repo.saveSyncRaw(logId, rawText); }
+    catch (e) { console.error(`[erp-sync] ✗ Lưu chuỗi thô lỗi: ${e.message}`); }
 
     // Tính khóa định danh cho TỪNG dòng (mỗi bản ghi = 1 đợt; xem buildKeys).
     const seen = new Map();
@@ -165,4 +173,10 @@ async function history(limit) {
   return repo.listSyncHistory(limit || 50);
 }
 
-module.exports = { syncPhieuNhanVai, history };
+// Chuỗi response nguyên văn của 1 lần đồng bộ.
+async function rawData(logId) {
+  const text = await repo.getSyncRaw(logId);
+  return { chuoi_tho: text || null };
+}
+
+module.exports = { syncPhieuNhanVai, history, rawData };

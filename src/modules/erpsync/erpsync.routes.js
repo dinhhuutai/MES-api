@@ -10,5 +10,6 @@ router.use(auth);
 
 router.post('/sync/phieu-nhan-vai', rbac('ERP_SYNC'), c.syncPhieuNhanVai);
 router.get('/sync/history', rbac('ERP_SYNC'), c.history);
+router.get('/sync/:id/raw', rbac('ERP_SYNC'), c.rawData);
 
 module.exports = router;
