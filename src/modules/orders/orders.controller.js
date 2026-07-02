@@ -15,9 +15,20 @@ const list = asyncHandler(async (req, res) => {
   return ok(res, data);
 });
 
+const FILTER_KEYS = ['khach', 'don', 'maHang', 'codePhan', 'mauVai', 'kichVai', 'kichPhim', 'ngayVaiTu', 'ngayVaiDen'];
 const listVaiVe = asyncHandler(async (req, res) => {
   const { page, limit, offset } = getPaging(req.query);
-  const data = await service.listVaiVe({ search: req.query.search || '', page, limit, offset });
+  const filters = {};
+  for (const k of FILTER_KEYS) {
+    const v = (req.query[k] || '').trim();
+    if (v) filters[k] = v;
+  }
+  const data = await service.listVaiVe({
+    search: req.query.search || '',
+    filters,
+    stage: req.query.stage || '',
+    page, limit, offset,
+  });
   return ok(res, data);
 });
 

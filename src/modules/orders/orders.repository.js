@@ -44,17 +44,66 @@ async function list({ search = '', missingProfit = false, offset = 0, limit = 20
   return { rows: data.rows, total: count.rows[0].total };
 }
 
+// Điều kiện lọc theo GIAI ĐOẠN của phần in (derive từ trạng thái runtime — không phụ thuộc ton_tram/029).
+// Một phần in có thể ở nhiều giai đoạn (nhiều đợt vải/tem rải rác) → lọc dạng "có ≥1 đối tượng ở giai đoạn đó".
+function stageCondition(stage) {
+  const LENH = "SELECT 1 FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve d ON d.id=lsd.dot_vai_ve_id AND d.phan_in_id=pin.id";
+  const anyLenh = `EXISTS (${LENH})`;
+  const lenhStatus = (st) => `EXISTS (${LENH} JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id WHERE ls.trang_thai='${st}')`;
+  const tem = (list) => `EXISTS (${LENH} JOIN phieu_san_xuat ps ON ps.lenh_san_xuat_id=lsd.lenh_san_xuat_id JOIN tem t ON t.phieu_san_xuat_id=ps.id WHERE t.trang_thai <> 'HUY' AND t.trang_thai IN (${list.map((s) => `'${s}'`).join(',')}))`;
+  const phieuChay = `EXISTS (${LENH} JOIN phieu_san_xuat ps ON ps.lenh_san_xuat_id=lsd.lenh_san_xuat_id WHERE ps.trang_thai='DANG_CHAY')`;
+  const testStarted = `EXISTS (${LENH} JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id JOIN ket_qua_checkpoint kq ON kq.lenh_san_xuat_id=ls.id JOIN checkpoint c ON c.id=kq.checkpoint_id WHERE ls.trang_thai='RELEASE_1' AND c.ma_checkpoint IN ('TEST_CNSP','TEST_QA') AND kq.trang_thai='DAT')`;
+  const techAny = "EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint c ON c.id=kq.checkpoint_id WHERE kq.phan_in_id=pin.id AND c.ma_checkpoint IN ('KHUON','FILM','MUC','HSKT','QC_XAC_NHAN') AND kq.trang_thai='DAT')";
+  switch (stage) {
+    case 'ERP': return `NOT ${anyLenh} AND NOT ${techAny}`;
+    case 'READY': return `NOT ${anyLenh} AND ${techAny}`;
+    case 'RELEASE_1': return `${lenhStatus('RELEASE_1')} AND NOT ${testStarted}`;
+    case 'TEST_RUN': return testStarted;
+    case 'RELEASE_2': return lenhStatus('RELEASE_2');
+    case 'SAN_XUAT': return phieuChay;
+    case 'CHO_KHO': return tem(['IN', 'DANG_PHOI']);
+    case 'KCS': return tem(['DA_KHO']);
+    case 'SUA': return tem(['CHO_SUA']);
+    case 'OQC': return tem(['CHO_OQC']);
+    case 'GIAO': return tem(['OQC_DAT']);
+    case 'DA_GIAO': return tem(['DA_GIAO']);
+    default: return null;
+  }
+}
+
 // Danh sách "phần in vải về": GỘP theo phần in (mỗi dòng = 1 phần in), kèm mảng đợt vải về.
-// Phần in có nhiều đợt → rowspan ở FE để dễ nhận biết. Phần in chưa có đợt vẫn hiển thị (dot_vai=[]).
-// TODO(công nợ): khi có trạng thái "đã làm công nợ xong" trên đợt vải, thêm điều kiện loại đợt đó
-//   ở LEFT JOIN (vd: AND dv.trang_thai <> 'CONG_NO_XONG'). Hiện hệ thống chưa lưu trạng thái này.
-async function listVaiVe({ search = '', offset = 0, limit = 20 }) {
-  const where = `($1 = '' OR pin.ma_phan ILIKE '%'||$1||'%' OR kh.ten_khach_hang ILIKE '%'||$1||'%'
-              OR dh.ma_don_hang ILIKE '%'||$1||'%' OR mh.ma_hang ILIKE '%'||$1||'%'
-              OR pin.mau_vai ILIKE '%'||$1||'%' OR pin.kich_vai ILIKE '%'||$1||'%'
-              OR pin.kich_phim ILIKE '%'||$1||'%' OR dv.ma_dot_vai ILIKE '%'||$1||'%')`;
-  // 1 query duy nhất: tổng số phần in qua COUNT(*) OVER() (tránh chạy song song 2 query nặng
-  // làm rớt kết nối DB). Window count = số nhóm (phần in) trước LIMIT.
+// Hỗ trợ: tìm nhanh (search), lọc nhiều trường cùng lúc (filters, AND), lọc theo giai đoạn (stage).
+async function listVaiVe({ search = '', filters = {}, stage = '', offset = 0, limit = 20 }) {
+  const params = [];
+  const add = (v) => { params.push(v); return `$${params.length}`; };
+  const cond = [];
+
+  if (search) {
+    const p = add(search);
+    cond.push(`(pin.ma_phan ILIKE '%'||${p}||'%' OR kh.ten_khach_hang ILIKE '%'||${p}||'%'
+      OR dh.ma_don_hang ILIKE '%'||${p}||'%' OR mh.ma_hang ILIKE '%'||${p}||'%'
+      OR pin.mau_vai ILIKE '%'||${p}||'%' OR pin.kich_vai ILIKE '%'||${p}||'%' OR pin.kich_phim ILIKE '%'||${p}||'%'
+      OR EXISTS (SELECT 1 FROM dot_vai_ve dvs WHERE dvs.phan_in_id=pin.id AND dvs.ma_dot_vai ILIKE '%'||${p}||'%'))`);
+  }
+  // Lọc từng trường (AND với nhau).
+  const FIELD = { khach: 'kh.ten_khach_hang', don: 'dh.ma_don_hang', maHang: 'mh.ma_hang',
+    codePhan: 'pin.ma_phan', mauVai: 'pin.mau_vai', kichVai: 'pin.kich_vai', kichPhim: 'pin.kich_phim' };
+  for (const [k, col] of Object.entries(FIELD)) {
+    if (filters[k]) { const p = add(filters[k]); cond.push(`${col} ILIKE '%'||${p}||'%'`); }
+  }
+  // Lọc theo NGÀY VẢI VỀ (khoảng): phần in có ≥1 đợt vải với ngay_vai_ve trong khoảng.
+  if (filters.ngayVaiTu || filters.ngayVaiDen) {
+    const parts = ['dvd.phan_in_id = pin.id'];
+    if (filters.ngayVaiTu) parts.push(`dvd.ngay_vai_ve >= ${add(filters.ngayVaiTu)}::date`);
+    if (filters.ngayVaiDen) parts.push(`dvd.ngay_vai_ve <= ${add(filters.ngayVaiDen)}::date`);
+    cond.push(`EXISTS (SELECT 1 FROM dot_vai_ve dvd WHERE ${parts.join(' AND ')})`);
+  }
+  const sc = stageCondition(stage);
+  if (sc) cond.push(`(${sc})`);
+  cond.push("dh.trang_thai IS DISTINCT FROM 'CLOSED_FINANCE'");
+
+  const limitP = add(limit); const offsetP = add(offset);
+  // 1 query duy nhất: tổng số phần in qua COUNT(*) OVER(). Gửi SQL 1 dòng (IPS-safe).
   const sql = `
     SELECT pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim,
            pin.so_luong_don_hang, pin.loi_nhuan,
@@ -69,16 +118,11 @@ async function listVaiVe({ search = '', offset = 0, limit = 20 }) {
            COUNT(*) OVER()::int AS total_count
     ${BASE_JOINS}
     LEFT JOIN dot_vai_ve dv ON dv.phan_in_id = pin.id
-    WHERE ${where}
-      AND dh.trang_thai IS DISTINCT FROM 'CLOSED_FINANCE'
-      AND NOT EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT')
+    WHERE ${cond.join(' AND ')}
     GROUP BY pin.id, mh.ma_hang, mh.ten_ma_hang, dh.ma_don_hang, dh.so_po, kh.ma_khach_hang, kh.ten_khach_hang
     ORDER BY kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, pin.ma_phan
-    LIMIT $2 OFFSET $3`;
-  // Gửi SQL trên 1 dòng (thu gọn whitespace): tránh thiết bị IPS/WAF trên đường tới DB public
-  // reset kết nối khi gặp pattern WHERE/json nhiều dòng ("Connection terminated unexpectedly").
-  // An toàn vì query này không có literal chứa khoảng trắng có nghĩa.
-  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [search, limit, offset]);
+    LIMIT ${limitP} OFFSET ${offsetP}`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), params);
   const total = rows.length ? rows[0].total_count : 0;
   return { rows, total };
 }

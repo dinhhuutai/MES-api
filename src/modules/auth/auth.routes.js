@@ -14,6 +14,7 @@ router.get('/me', auth, controller.me);
 router.patch('/me', auth, profileRules, validate, controller.updateProfile);
 router.post('/me/avatar', auth, singleImage('avatar'), controller.uploadAvatar);
 router.delete('/me/avatar', auth, controller.resetAvatar);
+router.post('/me/doi-mat-khau', auth, controller.changePassword);
 router.post('/logout', auth, controller.logout);
 
 module.exports = router;

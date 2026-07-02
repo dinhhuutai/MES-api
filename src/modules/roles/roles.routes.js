@@ -17,6 +17,7 @@ const createRules = [
 
 router.get('/', rbac('ROLE_VIEW'), c.list);
 router.get('/:id', rbac('ROLE_VIEW'), c.getOne);
+router.get('/:id/users', rbac('ROLE_VIEW'), c.getUsers);
 router.post('/', rbac('ROLE_MANAGE'), createRules, validate, c.create);
 router.patch('/:id', rbac('ROLE_MANAGE'), c.update);
 router.patch('/:id/active', rbac('ROLE_MANAGE'), c.setActive);

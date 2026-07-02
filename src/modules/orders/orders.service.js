@@ -9,8 +9,8 @@ async function listPhanIn({ search, missingProfit, page, limit, offset }) {
   return { items: rows, meta: buildMeta(page, limit, total) };
 }
 
-async function listVaiVe({ search, page, limit, offset }) {
-  const { rows, total } = await repo.listVaiVe({ search, offset, limit });
+async function listVaiVe({ search, filters, stage, page, limit, offset }) {
+  const { rows, total } = await repo.listVaiVe({ search, filters, stage, offset, limit });
   return { items: rows, meta: buildMeta(page, limit, total) };
 }
 

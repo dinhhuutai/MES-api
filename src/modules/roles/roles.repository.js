@@ -29,6 +29,21 @@ async function findById(id) {
   return rows[0] || null;
 }
 
+// Danh sách người dùng đang được gán 1 vai trò.
+async function listUsers(roleId) {
+  const { rows } = await query(
+    `SELECT nd.id, nd.ma_user, nd.ho_ten, nd.ten_dang_nhap, nd.dang_hoat_dong,
+            pb.ten_phong_ban
+     FROM user_role ur
+     JOIN nguoi_dung nd ON nd.id = ur.user_id
+     LEFT JOIN phong_ban pb ON pb.id = nd.phong_ban_id
+     WHERE ur.role_id = $1
+     ORDER BY nd.ho_ten`,
+    [roleId]
+  );
+  return rows;
+}
+
 async function existsCode(maRole) {
   const { rows } = await query('SELECT 1 FROM vai_tro WHERE ma_role = $1', [maRole]);
   return rows.length > 0;
@@ -71,4 +86,4 @@ async function setPermissions(roleId, permissionIds, actorId) {
   });
 }
 
-module.exports = { list, findById, existsCode, create, update, setActive, setPermissions };
+module.exports = { list, findById, listUsers, existsCode, create, update, setActive, setPermissions };

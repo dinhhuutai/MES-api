@@ -29,6 +29,11 @@ async function updateRole(id, body, actorId) {
   return getRole(id);
 }
 
+async function getRoleUsers(id) {
+  await getRole(id);
+  return repo.listUsers(id);
+}
+
 async function setActive(id, active, actorId) {
   await getRole(id);
   await repo.setActive(id, active, actorId);
@@ -41,4 +46,4 @@ async function setPermissions(id, permissionIds, actorId) {
   return getRole(id);
 }
 
-module.exports = { listRoles, getRole, createRole, updateRole, setActive, setPermissions };
+module.exports = { listRoles, getRole, getRoleUsers, createRole, updateRole, setActive, setPermissions };

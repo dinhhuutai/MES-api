@@ -91,6 +91,18 @@ async function updateLastLogin(userId) {
   await query('UPDATE nguoi_dung SET lan_dang_nhap_cuoi = CURRENT_TIMESTAMP WHERE id = $1', [userId]);
 }
 
+async function getHash(userId) {
+  const { rows } = await query('SELECT mat_khau_hash FROM nguoi_dung WHERE id = $1', [userId]);
+  return rows[0] ? rows[0].mat_khau_hash : null;
+}
+
+async function setPassword(userId, hash) {
+  await query(
+    'UPDATE nguoi_dung SET mat_khau_hash = $2, updated_by = $1, updated_date = CURRENT_TIMESTAMP WHERE id = $1',
+    [userId, hash]
+  );
+}
+
 // url = NULL → quay về avatar mặc định theo giới tính (xử lý ở frontend).
 async function setAvatar(id, url) {
   await query(
@@ -101,4 +113,5 @@ async function setAvatar(id, url) {
 
 module.exports = {
   findByUsername, findById, updateProfile, setAvatar, getRoles, getPermissions, updateLastLogin,
+  getHash, setPassword,
 };

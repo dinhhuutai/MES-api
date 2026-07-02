@@ -265,6 +265,43 @@ async function confirmQcBatch(phanInIds, actorId) {
   return { ok, failed, okCount: ok.length, failedCount: failed.length };
 }
 
+// Hủy xác nhận 1 mục READY (Admin/quyền READY_CANCEL) — khi bấm nhầm.
+// Hủy 1 mục kỹ thuật mà QC đã xác nhận → hủy luôn QC để giữ nhất quán (QC cần đủ 4 mục).
+async function cancelItem(phanInId, ma, actorId) {
+  const CANCELABLE = [...INPUT_CPS, QC_CP];
+  if (!CANCELABLE.includes(ma)) {
+    throw new AppError('Mục không hợp lệ để hủy', { status: 400, errorCode: 'INVALID_ITEM' });
+  }
+  const { tram, byMa } = await loadConfig();
+  const cp = byMa[ma];
+  if (!cp) throw new AppError(`Checkpoint ${ma} không còn hiệu lực`, { status: 404, errorCode: 'NO_CHECKPOINT' });
+
+  const results = await repo.getResults(tram.id, phanInId);
+  const state = buildState(results);
+  const cur = results.find((r) => r.ma_checkpoint === ma);
+  if (cur?.trang_thai !== 'DAT') throw new AppError('Mục này chưa được xác nhận', { status: 409, errorCode: 'NOT_CONFIRMED' });
+
+  const huyList = [ma];
+  await withTransaction(async (client) => {
+    await repo.cancelResult(client, phanInId, cp.id, actorId);
+    if (INPUT_CPS.includes(ma) && state.qc_done && byMa[QC_CP]) {
+      await repo.cancelResult(client, phanInId, byMa[QC_CP].id, actorId);
+      huyList.push(QC_CP);
+    }
+  });
+  await repo.logCancel(phanInId, huyList, actorId);
+  sockets.emit('ready:confirmed', { phanInId, huy: huyList });
+  sockets.emit('dashboard:refresh', {});
+  return getDetail(phanInId);
+}
+
+// Lịch sử xác nhận READY đang hiệu lực (cho trang "Lịch sử trạng thái" — Hệ thống). Kèm nhãn mục.
+async function confirmHistory(date, search) {
+  const LABEL = { KHUON: 'Khuôn', FILM: 'Film', MUC: 'Mực', HSKT: 'HSKT', QC_XAC_NHAN: 'QC xác nhận' };
+  const rows = await repo.listConfirmHistory({ date, search: search || '' });
+  return rows.map((r) => ({ ...r, muc_label: LABEL[r.ma_checkpoint] || r.ten_checkpoint || r.ma_checkpoint }));
+}
+
 async function history(date, scope) {
   const maList = scope === 'qc' ? ['QC_XAC_NHAN'] : INPUT_CPS;
   const rows = await repo.historyByDate(date, maList);
@@ -279,5 +316,5 @@ async function history(date, scope) {
 
 module.exports = {
   getConfig, listCandidates, getDetail, confirmItem, confirmItemsBatch, confirmItemBulk,
-  confirmQC, confirmQcBatch, history,
+  confirmQC, confirmQcBatch, cancelItem, history, confirmHistory,
 };

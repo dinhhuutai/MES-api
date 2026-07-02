@@ -30,9 +30,14 @@ const resetAvatar = asyncHandler(async (req, res) => {
   return ok(res, data, 'Đã đặt lại ảnh mặc định');
 });
 
+const changePassword = asyncHandler(async (req, res) => {
+  const data = await service.changePassword(req.user.id, req.body.matKhauCu, req.body.matKhauMoi);
+  return ok(res, data, 'Đã đổi mật khẩu');
+});
+
 // JWT stateless: logout xử lý phía client (xóa token). Endpoint để client gọi cho nhất quán.
 const logout = asyncHandler(async (req, res) => {
   return ok(res, {}, 'Đã đăng xuất');
 });
 
-module.exports = { login, me, updateProfile, uploadAvatar, resetAvatar, logout };
+module.exports = { login, me, updateProfile, uploadAvatar, resetAvatar, changePassword, logout };

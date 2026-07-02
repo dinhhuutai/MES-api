@@ -81,7 +81,18 @@ const qcConfirmBatch = asyncHandler(async (req, res) => {
   return ok(res, data, `Đã QC xác nhận ${data.okCount} phần in`);
 });
 
+const cancelItem = asyncHandler(async (req, res) => {
+  const ma = String(req.body.ma || '').toUpperCase();
+  const data = await service.cancelItem(req.params.phanInId, ma, req.user.id);
+  return ok(res, data, 'Đã hủy xác nhận');
+});
+
+const confirmHistory = asyncHandler(async (req, res) => {
+  const date = req.query.date || new Date().toISOString().slice(0, 10);
+  return ok(res, await service.confirmHistory(date, req.query.search || ''));
+});
+
 module.exports = {
   config, candidates, qcCandidates, detail, history,
-  confirmItem, confirmItemsBatch, confirmBulk, confirmQC, qcConfirmBatch,
+  confirmItem, confirmItemsBatch, confirmBulk, confirmQC, qcConfirmBatch, cancelItem, confirmHistory,
 };

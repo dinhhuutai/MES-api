@@ -112,6 +112,32 @@ async function historyByDate(date, maList) {
   return rows;
 }
 
+// Lịch sử xác nhận READY (mức phần in) đang hiệu lực (DAT) theo ngày — cho trang "Lịch sử trạng thái"
+// ở module Hệ thống. Admin có thể xóa mềm (hủy) từng dòng để người phụ trách xác nhận lại.
+async function listConfirmHistory({ date, search = '' }) {
+  const sql = `
+    SELECT kq.id AS ket_qua_id, kq.phan_in_id, cp.ma_checkpoint, cp.ten_checkpoint,
+           kq.gia_tri_text, kq.tg_xac_nhan, nx.ho_ten AS nguoi_xac_nhan,
+           pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim,
+           mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang
+    FROM ket_qua_checkpoint kq
+    JOIN checkpoint cp ON cp.id = kq.checkpoint_id
+    JOIN tram t ON t.id = cp.tram_id
+    JOIN phan_in pin ON pin.id = kq.phan_in_id
+    JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+    JOIN don_hang dh ON dh.id = mh.don_hang_id
+    JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+    LEFT JOIN nguoi_dung nx ON nx.id = kq.nguoi_xac_nhan_id
+    WHERE t.ma_tram = 'READY' AND kq.trang_thai = 'DAT'
+      AND (kq.tg_xac_nhan AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
+      AND ($2 = '' OR pin.ma_phan ILIKE '%'||$2||'%' OR mh.ma_hang ILIKE '%'||$2||'%'
+           OR kh.ten_khach_hang ILIKE '%'||$2||'%' OR dh.ma_don_hang ILIKE '%'||$2||'%'
+           OR pin.mau_vai ILIKE '%'||$2||'%' OR pin.kich_vai ILIKE '%'||$2||'%' OR pin.kich_phim ILIKE '%'||$2||'%')
+    ORDER BY kq.tg_xac_nhan DESC NULLS LAST`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [date, search]);
+  return rows;
+}
+
 async function getPhanInBasic(phanInId) {
   const { rows } = await query(
     `SELECT pin.id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim,
@@ -204,6 +230,26 @@ async function getReadyEntryTime(phanInId) {
   return rows[0]?.ready_tg_vao || null;
 }
 
+// Hủy 1 kết quả checkpoint đã DAT (bấm nhầm) → trang_thai='HUY', xóa người/giờ xác nhận.
+async function cancelResult(client, phanInId, checkpointId, actorId) {
+  const { rowCount } = await client.query(
+    `UPDATE ket_qua_checkpoint SET trang_thai = 'HUY', nguoi_xac_nhan_id = NULL, tg_xac_nhan = NULL,
+       updated_by = $3, updated_date = CURRENT_TIMESTAMP
+     WHERE phan_in_id = $1 AND checkpoint_id = $2 AND trang_thai = 'DAT'`,
+    [phanInId, checkpointId, actorId]
+  );
+  return rowCount > 0;
+}
+
+// Ghi audit hủy xác nhận.
+async function logCancel(phanInId, maList, actorId) {
+  await query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('ket_qua_checkpoint', $1, 'HUY_XAC_NHAN', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`,
+    [String(phanInId), JSON.stringify({ ma: maList }), actorId]
+  );
+}
+
 async function insertStatusLog(client, { ketQuaId, trangThaiMoiId, nguoiId, lyDo }) {
   await client.query(
     `INSERT INTO lich_su_trang_thai
@@ -214,6 +260,6 @@ async function insertStatusLog(client, { ketQuaId, trangThaiMoiId, nguoiId, lyDo
 }
 
 module.exports = {
-  loadReadyConfig, listCandidates, historyByDate, getPhanInBasic, getResults, getBulkStates,
-  getReadyEntryTime, findResultId, upsertResult, insertStatusLog,
+  loadReadyConfig, listCandidates, historyByDate, listConfirmHistory, getPhanInBasic, getResults, getBulkStates,
+  getReadyEntryTime, findResultId, upsertResult, cancelResult, logCancel, insertStatusLog,
 };

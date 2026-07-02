@@ -78,4 +78,19 @@ async function resetAvatar(userId) {
   return me(userId);
 }
 
-module.exports = { login, me, updateProfile, uploadAvatar, resetAvatar };
+// Người dùng tự đổi mật khẩu (cần mật khẩu hiện tại).
+async function changePassword(userId, matKhauCu, matKhauMoi) {
+  if (!matKhauMoi || String(matKhauMoi).length < 6) {
+    throw new AppError('Mật khẩu mới tối thiểu 6 ký tự', { status: 422, errorCode: 'WEAK_PASSWORD' });
+  }
+  const hash = await repo.getHash(userId);
+  const matched = await bcrypt.compare(matKhauCu || '', hash || '');
+  if (!matched) {
+    throw new AppError('Mật khẩu hiện tại không đúng', { status: 400, errorCode: 'WRONG_PASSWORD' });
+  }
+  const newHash = await bcrypt.hash(String(matKhauMoi), 10);
+  await repo.setPassword(userId, newHash);
+  return { ok: true };
+}
+
+module.exports = { login, me, updateProfile, uploadAvatar, resetAvatar, changePassword };
