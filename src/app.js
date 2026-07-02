@@ -24,6 +24,7 @@ const dashboardRoutes = require('./modules/dashboard/dashboard.routes');
 const erpsyncRoutes = require('./modules/erpsync/erpsync.routes');
 const presenceRoutes = require('./modules/presence/presence.routes');
 const financeRoutes = require('./modules/finance/finance.routes');
+const chuyenRoutes = require('./modules/chuyen/chuyen.routes');
 
 const app = express();
 
@@ -57,6 +58,7 @@ app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/erp', erpsyncRoutes);
 app.use('/api/presence', presenceRoutes);
 app.use('/api/tai-chinh', financeRoutes);
+app.use('/api/chuyen', chuyenRoutes);
 
 // 404 + error
 app.use(notFound);

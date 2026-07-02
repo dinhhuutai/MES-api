@@ -6,6 +6,7 @@ const wf = require('../workflow/workflow.repository');
 const AppError = require('../../utils/AppError');
 const { buildMeta } = require('../../utils/pagination');
 const sockets = require('../../sockets');
+const tracking = require('../workflow/tracking.service');
 
 const TEST_TRAM = 'TEST_RUN';
 const CNSP_CP = 'TEST_CNSP';
@@ -62,11 +63,15 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
         versionId: version.id, maLenh, chuyenId, soLuongRelease: soLuong, ngayKeHoach, trangThai,
       }, actorId);
       await repo.addLenhDotVai(client, id, dvId, actorId);
-      out.push({ id, ma_lenh_san_xuat: maLenh, trang_thai: trangThai, so_dot_vai: 1 });
+      out.push({ id, ma_lenh_san_xuat: maLenh, trang_thai: trangThai, so_dot_vai: 1, dot_vai_id: dvId });
     }
     return out;
   });
 
+  // Theo dõi dòng chảy: mỗi lệnh → trạm tương ứng (đợt đã test xong vào thẳng RELEASE_2).
+  for (const c of created) {
+    await tracking.moveDotVaiTo([c.dot_vai_id], c.trang_thai === 'RELEASE_2' ? 'RELEASE_2' : 'RELEASE_1', actorId);
+  }
   created.forEach((c) => sockets.emit('workflow:updated', { lenhId: c.id, stage: c.trang_thai }));
   sockets.emit('dashboard:refresh', {});
 
@@ -139,6 +144,7 @@ async function releaseSet(setId, { chuyenId, soLuongRelease, ngayKeHoach }, acto
     return id;
   });
 
+  await tracking.moveDotVaiTo(dotVaiIds, 'RELEASE_1', actorId); // theo dõi dòng chảy (cả set)
   sockets.emit('workflow:updated', { lenhId, stage: 'RELEASE_1', fromSet: setId });
   sockets.emit('dashboard:refresh', {});
   return getLenhDetail(lenhId);
@@ -185,6 +191,7 @@ async function confirmTest(lenhId, which, actorId) {
     });
     await repo.insertStatusLog(client, { ketQuaId: kqId, trangThaiMoiId: datId, nguoiId: actorId, lyDo: `${cpMa} xác nhận test` });
   });
+  await tracking.moveByLenh(lenhId, TEST_TRAM, actorId); // theo dõi dòng chảy: vào trạm TEST_RUN
   sockets.emit('workflow:updated', { lenhId, stage: 'TEST_RUN', confirm: which });
   return getLenhDetail(lenhId);
 }
@@ -231,6 +238,7 @@ async function approveRelease2(lenhId, actorId) {
       { trang_thai: 'RELEASE_2', chuyen_id: lenh.chuyen_id || null, ngay_ke_hoach: toDateStr(lenh.ngay_ke_hoach) },
       actorId);
   });
+  await tracking.moveByLenh(lenhId, 'RELEASE_2', actorId); // theo dõi dòng chảy
   sockets.emit('workflow:updated', { lenhId, stage: 'RELEASE_2' });
   sockets.emit('dashboard:refresh', {});
   return getLenhDetail(lenhId);

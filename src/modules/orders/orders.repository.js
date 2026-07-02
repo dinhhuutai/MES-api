@@ -71,6 +71,7 @@ async function listVaiVe({ search = '', offset = 0, limit = 20 }) {
     LEFT JOIN dot_vai_ve dv ON dv.phan_in_id = pin.id
     WHERE ${where}
       AND dh.trang_thai IS DISTINCT FROM 'CLOSED_FINANCE'
+      AND NOT EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT')
     GROUP BY pin.id, mh.ma_hang, mh.ten_ma_hang, dh.ma_don_hang, dh.so_po, kh.ma_khach_hang, kh.ten_khach_hang
     ORDER BY kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, pin.ma_phan
     LIMIT $2 OFFSET $3`;

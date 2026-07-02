@@ -4,6 +4,7 @@ const { withTransaction } = require('../../config/db');
 const repo = require('./quality.repository');
 const AppError = require('../../utils/AppError');
 const sockets = require('../../sockets');
+const tracking = require('../workflow/tracking.service');
 
 const num = (x) => Math.max(0, Number(x) || 0);
 
@@ -20,7 +21,10 @@ async function requireTem(temId, expectStatus) {
 async function listKcsCandidates(search) { return repo.listByTemStatus('DA_KHO', { search }); }
 
 async function recordKcs(temId, body, actorId) {
-  await requireTem(temId, 'DA_KHO');
+  const tem = await repo.getTemForSplit(temId);
+  if (!tem) throw new AppError('Tem không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  if (tem.trang_thai !== 'DA_KHO') throw new AppError('Tem không ở trạng thái DA_KHO', { status: 409, errorCode: 'WRONG_STAGE' });
+
   const dat = num(body.soLuongDat);
   const thieu = num(body.soLuongThieu);
   const du = num(body.soLuongDu);
@@ -39,41 +43,75 @@ async function recordKcs(temId, body, actorId) {
     ketQua: hu > 0 ? 'CO_LOI' : 'DAT',
     ghiChu: body.ghiChu,
   };
-  let next;
-  if (quyetDinhSua > 0) next = 'CHO_SUA';
-  else if (dat > 0) next = 'CHO_OQC';
-  else next = 'LOAI';
+
+  // TÁCH 2 HƯỚNG: phần ĐẠT → OQC (giữ trên tem gốc), phần SỬA → tem con CHO_SUA.
+  // Nhờ tách, phần đạt LUÔN đi tiếp OQC dù có phần phải sửa (sửa bug cũ: 1 phần sửa làm kẹt cả tem).
+  const needChild = dat > 0 && quyetDinhSua > 0;
+  const maTemChild = needChild ? await repo.nextMaTem() : null;
+  let next; let childTemId = null;
 
   await withTransaction(async (client) => {
     await repo.insertKcs(client, temId, data, actorId);
-    await repo.setTemTrangThai(client, temId, next, actorId);
+    if (needChild) {
+      await repo.setTemStatusQty(client, temId, 'CHO_OQC', dat, actorId); // tem gốc = phần đạt
+      childTemId = await repo.createChildTem(client, {
+        phieuId: tem.phieu_san_xuat_id, maTem: maTemChild, soLuong: quyetDinhSua, trangThai: 'CHO_SUA',
+      }, actorId);
+      await repo.insertTemSplit(client, { chaId: temId, conId: childTemId, soLuong: quyetDinhSua, lyDo: 'KCS: tách phần sửa' }, actorId);
+      next = 'SPLIT';
+    } else if (quyetDinhSua > 0) {
+      await repo.setTemStatusQty(client, temId, 'CHO_SUA', quyetDinhSua, actorId);
+      next = 'CHO_SUA';
+    } else if (dat > 0) {
+      await repo.setTemStatusQty(client, temId, 'CHO_OQC', dat, actorId);
+      next = 'CHO_OQC';
+    } else {
+      await repo.setTemTrangThai(client, temId, 'LOAI', actorId);
+      next = 'LOAI';
+    }
   });
+  await tracking.moveByTem(temId, 'KIEM', actorId); // theo dõi dòng chảy: KCS kiểm
   sockets.emit('quality:updated', { temId, stage: 'KCS', next });
   sockets.emit('dashboard:refresh', {});
-  return { tem_id: temId, next };
+  return { tem_id: temId, next, so_luong_dat: dat, so_luong_sua: quyetDinhSua, child_tem_id: childTemId };
 }
 
 // ----- SỬA (đầu vào: tem CHO_SUA) -----
 async function listSuaCandidates(search) { return repo.listByTemStatus('CHO_SUA', { search }); }
 
 async function recordSua(temId, body, actorId) {
-  await requireTem(temId, 'CHO_SUA');
+  const tem = await repo.getTemForSplit(temId);
+  if (!tem) throw new AppError('Tem không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  if (tem.trang_thai !== 'CHO_SUA') throw new AppError('Tem không ở trạng thái CHO_SUA', { status: 409, errorCode: 'WRONG_STAGE' });
+
   const huyThang = num(body.soLuongHuyThang);
-  const sua = num(body.soLuongSua);
+  const sua = num(body.soLuongSua) || num(tem.so_luong); // mặc định = SL cần sửa (kế thừa từ KCS)
   const suaDat = Math.min(num(body.soLuongSuaDat), sua);
   const suaHuy = Math.min(num(body.soLuongSuaHuy), sua);
 
   const ghiChu = [body.ghiChu, huyThang > 0 ? `Hủy thẳng: ${huyThang}` : null].filter(Boolean).join(' · ') || null;
-  const next = suaDat > 0 ? 'CHO_OQC' : 'LOAI';
+
+  // Sửa đạt → SINH TEM MỚI cho phần sửa đạt → OQC; tem sửa gốc kết thúc (LOAI).
+  const maTemChild = suaDat > 0 ? await repo.nextMaTem() : null;
+  let next; let childTemId = null;
 
   await withTransaction(async (client) => {
-    await repo.insertSua(client, temId, {
-      soLuongSua: sua, soLuongSuaDat: suaDat, soLuongSuaHuy: suaHuy, ghiChu,
-    }, actorId);
-    await repo.setTemTrangThai(client, temId, next, actorId);
+    await repo.insertSua(client, temId, { soLuongSua: sua, soLuongSuaDat: suaDat, soLuongSuaHuy: suaHuy, ghiChu }, actorId);
+    if (suaDat > 0) {
+      childTemId = await repo.createChildTem(client, {
+        phieuId: tem.phieu_san_xuat_id, maTem: maTemChild, soLuong: suaDat, trangThai: 'CHO_OQC',
+      }, actorId);
+      await repo.insertTemSplit(client, { chaId: temId, conId: childTemId, soLuong: suaDat, lyDo: 'Sửa đạt → OQC' }, actorId);
+      await repo.setTemTrangThai(client, temId, 'LOAI', actorId);
+      next = 'CHO_OQC';
+    } else {
+      await repo.setTemTrangThai(client, temId, 'LOAI', actorId);
+      next = 'LOAI';
+    }
   });
-  sockets.emit('quality:updated', { temId, stage: 'SUA', next });
-  return { tem_id: temId, next };
+  await tracking.moveByTem(temId, 'SUA', actorId); // theo dõi dòng chảy: hàng lỗi chuyển sửa
+  sockets.emit('quality:updated', { temId, stage: 'SUA', next, child_tem_id: childTemId });
+  return { tem_id: temId, next, child_tem_id: childTemId };
 }
 
 // ----- OQC (đầu vào: tem CHO_OQC) -----
@@ -85,14 +123,35 @@ async function recordOqc(temId, body, actorId) {
   const loi = num(body.soLuongLoi);
   const ketQua = body.ketQua === 'KHONG_DAT' ? 'KHONG_DAT' : 'DAT';
   const lanKiem = await repo.nextOqcRound(temId);
-  const next = ketQua === 'DAT' ? 'OQC_DAT' : 'CHO_SUA';
+
+  const ownerChoGiaoId = body.ownerChoGiaoId || null;
+  const lyDoChoGiao = (body.lyDoChoGiao || '').trim() || null;
+  let choGiao = false;
+  let next;
+
+  if (ketQua === 'DAT') {
+    next = 'OQC_DAT'; // đạt → sẵn sàng giao
+  } else if (ownerChoGiaoId) {
+    // Không đạt nhưng CHO GIAO NGOẠI LỆ — bắt buộc có lý do + owner.
+    if (!lyDoChoGiao) throw new AppError('Cho giao ngoại lệ cần nhập lý do', { status: 422, errorCode: 'NO_LY_DO' });
+    choGiao = true;
+    next = 'CHO_GIAO_NGOAI_LE'; // tem → OQC_DAT (đánh dấu cho giao ngoại lệ)
+  } else {
+    next = 'GIU_OQC'; // không đạt & chưa có owner cho giao → NẰM LẠI OQC
+  }
 
   await withTransaction(async (client) => {
     await repo.insertOqc(client, temId, {
-      lanKiem, soLuongKiem: num(body.soLuongKiem) || dat + loi, soLuongDat: dat, soLuongLoi: loi, ketQua, ghiChu: body.ghiChu,
+      lanKiem, soLuongKiem: num(body.soLuongKiem) || dat + loi, soLuongDat: dat, soLuongLoi: loi,
+      ketQua, choGiao, lyDoChoGiao, ownerChoGiaoId, ghiChu: body.ghiChu,
     }, actorId);
-    await repo.setTemTrangThai(client, temId, next, actorId);
+    if (next === 'OQC_DAT' || next === 'CHO_GIAO_NGOAI_LE') {
+      await repo.setTemTrangThai(client, temId, 'OQC_DAT', actorId); // sang giao hàng
+    }
+    // GIU_OQC: giữ nguyên CHO_OQC (nằm lại OQC)
   });
+  await tracking.moveByTem(temId, 'OQC', actorId); // theo dõi dòng chảy: OQC kiểm cuối
+  if (next !== 'GIU_OQC') await tracking.moveByTem(temId, 'FINISH', actorId); // cho giao → FINISH
   sockets.emit('quality:updated', { temId, stage: 'OQC', next });
   sockets.emit('dashboard:refresh', {});
   return { tem_id: temId, next };

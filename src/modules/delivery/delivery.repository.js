@@ -19,10 +19,24 @@ async function listTemSanSang({ search = '' }) {
                FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
                JOIN phan_in pin ON pin.id = dv.phan_in_id WHERE lsd.lenh_san_xuat_id = ls.id) AS phan_list,
             ${DON_SUB('dh.ma_don_hang', 'don_list')},
-            ${DON_SUB('kh.ten_khach_hang', 'khach_list')}
+            ${DON_SUB('kh.ten_khach_hang', 'khach_list')},
+            sla.tg_vao, sla.sla_phut, sla.canh_bao_truoc_phut,
+            info.ma_hang, info.mau_vai, info.kich_vai, info.kich_phim
      FROM tem t
      JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
      JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+     LEFT JOIN LATERAL (
+       SELECT mh.ma_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim
+       FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+       JOIN phan_in pin ON pin.id = dv.phan_in_id JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+       WHERE lsd.lenh_san_xuat_id = ls.id ORDER BY pin.ma_phan, dv.ma_dot_vai LIMIT 1
+     ) info ON true
+     LEFT JOIN LATERAL (
+       SELECT tt.tg_vao, tr.thoi_gian_quy_dinh_phut AS sla_phut, tr.canh_bao_truoc_phut
+       FROM lenh_sx_dot_vai lsd JOIN ton_tram tt ON tt.dot_vai_ve_id = lsd.dot_vai_ve_id
+       JOIN tram tr ON tr.id = tt.tram_id
+       WHERE lsd.lenh_san_xuat_id = ls.id ORDER BY tt.tg_vao LIMIT 1
+     ) sla ON true
      WHERE t.trang_thai = 'OQC_DAT'
        AND NOT EXISTS (SELECT 1 FROM giao_hang_tem gt WHERE gt.tem_id = t.id)
        AND ($1 = '' OR t.ma_tem ILIKE '%'||$1||'%' OR ls.ma_lenh_san_xuat ILIKE '%'||$1||'%'
@@ -113,7 +127,7 @@ async function listGiaoHang({ search = '' }) {
 
 async function getGiaoHangTems(giaoHangId) {
   const { rows } = await query(
-    `SELECT gt.id, gt.so_luong_giao, t.ma_tem, t.trang_thai, ls.ma_lenh_san_xuat
+    `SELECT gt.id, gt.tem_id, gt.so_luong_giao, t.ma_tem, t.trang_thai, ls.ma_lenh_san_xuat
      FROM giao_hang_tem gt
      JOIN tem t ON t.id = gt.tem_id
      LEFT JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id

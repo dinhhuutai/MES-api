@@ -13,7 +13,7 @@ const candidates = asyncHandler(async (req, res) => {
 const getRun = asyncHandler(async (req, res) => ok(res, await service.getRun(req.params.lenhId)));
 
 const start = asyncHandler(async (req, res) =>
-  ok(res, await service.startProduction(req.params.lenhId, req.user.id), 'Đã xác nhận chạy'));
+  ok(res, await service.startProduction(req.params.lenhId, req.user.id, req.body.chuyenId || null), 'Đã xác nhận chạy'));
 
 const printTem = asyncHandler(async (req, res) =>
   ok(res, await service.printTem(req.params.phieuId, req.body.soLuong, req.user.id), 'Đã in tem'));
@@ -23,6 +23,8 @@ const finish = asyncHandler(async (req, res) =>
 
 const reprintTem = asyncHandler(async (req, res) =>
   ok(res, await service.reprintTem(req.params.temId, req.body.lyDo, req.user.id), 'Đã in lại tem'));
+
+const temLabel = asyncHandler(async (req, res) => ok(res, await service.temLabel(req.params.temId)));
 
 const temLogs = asyncHandler(async (req, res) => ok(res, await service.temLogs(req.params.phieuId)));
 
@@ -50,7 +52,7 @@ const confirmDry = asyncHandler(async (req, res) =>
   ok(res, await service.confirmDry(req.params.temId, req.user.id), 'Đã xác nhận khô'));
 
 module.exports = {
-  candidates, getRun, start, printTem, reprintTem, temLogs, finish, monitor,
+  candidates, getRun, start, printTem, reprintTem, temLabel, temLogs, finish, monitor,
   xePhoi, temChoPhoi, themTem, adjustPhoi, drying, confirmDry,
   stopLine, resumeLine,
 };

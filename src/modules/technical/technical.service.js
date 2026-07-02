@@ -6,6 +6,7 @@ const wf = require('../workflow/workflow.repository');
 const AppError = require('../../utils/AppError');
 const { buildMeta } = require('../../utils/pagination');
 const sockets = require('../../sockets');
+const tracking = require('../workflow/tracking.service');
 
 const READY_TRAM = 'READY';
 const INPUT_CPS = ['KHUON', 'FILM', 'MUC', 'HSKT']; // 4 mục kỹ thuật, xác nhận độc lập
@@ -84,8 +85,12 @@ async function getDetail(phanInId) {
   const phanIn = await repo.getPhanInBasic(phanInId);
   if (!phanIn) throw new AppError('Phần in không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   const results = await repo.getResults(tram.id, phanInId);
+  // Thời điểm vào trạm READY (để FE tính SLA checklist). Best-effort — thiếu 029/ton_tram thì null.
+  let readyTgVao = null;
+  try { readyTgVao = await repo.getReadyEntryTime(phanInId); } catch { readyTgVao = null; }
   return {
     phan_in: phanIn,
+    ready_tg_vao: readyTgVao,
     checkpoints: results.map((r) => ({ ...r, options: parseOptions(r.cau_hinh_json) })),
     state: buildState(results),
   };
@@ -126,6 +131,7 @@ async function confirmItem(phanInId, ma, value, actorId) {
   });
 
   const after = buildState(await repo.getResults(tram.id, phanInId));
+  await tracking.moveByPhanIn(phanInId, READY_TRAM, actorId); // theo dõi dòng chảy: đợt vải vào trạm READY
   sockets.emit('ready:confirmed', { phanInId, buoc: ma, tech_done: after.tech_done });
   sockets.emit('dashboard:refresh', {});
   return getDetail(phanInId);
@@ -170,6 +176,7 @@ async function confirmItemsBatch(phanInId, items, actorId) {
   });
 
   const after = buildState(await repo.getResults(tram.id, phanInId));
+  await tracking.moveByPhanIn(phanInId, READY_TRAM, actorId); // theo dõi dòng chảy
   sockets.emit('ready:confirmed', { phanInId, buoc: todo.map((t) => t.ma), tech_done: after.tech_done });
   sockets.emit('dashboard:refresh', {});
   return getDetail(phanInId);
@@ -208,6 +215,7 @@ async function confirmItemBulk(phanInIds, ma, value, actorId) {
       });
     }
   });
+  for (const id of eligible) await tracking.moveByPhanIn(id, READY_TRAM, actorId); // theo dõi dòng chảy
   sockets.emit('ready:confirmed', { bulk: true, ma, count: eligible.length });
   sockets.emit('dashboard:refresh', {});
   return { okCount: eligible.length, skippedCount: phanInIds.length - eligible.length };

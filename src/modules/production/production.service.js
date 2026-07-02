@@ -5,6 +5,7 @@ const repo = require('./production.repository');
 const AppError = require('../../utils/AppError');
 const { buildMeta } = require('../../utils/pagination');
 const sockets = require('../../sockets');
+const tracking = require('../workflow/tracking.service');
 
 async function listCandidates({ search, page, limit, offset }) {
   const { rows, total } = await repo.listProductionCandidates({ search, offset, limit });
@@ -16,7 +17,7 @@ async function getRun(lenhId) {
   if (!lenh) throw new AppError('Lệnh sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   const phieu = await repo.getActivePhieu(lenhId);
   const tems = phieu ? await repo.getTemsByPhieu(phieu.id) : [];
-  const printed = tems.reduce((s, t) => s + (Number(t.so_luong) || 0), 0);
+  const printed = tems.reduce((s, t) => s + (t.trang_thai === 'HUY' ? 0 : (Number(t.so_luong) || 0)), 0);
   const [ngungList, ngungActive] = phieu
     ? await Promise.all([repo.listNgungByPhieu(phieu.id), repo.getActiveNgung(phieu.id)])
     : [[], null];
@@ -50,17 +51,21 @@ async function resumeLine(phieuId, actorId) {
   return getRun(phieu.lenh_san_xuat_id);
 }
 
-async function startProduction(lenhId, actorId) {
+async function startProduction(lenhId, actorId, chuyenId = null) {
   const lenh = await repo.getLenhBasic(lenhId);
   if (!lenh) throw new AppError('Lệnh sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   if (lenh.trang_thai !== 'RELEASE_2') {
     throw new AppError('Lệnh chưa ở trạng thái Release 2', { status: 409, errorCode: 'WRONG_STAGE' });
   }
+  // Chuyền THỰC TẾ chạy (kế thừa chuyền kế hoạch, cho phép đổi khi xác nhận chạy).
+  const chuyenThucTe = chuyenId || lenh.chuyen_id;
   const maPhieu = await repo.nextMaPhieu();
   await withTransaction(async (client) => {
-    await repo.createPhieu(client, { lenhId, chuyenId: lenh.chuyen_id, maPhieu }, actorId);
+    if (chuyenId && chuyenId !== lenh.chuyen_id) await repo.setLenhChuyen(client, lenhId, chuyenId, actorId);
+    await repo.createPhieu(client, { lenhId, chuyenId: chuyenThucTe, maPhieu }, actorId);
     await repo.setLenhTrangThai(client, lenhId, 'SAN_XUAT', actorId);
   });
+  await tracking.moveByLenh(lenhId, 'SAN_XUAT', actorId); // theo dõi dòng chảy
   sockets.emit('production:updated', { lenhId, stage: 'SAN_XUAT' });
   sockets.emit('dashboard:refresh', {});
   return getRun(lenhId);
@@ -98,25 +103,49 @@ async function printTem(phieuId, soLuong, actorId) {
   if (!xe) throw new AppError('Chưa cấu hình xe phơi để bắt đầu phơi', { status: 409, errorCode: 'NO_XE' });
 
   const maTem = await repo.nextMaTem();
+  let newTemId;
   await withTransaction(async (client) => {
-    const temId = await repo.createTem(client, { phieuId, maTem, soLuong: qty }, actorId);
-    await repo.logTemPrint(client, { temId, maTem, actorId });
-    await repo.addTemToXe(client, { temId, xeId: xe.id, soLuongPhoi: qty, phut: DEFAULT_DRY_MIN }, actorId);
+    newTemId = await repo.createTem(client, { phieuId, maTem, soLuong: qty }, actorId);
+    await repo.logTemPrint(client, { temId: newTemId, maTem, actorId });
+    await repo.addTemToXe(client, { temId: newTemId, xeId: xe.id, soLuongPhoi: qty, phut: DEFAULT_DRY_MIN }, actorId);
   });
+  await tracking.moveByLenh(phieu.lenh_san_xuat_id, 'CHO_KHO', actorId); // in tem → xe phơi → CHỜ KHÔ
   sockets.emit('production:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'tem' });
   sockets.emit('drying:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'auto-phoi' });
-  return getRun(phieu.lenh_san_xuat_id);
+  const run = await getRun(phieu.lenh_san_xuat_id);
+  return { ...run, new_tem_id: newTemId };
 }
 
-// In lại tem (kèm lý do) — ghi log_tem, tem không đổi số lượng.
+// In lại tem: HỦY tem cũ (gỡ khỏi xe phơi) + tạo TEM MỚI (mã/barcode mới) để in lại.
+// Chỉ cho in lại khi tem cũ còn ở giai đoạn IN/DANG_PHOI (chưa khô/kiểm).
 async function reprintTem(temId, lyDo, actorId) {
   if (!lyDo || !lyDo.trim()) throw new AppError('Nhập lý do in lại tem', { status: 422, errorCode: 'NO_LY_DO' });
   const ctx = await repo.getTemContext(temId);
   if (!ctx) throw new AppError('Tem không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
-  const soLan = await repo.nextReprint(temId);
-  await repo.logReprint(temId, ctx.ma_tem, lyDo.trim(), soLan, actorId);
-  sockets.emit('production:updated', { lenhId: ctx.lenh_san_xuat_id, action: 'reprint', temId });
-  return getRun(ctx.lenh_san_xuat_id);
+  if (!['IN', 'DANG_PHOI'].includes(ctx.trang_thai)) {
+    throw new AppError('Tem đã qua công đoạn sau (khô/kiểm/giao), không thể in lại', { status: 409, errorCode: 'WRONG_STAGE' });
+  }
+  const xe = await repo.getDefaultXePhoi();
+  if (!xe) throw new AppError('Chưa cấu hình xe phơi', { status: 409, errorCode: 'NO_XE' });
+
+  const maTem = await repo.nextMaTem();
+  let newTemId;
+  await withTransaction(async (client) => {
+    await repo.cancelTem(client, temId, actorId);                 // hủy tem cũ + gỡ xe phơi
+    newTemId = await repo.createTem(client, { phieuId: ctx.phieu_san_xuat_id, maTem, soLuong: ctx.so_luong }, actorId);
+    await repo.logTemPrint(client, { temId: newTemId, maTem, actorId, lyDo: `In lại thay ${ctx.ma_tem}: ${lyDo.trim()}` });
+    await repo.addTemToXe(client, { temId: newTemId, xeId: xe.id, soLuongPhoi: ctx.so_luong, phut: DEFAULT_DRY_MIN }, actorId);
+  });
+  sockets.emit('production:updated', { lenhId: ctx.lenh_san_xuat_id, action: 'reprint', temId: newTemId });
+  sockets.emit('drying:updated', { lenhId: ctx.lenh_san_xuat_id, action: 'auto-phoi' });
+  const run = await getRun(ctx.lenh_san_xuat_id);
+  return { ...run, new_tem_id: newTemId, huy_tem: ctx.ma_tem };
+}
+
+async function temLabel(temId) {
+  const data = await repo.getTemLabelData(temId);
+  if (!data) throw new AppError('Tem không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  return data;
 }
 
 async function temLogs(phieuId) {
@@ -178,7 +207,7 @@ async function confirmDry(temId, actorId) {
 }
 
 module.exports = {
-  listCandidates, getRun, startProduction, printTem, reprintTem, temLogs, finishRun, monitor,
+  listCandidates, getRun, startProduction, printTem, reprintTem, temLabel, temLogs, finishRun, monitor,
   getXePhoi, listTemChoPhoi, addToXe, adjustPhoi, listDrying, confirmDry,
   stopLine, resumeLine,
 };

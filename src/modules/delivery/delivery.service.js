@@ -4,6 +4,7 @@ const { withTransaction } = require('../../config/db');
 const repo = require('./delivery.repository');
 const AppError = require('../../utils/AppError');
 const sockets = require('../../sockets');
+const tracking = require('../workflow/tracking.service');
 
 async function listTemSanSang(search) {
   return repo.listTemSanSang({ search });
@@ -44,6 +45,9 @@ async function confirmGiao(giaoHangId, actorId) {
   if (gh.so_tem === 0) throw new AppError('Phiếu chưa có tem', { status: 422, errorCode: 'EMPTY' });
 
   await withTransaction((client) => repo.confirmGiao(client, giaoHangId, actorId));
+  // Theo dõi dòng chảy: các tem trong phiếu giao → trạm DONE_DELIVERY.
+  const tems = await repo.getGiaoHangTems(giaoHangId);
+  for (const t of tems) await tracking.moveByTem(t.tem_id || t.id, 'DONE_DELIVERY', actorId);
   sockets.emit('delivery:updated', { giaoHangId, stage: 'DA_GIAO' });
   sockets.emit('dashboard:refresh', {});
   return getDetail(giaoHangId);

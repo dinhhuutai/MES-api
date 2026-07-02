@@ -40,19 +40,32 @@ async function listCandidates({
   const selectBase = (withItems) => `
     SELECT pin.id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim,
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
+           (SELECT string_agg(DISTINCT gs.ma_set, ', ')
+              FROM dot_vai_ve dv JOIN gom_set_dot_vai gsd ON gsd.dot_vai_ve_id = dv.id
+              JOIN gom_set gs ON gs.id = gsd.gom_set_id AND gs.trang_thai = 'MO'
+              WHERE dv.phan_in_id = pin.id) AS gom_set_list,
            (SELECT count(*) FROM ket_qua_checkpoint k
               WHERE k.phan_in_id = pin.id AND k.checkpoint_id = ANY($2::uuid[]) AND k.trang_thai = 'DAT')::int AS n_tech_done,
            ${doneExpr('$3')} AS qc_done${withItems ? `,
            ${doneExpr('$6')} AS khuon_done,
            ${doneExpr('$7')} AS film_done,
            ${doneExpr('$8')} AS muc_done,
-           ${doneExpr('$9')} AS hskt_done` : ''}
+           ${doneExpr('$9')} AS hskt_done` : ''},
+           sla.tg_vao, sla.sla_phut, sla.canh_bao_truoc_phut
     FROM phan_in pin
     JOIN ma_hang mh ON mh.id = pin.ma_hang_id
     JOIN don_hang dh ON dh.id = mh.don_hang_id
     JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+    LEFT JOIN LATERAL (
+      SELECT min(tt.tg_vao) AS tg_vao, max(tr.thoi_gian_quy_dinh_phut) AS sla_phut, max(tr.canh_bao_truoc_phut) AS canh_bao_truoc_phut
+      FROM ton_tram tt JOIN dot_vai_ve dv ON dv.id = tt.dot_vai_ve_id
+      JOIN tram tr ON tr.id = tt.tram_id
+      WHERE dv.phan_in_id = pin.id AND tr.ma_tram = 'READY'
+    ) sla ON true
     WHERE ${SEARCH}`;
 
+  // Mặc định (màn kỹ thuật): mọi phần in chưa QC xong.
+  // onlyQcReady (màn QC): chỉ phần in ĐÃ ĐỦ 4 mục kỹ thuật & chưa QC.
   const OUTER_WHERE = onlyQcReady
     ? 'WHERE q.qc_done = false AND q.n_tech_done >= 4'
     : 'WHERE q.qc_done = false';
@@ -111,7 +124,7 @@ async function getPhanInBasic(phanInId) {
 async function getResults(tramId, phanInId) {
   const { rows } = await query(
     `SELECT cp.id AS checkpoint_id, cp.ma_checkpoint, cp.ten_checkpoint, cp.bat_buoc, cp.thu_tu,
-            cp.cau_hinh_json, lc.ma_loai AS loai_checkpoint,
+            cp.cau_hinh_json, cp.thoi_gian_quy_dinh_phut, cp.canh_bao_truoc_phut, lc.ma_loai AS loai_checkpoint,
             kq.id AS ket_qua_id, kq.trang_thai, kq.gia_tri_text, kq.gia_tri_json,
             kq.nguoi_xac_nhan_id, kq.tg_xac_nhan, nx.ho_ten AS nguoi_xac_nhan_ten
      FROM checkpoint cp
@@ -170,6 +183,18 @@ async function upsertResult(client, data) {
   return rows[0].id;
 }
 
+// Thời điểm phần in vào trạm READY (min tg_vao của các đợt vải đang ở READY) — để tính SLA checklist.
+async function getReadyEntryTime(phanInId) {
+  const { rows } = await query(
+    `SELECT min(tt.tg_vao) AS ready_tg_vao
+     FROM ton_tram tt JOIN dot_vai_ve dv ON dv.id = tt.dot_vai_ve_id
+     JOIN tram t ON t.id = tt.tram_id
+     WHERE dv.phan_in_id = $1 AND t.ma_tram = 'READY'`.replace(/\s+/g, ' '),
+    [phanInId]
+  );
+  return rows[0]?.ready_tg_vao || null;
+}
+
 async function insertStatusLog(client, { ketQuaId, trangThaiMoiId, nguoiId, lyDo }) {
   await client.query(
     `INSERT INTO lich_su_trang_thai
@@ -181,5 +206,5 @@ async function insertStatusLog(client, { ketQuaId, trangThaiMoiId, nguoiId, lyDo
 
 module.exports = {
   loadReadyConfig, listCandidates, historyByDate, getPhanInBasic, getResults, getBulkStates,
-  findResultId, upsertResult, insertStatusLog,
+  getReadyEntryTime, findResultId, upsertResult, insertStatusLog,
 };

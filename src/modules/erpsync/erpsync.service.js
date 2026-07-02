@@ -7,6 +7,7 @@ const repo = require('./erpsync.repository');
 const env = require('../../config/env');
 const AppError = require('../../utils/AppError');
 const sockets = require('../../sockets');
+const tracking = require('../workflow/tracking.service');
 
 const NGUON = 'phieu_nhan_vai_60';
 
@@ -96,11 +97,11 @@ async function processRow(r, maPhan, maDotVai) {
       mauVai: clean(r.fabric_color), kichVai: clean(r.fabric_size), kichPhim: clean(r.film_size),
       soLuongDonHang: r.order_qty ?? null,
     });
-    const { inserted } = await repo.upsertDotVai(client, {
+    const { id: dotVaiId, inserted } = await repo.upsertDotVai(client, {
       maDotVai, phanInId: pinId,
       ngayVaiVe: toDate(r.erp_datetime || r.created_date), hanGiao: toDate(r.due_date), soLuong: r.received_qty ?? null,
     });
-    return inserted;
+    return { inserted, dotVaiId };
   });
 }
 
@@ -123,11 +124,13 @@ async function syncPhieuNhanVai({ fromDate, actorId = null, tuDong = false } = {
     catch (e) { console.error(`[erp-sync] ✗ Lưu chuỗi thô lỗi: ${e.message}`); }
 
     // Tính khóa định danh cho TỪNG dòng (mỗi bản ghi = 1 đợt; xem buildKeys).
+    // Bỏ qua khi: (1) không đúng khách 'SD', hoặc (2) không có code_part.
     const seen = new Map();
     const prepared = rows.map((r) => {
-      const skip = !clean(r.code_part);
+      const notSd = clean(r.customer_name).toUpperCase() !== 'SD';
+      const noCode = !clean(r.code_part);
       const { maPhan, maDotVai } = buildKeys(r, seen);
-      return { r, maPhan, maDotVai, skip };
+      return { r, maPhan, maDotVai, skip: notSd || noCode, notSd, noCode };
     });
 
     // Task 1: LƯU DỮ LIỆU THÔ trước khi xử lý (gồm cả dòng bị bỏ qua).
@@ -139,20 +142,30 @@ async function syncPhieuNhanVai({ fromDate, actorId = null, tuDong = false } = {
       console.error(`[erp-sync] ✗ Lưu dữ liệu thô lỗi: ${e.message}`);
     }
 
-    let soMoi = 0; let soCapNhat = 0; let soBoQua = 0; const errors = [];
+    let soMoi = 0; let soCapNhat = 0; let soBoQua = 0; let soKhongSd = 0; let soKhongCode = 0;
+    const errors = [];
+    const newDotVaiIds = [];
     for (const p of prepared) {
-      // Bỏ qua dòng không có code_part (theo yêu cầu: code_part = null thì bỏ ra).
-      if (p.skip) { soBoQua += 1; continue; }
+      // Bỏ qua dòng không phải khách 'SD' hoặc không có code_part.
+      if (p.skip) {
+        soBoQua += 1;
+        if (p.notSd) soKhongSd += 1; else if (p.noCode) soKhongCode += 1;
+        continue;
+      }
       try {
-        const inserted = await processRow(p.r, p.maPhan, p.maDotVai);
-        if (inserted) soMoi += 1; else soCapNhat += 1;
+        const { inserted, dotVaiId } = await processRow(p.r, p.maPhan, p.maDotVai);
+        if (inserted) { soMoi += 1; newDotVaiIds.push(dotVaiId); } else soCapNhat += 1;
       } catch (e) {
         errors.push(e.message);
       }
     }
+    // Theo dõi dòng chảy: đợt vải mới nhận từ ERP → vào thẳng trạm READY
+    // (hệ MES này BẮT ĐẦU TỪ READY — dữ liệu ERP về coi như đã mở đơn, chờ chuẩn bị kỹ thuật). Best-effort.
+    if (newDotVaiIds.length) await tracking.moveDotVaiTo(newDotVaiIds, 'READY', actorId);
     const trangThai = errors.length && soMoi + soCapNhat === 0 ? 'LOI' : 'THANH_CONG';
     const notes = [];
-    if (soBoQua) notes.push(`bỏ qua ${soBoQua} dòng không có code_part`);
+    if (soKhongSd) notes.push(`bỏ qua ${soKhongSd} dòng không phải khách 'SD'`);
+    if (soKhongCode) notes.push(`bỏ qua ${soKhongCode} dòng không có code_part`);
     if (errors.length) notes.push(`lỗi ${errors.length}/${rows.length}: ${errors.slice(0, 3).join(' | ')}`);
     await repo.finishSyncLog(logId, {
       tong: rows.length, soMoi, soCapNhat, soLoi: errors.length, trangThai,

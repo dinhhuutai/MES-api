@@ -23,6 +23,16 @@ const PHAN_INFO_LATERAL = `
     LIMIT 1
   ) info ON true`;
 
+// SLA trạm hiện tại của đợt vải (ton_tram) cho các màn theo tem — tô màu cảnh báo SLA.
+const SLA_LATERAL = `
+  LEFT JOIN LATERAL (
+    SELECT tt.tg_vao, tr.thoi_gian_quy_dinh_phut AS sla_phut, tr.canh_bao_truoc_phut
+    FROM lenh_sx_dot_vai lsd JOIN ton_tram tt ON tt.dot_vai_ve_id = lsd.dot_vai_ve_id
+    JOIN tram tr ON tr.id = tt.tram_id
+    WHERE lsd.lenh_san_xuat_id = ls.id ORDER BY tt.tg_vao LIMIT 1
+  ) sla ON true`;
+const SLA_COLS = 'sla.tg_vao, sla.sla_phut, sla.canh_bao_truoc_phut,';
+
 // ----- XÁC NHẬN CHẠY -----
 async function listProductionCandidates({ search = '', offset = 0, limit = 20 }) {
   const FROM = `
@@ -50,10 +60,10 @@ async function listProductionCandidates({ search = '', offset = 0, limit = 20 })
   return { rows: data.rows, total: count.rows[0].total };
 }
 
-// Tổng số lượng đã in của 1 phiếu (cho luật tối đa 110% SL release).
+// Tổng số lượng đã in của 1 phiếu (cho luật tối đa 110% SL release). Bỏ tem đã HỦY.
 async function getPrintedTotal(phieuId) {
   const { rows } = await query(
-    'SELECT COALESCE(SUM(so_luong),0)::int AS printed FROM tem WHERE phieu_san_xuat_id = $1',
+    "SELECT COALESCE(SUM(so_luong),0)::int AS printed FROM tem WHERE phieu_san_xuat_id = $1 AND trang_thai <> 'HUY'",
     [phieuId]
   );
   return rows[0].printed;
@@ -82,6 +92,13 @@ async function createPhieu(client, { lenhId, chuyenId, maPhieu }, actorId) {
     [lenhId, chuyenId, maPhieu, actorId]
   );
   return rows[0].id;
+}
+
+async function setLenhChuyen(client, lenhId, chuyenId, actorId) {
+  await client.query(
+    'UPDATE lenh_san_xuat SET chuyen_id=$2, updated_by=$3, updated_date=CURRENT_TIMESTAMP WHERE id=$1',
+    [lenhId, chuyenId, actorId]
+  );
 }
 
 async function setLenhTrangThai(client, lenhId, trangThai, actorId) {
@@ -129,8 +146,41 @@ async function getTemsByPhieu(phieuId) {
 // Ngữ cảnh tem (để in lại + reload đúng lệnh).
 async function getTemContext(temId) {
   const { rows } = await query(
-    `SELECT t.id, t.ma_tem, ps.lenh_san_xuat_id, ps.trang_thai AS phieu_trang_thai
+    `SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.phieu_san_xuat_id,
+            ps.lenh_san_xuat_id, ps.trang_thai AS phieu_trang_thai
      FROM tem t JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id WHERE t.id=$1`,
+    [temId]
+  );
+  return rows[0] || null;
+}
+
+// Hủy tem (khi in lại) — đánh dấu HUY + gỡ khỏi xe phơi đang phơi.
+async function cancelTem(client, temId, actorId) {
+  await client.query(
+    "UPDATE tem SET trang_thai='HUY', updated_by=$2, updated_date=CURRENT_TIMESTAMP WHERE id=$1",
+    [temId, actorId]
+  );
+  await client.query(
+    "UPDATE tem_xe_phoi SET trang_thai='HUY', updated_by=$2, updated_date=CURRENT_TIMESTAMP WHERE tem_id=$1 AND trang_thai='DANG_PHOI'",
+    [temId, actorId]
+  );
+}
+
+// Dữ liệu in NHÃN TEM (thông tin tem + phần in + lệnh + người in).
+async function getTemLabelData(temId) {
+  const { rows } = await query(
+    `SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.created_date,
+            ls.ma_lenh_san_xuat, cs.ma_chuyen, cs.ten_chuyen,
+            info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan,
+            info.mau_vai, info.kich_vai, info.kich_phim,
+            (SELECT nd.ho_ten FROM log_tem lt LEFT JOIN nguoi_dung nd ON nd.id = lt.nguoi_in_id
+             WHERE lt.tem_id = t.id ORDER BY lt.tg_in LIMIT 1) AS nguoi_in
+     FROM tem t
+     JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+     JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+     LEFT JOIN chuyen_san_xuat cs ON cs.id = ps.chuyen_id
+     ${PHAN_INFO_LATERAL}
+     WHERE t.id = $1`,
     [temId]
   );
   return rows[0] || null;
@@ -183,11 +233,11 @@ async function createTem(client, { phieuId, maTem, soLuong }, actorId) {
   return rows[0].id;
 }
 
-async function logTemPrint(client, { temId, maTem, actorId }) {
+async function logTemPrint(client, { temId, maTem, actorId, lyDo = null }) {
   await client.query(
-    `INSERT INTO log_tem (tem_id, ma_tem, nguoi_in_id, tg_in, so_lan_in, created_by)
-     VALUES ($1,$2,$3,CURRENT_TIMESTAMP,1,$3)`,
-    [temId, maTem, actorId]
+    `INSERT INTO log_tem (tem_id, ma_tem, nguoi_in_id, tg_in, so_lan_in, ly_do_in_lai, created_by)
+     VALUES ($1,$2,$3,CURRENT_TIMESTAMP,1,$4,$3)`,
+    [temId, maTem, actorId, lyDo]
   );
 }
 
@@ -206,7 +256,7 @@ async function monitorRunning() {
     `SELECT ps.id AS phieu_id, ls.id AS lenh_id, cs.id AS chuyen_id, cs.ma_chuyen, cs.ten_chuyen,
             cs.dinh_muc_gio, ps.tg_bd, ls.ma_lenh_san_xuat, ls.ngay_ke_hoach,
             ls.so_luong_release AS target, ${PHAN_AGG} AS phan_list,
-            info.ten_khach_hang, info.ma_hang, info.ma_phan, info.mau_vai, info.kich_vai, info.kich_phim,
+            info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan, info.mau_vai, info.kich_vai, info.kich_phim,
             (SELECT COALESCE(SUM(t.so_luong),0)::int FROM tem t WHERE t.phieu_san_xuat_id=ps.id) AS printed,
             (SELECT count(*) FROM tem t WHERE t.phieu_san_xuat_id=ps.id)::int AS so_tem,
             EXISTS (SELECT 1 FROM ngung_chuyen n WHERE n.phieu_san_xuat_id=ps.id AND n.trang_thai='DANG_NGUNG') AS dang_ngung,
@@ -249,11 +299,14 @@ async function listXePhoi() {
 async function listCurrentPhoi() {
   const { rows } = await query(
     `SELECT txp.id AS tem_xe_id, txp.xe_phoi_id, txp.so_luong_phoi, txp.tg_bd_phoi, txp.tg_kt_phoi,
-            t.ma_tem, ls.ma_lenh_san_xuat
+            t.ma_tem, t.so_luong, ls.ma_lenh_san_xuat, ${SLA_COLS}
+            info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.mau_vai, info.kich_vai, info.kich_phim
      FROM tem_xe_phoi txp
      JOIN tem t ON t.id = txp.tem_id
      LEFT JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
      LEFT JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+     ${PHAN_INFO_LATERAL}
+     ${SLA_LATERAL}
      WHERE txp.trang_thai='DANG_PHOI'
      ORDER BY txp.tg_kt_phoi`
   );
@@ -262,11 +315,14 @@ async function listCurrentPhoi() {
 
 async function listTemChoPhoi({ search = '' }) {
   const { rows } = await query(
-    `SELECT t.id AS tem_id, t.ma_tem, t.so_luong, ls.ma_lenh_san_xuat, cs.ma_chuyen
+    `SELECT t.id AS tem_id, t.ma_tem, t.so_luong, ls.ma_lenh_san_xuat, cs.ma_chuyen, ${SLA_COLS}
+            info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.mau_vai, info.kich_vai, info.kich_phim
      FROM tem t
      JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
      JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
      LEFT JOIN chuyen_san_xuat cs ON cs.id = ps.chuyen_id
+     ${PHAN_INFO_LATERAL}
+     ${SLA_LATERAL}
      WHERE t.trang_thai='IN' AND ($1='' OR t.ma_tem ILIKE '%'||$1||'%' OR ls.ma_lenh_san_xuat ILIKE '%'||$1||'%'
             OR ${lenhPhanInMatch('ls.id', '$1')})
      ORDER BY t.created_date`,
@@ -297,12 +353,15 @@ async function adjustPhoi(temXeId, phut, actorId) {
 async function listDryingTems({ search = '' }) {
   const { rows } = await query(
     `SELECT t.id AS tem_id, t.ma_tem, t.so_luong, txp.id AS tem_xe_id, txp.tg_bd_phoi, txp.tg_kt_phoi,
-            xp.ma_xe_phoi, ls.ma_lenh_san_xuat
+            xp.ma_xe_phoi, ls.ma_lenh_san_xuat, ${SLA_COLS}
+            info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.mau_vai, info.kich_vai, info.kich_phim
      FROM tem t
      JOIN tem_xe_phoi txp ON txp.tem_id = t.id AND txp.trang_thai='DANG_PHOI'
      JOIN xe_phoi xp ON xp.id = txp.xe_phoi_id
      LEFT JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
      LEFT JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+     ${PHAN_INFO_LATERAL}
+     ${SLA_LATERAL}
      WHERE t.trang_thai='DANG_PHOI' AND ($1='' OR t.ma_tem ILIKE '%'||$1||'%'
             OR ls.ma_lenh_san_xuat ILIKE '%'||$1||'%' OR ${lenhPhanInMatch('ls.id', '$1')})
      ORDER BY txp.tg_kt_phoi`,
@@ -367,8 +426,9 @@ async function listNgungByPhieu(phieuId) {
 }
 
 module.exports = {
-  listProductionCandidates, getPrintedTotal, getDefaultXePhoi, nextMaPhieu, createPhieu, setLenhTrangThai, getLenhBasic,
-  getActivePhieu, getPhieuById, getTemsByPhieu, getTemContext, listTemLogByPhieu, nextReprint, logReprint,
+  listProductionCandidates, getPrintedTotal, getDefaultXePhoi, nextMaPhieu, createPhieu, setLenhChuyen, setLenhTrangThai, getLenhBasic,
+  getActivePhieu, getPhieuById, getTemsByPhieu, getTemContext, cancelTem, getTemLabelData,
+  listTemLogByPhieu, nextReprint, logReprint,
   nextMaTem, createTem, logTemPrint, finishPhieu,
   monitorRunning, monitorQueue, listXePhoi, listCurrentPhoi, listTemChoPhoi, addTemToXe, adjustPhoi,
   listDryingTems, confirmDry, getTemBasic,

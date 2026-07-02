@@ -4,6 +4,7 @@ const repo = require('./finance.repository');
 const AppError = require('../../utils/AppError');
 const { buildMeta } = require('../../utils/pagination');
 const sockets = require('../../sockets');
+const tracking = require('../workflow/tracking.service');
 
 async function listDonHang({ search, status, page, limit, offset }) {
   const { rows, total } = await repo.listDonHang({ search, status, offset, limit });
@@ -36,6 +37,7 @@ async function confirm(donHangId, actorId) {
     throw new AppError('Cần nhập tổng công nợ trước khi xác nhận', { status: 400, errorCode: 'MISSING_AMOUNT' });
   }
   await repo.confirm(donHangId, actorId);
+  await tracking.moveByDonHang(donHangId, 'CLOSED_FINANCE', actorId); // theo dõi dòng chảy: đóng tài chính
   sockets.emit('workflow:updated', { type: 'CLOSED_FINANCE', donHangId });
   sockets.emit('dashboard:refresh', {});
   return getCongNo(donHangId);

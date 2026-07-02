@@ -70,7 +70,7 @@ async function setTramActive(id, active, actor) {
 async function listCheckpoints(tramId) {
   const { rows } = await query(
     `SELECT cp.id, cp.ma_checkpoint, cp.ten_checkpoint, cp.mo_ta, cp.bat_buoc, cp.thu_tu,
-            cp.cau_hinh_json, cp.thoi_gian_quy_dinh_phut, cp.dang_hoat_dong,
+            cp.cau_hinh_json, cp.thoi_gian_quy_dinh_phut, cp.canh_bao_truoc_phut, cp.dang_hoat_dong,
             cp.loai_checkpoint_id, lc.ma_loai AS loai_checkpoint
      FROM checkpoint cp LEFT JOIN loai_checkpoint lc ON lc.id = cp.loai_checkpoint_id
      WHERE cp.tram_id = $1 ORDER BY cp.thu_tu, cp.ma_checkpoint`,
@@ -81,20 +81,20 @@ async function listCheckpoints(tramId) {
 async function createCheckpoint(d, actor) {
   const { rows } = await query(
     `INSERT INTO checkpoint (tram_id, loai_checkpoint_id, ma_checkpoint, ten_checkpoint, mo_ta, bat_buoc, thu_tu,
-                             cau_hinh_json, thoi_gian_quy_dinh_phut, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+                             cau_hinh_json, thoi_gian_quy_dinh_phut, canh_bao_truoc_phut, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
     [d.tramId, d.loaiCheckpointId || null, d.maCheckpoint, d.tenCheckpoint, d.moTa || null,
-     d.batBuoc === true, d.thuTu ?? null, d.cauHinhJson || null, d.thoiGianQuyDinhPhut ?? null, actor]
+     d.batBuoc === true, d.thuTu ?? null, d.cauHinhJson || null, d.thoiGianQuyDinhPhut ?? null, d.canhBaoTruocPhut ?? null, actor]
   );
   return rows[0].id;
 }
 async function updateCheckpoint(id, d, actor) {
   await query(
     `UPDATE checkpoint SET ten_checkpoint=COALESCE($2,ten_checkpoint), mo_ta=$3, bat_buoc=$4, thu_tu=$5,
-       cau_hinh_json=$6, loai_checkpoint_id=$7, thoi_gian_quy_dinh_phut=$8,
-       updated_by=$9, updated_date=CURRENT_TIMESTAMP WHERE id=$1`,
+       cau_hinh_json=$6, loai_checkpoint_id=$7, thoi_gian_quy_dinh_phut=$8, canh_bao_truoc_phut=$9,
+       updated_by=$10, updated_date=CURRENT_TIMESTAMP WHERE id=$1`,
     [id, d.tenCheckpoint ?? null, d.moTa ?? null, d.batBuoc === true, d.thuTu ?? null,
-     d.cauHinhJson ?? null, d.loaiCheckpointId ?? null, d.thoiGianQuyDinhPhut ?? null, actor]
+     d.cauHinhJson ?? null, d.loaiCheckpointId ?? null, d.thoiGianQuyDinhPhut ?? null, d.canhBaoTruocPhut ?? null, actor]
   );
 }
 async function setCheckpointActive(id, active, actor) {
@@ -159,40 +159,42 @@ async function deleteCondition(id) {
 // ============ OWNER (cần DELETE) ============
 async function listTramOwners(tramId) {
   const { rows } = await query(
-    `SELECT o.id, o.phong_ban_id, o.user_id, o.role_id, pb.ten_phong_ban, u.ho_ten, r.ten_role
+    `SELECT o.id, o.phong_ban_id, o.user_id, o.role_id, o.loai, pb.ten_phong_ban, u.ho_ten, r.ten_role
      FROM tram_owner o
      LEFT JOIN phong_ban pb ON pb.id = o.phong_ban_id
      LEFT JOIN nguoi_dung u ON u.id = o.user_id
      LEFT JOIN vai_tro r ON r.id = o.role_id
-     WHERE o.tram_id = $1 ORDER BY o.created_date`,
+     WHERE o.tram_id = $1 ORDER BY o.loai DESC, o.created_date`,
     [tramId]
   );
   return rows;
 }
 async function addTramOwner(d, actor) {
   await query(
-    'INSERT INTO tram_owner (tram_id, phong_ban_id, user_id, role_id, created_by) VALUES ($1,$2,$3,$4,$5)',
-    [d.tramId, d.phongBanId || null, d.userId || null, d.roleId || null, actor]
+    'INSERT INTO tram_owner (tram_id, phong_ban_id, user_id, role_id, loai, created_by) VALUES ($1,$2,$3,$4,$5,$6)',
+    [d.tramId, d.phongBanId || null, d.userId || null, d.roleId || null,
+     d.loai === 'CHIU_TRACH_NHIEM' ? 'CHIU_TRACH_NHIEM' : 'XU_LY', actor]
   );
 }
 async function removeTramOwner(id) { await query('DELETE FROM tram_owner WHERE id = $1', [id]); }
 
 async function listCheckpointOwners(checkpointId) {
   const { rows } = await query(
-    `SELECT o.id, o.phong_ban_id, o.user_id, o.role_id, o.bat_buoc, pb.ten_phong_ban, u.ho_ten, r.ten_role
+    `SELECT o.id, o.phong_ban_id, o.user_id, o.role_id, o.loai, o.bat_buoc, pb.ten_phong_ban, u.ho_ten, r.ten_role
      FROM checkpoint_owner o
      LEFT JOIN phong_ban pb ON pb.id = o.phong_ban_id
      LEFT JOIN nguoi_dung u ON u.id = o.user_id
      LEFT JOIN vai_tro r ON r.id = o.role_id
-     WHERE o.checkpoint_id = $1 ORDER BY o.created_date`,
+     WHERE o.checkpoint_id = $1 ORDER BY o.loai DESC, o.created_date`,
     [checkpointId]
   );
   return rows;
 }
 async function addCheckpointOwner(d, actor) {
   await query(
-    'INSERT INTO checkpoint_owner (checkpoint_id, phong_ban_id, user_id, role_id, bat_buoc, created_by) VALUES ($1,$2,$3,$4,$5,$6)',
-    [d.checkpointId, d.phongBanId || null, d.userId || null, d.roleId || null, d.batBuoc === true, actor]
+    'INSERT INTO checkpoint_owner (checkpoint_id, phong_ban_id, user_id, role_id, loai, bat_buoc, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+    [d.checkpointId, d.phongBanId || null, d.userId || null, d.roleId || null,
+     d.loai === 'CHIU_TRACH_NHIEM' ? 'CHIU_TRACH_NHIEM' : 'XU_LY', d.batBuoc === true, actor]
   );
 }
 async function removeCheckpointOwner(id) { await query('DELETE FROM checkpoint_owner WHERE id = $1', [id]); }

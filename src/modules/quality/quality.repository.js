@@ -6,13 +6,30 @@ const { lenhPhanInMatch } = require('../../utils/search');
 const TEM_CTX = `
   SELECT t.id AS tem_id, t.ma_tem, t.so_luong, t.trang_thai,
          ls.ma_lenh_san_xuat, cs.ma_chuyen,
+         info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.mau_vai, info.kich_vai, info.kich_phim,
+         sla.tg_vao, sla.sla_phut, sla.canh_bao_truoc_phut,
          (SELECT string_agg(DISTINCT pin.ma_phan, ', ')
             FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
             JOIN phan_in pin ON pin.id = dv.phan_in_id WHERE lsd.lenh_san_xuat_id = ls.id) AS phan_list
   FROM tem t
   JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
   JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
-  LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id`;
+  LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+  LEFT JOIN LATERAL (
+    SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim
+    FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+    JOIN phan_in pin ON pin.id = dv.phan_in_id
+    JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+    JOIN don_hang dh ON dh.id = mh.don_hang_id
+    JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+    WHERE lsd.lenh_san_xuat_id = ls.id ORDER BY pin.ma_phan, dv.ma_dot_vai LIMIT 1
+  ) info ON true
+  LEFT JOIN LATERAL (
+    SELECT tt.tg_vao, tr.thoi_gian_quy_dinh_phut AS sla_phut, tr.canh_bao_truoc_phut
+    FROM lenh_sx_dot_vai lsd JOIN ton_tram tt ON tt.dot_vai_ve_id = lsd.dot_vai_ve_id
+    JOIN tram tr ON tr.id = tt.tram_id
+    WHERE lsd.lenh_san_xuat_id = ls.id ORDER BY tt.tg_vao LIMIT 1
+  ) sla ON true`;
 
 async function listByTemStatus(status, { search = '' }) {
   const { rows } = await query(
@@ -169,6 +186,47 @@ async function setTemTrangThai(client, temId, trangThai, actorId) {
   );
 }
 
+// Đổi trạng thái + số lượng (dùng khi tách tem: phần đạt giữ lại trên tem gốc với SL đạt).
+async function setTemStatusQty(client, temId, trangThai, soLuong, actorId) {
+  await client.query(
+    'UPDATE tem SET trang_thai = $2, so_luong = $3, updated_by = $4, updated_date = CURRENT_TIMESTAMP WHERE id = $1',
+    [temId, trangThai, soLuong, actorId]
+  );
+}
+
+// Sinh mã tem kế tiếp (dùng cho tem con khi tách ở KCS/Sửa). Gọi trước transaction.
+async function nextMaTem() {
+  const { rows } = await query(
+    `SELECT 'TEM' || LPAD((COALESCE(MAX(NULLIF(regexp_replace(ma_tem,'\\D','','g'),''))::int,0)+1)::text, 5, '0') AS ma
+     FROM tem`
+  );
+  return rows[0].ma;
+}
+
+// Tem con (tách từ tem cha) — cùng phiếu sản xuất, trạng thái tùy công đoạn.
+async function createChildTem(client, { phieuId, maTem, soLuong, trangThai }, actorId) {
+  const { rows } = await client.query(
+    `INSERT INTO tem (phieu_san_xuat_id, ma_tem, so_luong, trang_thai, created_by)
+     VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+    [phieuId, maTem, soLuong, trangThai, actorId]
+  );
+  return rows[0].id;
+}
+
+async function insertTemSplit(client, { chaId, conId, soLuong, lyDo }, actorId) {
+  await client.query(
+    `INSERT INTO tem_split (tem_cha_id, tem_con_id, so_luong, ly_do, created_by) VALUES ($1,$2,$3,$4,$5)`,
+    [chaId, conId, soLuong ?? null, lyDo || null, actorId]
+  );
+}
+
+async function getTemForSplit(temId) {
+  const { rows } = await query(
+    'SELECT id, ma_tem, so_luong, trang_thai, phieu_san_xuat_id FROM tem WHERE id = $1', [temId]
+  );
+  return rows[0] || null;
+}
+
 async function insertKcs(client, temId, d, actorId) {
   await client.query(
     `INSERT INTO kcs (tem_id, so_luong_kiem, so_luong_mau, so_luong_dat, so_luong_loi, so_luong_huy,
@@ -197,9 +255,11 @@ async function nextOqcRound(temId) {
 
 async function insertOqc(client, temId, d, actorId) {
   await client.query(
-    `INSERT INTO oqc (tem_id, lan_kiem_cua_phan, so_luong_kiem, so_luong_dat, so_luong_loi, ket_qua, ghi_chu, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-    [temId, d.lanKiem, d.soLuongKiem, d.soLuongDat, d.soLuongLoi, d.ketQua, d.ghiChu || null, actorId]
+    `INSERT INTO oqc (tem_id, lan_kiem_cua_phan, so_luong_kiem, so_luong_dat, so_luong_loi, ket_qua,
+                      cho_giao, ly_do_cho_giao, owner_cho_giao_id, ghi_chu, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+    [temId, d.lanKiem, d.soLuongKiem, d.soLuongDat, d.soLuongLoi, d.ketQua,
+     d.choGiao === true, d.lyDoChoGiao || null, d.ownerChoGiaoId || null, d.ghiChu || null, actorId]
   );
 }
 
@@ -243,7 +303,9 @@ async function oqcHistoryByDate(date) {
 }
 
 module.exports = {
-  listByTemStatus, getTemBasic, setTemTrangThai, insertKcs, insertSua, nextOqcRound, insertOqc,
+  listByTemStatus, getTemBasic, setTemTrangThai, setTemStatusQty,
+  nextMaTem, createChildTem, insertTemSplit, getTemForSplit,
+  insertKcs, insertSua, nextOqcRound, insertOqc,
   kcsHistoryByDate, suaHistoryByDate, oqcHistoryByDate,
   listInlineCandidates, getPhieuRun, nextInlineRound, insertQcInline, insertQcInlineLoi, inlineHistoryByDate,
   listLoaiLoiActive, listLoaiLoiAll, insertLoaiLoi, updateLoaiLoi, setLoaiLoiActive,
