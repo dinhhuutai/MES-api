@@ -33,6 +33,7 @@ async function loadConfig() {
   const tram = {
     id: r0.tram_id, ma_tram: r0.ma_tram, ten_tram: r0.ten_tram,
     thu_tu: r0.tram_thu_tu, thoi_gian_quy_dinh_phut: r0.thoi_gian_quy_dinh_phut,
+    canh_bao_truoc_phut: r0.canh_bao_truoc_phut,
   };
   const checkpoints = rows.filter((r) => r.cp_id).map((r) => ({
     id: r.cp_id, ma_checkpoint: r.ma_checkpoint, ten_checkpoint: r.ten_checkpoint,
@@ -66,12 +67,15 @@ async function getConfig() {
 
 // onlyQcReady=true: chỉ phần in đã đủ 4 mục kỹ thuật & chưa QC (cho màn QC bên Chất lượng).
 async function listCandidates({ search, page, limit, offset, onlyQcReady = false }) {
-  const { byMa } = await loadConfig();
+  const { tram, byMa } = await loadConfig();
   const inputIds = INPUT_CPS.map((ma) => byMa[ma]?.id).filter(Boolean);
+  // SLA hàng READY = SLA trạm READY (đếm từ lúc đợt vải về/ vào READY). Mặc định 480' nếu chưa cấu hình.
+  const readySla = tram.thoi_gian_quy_dinh_phut != null ? tram.thoi_gian_quy_dinh_phut : 480;
+  const readyCanhBao = tram.canh_bao_truoc_phut != null ? tram.canh_bao_truoc_phut : 60;
   const { rows, total } = await repo.listCandidates({
     search, inputIds, qcId: byMa[QC_CP]?.id,
     khuonId: byMa.KHUON?.id, filmId: byMa.FILM?.id, mucId: byMa.MUC?.id, hsktId: byMa.HSKT?.id,
-    onlyQcReady, offset, limit,
+    onlyQcReady, offset, limit, readySla, readyCanhBao,
   });
   const items = rows.map((r) => ({
     ...r,

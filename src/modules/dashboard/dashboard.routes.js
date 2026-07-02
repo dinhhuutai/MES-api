@@ -43,18 +43,34 @@ router.get('/owners', asyncHandler(async (req, res) => {
 }));
 
 // ---- KIOSK: tình trạng đơn hàng theo trạm ----
-// GET /dashboard/tinh-trang/summary — đếm phần in đang chạy chưa giao / sắp nghẽn / nghẽn.
+// GET /dashboard/tinh-trang/summary — đếm phần in đang chạy chưa giao / sắp nghẽn / nghẽn + danh sách nghẽn.
+const SLA_RANK = { NGHEN: 2, SAP_NGHEN: 1, OK: 0 };
 router.get('/tinh-trang/summary', asyncHandler(async (req, res) => {
   const rows = await repo.tinhTrangActiveRows();
-  const dangChay = new Set(); const sap = new Set(); const nghen = new Set();
+  const dangChay = new Set();
+  // Gộp theo phần in → giữ trạng thái SLA xấu nhất trong các đợt vải của nó.
+  const byPhanIn = {};
   rows.forEach((r) => {
     const st = slaStatus(r.phut_da_o, r.sla_phut, r.canh_bao_truoc_phut);
-    // "đang chạy chưa giao" = chưa ở trạm giao xong.
     if (r.ma_tram !== 'DONE_DELIVERY') dangChay.add(r.phan_in_id);
-    if (st === 'SAP_NGHEN') sap.add(r.phan_in_id);
-    if (st === 'NGHEN') nghen.add(r.phan_in_id);
+    const cur = byPhanIn[r.phan_in_id];
+    if (!cur || SLA_RANK[st] > SLA_RANK[cur.sla_status]) {
+      byPhanIn[r.phan_in_id] = {
+        id: r.phan_in_id, sla_status: st, ten_tram: r.ten_tram,
+        ma_phan: r.ma_phan, ma_hang: r.ma_hang, ten_khach_hang: r.ten_khach_hang,
+        ma_don_hang: r.ma_don_hang, mau_vai: r.mau_vai, kich_vai: r.kich_vai, kich_phim: r.kich_phim,
+      };
+    }
   });
-  return ok(res, { dang_chay_chua_giao: dangChay.size, sap_nghen: sap.size, nghen: nghen.size });
+  const items = Object.values(byPhanIn);
+  const danhSachNghen = items.filter((i) => i.sla_status === 'NGHEN');
+  const danhSachSap = items.filter((i) => i.sla_status === 'SAP_NGHEN');
+  return ok(res, {
+    dang_chay_chua_giao: dangChay.size,
+    sap_nghen: danhSachSap.length,
+    nghen: danhSachNghen.length,
+    danh_sach: { NGHEN: danhSachNghen, SAP_NGHEN: danhSachSap },
+  });
 }));
 
 // GET /dashboard/tinh-trang/phan-in?search= — danh sách phần in để xoay vòng.

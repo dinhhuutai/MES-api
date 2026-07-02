@@ -100,14 +100,20 @@ async function stageCounts() {
 
 // ============ KIOSK: TÌNH TRẠNG ĐƠN HÀNG THEO TRẠM ============
 
-// Các đợt vải đang trong dòng chảy (chưa CLOSED_FINANCE) — rows để tính tổng quan (đếm phần in).
+// Các đợt vải đang trong dòng chảy (chưa CLOSED_FINANCE) — rows để tính tổng quan + danh sách nghẽn.
 async function tinhTrangActiveRows() {
   const { rows } = await query(
-    `SELECT dv.phan_in_id, tr.ma_tram,
+    `SELECT dv.phan_in_id, tr.ma_tram, tr.ten_tram,
             tr.thoi_gian_quy_dinh_phut AS sla_phut, tr.canh_bao_truoc_phut,
-            floor(EXTRACT(EPOCH FROM (now() - tt.tg_vao)) / 60)::int AS phut_da_o
+            floor(EXTRACT(EPOCH FROM (now() - tt.tg_vao)) / 60)::int AS phut_da_o,
+            pi.ma_phan, pi.mau_vai, pi.kich_vai, pi.kich_phim,
+            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang
      FROM ton_tram tt JOIN tram tr ON tr.id = tt.tram_id
      JOIN dot_vai_ve dv ON dv.id = tt.dot_vai_ve_id
+     JOIN phan_in pi ON pi.id = dv.phan_in_id
+     JOIN ma_hang mh ON mh.id = pi.ma_hang_id
+     JOIN don_hang dh ON dh.id = mh.don_hang_id
+     JOIN khach_hang kh ON kh.id = dh.khach_hang_id
      WHERE tt.dot_vai_ve_id IS NOT NULL AND tr.ma_tram <> 'CLOSED_FINANCE'`.replace(/\s+/g, ' ')
   );
   return rows;

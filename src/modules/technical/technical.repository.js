@@ -10,7 +10,7 @@ async function loadReadyConfig() {
       WHERE la_hien_hanh = true ORDER BY ngay_hieu_luc DESC LIMIT 1
     )
     SELECT v.id AS version_id, v.ma_version, v.ten_version,
-           t.id AS tram_id, t.ma_tram, t.ten_tram, t.thu_tu AS tram_thu_tu, t.thoi_gian_quy_dinh_phut,
+           t.id AS tram_id, t.ma_tram, t.ten_tram, t.thu_tu AS tram_thu_tu, t.thoi_gian_quy_dinh_phut, t.canh_bao_truoc_phut,
            cp.id AS cp_id, cp.ma_checkpoint, cp.ten_checkpoint, cp.bat_buoc, cp.thu_tu AS cp_thu_tu,
            cp.cau_hinh_json, lc.ma_loai AS loai_checkpoint
     FROM v
@@ -28,7 +28,7 @@ async function loadReadyConfig() {
 //  - mặc định: phần in chưa QC xong (màn Chuẩn bị kỹ thuật).
 async function listCandidates({
   search = '', inputIds = [], qcId, khuonId, filmId, mucId, hsktId,
-  onlyQcReady = false, offset = 0, limit = 20,
+  onlyQcReady = false, offset = 0, limit = 20, readySla = null, readyCanhBao = null,
 }) {
   const SEARCH = `($1 = '' OR pin.ma_phan ILIKE '%'||$1||'%' OR kh.ten_khach_hang ILIKE '%'||$1||'%'
                   OR dh.ma_don_hang ILIKE '%'||$1||'%' OR mh.ma_hang ILIKE '%'||$1||'%'
@@ -57,10 +57,16 @@ async function listCandidates({
     JOIN don_hang dh ON dh.id = mh.don_hang_id
     JOIN khach_hang kh ON kh.id = dh.khach_hang_id
     LEFT JOIN LATERAL (
-      SELECT min(tt.tg_vao) AS tg_vao, max(tr.thoi_gian_quy_dinh_phut) AS sla_phut, max(tr.canh_bao_truoc_phut) AS canh_bao_truoc_phut
-      FROM ton_tram tt JOIN dot_vai_ve dv ON dv.id = tt.dot_vai_ve_id
-      JOIN tram tr ON tr.id = tt.tram_id
-      WHERE dv.phan_in_id = pin.id AND tr.ma_tram = 'READY'
+      -- Mốc "vào READY": ưu tiên ton_tram (029), fallback thời điểm đợt vải về (ERP sync) — đợt chưa release.
+      SELECT COALESCE(
+               (SELECT min(tt.tg_vao) FROM ton_tram tt JOIN dot_vai_ve d2 ON d2.id = tt.dot_vai_ve_id
+                  JOIN tram tr ON tr.id = tt.tram_id
+                  WHERE d2.phan_in_id = pin.id AND tr.ma_tram = 'READY'),
+               (SELECT min(COALESCE(dv.created_date, dv.ngay_vai_ve::timestamptz)) FROM dot_vai_ve dv
+                  WHERE dv.phan_in_id = pin.id
+                    AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd WHERE lsd.dot_vai_ve_id = dv.id))
+             ) AS tg_vao,
+             $10::int AS sla_phut, $11::int AS canh_bao_truoc_phut
     ) sla ON true
     WHERE ${SEARCH}`;
 
@@ -78,7 +84,7 @@ async function listCandidates({
     ORDER BY q.n_tech_done DESC, q.ma_phan
     LIMIT $4 OFFSET $5`;
 
-  const { rows } = await query(dataSql, [search, inputIds, qcId, limit, offset, khuonId, filmId, mucId, hsktId]);
+  const { rows } = await query(dataSql, [search, inputIds, qcId, limit, offset, khuonId, filmId, mucId, hsktId, readySla, readyCanhBao]);
   const total = rows.length ? rows[0].total_count : 0;
   // Bỏ cột phụ total_count khỏi từng dòng trả về.
   const items = rows.map(({ total_count, ...r }) => r);
@@ -183,13 +189,16 @@ async function upsertResult(client, data) {
   return rows[0].id;
 }
 
-// Thời điểm phần in vào trạm READY (min tg_vao của các đợt vải đang ở READY) — để tính SLA checklist.
+// Thời điểm phần in vào trạm READY — ưu tiên ton_tram (029), fallback thời điểm đợt vải về (ERP).
 async function getReadyEntryTime(phanInId) {
   const { rows } = await query(
-    `SELECT min(tt.tg_vao) AS ready_tg_vao
-     FROM ton_tram tt JOIN dot_vai_ve dv ON dv.id = tt.dot_vai_ve_id
-     JOIN tram t ON t.id = tt.tram_id
-     WHERE dv.phan_in_id = $1 AND t.ma_tram = 'READY'`.replace(/\s+/g, ' '),
+    `SELECT COALESCE(
+              (SELECT min(tt.tg_vao) FROM ton_tram tt JOIN dot_vai_ve dv ON dv.id = tt.dot_vai_ve_id
+                 JOIN tram t ON t.id = tt.tram_id WHERE dv.phan_in_id = $1 AND t.ma_tram = 'READY'),
+              (SELECT min(COALESCE(dv.created_date, dv.ngay_vai_ve::timestamptz)) FROM dot_vai_ve dv
+                 WHERE dv.phan_in_id = $1
+                   AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd WHERE lsd.dot_vai_ve_id = dv.id))
+            ) AS ready_tg_vao`.replace(/\s+/g, ' '),
     [phanInId]
   );
   return rows[0]?.ready_tg_vao || null;
