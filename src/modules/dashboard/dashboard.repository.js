@@ -93,7 +93,7 @@ async function stageCounts() {
           WHEN ${temEx("t.trang_thai = 'DA_KHO'")} THEN 'KCS'
           WHEN ${temEx("t.trang_thai IN ('IN','DANG_PHOI')")} THEN 'CHO_KHO'
           WHEN EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = lk.lenh_id AND ps.trang_thai = 'DANG_CHAY') THEN 'SAN_XUAT'
-          WHEN lk.lenh_tt = 'RELEASE_2' THEN 'RELEASE_2'
+          WHEN lk.lenh_tt = 'RELEASE_2' THEN 'CHO_SAN_XUAT'
           WHEN EXISTS (SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id = k.checkpoint_id
                        WHERE k.lenh_san_xuat_id = lk.lenh_id AND c.ma_checkpoint = 'TEST_CNSP' AND k.trang_thai = 'DAT')
                AND EXISTS (SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id = k.checkpoint_id

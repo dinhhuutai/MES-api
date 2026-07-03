@@ -63,7 +63,9 @@ function stageCondition(stage) {
     case 'RELEASE_1': return `NOT ${anyLenh} AND ${qcDone}`;
     // TEST_RUN = lệnh RELEASE_1 CHƯA đủ CNSP+QA. Đủ rồi thì nằm ở RELEASE_2 (chờ duyệt cuối).
     case 'TEST_RUN': return `EXISTS (${LJ} WHERE ls.trang_thai='RELEASE_1' AND NOT (${bothTest}))`;
-    case 'RELEASE_2': return `EXISTS (${LJ} WHERE ls.trang_thai='RELEASE_2') OR EXISTS (${LJ} WHERE ls.trang_thai='RELEASE_1' AND ${bothTest})`;
+    // RELEASE_2 = chờ DUYỆT cuối (lệnh RELEASE_1 đã đủ CNSP+QA). CHO_SAN_XUAT = đã DUYỆT Release 2, chờ vào sản xuất.
+    case 'RELEASE_2': return `EXISTS (${LJ} WHERE ls.trang_thai='RELEASE_1' AND ${bothTest})`;
+    case 'CHO_SAN_XUAT': return `EXISTS (${LJ} WHERE ls.trang_thai='RELEASE_2')`;
     case 'SAN_XUAT': return phieuChay;
     case 'CHO_KHO': return tem(['IN', 'DANG_PHOI']);
     case 'KCS': return tem(['DA_KHO']);
