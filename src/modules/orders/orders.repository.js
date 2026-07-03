@@ -55,10 +55,9 @@ function stageCondition(stage) {
   const tem = (list) => `EXISTS (${LJ} JOIN phieu_san_xuat ps ON ps.lenh_san_xuat_id=ls.id JOIN tem t ON t.phieu_san_xuat_id=ps.id WHERE ls.trang_thai <> 'HUY' AND t.trang_thai <> 'HUY' AND t.trang_thai IN (${list.map((s) => `'${s}'`).join(',')}))`;
   const phieuChay = `EXISTS (${LJ} JOIN phieu_san_xuat ps ON ps.lenh_san_xuat_id=ls.id WHERE ls.trang_thai <> 'HUY' AND ps.trang_thai='DANG_CHAY')`;
   const qcDone = "EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint c ON c.id=kq.checkpoint_id WHERE kq.phan_in_id=pin.id AND c.ma_checkpoint='QC_XAC_NHAN' AND kq.trang_thai='DAT')";
-  const techAny = "EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint c ON c.id=kq.checkpoint_id WHERE kq.phan_in_id=pin.id AND c.ma_checkpoint IN ('KHUON','FILM','MUC','HSKT','QC_XAC_NHAN') AND kq.trang_thai='DAT')";
   switch (stage) {
-    case 'ERP': return `NOT ${anyLenh} AND NOT ${techAny}`;
-    case 'READY': return `NOT ${anyLenh} AND ${techAny} AND NOT ${qcDone}`;
+    // READY = chưa release & chưa QC (khớp màn Chuẩn bị kỹ thuật + dashboard). Bao gồm phần in mới lấy từ ERP (chưa xác nhận mục kỹ thuật nào).
+    case 'READY': return `NOT ${anyLenh} AND NOT ${qcDone}`;
     case 'RELEASE_1': return `NOT ${anyLenh} AND ${qcDone}`;
     case 'TEST_RUN': return lenhStatus('RELEASE_1');
     case 'RELEASE_2': return lenhStatus('RELEASE_2');
