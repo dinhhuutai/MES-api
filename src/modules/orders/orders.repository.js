@@ -51,16 +51,19 @@ async function list({ search = '', missingProfit = false, offset = 0, limit = 20
 function stageCondition(stage) {
   const LJ = "SELECT 1 FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve d ON d.id=lsd.dot_vai_ve_id AND d.phan_in_id=pin.id JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id";
   const anyLenh = `EXISTS (${LJ} WHERE ls.trang_thai <> 'HUY')`;
-  const lenhStatus = (st) => `EXISTS (${LJ} WHERE ls.trang_thai='${st}')`;
   const tem = (list) => `EXISTS (${LJ} JOIN phieu_san_xuat ps ON ps.lenh_san_xuat_id=ls.id JOIN tem t ON t.phieu_san_xuat_id=ps.id WHERE ls.trang_thai <> 'HUY' AND t.trang_thai <> 'HUY' AND t.trang_thai IN (${list.map((s) => `'${s}'`).join(',')}))`;
   const phieuChay = `EXISTS (${LJ} JOIN phieu_san_xuat ps ON ps.lenh_san_xuat_id=ls.id WHERE ls.trang_thai <> 'HUY' AND ps.trang_thai='DANG_CHAY')`;
   const qcDone = "EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint c ON c.id=kq.checkpoint_id WHERE kq.phan_in_id=pin.id AND c.ma_checkpoint='QC_XAC_NHAN' AND kq.trang_thai='DAT')";
+  // Test Run của 1 lệnh đã đủ CNSP + QA → lệnh sẵn sàng "duyệt cuối" (giai đoạn Release 2), không còn ở Test Run.
+  const testDat = (ma) => `EXISTS (SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id=k.checkpoint_id WHERE k.lenh_san_xuat_id=ls.id AND c.ma_checkpoint='${ma}' AND k.trang_thai='DAT')`;
+  const bothTest = `${testDat('TEST_CNSP')} AND ${testDat('TEST_QA')}`;
   switch (stage) {
     // READY = chưa release & chưa QC (khớp màn Chuẩn bị kỹ thuật + dashboard). Bao gồm phần in mới lấy từ ERP (chưa xác nhận mục kỹ thuật nào).
     case 'READY': return `NOT ${anyLenh} AND NOT ${qcDone}`;
     case 'RELEASE_1': return `NOT ${anyLenh} AND ${qcDone}`;
-    case 'TEST_RUN': return lenhStatus('RELEASE_1');
-    case 'RELEASE_2': return lenhStatus('RELEASE_2');
+    // TEST_RUN = lệnh RELEASE_1 CHƯA đủ CNSP+QA. Đủ rồi thì nằm ở RELEASE_2 (chờ duyệt cuối).
+    case 'TEST_RUN': return `EXISTS (${LJ} WHERE ls.trang_thai='RELEASE_1' AND NOT (${bothTest}))`;
+    case 'RELEASE_2': return `EXISTS (${LJ} WHERE ls.trang_thai='RELEASE_2') OR EXISTS (${LJ} WHERE ls.trang_thai='RELEASE_1' AND ${bothTest})`;
     case 'SAN_XUAT': return phieuChay;
     case 'CHO_KHO': return tem(['IN', 'DANG_PHOI']);
     case 'KCS': return tem(['DA_KHO']);
