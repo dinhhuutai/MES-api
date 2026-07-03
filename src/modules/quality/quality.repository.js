@@ -302,11 +302,58 @@ async function oqcHistoryByDate(date) {
   return rows;
 }
 
+// ----- Danh sách tem "đã hoàn thành" checkpoint (KCS/Sửa/OQC) theo ngày (giờ VN) -----
+// Trả hình dạng đối tượng cho DonePanel: ma (mã tem) + ngữ cảnh phần in + SL + giờ + người.
+const TEM_INFO_LATERAL = `
+  LEFT JOIN LATERAL (
+    SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim
+    FROM phieu_san_xuat ps JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+    JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
+    JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+    JOIN phan_in pin ON pin.id = dv.phan_in_id
+    JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+    JOIN don_hang dh ON dh.id = mh.don_hang_id
+    JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+    WHERE ps.id = t.phieu_san_xuat_id ORDER BY pin.ma_phan, dv.ma_dot_vai LIMIT 1
+  ) info ON true`;
+
+// table ∈ 'kcs'|'sua'|'oqc' (nội bộ, không nhận từ user).
+async function temDoneByDate(table, date) {
+  const qtyCol = table === 'sua' ? 'so_luong_sua_dat' : 'so_luong_dat';
+  const sql = `
+    SELECT x.created_date AS tg, nd.ho_ten AS nguoi, t.ma_tem AS ma, x.${qtyCol} AS so_luong,
+           info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.mau_vai, info.kich_vai, info.kich_phim
+    FROM ${table} x JOIN tem t ON t.id = x.tem_id
+    LEFT JOIN nguoi_dung nd ON nd.id = x.created_by
+    ${TEM_INFO_LATERAL}
+    WHERE (x.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
+    ORDER BY x.created_date DESC`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [date]);
+  return rows;
+}
+
+async function inlineDoneByDate(date) {
+  const sql = `
+    SELECT q.created_date AS tg, nd.ho_ten AS nguoi, ps.ma_phieu_san_xuat AS ma,
+           q.so_luong_mau AS so_luong, q.ket_qua,
+           info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.mau_vai, info.kich_vai, info.kich_phim
+    FROM qc_in_line q
+    JOIN phieu_san_xuat ps ON ps.id = q.phieu_san_xuat_id
+    JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+    LEFT JOIN nguoi_dung nd ON nd.id = q.created_by
+    ${PHAN_INFO_LATERAL}
+    WHERE (q.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
+    ORDER BY q.created_date DESC`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [date]);
+  return rows;
+}
+
 module.exports = {
   listByTemStatus, getTemBasic, setTemTrangThai, setTemStatusQty,
   nextMaTem, createChildTem, insertTemSplit, getTemForSplit,
   insertKcs, insertSua, nextOqcRound, insertOqc,
   kcsHistoryByDate, suaHistoryByDate, oqcHistoryByDate,
+  temDoneByDate, inlineDoneByDate,
   listInlineCandidates, getPhieuRun, nextInlineRound, insertQcInline, insertQcInlineLoi, inlineHistoryByDate,
   listLoaiLoiActive, listLoaiLoiAll, insertLoaiLoi, updateLoaiLoi, setLoaiLoiActive,
 };

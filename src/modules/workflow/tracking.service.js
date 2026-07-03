@@ -132,6 +132,30 @@ async function moveDotVaiTo(dotVaiIds, tramCode, actorId, opts = {}) {
   }
 }
 
+// Hoàn tác chuyển trạm: đưa đợt vải VỀ LẠI 1 trạm (bỏ qua forward-guard) — dùng khi HỦY/hoàn tác.
+// Best-effort: chỉ cập nhật ton_tram (dashboard/orders tính deterministic nên không phụ thuộc).
+async function revertToTram(dotVaiIds, tramCode, actorId) {
+  try {
+    const ids = [...new Set((dotVaiIds || []).filter(Boolean))];
+    if (ids.length === 0) return;
+    const { rows } = await query(
+      `SELECT t.id FROM tram t JOIN workflow_version wv ON wv.id = t.workflow_version_id AND wv.la_hien_hanh = true
+       WHERE t.ma_tram = $1 LIMIT 1`,
+      [tramCode]
+    );
+    const tramId = rows[0]?.id;
+    if (!tramId) return;
+    await query(
+      `UPDATE ton_tram SET tram_id = $1, tg_vao = CURRENT_TIMESTAMP, updated_by = $2, updated_date = CURRENT_TIMESTAMP
+       WHERE dot_vai_ve_id = ANY($3::uuid[])`,
+      [tramId, actorId, ids]
+    );
+  } catch (e) {
+    console.error(`[tracking] revertToTram(${tramCode}) lỗi: ${e.message}`);
+  }
+}
+const revertToReady = (dotVaiIds, actorId) => revertToTram(dotVaiIds, 'READY', actorId);
+
 // Tiện ích: move theo đối tượng (tự resolve đợt vải).
 const moveByLenh = async (lenhId, tramCode, actorId, opts) =>
   moveDotVaiTo(await dotVaiFromLenh(lenhId), tramCode, actorId, opts);
@@ -143,7 +167,7 @@ const moveByDonHang = async (donHangId, tramCode, actorId, opts) =>
   moveDotVaiTo(await dotVaiFromDonHang(donHangId), tramCode, actorId, opts);
 
 module.exports = {
-  moveDotVaiTo,
+  moveDotVaiTo, revertToReady, revertToTram,
   moveByLenh, moveByTem, moveByPhanIn, moveByDonHang,
   dotVaiFromLenh, dotVaiFromTem, dotVaiFromPhanIn, dotVaiFromDonHang,
 };

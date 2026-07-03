@@ -188,6 +188,12 @@ async function oqcHistory(date) {
   }));
 }
 
+// ----- Danh sách "đã hoàn thành" theo ngày (cho DonePanel bên trái) -----
+async function kcsDone(date) { return repo.temDoneByDate('kcs', date); }
+async function suaDone(date) { return repo.temDoneByDate('sua', date); }
+async function oqcDone(date) { return repo.temDoneByDate('oqc', date); }
+async function inlineDone(date) { return repo.inlineDoneByDate(date); }
+
 // ----- QC IN-LINE (kiểm tại chuyền — phiếu đang chạy) -----
 async function listInlineCandidates(search) { return repo.listInlineCandidates({ search }); }
 async function listLoaiLoi() { return repo.listLoaiLoiActive(); }
@@ -257,6 +263,7 @@ async function toggleLoaiLoi(id, active, actorId) {
 module.exports = {
   listKcsCandidates, recordKcs, listSuaCandidates, recordSua, listOqcCandidates, recordOqc,
   kcsHistory, suaHistory, oqcHistory,
+  kcsDone, suaDone, oqcDone, inlineDone,
   listInlineCandidates, listLoaiLoi, recordQcInline, inlineHistory,
   listLoaiLoiAll, createLoaiLoi, updateLoaiLoi, toggleLoaiLoi,
 };

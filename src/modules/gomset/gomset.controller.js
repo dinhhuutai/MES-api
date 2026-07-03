@@ -17,6 +17,11 @@ const history = asyncHandler(async (req, res) => {
   return ok(res, await service.gomHistory(date));
 });
 
+const done = asyncHandler(async (req, res) => {
+  const date = req.query.date || new Date().toISOString().slice(0, 10);
+  return ok(res, await service.gomDone(date));
+});
+
 const detail = asyncHandler(async (req, res) => ok(res, await service.getSetDetail(req.params.id)));
 
 const create = asyncHandler(async (req, res) => created(res, await service.createSet(req.body, req.user.id), 'Đã tạo set'));
@@ -30,4 +35,4 @@ const removeItem = asyncHandler(async (req, res) =>
 const cancel = asyncHandler(async (req, res) =>
   ok(res, await service.cancelSet(req.params.id, req.user.id), 'Đã hủy set'));
 
-module.exports = { candidates, list, history, detail, create, addItems, removeItem, cancel };
+module.exports = { candidates, list, history, done, detail, create, addItems, removeItem, cancel };

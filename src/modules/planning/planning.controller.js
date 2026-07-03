@@ -40,6 +40,12 @@ const confirmCNSP = asyncHandler(async (req, res) =>
 const confirmQA = asyncHandler(async (req, res) =>
   ok(res, await service.confirmTest(req.params.lenhId, 'qa', req.user.id), 'QA đã xác nhận'));
 
+const cancelCNSP = asyncHandler(async (req, res) =>
+  ok(res, await service.cancelTest(req.params.lenhId, 'cnsp', req.user.id), 'Đã hủy xác nhận CNSP'));
+
+const cancelQA = asyncHandler(async (req, res) =>
+  ok(res, await service.cancelTest(req.params.lenhId, 'qa', req.user.id), 'Đã hủy xác nhận QA'));
+
 const confirmCNSPBatch = asyncHandler(async (req, res) =>
   ok(res, await service.confirmTestBatch(req.body.lenhIds, 'cnsp', req.user.id), 'CNSP xác nhận hàng loạt'));
 
@@ -78,10 +84,27 @@ const planHistory = asyncHandler(async (req, res) => {
   return ok(res, await service.planHistory(date));
 });
 
+const cancelableLenh = asyncHandler(async (req, res) => {
+  const { page, limit, offset } = getPaging(req.query);
+  return ok(res, await service.listCancelableLenh({ search: req.query.search || '', page, limit, offset }));
+});
+
+const cancelLenh = asyncHandler(async (req, res) =>
+  ok(res, await service.rollbackLenh(req.params.lenhId, req.body, req.user.id), 'Đã hoàn tác chuyển trạm'));
+
+const today = () => new Date().toISOString().slice(0, 10);
+const release1Done = asyncHandler(async (req, res) => ok(res, await service.release1Done(req.query.date || today())));
+const release2Done = asyncHandler(async (req, res) => ok(res, await service.release2Done(req.query.date || today())));
+const replanDone = asyncHandler(async (req, res) => ok(res, await service.replanDone(req.query.date || today())));
+const testCnspDone = asyncHandler(async (req, res) => ok(res, await service.testCnspDone(req.query.date || today())));
+const testQaDone = asyncHandler(async (req, res) => ok(res, await service.testQaDone(req.query.date || today())));
+
 module.exports = {
   release1Candidates, createRelease1, release1History, releaseSets, releaseSet,
   testRunCandidates, lenhDetail, recordTestRun,
-  confirmCNSP, confirmQA, confirmCNSPBatch, confirmQABatch,
+  confirmCNSP, confirmQA, cancelCNSP, cancelQA, confirmCNSPBatch, confirmQABatch,
   release2Candidates, approveRelease2, approveRelease2Batch, testRunHistory,
   replanCandidates, replan, replanBatch, planHistory,
+  cancelableLenh, cancelLenh,
+  release1Done, release2Done, replanDone, testCnspDone, testQaDone,
 };

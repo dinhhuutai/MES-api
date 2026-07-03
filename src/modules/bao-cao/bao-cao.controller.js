@@ -27,7 +27,7 @@ const remove = asyncHandler(async (req, res) =>
   ok(res, await service.deleteReport(req.params.id, req.user), 'Đã xóa báo cáo'));
 
 const render = asyncHandler(async (req, res) =>
-  ok(res, await service.renderReport(req.params.id, { tu: req.body.tu, den: req.body.den, noiDung: req.body.noiDung })));
+  ok(res, await service.renderReport(req.params.id, { noiDung: req.body.noiDung })));
 
 const history = asyncHandler(async (req, res) =>
   ok(res, await service.history(req.params.id, req.query.date)));
@@ -45,7 +45,7 @@ const tuChoi = asyncHandler(async (req, res) =>
   ok(res, await service.tuChoiDeXuat(req.params.id, req.body.lyDo, req.user.id), 'Đã từ chối'));
 
 const hienHanh = asyncHandler(async (req, res) =>
-  ok(res, await service.hienHanhPhongBan(req.params.phongBanId, { tu: req.query.tu, den: req.query.den })));
+  ok(res, await service.hienHanhPhongBan(req.params.phongBanId)));
 
 module.exports = {
   listMetrics, list, listAll, getOne, create, update, undo, remove, render, history,

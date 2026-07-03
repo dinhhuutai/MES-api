@@ -11,9 +11,11 @@ const pool = new Pool({
   user: env.db.user,
   password: env.db.password,
   ssl: env.db.ssl ? { rejectUnauthorized: false } : false,
-  max: 10,
+  // Dashboard bắn ~13 query song song (summary 11 + activity + stage-counts); pool nhỏ → query xếp hàng
+  // và có thể timeout khi DB ở xa → trang kẹt "Đang tải". Nới pool để đủ chỗ cho các màn nặng.
+  max: 25,
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 10000,
+  connectionTimeoutMillis: 15000,
 });
 
 pool.on('error', (err) => {

@@ -10,17 +10,18 @@ const tracking = require('../workflow/tracking.service');
 
 const READY_TRAM = 'READY';
 const INPUT_CPS = ['KHUON', 'FILM', 'MUC', 'HSKT']; // 4 mục kỹ thuật, xác nhận độc lập
-const OPTION_CPS = ['KHUON', 'FILM', 'MUC']; // cần chọn option khi xác nhận
+const OPTION_CPS = ['KHUON', 'FILM', 'MUC', 'HSKT']; // cần chọn option khi xác nhận (HSKT: Hoàn thiện/Thừa hưởng)
 const QC_CP = 'QC_XAC_NHAN';
+// Option mặc định (dùng khi cấu hình checkpoint chưa khai — vd HSKT chưa chạy migration 035).
+const DEFAULT_OPTIONS = { HSKT: ['Hoàn thiện', 'Thừa hưởng'] };
 
-function parseOptions(cfg) {
-  if (!cfg) return [];
-  try {
-    const o = typeof cfg === 'string' ? JSON.parse(cfg) : cfg;
-    return o.options || [];
-  } catch {
-    return [];
+// Đọc options của 1 checkpoint từ cau_hinh_json, fallback về DEFAULT_OPTIONS theo mã.
+function optionsFor(ma, cfg) {
+  let o = [];
+  if (cfg) {
+    try { const j = typeof cfg === 'string' ? JSON.parse(cfg) : cfg; o = j.options || []; } catch { o = []; }
   }
+  return (o && o.length) ? o : (DEFAULT_OPTIONS[ma] || []);
 }
 
 // Đọc cấu hình trạm READY + checkpoint (động từ DB) — 1 query thay vì 3.
@@ -62,7 +63,7 @@ function buildState(results) {
 
 async function getConfig() {
   const { tram, checkpoints } = await loadConfig();
-  return { tram, checkpoints: checkpoints.map((c) => ({ ...c, options: parseOptions(c.cau_hinh_json) })) };
+  return { tram, checkpoints: checkpoints.map((c) => ({ ...c, options: optionsFor(c.ma_checkpoint, c.cau_hinh_json) })) };
 }
 
 // onlyQcReady=true: chỉ phần in đã đủ 4 mục kỹ thuật & chưa QC (cho màn QC bên Chất lượng).
@@ -95,7 +96,7 @@ async function getDetail(phanInId) {
   return {
     phan_in: phanIn,
     ready_tg_vao: readyTgVao,
-    checkpoints: results.map((r) => ({ ...r, options: parseOptions(r.cau_hinh_json) })),
+    checkpoints: results.map((r) => ({ ...r, options: optionsFor(r.ma_checkpoint, r.cau_hinh_json) })),
     state: buildState(results),
   };
 }
@@ -276,6 +277,12 @@ async function cancelItem(phanInId, ma, actorId) {
   const cp = byMa[ma];
   if (!cp) throw new AppError(`Checkpoint ${ma} không còn hiệu lực`, { status: 404, errorCode: 'NO_CHECKPOINT' });
 
+  // Không cho hủy xác nhận READY khi phần in ĐÃ RELEASE (đã rời trạm READY, đang ở Release/Test/Sản xuất...).
+  // Muốn hủy thì phải hủy release/test trước (theo thứ tự ngược lại) — tránh phần in vừa ở READY vừa ở trạm sau.
+  if (await repo.isPhanInReleased(phanInId)) {
+    throw new AppError('Phần in đã release — hãy hủy xác nhận ở trạm sau (Release/Test Run) trước khi hủy READY', { status: 409, errorCode: 'ALREADY_RELEASED' });
+  }
+
   const results = await repo.getResults(tram.id, phanInId);
   const state = buildState(results);
   const cur = results.find((r) => r.ma_checkpoint === ma);
@@ -314,7 +321,12 @@ async function history(date, scope) {
   }));
 }
 
+// Danh sách phần in đã hoàn thành checkpoint READY theo ngày (cho DonePanel).
+async function done(date, scope) {
+  return repo.doneByDate(date, scope === 'qc' ? 'qc' : 'tech');
+}
+
 module.exports = {
   getConfig, listCandidates, getDetail, confirmItem, confirmItemsBatch, confirmItemBulk,
-  confirmQC, confirmQcBatch, cancelItem, history, confirmHistory,
+  confirmQC, confirmQcBatch, cancelItem, history, done, confirmHistory,
 };

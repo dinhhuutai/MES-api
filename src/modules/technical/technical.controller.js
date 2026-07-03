@@ -31,6 +31,12 @@ const history = asyncHandler(async (req, res) => {
   return ok(res, await service.history(date, scope));
 });
 
+const done = asyncHandler(async (req, res) => {
+  const date = req.query.date || new Date().toISOString().slice(0, 10);
+  const scope = req.query.scope === 'qc' ? 'qc' : 'tech';
+  return ok(res, await service.done(date, scope));
+});
+
 const confirmItem = asyncHandler(async (req, res) => {
   const ma = String(req.params.ma || '').toUpperCase();
   const perm = ITEM_PERM[ma];
@@ -93,6 +99,6 @@ const confirmHistory = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
-  config, candidates, qcCandidates, detail, history,
+  config, candidates, qcCandidates, detail, history, done,
   confirmItem, confirmItemsBatch, confirmBulk, confirmQC, qcConfirmBatch, cancelItem, confirmHistory,
 };

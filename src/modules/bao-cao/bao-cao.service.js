@@ -5,22 +5,6 @@ const metrics = require('./metrics');
 const { evaluateGrid } = require('./formula');
 const AppError = require('../../utils/AppError');
 
-const toDateStr = (v) => {
-  if (!v) return null;
-  if (v instanceof Date) return v.toISOString().slice(0, 10);
-  return String(v).slice(0, 10);
-};
-
-function defaultPeriod(rep, tu, den) {
-  const today = new Date();
-  const iso = (d) => d.toISOString().slice(0, 10);
-  const first = new Date(today.getFullYear(), today.getMonth(), 1);
-  return {
-    tu: tu || toDateStr(rep.ky_tu) || iso(first),
-    den: den || toDateStr(rep.ky_den) || iso(today),
-  };
-}
-
 function listMetrics() {
   return metrics.catalog();
 }
@@ -76,29 +60,29 @@ async function deleteReport(id, user) {
   return { id };
 }
 
-// Tính giá trị báo cáo theo kỳ (metric + công thức).
-async function renderContent(rep, { tu, den } = {}) {
+// Tính giá trị báo cáo (metric + công thức). Mỗi metric tự mang mốc thời gian → giá trị realtime.
+async function renderContent(rep) {
   const noiDung = rep.noi_dung_json || {};
   const cells = noiDung.o || {};
-  const ky = defaultPeriod(rep, tu, den);
   const usedMetrics = Object.values(cells)
     .filter((c) => c && c.loai === 'metric' && c.metric)
     .map((c) => c.metric);
-  const metricValues = await metrics.compute(usedMetrics, ky);
+  const metricValues = await metrics.compute(usedMetrics);
   const ketQua = evaluateGrid(cells, metricValues);
   return {
     id: rep.id, ma_bao_cao: rep.ma_bao_cao, ten_bao_cao: rep.ten_bao_cao,
     so_cot: noiDung.so_cot || 8, so_hang: noiDung.so_hang || 20,
-    o: cells, dinh_dang: noiDung.dinh_dang || {},
-    ket_qua: ketQua, metric_values: metricValues, ky,
+    o: cells, merges: noiDung.merges || [], dinh_dang: noiDung.dinh_dang || {},
+    ket_qua: ketQua, metric_values: metricValues,
+    tinh_luc: new Date().toISOString(),
   };
 }
 
-async function renderReport(id, { tu, den, noiDung } = {}) {
+async function renderReport(id, { noiDung } = {}) {
   const rep = await getReport(id);
   // Cho phép xem trước layout CHƯA lưu (noiDung gửi từ FE) mà không ghi DB.
   if (noiDung && typeof noiDung === 'object') rep.noi_dung_json = noiDung;
-  return renderContent(rep, { tu, den });
+  return renderContent(rep);
 }
 
 async function history(id, date) {
@@ -143,10 +127,10 @@ async function tuChoiDeXuat(id, lyDo, actorId) {
   return { id };
 }
 
-async function hienHanhPhongBan(phongBanId, period) {
+async function hienHanhPhongBan(phongBanId) {
   const rep = await repo.hienHanh(phongBanId);
   if (!rep) return null;
-  return renderContent(rep, period || {});
+  return renderContent(rep);
 }
 
 module.exports = {

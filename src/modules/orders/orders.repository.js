@@ -45,20 +45,22 @@ async function list({ search = '', missingProfit = false, offset = 0, limit = 20
 }
 
 // Điều kiện lọc theo GIAI ĐOẠN của phần in (derive từ trạng thái runtime — không phụ thuộc ton_tram/029).
-// Một phần in có thể ở nhiều giai đoạn (nhiều đợt vải/tem rải rác) → lọc dạng "có ≥1 đối tượng ở giai đoạn đó".
+// GIAI ĐOẠN khớp với MÀN HÌNH: phần in ĐÃ RELEASE (có lệnh ≠ HUY, trạng thái RELEASE_1) → Test Run;
+// QC xong nhưng CHƯA release → Release 1; chưa QC → READY. Lệnh 'HUY' (đã hủy chuyển trạm) coi như chưa release.
+// Một phần in có thể ở nhiều giai đoạn (nhiều đợt vải/tem rải rác).
 function stageCondition(stage) {
-  const LENH = "SELECT 1 FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve d ON d.id=lsd.dot_vai_ve_id AND d.phan_in_id=pin.id";
-  const anyLenh = `EXISTS (${LENH})`;
-  const lenhStatus = (st) => `EXISTS (${LENH} JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id WHERE ls.trang_thai='${st}')`;
-  const tem = (list) => `EXISTS (${LENH} JOIN phieu_san_xuat ps ON ps.lenh_san_xuat_id=lsd.lenh_san_xuat_id JOIN tem t ON t.phieu_san_xuat_id=ps.id WHERE t.trang_thai <> 'HUY' AND t.trang_thai IN (${list.map((s) => `'${s}'`).join(',')}))`;
-  const phieuChay = `EXISTS (${LENH} JOIN phieu_san_xuat ps ON ps.lenh_san_xuat_id=lsd.lenh_san_xuat_id WHERE ps.trang_thai='DANG_CHAY')`;
-  const testStarted = `EXISTS (${LENH} JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id JOIN ket_qua_checkpoint kq ON kq.lenh_san_xuat_id=ls.id JOIN checkpoint c ON c.id=kq.checkpoint_id WHERE ls.trang_thai='RELEASE_1' AND c.ma_checkpoint IN ('TEST_CNSP','TEST_QA') AND kq.trang_thai='DAT')`;
+  const LJ = "SELECT 1 FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve d ON d.id=lsd.dot_vai_ve_id AND d.phan_in_id=pin.id JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id";
+  const anyLenh = `EXISTS (${LJ} WHERE ls.trang_thai <> 'HUY')`;
+  const lenhStatus = (st) => `EXISTS (${LJ} WHERE ls.trang_thai='${st}')`;
+  const tem = (list) => `EXISTS (${LJ} JOIN phieu_san_xuat ps ON ps.lenh_san_xuat_id=ls.id JOIN tem t ON t.phieu_san_xuat_id=ps.id WHERE ls.trang_thai <> 'HUY' AND t.trang_thai <> 'HUY' AND t.trang_thai IN (${list.map((s) => `'${s}'`).join(',')}))`;
+  const phieuChay = `EXISTS (${LJ} JOIN phieu_san_xuat ps ON ps.lenh_san_xuat_id=ls.id WHERE ls.trang_thai <> 'HUY' AND ps.trang_thai='DANG_CHAY')`;
+  const qcDone = "EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint c ON c.id=kq.checkpoint_id WHERE kq.phan_in_id=pin.id AND c.ma_checkpoint='QC_XAC_NHAN' AND kq.trang_thai='DAT')";
   const techAny = "EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint c ON c.id=kq.checkpoint_id WHERE kq.phan_in_id=pin.id AND c.ma_checkpoint IN ('KHUON','FILM','MUC','HSKT','QC_XAC_NHAN') AND kq.trang_thai='DAT')";
   switch (stage) {
     case 'ERP': return `NOT ${anyLenh} AND NOT ${techAny}`;
-    case 'READY': return `NOT ${anyLenh} AND ${techAny}`;
-    case 'RELEASE_1': return `${lenhStatus('RELEASE_1')} AND NOT ${testStarted}`;
-    case 'TEST_RUN': return testStarted;
+    case 'READY': return `NOT ${anyLenh} AND ${techAny} AND NOT ${qcDone}`;
+    case 'RELEASE_1': return `NOT ${anyLenh} AND ${qcDone}`;
+    case 'TEST_RUN': return lenhStatus('RELEASE_1');
     case 'RELEASE_2': return lenhStatus('RELEASE_2');
     case 'SAN_XUAT': return phieuChay;
     case 'CHO_KHO': return tem(['IN', 'DANG_PHOI']);

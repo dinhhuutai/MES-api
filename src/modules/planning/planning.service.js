@@ -196,6 +196,29 @@ async function confirmTest(lenhId, which, actorId) {
   return getLenhDetail(lenhId);
 }
 
+// Xóa mềm (hủy) xác nhận Test Run của 1 lệnh — CNSP hoặc QA. Đưa DAT → HUY để xác nhận lại.
+// Chỉ hủy khi lệnh CHƯA Release 2 (nếu đã RELEASE_2 phải hủy Release 2 trước — thứ tự ngược lại).
+async function cancelTest(lenhId, which, actorId) {
+  const { byMa } = await loadTestConfig();
+  const cpMa = which === 'cnsp' ? CNSP_CP : QA_CP;
+  const lenh = await repo.getLenhBasic(lenhId);
+  if (!lenh) throw new AppError('Lệnh sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  if (lenh.trang_thai === 'RELEASE_2') {
+    throw new AppError('Lệnh đã Release 2 — hãy hủy Release 2 trước khi hủy xác nhận Test Run', { status: 409, errorCode: 'ALREADY_RELEASED_2' });
+  }
+  const status = await repo.getLenhTestStatus(lenhId, byMa[CNSP_CP].id, byMa[QA_CP].id);
+  const done = which === 'cnsp' ? status.cnsp_done : status.qa_done;
+  if (!done) throw new AppError('Mục này chưa được xác nhận', { status: 409, errorCode: 'NOT_CONFIRMED' });
+
+  await withTransaction(async (client) => {
+    await repo.cancelLenhResult(client, lenhId, byMa[cpMa].id, actorId);
+  });
+  await repo.logTestCancel(lenhId, cpMa, actorId);
+  sockets.emit('workflow:updated', { lenhId, stage: 'TEST_RUN', huy: which });
+  sockets.emit('dashboard:refresh', {});
+  return getLenhDetail(lenhId);
+}
+
 // Xác nhận test hàng loạt (CNSP hoặc QA) cho nhiều lệnh.
 async function confirmTestBatch(lenhIds, which, actorId) {
   if (!Array.isArray(lenhIds) || lenhIds.length === 0) {
@@ -256,6 +279,57 @@ async function approveRelease2Batch(lenhIds, actorId) {
   }
   sockets.emit('dashboard:refresh', {});
   return { okCount, failedCount: errors.length, errors };
+}
+
+// ----- HỦY LỆNH / HOÀN TÁC RELEASE (đưa đợt vải về lại Release 1) -----
+async function listCancelableLenh({ search, page, limit, offset }) {
+  const { rows, total } = await repo.listCancelableLenh({ search, offset, limit });
+  return { items: rows, meta: buildMeta(page, limit, total) };
+}
+
+// Hoàn tác chuyển trạm 1 lệnh về checkpoint đích (pre-production):
+//  - TEST_RUN : chỉ bỏ duyệt Release 2 (RELEASE_2 → RELEASE_1); đợt vải vẫn ở Test Run.
+//  - RELEASE_1: hủy lệnh → đợt vải về "chờ release" (Release 1 candidate), giữ QC.
+//  - READY    : hủy lệnh + hủy QC ready → phần in về màn READY (làm lại từ kỹ thuật/QC).
+async function rollbackLenh(lenhId, { target, lyDo }, actorId) {
+  const TARGET = ['READY', 'RELEASE_1', 'TEST_RUN'].includes(target) ? target : 'RELEASE_1';
+  const lenh = await repo.getLenhForCancel(lenhId);
+  if (!lenh) throw new AppError('Lệnh sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  if (lenh.trang_thai === 'HUY') throw new AppError('Lệnh đã hủy', { status: 409, errorCode: 'ALREADY' });
+  if (!['RELEASE_1', 'RELEASE_2'].includes(lenh.trang_thai)) {
+    throw new AppError('Chỉ hoàn tác lệnh đang ở Release 1 / Release 2 (chưa vào sản xuất)', { status: 409, errorCode: 'WRONG_STAGE' });
+  }
+  if (lenh.co_phieu) {
+    throw new AppError('Lệnh đã bắt đầu sản xuất (đã in tem) — không thể hoàn tác tự động', { status: 409, errorCode: 'HAS_PHIEU' });
+  }
+  const dotVaiIds = await tracking.dotVaiFromLenh(lenhId);
+
+  // Chỉ bỏ duyệt Release 2 → về Test Run (giữ lệnh, vẫn đã release).
+  if (TARGET === 'TEST_RUN') {
+    if (lenh.trang_thai !== 'RELEASE_2') {
+      throw new AppError('Lệnh đang ở Test Run (Release 1) — không cần hoàn tác về Test Run', { status: 409, errorCode: 'NOOP' });
+    }
+    await withTransaction(async (client) => {
+      await repo.setLenhTrangThai(client, lenhId, 'RELEASE_1', actorId);
+      await repo.logPlanChange(client, lenhId, 'HUY_RELEASE_2',
+        { trang_thai: 'RELEASE_2' }, { trang_thai: 'RELEASE_1', ly_do: (lyDo || '').trim() || null }, actorId);
+    });
+    await tracking.revertToTram(dotVaiIds, 'TEST_RUN', actorId);
+    sockets.emit('workflow:updated', { lenhId, stage: 'RELEASE_1' });
+    sockets.emit('dashboard:refresh', {});
+    return { id: lenhId, target: TARGET, dot_vai: dotVaiIds.length };
+  }
+
+  // RELEASE_1 / READY: hủy lệnh (đợt vải rời lệnh) + (READY) hủy QC.
+  await withTransaction(async (client) => {
+    await repo.cancelLenhOrder(client, lenhId, actorId);
+    if (TARGET === 'READY') await repo.cancelReadyQcForDotVai(client, dotVaiIds, actorId);
+  });
+  await repo.logLenhCancel(lenhId, lenh.ma_lenh_san_xuat, `[${TARGET}] ${lyDo || ''}`.trim(), actorId);
+  await tracking.revertToReady(dotVaiIds, actorId);
+  sockets.emit('workflow:updated', { lenhId, stage: 'HUY' });
+  sockets.emit('dashboard:refresh', {});
+  return { id: lenhId, target: TARGET, dot_vai: dotVaiIds.length, tu_set: lenh.tu_set === true };
 }
 
 // ----- LẬP KẾ HOẠCH LẠI -----
@@ -340,9 +414,18 @@ async function testRunHistory(date) {
   }));
 }
 
+// ----- Danh sách "đã hoàn thành" theo ngày (cho DonePanel bên trái) -----
+async function release1Done(date) { return repo.release1DoneByDate(date); }
+async function release2Done(date) { return repo.planDoneByDate(date, 'RELEASE_2'); }
+async function replanDone(date) { return repo.planDoneByDate(date, 'REPLAN'); }
+async function testCnspDone(date) { return repo.testDoneByDate(date, CNSP_CP); }
+async function testQaDone(date) { return repo.testDoneByDate(date, QA_CP); }
+
 module.exports = {
   listRelease1Candidates, createRelease1, release1History, listReleaseSets, releaseSet,
-  listTestRunCandidates, getLenhDetail, recordTestRun, confirmTest, confirmTestBatch,
+  listTestRunCandidates, getLenhDetail, recordTestRun, confirmTest, confirmTestBatch, cancelTest,
   listRelease2Candidates, approveRelease2, approveRelease2Batch, testRunHistory,
   listReplanCandidates, replan, replanBatch, planHistory,
+  listCancelableLenh, rollbackLenh,
+  release1Done, release2Done, replanDone, testCnspDone, testQaDone,
 };

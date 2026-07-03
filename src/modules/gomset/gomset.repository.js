@@ -14,7 +14,8 @@ async function listCandidates({ search = '', offset = 0, limit = 50 }) {
     JOIN ma_hang mh ON mh.id = pin.ma_hang_id
     JOIN don_hang dh ON dh.id = mh.don_hang_id
     JOIN khach_hang kh ON kh.id = dh.khach_hang_id
-    WHERE NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd WHERE lsd.dot_vai_ve_id = dv.id)
+    WHERE NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
+                      WHERE lsd.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY')
       AND NOT EXISTS (SELECT 1 FROM gom_set_dot_vai gsd JOIN gom_set gs ON gs.id = gsd.gom_set_id
                       WHERE gsd.dot_vai_ve_id = dv.id AND gs.trang_thai = 'MO')
       AND NOT EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
@@ -62,7 +63,8 @@ async function addDotVai(client, setId, dotVaiId, actorId) {
 // Đợt vải đã release (nằm trong lệnh) → không gom được.
 async function dotVaiReleased(dotVaiIds) {
   const { rows } = await query(
-    'SELECT dot_vai_ve_id FROM lenh_sx_dot_vai WHERE dot_vai_ve_id = ANY($1::uuid[])',
+    `SELECT lsd.dot_vai_ve_id FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
+     WHERE lsd.dot_vai_ve_id = ANY($1::uuid[]) AND ls.trang_thai <> 'HUY'`,
     [dotVaiIds]
   );
   return rows.map((r) => r.dot_vai_ve_id);
@@ -119,7 +121,8 @@ async function getSetMembers(setId) {
             pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, mh.ma_hang, kh.ten_khach_hang,
             EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
                     WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT') AS qc_done,
-            EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd WHERE lsd.dot_vai_ve_id = dv.id) AS da_release
+            EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
+                    WHERE lsd.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY') AS da_release
      FROM gom_set_dot_vai gsd
      JOIN dot_vai_ve dv ON dv.id = gsd.dot_vai_ve_id
      JOIN phan_in pin ON pin.id = dv.phan_in_id
@@ -180,8 +183,26 @@ async function gomHistoryByDate(date) {
   return rows;
 }
 
+// Danh sách set "đã hoàn thành" thao tác gom (tạo/release) trong ngày (giờ VN) — cho DonePanel.
+async function gomDoneByDate(date) {
+  const sql = `
+    SELECT a.thoi_gian AS tg, nd.ho_ten AS nguoi, a.hanh_dong, gs.ma_set AS ma,
+           (SELECT count(*) FROM gom_set_dot_vai d WHERE d.gom_set_id = gs.id)::int AS so_dot_vai,
+           (SELECT string_agg(DISTINCT pin.mau_vai, ', ')
+              FROM gom_set_dot_vai d JOIN dot_vai_ve dv ON dv.id = d.dot_vai_ve_id
+              JOIN phan_in pin ON pin.id = dv.phan_in_id WHERE d.gom_set_id = gs.id) AS mau_list
+    FROM audit_log a
+    JOIN gom_set gs ON gs.id = a.id_ban_ghi::uuid
+    LEFT JOIN nguoi_dung nd ON nd.id = a.nguoi_thuc_hien_id
+    WHERE a.ten_bang = 'gom_set' AND a.hanh_dong IN ('CREATE_SET','RELEASE_SET')
+      AND (a.thoi_gian AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
+    ORDER BY a.thoi_gian DESC`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [date]);
+  return rows;
+}
+
 module.exports = {
   listCandidates, nextMaSet, createSet, addDotVai, dotVaiReleased, dotVaiInOpenSet,
   getSet, listSets, getSetMembers, removeDotVai, cancelSet,
-  getDotVaiLabels, logGomAction, gomHistoryByDate,
+  getDotVaiLabels, logGomAction, gomHistoryByDate, gomDoneByDate,
 };

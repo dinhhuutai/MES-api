@@ -54,38 +54,54 @@ async function activity(limit = 12) {
 }
 
 // ============ ĐẾM THEO GIAI ĐOẠN (cho Dashboard) ============
-// Đơn vị = đợt vải (ton_tram) quy về phần in + mã hàng distinct. READY tách KT/QA; TEST_RUN tách CNSP/QA.
+// Đơn vị = đợt vải, nhưng GIAI ĐOẠN suy ra TỪ TRẠNG THÁI RUNTIME (lệnh/tem/ket_qua_checkpoint) —
+// KHÔNG phụ thuộc ton_tram (029) để tránh lệch khi ton_tram chưa đồng bộ. Nhất quán với màn Đơn hàng.
+// Một phần in có thể ở nhiều giai đoạn (nhiều đợt vải rải rác) → đếm distinct phần in / mã hàng theo từng giai đoạn.
 async function stageCounts() {
+  // tem cùng lệnh của đợt vải: EXISTS (phiếu → tem) theo trạng thái.
+  const temEx = (cond) => `EXISTS (SELECT 1 FROM phieu_san_xuat ps JOIN tem t ON t.phieu_san_xuat_id = ps.id
+    WHERE ps.lenh_san_xuat_id = lk.lenh_id AND t.trang_thai <> 'HUY' AND ${cond})`;
   const stageSql = `
-    WITH active AS (
-      SELECT dv.phan_in_id, pi.ma_hang_id, tr.ma_tram,
-        (SELECT count(*) FROM ket_qua_checkpoint k JOIN checkpoint cp ON cp.id = k.checkpoint_id
-           WHERE k.phan_in_id = dv.phan_in_id AND cp.ma_checkpoint IN ('KHUON','FILM','MUC','HSKT') AND k.trang_thai = 'DAT') AS n_tech,
-        EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd JOIN ket_qua_checkpoint k ON k.lenh_san_xuat_id = lsd.lenh_san_xuat_id
-           JOIN checkpoint cp ON cp.id = k.checkpoint_id
-           WHERE lsd.dot_vai_ve_id = dv.id AND cp.ma_checkpoint = 'TEST_CNSP' AND k.trang_thai = 'DAT') AS test_cnsp
-      FROM ton_tram tt
-      JOIN tram tr ON tr.id = tt.tram_id
-      JOIN dot_vai_ve dv ON dv.id = tt.dot_vai_ve_id
-      JOIN phan_in pi ON pi.id = dv.phan_in_id
-      WHERE tt.dot_vai_ve_id IS NOT NULL AND tr.ma_tram NOT IN ('CLOSED_FINANCE')
+    WITH dv AS (
+      SELECT d.id AS dot_vai_id, d.phan_in_id, pi.ma_hang_id
+      FROM dot_vai_ve d
+      JOIN phan_in pi ON pi.id = d.phan_in_id
+      JOIN ma_hang mh ON mh.id = pi.ma_hang_id
+      JOIN don_hang dh ON dh.id = mh.don_hang_id AND dh.trang_thai IS DISTINCT FROM 'CLOSED_FINANCE'
+    ),
+    lk AS (
+      SELECT DISTINCT ON (lsd.dot_vai_ve_id) lsd.dot_vai_ve_id, ls.id AS lenh_id, ls.trang_thai AS lenh_tt
+      FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
+      WHERE ls.trang_thai <> 'HUY'
+      ORDER BY lsd.dot_vai_ve_id, ls.created_date DESC
+    ),
+    staged AS (
+      SELECT dv.phan_in_id, dv.ma_hang_id,
+        CASE
+          WHEN lk.lenh_id IS NULL THEN
+            CASE
+              WHEN EXISTS (SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id = k.checkpoint_id
+                           WHERE k.phan_in_id = dv.phan_in_id AND c.ma_checkpoint = 'QC_XAC_NHAN' AND k.trang_thai = 'DAT') THEN 'RELEASE_1'
+              WHEN (SELECT count(*) FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id = k.checkpoint_id
+                    WHERE k.phan_in_id = dv.phan_in_id AND c.ma_checkpoint IN ('KHUON','FILM','MUC','HSKT') AND k.trang_thai = 'DAT') >= 4 THEN 'READY_QA'
+              ELSE 'READY_KT'
+            END
+          WHEN ${temEx("t.trang_thai = 'DA_GIAO'")} THEN 'DA_GIAO'
+          WHEN ${temEx("t.trang_thai = 'OQC_DAT'")} THEN 'DANG_GIAO'
+          WHEN ${temEx("t.trang_thai = 'CHO_OQC'")} THEN 'OQC'
+          WHEN ${temEx("t.trang_thai = 'CHO_SUA'")} THEN 'SUA'
+          WHEN ${temEx("t.trang_thai = 'DA_KHO'")} THEN 'KCS'
+          WHEN ${temEx("t.trang_thai IN ('IN','DANG_PHOI')")} THEN 'CHO_KHO'
+          WHEN EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = lk.lenh_id AND ps.trang_thai = 'DANG_CHAY') THEN 'SAN_XUAT'
+          WHEN lk.lenh_tt = 'RELEASE_2' THEN 'RELEASE_2'
+          WHEN EXISTS (SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id = k.checkpoint_id
+                       WHERE k.lenh_san_xuat_id = lk.lenh_id AND c.ma_checkpoint = 'TEST_CNSP' AND k.trang_thai = 'DAT') THEN 'TESTRUN_QA'
+          ELSE 'TESTRUN_CNSP'
+        END AS stage
+      FROM dv LEFT JOIN lk ON lk.dot_vai_ve_id = dv.dot_vai_id
     )
     SELECT stage, count(DISTINCT phan_in_id)::int AS n_phan_in, count(DISTINCT ma_hang_id)::int AS n_ma
-    FROM (
-      SELECT phan_in_id, ma_hang_id,
-        CASE
-          WHEN ma_tram = 'READY' AND n_tech < 4 THEN 'READY_KT'
-          WHEN ma_tram = 'READY' THEN 'READY_QA'
-          WHEN ma_tram = 'TEST_RUN' AND NOT test_cnsp THEN 'TESTRUN_CNSP'
-          WHEN ma_tram = 'TEST_RUN' THEN 'TESTRUN_QA'
-          WHEN ma_tram = 'KIEM' THEN 'KCS'
-          WHEN ma_tram = 'FINISH' THEN 'DANG_GIAO'
-          WHEN ma_tram = 'DONE_DELIVERY' THEN 'DA_GIAO'
-          ELSE ma_tram
-        END AS stage
-      FROM active
-    ) s
-    GROUP BY stage`;
+    FROM staged GROUP BY stage`;
   const [stageRows, totals] = await Promise.all([
     query(stageSql.replace(/\s+/g, ' ')),
     query(`SELECT

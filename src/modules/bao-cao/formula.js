@@ -102,6 +102,8 @@ function evaluateGrid(cells = {}, metricValues = {}) {
       if (!c) v = 0;
       else if (c.loai === 'so') { v = Number(c.gia_tri); if (!Number.isFinite(v)) throw new Error('#SO'); }
       else if (c.loai === 'text') throw new Error('#TEXT');
+      else if (c.loai === 'tha_xuong') throw new Error('#TEXT'); // trình thả xuống = text
+      else if (c.loai === 'hop_kiem') v = c.gia_tri === true ? 1 : 0; // hộp kiểm: TRUE=1, FALSE=0
       else if (c.loai === 'metric') {
         const mv = metricValues[c.metric];
         if (mv == null || typeof mv === 'object') throw new Error('#METRIC');
@@ -123,6 +125,8 @@ function evaluateGrid(cells = {}, metricValues = {}) {
   for (const key of Object.keys(cells)) {
     const c = cells[key];
     if (c.loai === 'text') { out[key] = { value: c.gia_tri ?? '', kieu: 'text' }; continue; }
+    if (c.loai === 'tha_xuong') { out[key] = { value: c.gia_tri ?? '', kieu: 'text' }; continue; }
+    if (c.loai === 'hop_kiem') { out[key] = { value: c.gia_tri === true, kieu: 'bool' }; continue; }
     try { out[key] = { value: resolve(key), kieu: 'so' }; }
     catch (e) { out[key] = { value: e.message, kieu: 'loi', loi: true }; }
   }

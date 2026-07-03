@@ -17,7 +17,8 @@ async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
     JOIN khach_hang kh ON kh.id = dh.khach_hang_id
     WHERE EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
                   WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT')
-      AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd WHERE lsd.dot_vai_ve_id = dv.id)
+      AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
+                      WHERE lsd.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY')
       AND NOT EXISTS (SELECT 1 FROM gom_set_dot_vai gsd JOIN gom_set gs ON gs.id = gsd.gom_set_id
                       WHERE gsd.dot_vai_ve_id = dv.id AND gs.trang_thai = 'MO')
       AND ${SEARCH}`;
@@ -101,7 +102,8 @@ async function addLenhDotVai(client, lenhId, dotVaiId, actorId) {
 
 async function dotVaiAlreadyReleased(dotVaiIds) {
   const { rows } = await query(
-    'SELECT dot_vai_ve_id FROM lenh_sx_dot_vai WHERE dot_vai_ve_id = ANY($1::uuid[])',
+    `SELECT lsd.dot_vai_ve_id FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
+     WHERE lsd.dot_vai_ve_id = ANY($1::uuid[]) AND ls.trang_thai <> 'HUY'`,
     [dotVaiIds]
   );
   return rows.map((r) => r.dot_vai_ve_id);
@@ -169,7 +171,8 @@ async function getSetMembersForRelease(setId) {
     `SELECT dv.id AS dot_vai_id, COALESCE(dv.so_luong_vai_ve,0)::int AS so_luong,
             EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
                     WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT') AS qc_done,
-            EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd WHERE lsd.dot_vai_ve_id = dv.id) AS da_release
+            EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
+                    WHERE lsd.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY') AS da_release
      FROM gom_set_dot_vai gsd
      JOIN dot_vai_ve dv ON dv.id = gsd.dot_vai_ve_id
      JOIN phan_in pin ON pin.id = dv.phan_in_id
@@ -304,6 +307,84 @@ async function listReplanCandidates({ search = '', offset = 0, limit = 50 }) {
   return { rows: data.rows, total: count.rows[0].total };
 }
 
+// ----- HỦY LỆNH / HOÀN TÁC RELEASE (lệnh RELEASE_1/RELEASE_2 chưa bắt đầu sản xuất) -----
+async function listCancelableLenh({ search = '', offset = 0, limit = 50 }) {
+  const FROM = `
+    FROM lenh_san_xuat ls
+    LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+    ${PHAN_INFO_LATERAL}
+    WHERE ls.trang_thai IN ('RELEASE_1','RELEASE_2')
+      AND NOT EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = ls.id)
+      AND ($1 = '' OR ls.ma_lenh_san_xuat ILIKE '%'||$1||'%' OR ${lenhPhanInMatch('ls.id', '$1')})`;
+  const dataSql = `
+    SELECT ls.id, ls.ma_lenh_san_xuat, ls.trang_thai, ls.so_luong_release, ls.ngay_ke_hoach, ls.created_date,
+           cs.ma_chuyen, cs.ten_chuyen,
+           info.ten_khach_hang, info.ma_don_hang, info.ma_hang,
+           info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan,
+           info.so_luong_don_hang, info.so_luong_vai_ve,
+           EXISTS (SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id=k.checkpoint_id
+                   WHERE k.lenh_san_xuat_id=ls.id AND c.ma_checkpoint IN ('TEST_CNSP','TEST_QA') AND k.trang_thai='DAT') AS co_test,
+           (SELECT count(*) FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id)::int AS so_dot_vai
+    ${FROM}
+    ORDER BY ls.created_date DESC
+    LIMIT $2 OFFSET $3`;
+  const countSql = `SELECT count(*)::int AS total ${FROM}`;
+  const [data, count] = await Promise.all([
+    query(dataSql, [search, limit, offset]),
+    query(countSql, [search]),
+  ]);
+  return { rows: data.rows, total: count.rows[0].total };
+}
+
+async function getLenhForCancel(lenhId) {
+  const { rows } = await query(
+    `SELECT ls.id, ls.ma_lenh_san_xuat, ls.trang_thai,
+            EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = ls.id) AS co_phieu,
+            EXISTS (SELECT 1 FROM gom_set gs WHERE gs.lenh_san_xuat_id = ls.id) AS tu_set
+     FROM lenh_san_xuat ls WHERE ls.id = $1`,
+    [lenhId]
+  );
+  return rows[0] || null;
+}
+
+// Xóa mềm lệnh: trang_thai → HUY (đợt vải quay lại pool Release 1). Test ket_qua của lệnh cũng HUY.
+async function cancelLenhOrder(client, lenhId, actorId) {
+  await client.query(
+    "UPDATE lenh_san_xuat SET trang_thai='HUY', updated_by=$2, updated_date=CURRENT_TIMESTAMP WHERE id=$1",
+    [lenhId, actorId]
+  );
+  await client.query(
+    `UPDATE ket_qua_checkpoint SET trang_thai='HUY', updated_by=$2, updated_date=CURRENT_TIMESTAMP
+     WHERE lenh_san_xuat_id=$1 AND trang_thai='DAT'`,
+    [lenhId, actorId]
+  );
+  // Mở lại set đã release qua lệnh này (nếu có) để có thể gom/release lại.
+  await client.query(
+    "UPDATE gom_set SET trang_thai='MO', lenh_san_xuat_id=NULL, updated_by=$2, updated_date=CURRENT_TIMESTAMP WHERE lenh_san_xuat_id=$1 AND trang_thai='DA_RELEASE'",
+    [lenhId, actorId]
+  );
+}
+
+// Hủy (xóa mềm) xác nhận QC_XAC_NHAN (READY) của các phần in thuộc đợt vải — khi hoàn tác "về READY".
+async function cancelReadyQcForDotVai(client, dotVaiIds, actorId) {
+  await client.query(
+    `UPDATE ket_qua_checkpoint SET trang_thai='HUY', nguoi_xac_nhan_id=NULL, tg_xac_nhan=NULL,
+       updated_by=$2, updated_date=CURRENT_TIMESTAMP
+     WHERE trang_thai='DAT'
+       AND checkpoint_id IN (SELECT id FROM checkpoint WHERE ma_checkpoint='QC_XAC_NHAN')
+       AND phan_in_id IN (SELECT DISTINCT phan_in_id FROM dot_vai_ve WHERE id = ANY($1::uuid[]))`,
+    [dotVaiIds, actorId]
+  );
+}
+
+async function logLenhCancel(lenhId, maLenh, lyDo, actorId) {
+  await query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('lenh_san_xuat', $1, 'HUY_LENH', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`,
+    [String(lenhId), JSON.stringify({ ma_lenh: maLenh, ly_do: lyDo || null }), actorId]
+  );
+}
+
 async function getLenhForReplan(lenhId) {
   const { rows } = await query(
     `SELECT ls.id, ls.ma_lenh_san_xuat, ls.trang_thai, ls.chuyen_id, ls.ngay_ke_hoach,
@@ -432,6 +513,26 @@ async function insertStatusLog(client, { ketQuaId, trangThaiMoiId, nguoiId, lyDo
   );
 }
 
+// Hủy (xóa mềm) 1 xác nhận Test Run mức lệnh (TEST_CNSP/TEST_QA): DAT → HUY.
+async function cancelLenhResult(client, lenhId, checkpointId, actorId) {
+  const { rowCount } = await client.query(
+    `UPDATE ket_qua_checkpoint SET trang_thai = 'HUY', nguoi_xac_nhan_id = NULL, tg_xac_nhan = NULL,
+       updated_by = $3, updated_date = CURRENT_TIMESTAMP
+     WHERE lenh_san_xuat_id = $1 AND checkpoint_id = $2 AND trang_thai = 'DAT'`,
+    [lenhId, checkpointId, actorId]
+  );
+  return rowCount > 0;
+}
+
+// Ghi audit hủy xác nhận Test Run (đọc ở "Lịch sử kế hoạch" nếu cần).
+async function logTestCancel(lenhId, maCheckpoint, actorId) {
+  await query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('lenh_san_xuat', $1, 'HUY_XAC_NHAN_TEST', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`,
+    [String(lenhId), JSON.stringify({ checkpoint: maCheckpoint }), actorId]
+  );
+}
+
 async function setLenhTrangThai(client, lenhId, trangThai, actorId) {
   await client.query(
     'UPDATE lenh_san_xuat SET trang_thai=$2, updated_by=$3, updated_date=CURRENT_TIMESTAMP WHERE id=$1',
@@ -456,12 +557,66 @@ async function testRunHistoryByDate(date) {
   return rows;
 }
 
+// ===== Danh sách "đã hoàn thành" theo ngày (giờ VN) cho DonePanel — hình dạng đối tượng =====
+const DONE_INFO = `info.ten_khach_hang, info.ma_don_hang, info.ma_hang,
+                   info.mau_vai, info.kich_vai, info.kich_phim`;
+
+// Release 1: lệnh sản xuất được tạo trong ngày (mỗi đợt vải 1 lệnh).
+async function release1DoneByDate(date) {
+  const sql = `
+    SELECT ls.created_date AS tg, nd.ho_ten AS nguoi, ls.ma_lenh_san_xuat AS ma,
+           ls.so_luong_release AS so_luong, ${DONE_INFO}
+    FROM lenh_san_xuat ls
+    LEFT JOIN nguoi_dung nd ON nd.id = ls.created_by
+    ${PHAN_INFO_LATERAL}
+    WHERE (ls.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
+    ORDER BY ls.created_date DESC`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [date]);
+  return rows;
+}
+
+// Release 2 / Lập kế hoạch lại: audit_log (RELEASE_2 | REPLAN) trong ngày.
+async function planDoneByDate(date, hanhDong) {
+  const sql = `
+    SELECT a.thoi_gian AS tg, nd.ho_ten AS nguoi, ls.ma_lenh_san_xuat AS ma,
+           ls.so_luong_release AS so_luong, ${DONE_INFO}
+    FROM audit_log a
+    JOIN lenh_san_xuat ls ON ls.id = a.id_ban_ghi::uuid
+    LEFT JOIN nguoi_dung nd ON nd.id = a.nguoi_thuc_hien_id
+    ${PHAN_INFO_LATERAL}
+    WHERE a.ten_bang = 'lenh_san_xuat' AND a.hanh_dong = $2
+      AND (a.thoi_gian AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
+    ORDER BY a.thoi_gian DESC`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [date, hanhDong]);
+  return rows;
+}
+
+// Test Run CNSP / QA: lệnh được xác nhận (lich_su_trang_thai) trong ngày theo checkpoint.
+async function testDoneByDate(date, maCheckpoint) {
+  const sql = `
+    SELECT l.tg_thuc_hien AS tg, nd.ho_ten AS nguoi, ls.ma_lenh_san_xuat AS ma,
+           ls.so_luong_release AS so_luong, ${DONE_INFO}
+    FROM lich_su_trang_thai l
+    JOIN ket_qua_checkpoint kq ON kq.id = l.ket_qua_checkpoint_id
+    JOIN checkpoint cp ON cp.id = kq.checkpoint_id
+    JOIN lenh_san_xuat ls ON ls.id = kq.lenh_san_xuat_id
+    LEFT JOIN nguoi_dung nd ON nd.id = l.nguoi_thuc_hien_id
+    ${PHAN_INFO_LATERAL}
+    WHERE cp.ma_checkpoint = $2
+      AND (l.tg_thuc_hien AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
+    ORDER BY l.tg_thuc_hien DESC`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [date, maCheckpoint]);
+  return rows;
+}
+
 module.exports = {
   listRelease1Candidates, release1HistoryByDate, nextMaLenh, nextMaLenhTx, createLenh,
+  release1DoneByDate, planDoneByDate, testDoneByDate,
   testedDotVaiIds, getDotVaiQty, addLenhDotVai, dotVaiAlreadyReleased,
   listTestRunCandidates, listRelease2Candidates, getLenhBasic, getLenhDotVai, getTestRuns,
   getLenhTestStatus, insertTestRun, upsertLenhResult, insertStatusLog, setLenhTrangThai,
   testRunHistoryByDate,
   listReplanCandidates, getLenhForReplan, updateLenhPlan, logPlanChange, planHistoryByDate,
+  listCancelableLenh, getLenhForCancel, cancelLenhOrder, cancelReadyQcForDotVai, logLenhCancel,
   listReleasableSets, getOpenSetMembers, getSetForRelease, getSetMembersForRelease, markSetReleased, logGomSetReleased,
 };

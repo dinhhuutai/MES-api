@@ -92,6 +92,17 @@ async function gomHistory(date) {
   }));
 }
 
+// Danh sách set đã tạo/release trong ngày (cho DonePanel bên trái).
+async function gomDone(date) {
+  const LABEL = { CREATE_SET: 'Tạo set', RELEASE_SET: 'Release set' };
+  const rows = await repo.gomDoneByDate(date);
+  return rows.map((r) => ({
+    ma: r.ma, tg: r.tg, nguoi: r.nguoi || '—',
+    so_luong: r.so_dot_vai, mau_list: r.mau_list || '',
+    hanh_dong: LABEL[r.hanh_dong] || r.hanh_dong,
+  }));
+}
+
 async function listSets({ search }) {
   const rows = await repo.listSets({ search: search || '', trangThai: 'MO' });
   return rows.map((r) => ({ ...r, khac_mau: (r.so_mau || 0) > 1 }));
@@ -112,5 +123,5 @@ async function getSetDetail(setId) {
 }
 
 module.exports = {
-  listCandidates, createSet, addToSet, removeFromSet, cancelSet, listSets, getSetDetail, gomHistory,
+  listCandidates, createSet, addToSet, removeFromSet, cancelSet, listSets, getSetDetail, gomHistory, gomDone,
 };

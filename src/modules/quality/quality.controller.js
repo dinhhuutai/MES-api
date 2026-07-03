@@ -21,6 +21,11 @@ const kcsHistory = asyncHandler(async (req, res) => ok(res, await service.kcsHis
 const suaHistory = asyncHandler(async (req, res) => ok(res, await service.suaHistory(req.query.date || today())));
 const oqcHistory = asyncHandler(async (req, res) => ok(res, await service.oqcHistory(req.query.date || today())));
 
+const kcsDone = asyncHandler(async (req, res) => ok(res, await service.kcsDone(req.query.date || today())));
+const suaDone = asyncHandler(async (req, res) => ok(res, await service.suaDone(req.query.date || today())));
+const oqcDone = asyncHandler(async (req, res) => ok(res, await service.oqcDone(req.query.date || today())));
+const inlineDone = asyncHandler(async (req, res) => ok(res, await service.inlineDone(req.query.date || today())));
+
 // QC in-line
 const inlineCandidates = asyncHandler(async (req, res) => ok(res, await service.listInlineCandidates(req.query.search || '')));
 const inlineLoaiLoi = asyncHandler(async (req, res) => ok(res, await service.listLoaiLoi()));
@@ -37,6 +42,7 @@ const loaiLoiToggle = asyncHandler(async (req, res) => ok(res, await service.tog
 module.exports = {
   kcsCandidates, recordKcs, suaCandidates, recordSua, oqcCandidates, recordOqc,
   kcsHistory, suaHistory, oqcHistory,
+  kcsDone, suaDone, oqcDone, inlineDone,
   inlineCandidates, inlineLoaiLoi, inlineHistory, recordInline,
   loaiLoiList, loaiLoiCreate, loaiLoiUpdate, loaiLoiToggle,
 };

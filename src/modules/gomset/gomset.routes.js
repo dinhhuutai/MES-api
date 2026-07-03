@@ -11,6 +11,7 @@ router.use(auth);
 // Route tĩnh trước route động /:id
 router.get('/candidates', rbac('READY_GOMSET'), c.candidates);
 router.get('/history', rbac('READY_GOMSET'), c.history);
+router.get('/done', rbac('READY_GOMSET'), c.done);
 router.get('/', rbac('READY_GOMSET'), c.list);
 router.post('/', rbac('READY_GOMSET'), c.create);
 router.get('/:id', rbac('READY_GOMSET'), c.detail);

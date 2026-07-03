@@ -68,7 +68,13 @@ async function listCandidates({
              ) AS tg_vao,
              $10::int AS sla_phut, $11::int AS canh_bao_truoc_phut
     ) sla ON true
-    WHERE ${SEARCH}`;
+    -- Loại phần in ĐÃ RELEASE (có đợt vải nằm trong 1 lệnh ≠ HUY): nó đã rời trạm READY, không hiển thị ở màn READY
+    -- (kể cả sau khi xóa mềm xác nhận READY — tránh phần in vừa ở READY vừa ở Test Run/Sản xuất).
+    -- Lệnh đã hủy chuyển trạm ('HUY') coi như chưa release → phần in được xét lại bình thường.
+    WHERE NOT EXISTS (SELECT 1 FROM dot_vai_ve dvr JOIN lenh_sx_dot_vai lsr ON lsr.dot_vai_ve_id = dvr.id
+                      JOIN lenh_san_xuat lr ON lr.id = lsr.lenh_san_xuat_id
+                      WHERE dvr.phan_in_id = pin.id AND lr.trang_thai <> 'HUY')
+      AND ${SEARCH}`;
 
   // Mặc định (màn kỹ thuật): mọi phần in chưa QC xong.
   // onlyQcReady (màn QC): chỉ phần in ĐÃ ĐỦ 4 mục kỹ thuật & chưa QC.
@@ -136,6 +142,66 @@ async function listConfirmHistory({ date, search = '' }) {
     ORDER BY kq.tg_xac_nhan DESC NULLS LAST`;
   const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [date, search]);
   return rows;
+}
+
+// Danh sách phần in ĐÃ HOÀN THÀNH checkpoint READY theo ngày (giờ VN) — cho DonePanel.
+//  scope='tech': phần in đủ 4 mục kỹ thuật (mốc hoàn thành = lần xác nhận mục cuối cùng trong ngày).
+//  scope='qc':   phần in đã QC_XAC_NHAN = DAT trong ngày.
+async function doneByDate(date, scope = 'tech') {
+  const info = `pin.ma_phan AS ma, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.so_luong_don_hang AS so_luong,
+                mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang`;
+  const joins = `JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+                 JOIN don_hang dh ON dh.id = mh.don_hang_id
+                 JOIN khach_hang kh ON kh.id = dh.khach_hang_id`;
+  let sql;
+  if (scope === 'qc') {
+    sql = `
+      SELECT kq.tg_xac_nhan AS tg, nx.ho_ten AS nguoi, ${info}
+      FROM ket_qua_checkpoint kq
+      JOIN checkpoint cp ON cp.id = kq.checkpoint_id
+      JOIN tram t ON t.id = cp.tram_id
+      JOIN phan_in pin ON pin.id = kq.phan_in_id
+      ${joins}
+      LEFT JOIN nguoi_dung nx ON nx.id = kq.nguoi_xac_nhan_id
+      WHERE t.ma_tram = 'READY' AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT'
+        AND (kq.tg_xac_nhan AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
+      ORDER BY kq.tg_xac_nhan DESC`;
+  } else {
+    sql = `
+      WITH tech AS (
+        SELECT kq.phan_in_id, kq.tg_xac_nhan, kq.nguoi_xac_nhan_id
+        FROM ket_qua_checkpoint kq
+        JOIN checkpoint cp ON cp.id = kq.checkpoint_id
+        JOIN tram t ON t.id = cp.tram_id
+        WHERE t.ma_tram = 'READY' AND cp.ma_checkpoint IN ('KHUON','FILM','MUC','HSKT') AND kq.trang_thai = 'DAT'
+      ),
+      agg AS (
+        SELECT phan_in_id, count(*) AS n, max(tg_xac_nhan) AS tg_done
+        FROM tech GROUP BY phan_in_id HAVING count(*) >= 4
+      )
+      SELECT a.tg_done AS tg, nx.ho_ten AS nguoi, ${info}
+      FROM agg a
+      JOIN phan_in pin ON pin.id = a.phan_in_id
+      ${joins}
+      LEFT JOIN LATERAL (SELECT nguoi_xac_nhan_id FROM tech WHERE phan_in_id = a.phan_in_id
+                         ORDER BY tg_xac_nhan DESC NULLS LAST LIMIT 1) last ON true
+      LEFT JOIN nguoi_dung nx ON nx.id = last.nguoi_xac_nhan_id
+      WHERE (a.tg_done AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
+      ORDER BY a.tg_done DESC`;
+  }
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [date]);
+  return rows;
+}
+
+// Phần in đã release chưa? (có đợt vải nằm trong 1 lệnh ≠ HUY). Lệnh 'HUY' coi như chưa release.
+async function isPhanInReleased(phanInId) {
+  const { rows } = await query(
+    `SELECT EXISTS (SELECT 1 FROM dot_vai_ve dv JOIN lenh_sx_dot_vai lsd ON lsd.dot_vai_ve_id = dv.id
+                    JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
+                    WHERE dv.phan_in_id = $1 AND ls.trang_thai <> 'HUY') AS released`,
+    [phanInId]
+  );
+  return rows[0]?.released === true;
 }
 
 async function getPhanInBasic(phanInId) {
@@ -260,6 +326,6 @@ async function insertStatusLog(client, { ketQuaId, trangThaiMoiId, nguoiId, lyDo
 }
 
 module.exports = {
-  loadReadyConfig, listCandidates, historyByDate, listConfirmHistory, getPhanInBasic, getResults, getBulkStates,
+  loadReadyConfig, listCandidates, historyByDate, doneByDate, listConfirmHistory, isPhanInReleased, getPhanInBasic, getResults, getBulkStates,
   getReadyEntryTime, findResultId, upsertResult, cancelResult, logCancel, insertStatusLog,
 };

@@ -13,6 +13,7 @@ router.get('/candidates', rbac('READY_VIEW'), c.candidates);
 // Các route tĩnh — đặt trước route động /:phanInId để không bị nuốt.
 router.get('/qc-candidates', rbac('READY_QC'), c.qcCandidates);
 router.get('/history', rbac('READY_VIEW', 'READY_QC'), c.history);
+router.get('/done', rbac('READY_VIEW', 'READY_QC'), c.done);
 // Lịch sử trạng thái (xác nhận READY) cho module Hệ thống — chỉ quản trị (READY_CANCEL) mới xóa mềm.
 router.get('/lich-su-xac-nhan', rbac('READY_CANCEL'), c.confirmHistory);
 router.post('/qc-confirm-batch', rbac('READY_QC'), c.qcConfirmBatch);
