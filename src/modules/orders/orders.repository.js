@@ -158,6 +158,111 @@ async function listDotVai(phanInId) {
   return rows;
 }
 
+// Hành trình phần in qua các trạm (checkpoint) của workflow hiện hành:
+//  - READY (mức phần in) + TEST_RUN (mức lệnh): checklist đã xác nhận, kèm giờ + người (ket_qua_checkpoint).
+//  - SAN_XUAT → giao: mốc thời gian (không có checklist), suy từ phiếu/tem/kcs/sua/oqc/giao_hang.
+// Trả về mảng trạm theo thứ tự dòng chảy, mỗi trạm { checklists[], moc }.
+async function getPhanInTimeline(phanInId) {
+  const tramSql = `SELECT t.ma_tram, t.ten_tram, t.thu_tu
+    FROM tram t JOIN workflow_version wv ON wv.id=t.workflow_version_id
+    WHERE wv.la_hien_hanh=true ORDER BY t.thu_tu`;
+
+  const cklSql = `
+    SELECT t.ma_tram, cp.ma_checkpoint, cp.ten_checkpoint, cp.thu_tu AS cp_thu_tu,
+           kq.gia_tri_text, kq.tg_xac_nhan AS tg, nd.ho_ten AS nguoi
+    FROM ket_qua_checkpoint kq
+    JOIN checkpoint cp ON cp.id = kq.checkpoint_id
+    JOIN tram t ON t.id = cp.tram_id
+    JOIN workflow_version wv ON wv.id = t.workflow_version_id AND wv.la_hien_hanh = true
+    LEFT JOIN nguoi_dung nd ON nd.id = kq.nguoi_xac_nhan_id
+    WHERE kq.trang_thai='DAT'
+      AND (kq.phan_in_id = $1
+           OR kq.lenh_san_xuat_id IN (
+             SELECT lsd.lenh_san_xuat_id FROM lenh_sx_dot_vai lsd
+             JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+             JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
+             WHERE dv.phan_in_id = $1 AND ls.trang_thai <> 'HUY'))
+    ORDER BY t.thu_tu, cp.thu_tu, kq.tg_xac_nhan`;
+
+  const mocSql = `
+    WITH t_pin AS (
+      SELECT tm.id AS tem_id, tm.created_date, tm.created_by
+      FROM tem tm
+      JOIN phieu_san_xuat ps ON ps.id = tm.phieu_san_xuat_id
+      JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id AND ls.trang_thai <> 'HUY'
+      JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
+      JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id AND dv.phan_in_id = $1
+    ),
+    p_pin AS (
+      SELECT DISTINCT ps.id, ps.tg_bd, ps.created_by
+      FROM phieu_san_xuat ps
+      JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id AND ls.trang_thai <> 'HUY'
+      JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
+      JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id AND dv.phan_in_id = $1
+    ),
+    l_pin AS (
+      SELECT DISTINCT ls.id, ls.created_date, ls.created_by
+      FROM lenh_san_xuat ls
+      JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
+      JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id AND dv.phan_in_id = $1
+      WHERE ls.trang_thai <> 'HUY'
+    )
+    SELECT ma_tram, min(tg) AS tg, (array_agg(nguoi ORDER BY tg NULLS LAST))[1] AS nguoi, count(*)::int AS so_luong
+    FROM (
+      SELECT 'RELEASE_1' AS ma_tram, l.created_date AS tg, nd.ho_ten AS nguoi FROM l_pin l LEFT JOIN nguoi_dung nd ON nd.id=l.created_by
+      UNION ALL
+      SELECT 'RELEASE_2', a.thoi_gian, nd.ho_ten FROM audit_log a JOIN l_pin l ON l.id = a.id_ban_ghi::uuid
+        LEFT JOIN nguoi_dung nd ON nd.id = a.nguoi_thuc_hien_id
+        WHERE a.ten_bang='lenh_san_xuat' AND a.hanh_dong='RELEASE_2'
+      UNION ALL
+      SELECT 'SAN_XUAT' AS ma_tram, p.tg_bd AS tg, nd.ho_ten AS nguoi FROM p_pin p LEFT JOIN nguoi_dung nd ON nd.id=p.created_by
+      UNION ALL
+      SELECT 'CHO_KHO', tp.created_date, nd.ho_ten FROM t_pin tp LEFT JOIN nguoi_dung nd ON nd.id=tp.created_by
+      UNION ALL
+      SELECT 'KIEM', k.created_date, nd.ho_ten FROM kcs k JOIN t_pin tp ON tp.tem_id=k.tem_id LEFT JOIN nguoi_dung nd ON nd.id=k.created_by
+      UNION ALL
+      SELECT 'SUA', s.created_date, nd.ho_ten FROM sua s JOIN t_pin tp ON tp.tem_id=s.tem_id LEFT JOIN nguoi_dung nd ON nd.id=s.created_by
+      UNION ALL
+      SELECT 'OQC', o.created_date, nd.ho_ten FROM oqc o JOIN t_pin tp ON tp.tem_id=o.tem_id LEFT JOIN nguoi_dung nd ON nd.id=o.created_by
+      UNION ALL
+      SELECT 'DONE_DELIVERY', COALESCE(gh.ngay_giao::timestamptz, gh.updated_date), nd.ho_ten
+        FROM giao_hang gh JOIN giao_hang_tem ght ON ght.giao_hang_id=gh.id JOIN t_pin tp ON tp.tem_id=ght.tem_id
+        LEFT JOIN nguoi_dung nd ON nd.id=gh.updated_by
+        WHERE gh.trang_thai='DA_GIAO'
+    ) m
+    WHERE tg IS NOT NULL
+    GROUP BY ma_tram`;
+
+  const [tramR, cklR, mocR] = await Promise.all([
+    query(tramSql.replace(/\s+/g, ' ')),
+    query(cklSql.replace(/\s+/g, ' '), [phanInId]),
+    query(mocSql.replace(/\s+/g, ' '), [phanInId]),
+  ]);
+
+  const tramInfo = new Map(tramR.rows.map((t) => [t.ma_tram, t]));
+  const byTram = new Map();
+  const nodeFor = (maTram) => {
+    if (!byTram.has(maTram)) {
+      const info = tramInfo.get(maTram);
+      byTram.set(maTram, {
+        ma_tram: maTram, ten_tram: info?.ten_tram || maTram,
+        thu_tu: info?.thu_tu ?? 999, checklists: [], moc: null,
+      });
+    }
+    return byTram.get(maTram);
+  };
+  cklR.rows.forEach((r) => {
+    nodeFor(r.ma_tram).checklists.push({
+      ma_checkpoint: r.ma_checkpoint, ten_checkpoint: r.ten_checkpoint,
+      gia_tri_text: r.gia_tri_text, tg: r.tg, nguoi: r.nguoi || null,
+    });
+  });
+  mocR.rows.forEach((r) => {
+    nodeFor(r.ma_tram).moc = { tg: r.tg, nguoi: r.nguoi || null, so_luong: r.so_luong };
+  });
+  return [...byTram.values()].sort((a, b) => a.thu_tu - b.thu_tu);
+}
+
 async function setLoiNhuan(id, loiNhuan, actorId) {
   const { rowCount } = await query(
     'UPDATE phan_in SET loi_nhuan = $2, updated_by = $3, updated_date = CURRENT_TIMESTAMP WHERE id = $1',
@@ -192,4 +297,4 @@ async function profitHistoryByDate(date) {
   return rows;
 }
 
-module.exports = { list, listVaiVe, findById, listDotVai, setLoiNhuan, logProfitChange, profitHistoryByDate };
+module.exports = { list, listVaiVe, findById, listDotVai, getPhanInTimeline, setLoiNhuan, logProfitChange, profitHistoryByDate };

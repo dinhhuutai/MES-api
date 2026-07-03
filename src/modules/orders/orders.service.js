@@ -17,8 +17,8 @@ async function listVaiVe({ search, filters, stage, page, limit, offset }) {
 async function getPhanIn(id) {
   const phanIn = await repo.findById(id);
   if (!phanIn) throw new AppError('Phần in không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
-  const dotVai = await repo.listDotVai(id);
-  return { ...phanIn, dot_vai: dotVai };
+  const [dotVai, timeline] = await Promise.all([repo.listDotVai(id), repo.getPhanInTimeline(id)]);
+  return { ...phanIn, dot_vai: dotVai, timeline };
 }
 
 async function setLoiNhuan(id, loiNhuan, actorId) {
