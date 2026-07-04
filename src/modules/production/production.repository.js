@@ -370,13 +370,82 @@ async function listDryingTems({ search = '' }) {
   return rows;
 }
 
+// Cộng dồn thời gian phơi thực tế của phiên DANG_PHOI hiện tại vào tem. Best-effort (cần migration 038).
+async function accumulateDryTime(client, temId) {
+  try {
+    await client.query(
+      `UPDATE tem t SET thoi_gian_phoi_thuc_te_phut = COALESCE(t.thoi_gian_phoi_thuc_te_phut,0) + COALESCE((
+         SELECT GREATEST(floor(EXTRACT(EPOCH FROM (now() - x.tg_bd_phoi))/60)::int, 0)
+         FROM tem_xe_phoi x WHERE x.tem_id=t.id AND x.trang_thai='DANG_PHOI'
+         ORDER BY x.tg_bd_phoi DESC LIMIT 1),0)
+       WHERE t.id=$1`,
+      [temId]
+    );
+  } catch (e) { /* migration 038 chưa chạy */ }
+}
+
 async function confirmDry(client, temId, actorId) {
+  await accumulateDryTime(client, temId);
   await client.query("UPDATE tem SET trang_thai='DA_KHO', updated_by=$2, updated_date=CURRENT_TIMESTAMP WHERE id=$1", [temId, actorId]);
   await client.query(
     `UPDATE tem_xe_phoi SET trang_thai='XONG', tg_kt_phoi=COALESCE(tg_kt_phoi, CURRENT_TIMESTAMP),
        updated_by=$2, updated_date=CURRENT_TIMESTAMP WHERE tem_id=$1 AND trang_thai='DANG_PHOI'`,
     [temId, actorId]
   );
+}
+
+// TỰ ĐỘNG: tem hết giờ phơi (tg_kt_phoi <= now) → DA_KHO (chờ KCS) + đóng phiên phơi. Gọi lazy khi mở Chờ khô/KCS.
+async function promoteFinishedDrying() {
+  try {
+    await query(
+      `UPDATE tem t SET thoi_gian_phoi_thuc_te_phut = COALESCE(t.thoi_gian_phoi_thuc_te_phut,0) + COALESCE((
+         SELECT GREATEST(floor(EXTRACT(EPOCH FROM (x.tg_kt_phoi - x.tg_bd_phoi))/60)::int, 0)
+         FROM tem_xe_phoi x WHERE x.tem_id=t.id AND x.trang_thai='DANG_PHOI' AND x.tg_kt_phoi <= now()
+         ORDER BY x.tg_bd_phoi DESC LIMIT 1),0)
+       WHERE t.trang_thai='DANG_PHOI'
+         AND EXISTS (SELECT 1 FROM tem_xe_phoi x WHERE x.tem_id=t.id AND x.trang_thai='DANG_PHOI' AND x.tg_kt_phoi <= now())`.replace(/\s+/g, ' ')
+    );
+  } catch (e) { /* migration 038 chưa chạy */ }
+  const { rowCount } = await query(
+    `UPDATE tem SET trang_thai='DA_KHO', updated_date=CURRENT_TIMESTAMP
+     WHERE trang_thai='DANG_PHOI'
+       AND EXISTS (SELECT 1 FROM tem_xe_phoi x WHERE x.tem_id=tem.id AND x.trang_thai='DANG_PHOI' AND x.tg_kt_phoi <= now())`.replace(/\s+/g, ' ')
+  );
+  if (rowCount > 0) {
+    await query(
+      `UPDATE tem_xe_phoi SET trang_thai='XONG', updated_date=CURRENT_TIMESTAMP
+       WHERE trang_thai='DANG_PHOI' AND tg_kt_phoi <= now()`.replace(/\s+/g, ' ')
+    );
+  }
+  return rowCount;
+}
+
+// Phơi lại 1 tem đã khô (ở KCS): tem DA_KHO → DANG_PHOI + phiên phơi mới (phut phút).
+async function redryTem(client, { temId, xeId, phut }, actorId) {
+  await client.query("UPDATE tem SET trang_thai='DANG_PHOI', updated_by=$2, updated_date=CURRENT_TIMESTAMP WHERE id=$1", [temId, actorId]);
+  await client.query(
+    `INSERT INTO tem_xe_phoi (tem_id, xe_phoi_id, so_luong_phoi, tg_bd_phoi, tg_kt_phoi, trang_thai, ghi_chu, created_by)
+     SELECT $1, $2, t.so_luong, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + make_interval(mins => $3), 'DANG_PHOI', 'Phơi lại', $4
+     FROM tem t WHERE t.id = $1`,
+    [temId, xeId, phut || 0, actorId]
+  );
+}
+
+// Thời gian chờ khô mặc định (phút) của phần in thuộc phiếu — best-effort (cần migration 038).
+async function getDryMinForPhieu(phieuId) {
+  try {
+    const { rows } = await query(
+      `SELECT pin.thoi_gian_cho_kho_phut AS phut
+       FROM phieu_san_xuat ps
+       JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ps.lenh_san_xuat_id
+       JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+       JOIN phan_in pin ON pin.id = dv.phan_in_id
+       WHERE ps.id = $1 AND pin.thoi_gian_cho_kho_phut IS NOT NULL
+       ORDER BY pin.thoi_gian_cho_kho_phut LIMIT 1`,
+      [phieuId]
+    );
+    return rows[0]?.phut ?? null;
+  } catch (e) { return null; }
 }
 
 async function getTemBasic(temId) {
@@ -432,5 +501,6 @@ module.exports = {
   nextMaTem, createTem, logTemPrint, finishPhieu,
   monitorRunning, monitorQueue, listXePhoi, listCurrentPhoi, listTemChoPhoi, addTemToXe, adjustPhoi,
   listDryingTems, confirmDry, getTemBasic,
+  promoteFinishedDrying, redryTem, getDryMinForPhieu,
   getActiveNgung, startNgung, resumeNgung, listNgungByPhieu,
 };

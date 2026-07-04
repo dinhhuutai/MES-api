@@ -51,8 +51,11 @@ const drying = asyncHandler(async (req, res) => ok(res, await service.listDrying
 const confirmDry = asyncHandler(async (req, res) =>
   ok(res, await service.confirmDry(req.params.temId, req.user.id), 'Đã xác nhận khô'));
 
+const redry = asyncHandler(async (req, res) =>
+  ok(res, await service.redry(req.params.temId, req.body.phut, req.user.id), 'Đã đưa tem phơi lại'));
+
 module.exports = {
   candidates, getRun, start, printTem, reprintTem, temLabel, temLogs, finish, monitor,
-  xePhoi, temChoPhoi, themTem, adjustPhoi, drying, confirmDry,
+  xePhoi, temChoPhoi, themTem, adjustPhoi, drying, confirmDry, redry,
   stopLine, resumeLine,
 };

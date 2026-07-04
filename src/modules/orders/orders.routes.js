@@ -21,5 +21,6 @@ router.patch(
   validate,
   c.setLoiNhuan
 );
+router.patch('/:id/cho-kho', rbac('ORDER_VIEW'), c.setChoKho);
 
 module.exports = router;

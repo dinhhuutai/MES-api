@@ -18,7 +18,12 @@ async function requireTem(temId, expectStatus) {
 }
 
 // ----- KCS (đầu vào: tem DA_KHO) -----
-async function listKcsCandidates(search) { return repo.listByTemStatus('DA_KHO', { search }); }
+const prodRepo = require('../production/production.repository');
+async function listKcsCandidates(search) {
+  // Tem hết giờ phơi → tự động sang DA_KHO (chờ KCS) trước khi liệt kê.
+  try { await prodRepo.promoteFinishedDrying(); } catch (e) { /* bỏ qua */ }
+  return repo.listByTemStatus('DA_KHO', { search });
+}
 
 async function recordKcs(temId, body, actorId) {
   const tem = await repo.getTemForSplit(temId);

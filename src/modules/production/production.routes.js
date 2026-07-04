@@ -32,5 +32,7 @@ router.patch('/tem-xe-phoi/:id', rbac('XEPHOI'), c.adjustPhoi);
 // Chờ khô
 router.get('/drying', rbac('DRYING'), c.drying);
 router.post('/drying/:temId/confirm', rbac('DRYING'), c.confirmDry);
+// Phơi lại 1 tem (từ màn KCS hoặc chờ khô)
+router.post('/tem/:temId/phoi-lai', rbac('KCS', 'DRYING'), c.redry);
 
 module.exports = router;

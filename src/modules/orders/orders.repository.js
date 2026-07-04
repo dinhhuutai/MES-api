@@ -319,6 +319,20 @@ async function getPhanInTemSummary(phanInId) {
   return rows[0] || { pcs_in: 0, sl_dat: 0, sl_sua: 0, sl_sua_dat: 0, so_tem: 0 };
 }
 
+// Thời gian chờ khô (phút) của phần in — best-effort (cần migration 038).
+async function getDryMin(id) {
+  try {
+    const { rows } = await query('SELECT thoi_gian_cho_kho_phut AS phut FROM phan_in WHERE id=$1', [id]);
+    return rows[0]?.phut ?? null;
+  } catch (e) { return null; }
+}
+
+async function setDryMin(id, phut, actorId) {
+  await query('UPDATE phan_in SET thoi_gian_cho_kho_phut=$2, updated_by=$3, updated_date=CURRENT_TIMESTAMP WHERE id=$1',
+    [id, phut, actorId]);
+  return true;
+}
+
 async function setLoiNhuan(id, loiNhuan, actorId) {
   const { rowCount } = await query(
     'UPDATE phan_in SET loi_nhuan = $2, updated_by = $3, updated_date = CURRENT_TIMESTAMP WHERE id = $1',
@@ -353,4 +367,4 @@ async function profitHistoryByDate(date) {
   return rows;
 }
 
-module.exports = { list, listVaiVe, findById, listDotVai, getPhanInTimeline, getPhanInTemSummary, setLoiNhuan, logProfitChange, profitHistoryByDate };
+module.exports = { list, listVaiVe, findById, listDotVai, getPhanInTimeline, getPhanInTemSummary, getDryMin, setDryMin, setLoiNhuan, logProfitChange, profitHistoryByDate };

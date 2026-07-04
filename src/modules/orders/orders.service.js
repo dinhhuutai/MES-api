@@ -17,10 +17,19 @@ async function listVaiVe({ search, filters, stage, page, limit, offset }) {
 async function getPhanIn(id) {
   const phanIn = await repo.findById(id);
   if (!phanIn) throw new AppError('Phần in không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
-  const [dotVai, timeline, temSummary] = await Promise.all([
-    repo.listDotVai(id), repo.getPhanInTimeline(id), repo.getPhanInTemSummary(id),
+  const [dotVai, timeline, temSummary, dryMin] = await Promise.all([
+    repo.listDotVai(id), repo.getPhanInTimeline(id), repo.getPhanInTemSummary(id), repo.getDryMin(id),
   ]);
-  return { ...phanIn, dot_vai: dotVai, timeline, tem_summary: temSummary };
+  return { ...phanIn, dot_vai: dotVai, timeline, tem_summary: temSummary, thoi_gian_cho_kho_phut: dryMin };
+}
+
+async function setChoKho(id, phut, actorId) {
+  const exist = await repo.findById(id);
+  if (!exist) throw new AppError('Phần in không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  const p = phut === '' || phut === null || phut === undefined ? null : Number(phut);
+  if (p !== null && (Number.isNaN(p) || p < 0)) throw new AppError('Thời gian chờ khô phải là số ≥ 0', { status: 422, errorCode: 'INVALID' });
+  await repo.setDryMin(id, p, actorId);
+  return getPhanIn(id);
 }
 
 async function setLoiNhuan(id, loiNhuan, actorId) {
@@ -44,4 +53,4 @@ async function profitHistory(date) {
   }));
 }
 
-module.exports = { listPhanIn, listVaiVe, getPhanIn, setLoiNhuan, profitHistory };
+module.exports = { listPhanIn, listVaiVe, getPhanIn, setChoKho, setLoiNhuan, profitHistory };

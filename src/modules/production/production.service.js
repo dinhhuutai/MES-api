@@ -101,13 +101,15 @@ async function printTem(phieuId, soLuong, actorId) {
   // In tem xong tự đưa vào xe phơi mặc định + bắt đầu đếm ngược ngay.
   const xe = await repo.getDefaultXePhoi();
   if (!xe) throw new AppError('Chưa cấu hình xe phơi để bắt đầu phơi', { status: 409, errorCode: 'NO_XE' });
+  // Thời gian chờ khô = cấu hình của phần in (nếu có) hoặc mặc định 60'.
+  const dryMin = (await repo.getDryMinForPhieu(phieuId)) ?? DEFAULT_DRY_MIN;
 
   const maTem = await repo.nextMaTem();
   let newTemId;
   await withTransaction(async (client) => {
     newTemId = await repo.createTem(client, { phieuId, maTem, soLuong: qty }, actorId);
     await repo.logTemPrint(client, { temId: newTemId, maTem, actorId });
-    await repo.addTemToXe(client, { temId: newTemId, xeId: xe.id, soLuongPhoi: qty, phut: DEFAULT_DRY_MIN }, actorId);
+    await repo.addTemToXe(client, { temId: newTemId, xeId: xe.id, soLuongPhoi: qty, phut: dryMin }, actorId);
   });
   await tracking.moveByLenh(phieu.lenh_san_xuat_id, 'CHO_KHO', actorId); // in tem → xe phơi → CHỜ KHÔ
   sockets.emit('production:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'tem' });
@@ -191,7 +193,27 @@ async function adjustPhoi(temXeId, phut, actorId) {
 }
 
 async function listDrying(search) {
+  // Tem hết giờ phơi → tự động chuyển DA_KHO (chờ KCS) trước khi liệt kê.
+  try { await repo.promoteFinishedDrying(); } catch (e) { /* bỏ qua */ }
   return repo.listDryingTems({ search });
+}
+
+// Phơi lại 1 tem đã khô (từ màn KCS) — đưa tem về đang phơi với thời gian nhập vào.
+async function redry(temId, phut, actorId) {
+  const tem = await repo.getTemBasic(temId);
+  if (!tem) throw new AppError('Tem không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  if (tem.trang_thai !== 'DA_KHO') {
+    throw new AppError('Chỉ phơi lại tem đã khô (chờ KCS)', { status: 409, errorCode: 'WRONG_STAGE' });
+  }
+  const p = Number(phut);
+  if (!p || p <= 0) throw new AppError('Nhập thời gian phơi lại (phút)', { status: 422, errorCode: 'INVALID_MIN' });
+  const xe = await repo.getDefaultXePhoi();
+  if (!xe) throw new AppError('Chưa cấu hình xe phơi', { status: 409, errorCode: 'NO_XE' });
+  await withTransaction((client) => repo.redryTem(client, { temId, xeId: xe.id, phut: p }, actorId));
+  sockets.emit('drying:updated', { temId, redry: true });
+  sockets.emit('quality:updated', { temId, redry: true });
+  sockets.emit('dashboard:refresh', {});
+  return { ma_tem: tem.ma_tem, phut: p };
 }
 
 async function confirmDry(temId, actorId) {
@@ -208,6 +230,6 @@ async function confirmDry(temId, actorId) {
 
 module.exports = {
   listCandidates, getRun, startProduction, printTem, reprintTem, temLabel, temLogs, finishRun, monitor,
-  getXePhoi, listTemChoPhoi, addToXe, adjustPhoi, listDrying, confirmDry,
+  getXePhoi, listTemChoPhoi, addToXe, adjustPhoi, listDrying, confirmDry, redry,
   stopLine, resumeLine,
 };
