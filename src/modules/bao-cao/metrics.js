@@ -83,13 +83,13 @@ const DEFS = [
   { ma: 'HSKT_HOM_NAY', ten: 'HSKT hoàn thành hôm nay', nhom: 'Kỹ thuật (hôm nay)', don_vi: 'phần',
     mo_ta: 'Số phần in được xác nhận HSKT (DAT) trong hôm nay.',
     run: () => scalar(cpDoneToday('HSKT')) },
-  { ma: 'READY_KT_DU_HOM_NAY', ten: 'Phần in đủ 4 mục KT hôm nay', nhom: 'Kỹ thuật (hôm nay)', don_vi: 'phần',
-    mo_ta: 'Số phần in hoàn tất đủ 4 mục kỹ thuật, với mốc xác nhận mục cuối cùng trong hôm nay.',
+  { ma: 'READY_KT_DU_HOM_NAY', ten: 'Phần in đủ mục KT hôm nay', nhom: 'Kỹ thuật (hôm nay)', don_vi: 'phần',
+    mo_ta: 'Số phần in hoàn tất đủ 3 mục kỹ thuật, với mốc xác nhận mục cuối cùng trong hôm nay.',
     run: () => scalar(`SELECT count(*)::numeric AS v FROM (
       SELECT kq.phan_in_id, count(*) AS n, max(kq.tg_xac_nhan) AS tgmax
       FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
-      WHERE cp.ma_checkpoint IN ('KHUON','FILM','MUC','HSKT') AND kq.trang_thai = 'DAT'
-      GROUP BY kq.phan_in_id HAVING count(*) >= 4
+      WHERE cp.ma_checkpoint IN ('KHUON','FILM','MUC') AND kq.trang_thai = 'DAT'
+      GROUP BY kq.phan_in_id HAVING count(*) >= 3
     ) t WHERE ${TODAY_TS('t.tgmax')}`) },
   { ma: 'QC_READY_HOM_NAY', ten: 'Phần in QC-READY hôm nay', nhom: 'Kỹ thuật (hôm nay)', don_vi: 'phần',
     mo_ta: 'Số phần in được QC xác nhận READY (QC_XAC_NHAN=DAT) trong hôm nay.',

@@ -9,11 +9,12 @@ const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
 
 const READY_TRAM = 'READY';
-const INPUT_CPS = ['KHUON', 'FILM', 'MUC', 'HSKT']; // 4 mục kỹ thuật, xác nhận độc lập
-const OPTION_CPS = ['KHUON', 'FILM', 'MUC', 'HSKT']; // cần chọn option khi xác nhận (HSKT: Hoàn thiện/Thừa hưởng)
+const INPUT_CPS = ['KHUON', 'FILM', 'MUC']; // 3 mục kỹ thuật, xác nhận độc lập (HSKT đã bỏ)
+const OPTION_CPS = ['KHUON', 'FILM', 'MUC']; // cần chọn option khi xác nhận
 const QC_CP = 'QC_XAC_NHAN';
-// Option mặc định (dùng khi cấu hình checkpoint chưa khai — vd HSKT chưa chạy migration 035).
-const DEFAULT_OPTIONS = { HSKT: ['Hoàn thiện', 'Thừa hưởng'] };
+const TECH_TOTAL = INPUT_CPS.length; // số mục kỹ thuật cần đủ để hoàn tất READY
+// Option mặc định (dùng khi cấu hình checkpoint chưa khai báo trong DB).
+const DEFAULT_OPTIONS = {};
 
 // Đọc options của 1 checkpoint từ cau_hinh_json, fallback về DEFAULT_OPTIONS theo mã.
 function optionsFor(ma, cfg) {
@@ -50,13 +51,11 @@ function buildState(results) {
   const khuon_done = done('KHUON');
   const film_done = done('FILM');
   const muc_done = done('MUC');
-  const hskt_done = done('HSKT');
   return {
     khuon_done,
     film_done,
     muc_done,
-    hskt_done,
-    tech_done: khuon_done && film_done && muc_done && hskt_done,
+    tech_done: khuon_done && film_done && muc_done,
     qc_done: done(QC_CP),
   };
 }
@@ -66,7 +65,7 @@ async function getConfig() {
   return { tram, checkpoints: checkpoints.map((c) => ({ ...c, options: optionsFor(c.ma_checkpoint, c.cau_hinh_json) })) };
 }
 
-// onlyQcReady=true: chỉ phần in đã đủ 4 mục kỹ thuật & chưa QC (cho màn QC bên Chất lượng).
+// onlyQcReady=true: chỉ phần in đã đủ 3 mục kỹ thuật & chưa QC (cho màn QC bên Chất lượng).
 async function listCandidates({ search, page, limit, offset, onlyQcReady = false }) {
   const { tram, byMa } = await loadConfig();
   const inputIds = INPUT_CPS.map((ma) => byMa[ma]?.id).filter(Boolean);
@@ -75,12 +74,12 @@ async function listCandidates({ search, page, limit, offset, onlyQcReady = false
   const readyCanhBao = tram.canh_bao_truoc_phut != null ? tram.canh_bao_truoc_phut : 60;
   const { rows, total } = await repo.listCandidates({
     search, inputIds, qcId: byMa[QC_CP]?.id,
-    khuonId: byMa.KHUON?.id, filmId: byMa.FILM?.id, mucId: byMa.MUC?.id, hsktId: byMa.HSKT?.id,
-    onlyQcReady, offset, limit, readySla, readyCanhBao,
+    khuonId: byMa.KHUON?.id, filmId: byMa.FILM?.id, mucId: byMa.MUC?.id,
+    onlyQcReady, offset, limit, readySla, readyCanhBao, techTotal: TECH_TOTAL,
   });
   const items = rows.map((r) => ({
     ...r,
-    trang_thai_ready: r.qc_done ? 'DONE' : r.n_tech_done >= 4 ? 'CHO_QC' : r.n_tech_done > 0 ? 'DANG' : 'CHUA',
+    trang_thai_ready: r.qc_done ? 'DONE' : r.n_tech_done >= TECH_TOTAL ? 'CHO_QC' : r.n_tech_done > 0 ? 'DANG' : 'CHUA',
   }));
   return { items, meta: buildMeta(page, limit, total) };
 }
@@ -230,7 +229,7 @@ async function confirmQC(phanInId, actorId) {
   const { tram, byMa } = await loadConfig();
   const state = buildState(await repo.getResults(tram.id, phanInId));
   if (!state.tech_done) {
-    throw new AppError('Kỹ thuật chưa hoàn tất 4 mục — QC không thể xác nhận', { status: 409, errorCode: 'TECH_NOT_DONE' });
+    throw new AppError('Kỹ thuật chưa hoàn tất 3 mục — QC không thể xác nhận', { status: 409, errorCode: 'TECH_NOT_DONE' });
   }
   if (state.qc_done) throw new AppError('Đã QC xác nhận', { status: 409, errorCode: 'ALREADY' });
   if (!byMa[QC_CP]) throw new AppError('Workflow chưa có checkpoint QC', { status: 500, errorCode: 'NO_CHECKPOINT' });

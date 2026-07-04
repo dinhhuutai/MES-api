@@ -83,7 +83,7 @@ async function stageCounts() {
               WHEN EXISTS (SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id = k.checkpoint_id
                            WHERE k.phan_in_id = dv.phan_in_id AND c.ma_checkpoint = 'QC_XAC_NHAN' AND k.trang_thai = 'DAT') THEN 'RELEASE_1'
               WHEN (SELECT count(*) FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id = k.checkpoint_id
-                    WHERE k.phan_in_id = dv.phan_in_id AND c.ma_checkpoint IN ('KHUON','FILM','MUC','HSKT') AND k.trang_thai = 'DAT') >= 4 THEN 'READY_QA'
+                    WHERE k.phan_in_id = dv.phan_in_id AND c.ma_checkpoint IN ('KHUON','FILM','MUC') AND k.trang_thai = 'DAT') >= 3 THEN 'READY_QA'
               ELSE 'READY_KT'
             END
           WHEN EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = lk.lenh_id AND ps.trang_thai = 'DANG_CHAY') THEN 'SAN_XUAT'

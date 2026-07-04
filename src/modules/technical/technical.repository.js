@@ -23,12 +23,12 @@ async function loadReadyConfig() {
 }
 
 // Danh sách phần in cho READY.
-//  - inputIds: id 4 checkpoint kỹ thuật (KHUON/FILM/MUC/HSKT) → đếm n_tech_done.
-//  - onlyQcReady=true: chỉ phần in đủ 4 mục & chưa QC (màn QC bên Chất lượng).
+//  - inputIds: id 3 checkpoint kỹ thuật (KHUON/FILM/MUC) → đếm n_tech_done.
+//  - onlyQcReady=true: chỉ phần in đủ techTotal mục & chưa QC (màn QC bên Chất lượng).
 //  - mặc định: phần in chưa QC xong (màn Chuẩn bị kỹ thuật).
 async function listCandidates({
-  search = '', inputIds = [], qcId, khuonId, filmId, mucId, hsktId,
-  onlyQcReady = false, offset = 0, limit = 20, readySla = null, readyCanhBao = null,
+  search = '', inputIds = [], qcId, khuonId, filmId, mucId,
+  onlyQcReady = false, offset = 0, limit = 20, readySla = null, readyCanhBao = null, techTotal = 3,
 }) {
   const SEARCH = `($1 = '' OR pin.ma_phan ILIKE '%'||$1||'%' OR kh.ten_khach_hang ILIKE '%'||$1||'%'
                   OR dh.ma_don_hang ILIKE '%'||$1||'%' OR mh.ma_hang ILIKE '%'||$1||'%'
@@ -49,8 +49,7 @@ async function listCandidates({
            ${doneExpr('$3')} AS qc_done${withItems ? `,
            ${doneExpr('$6')} AS khuon_done,
            ${doneExpr('$7')} AS film_done,
-           ${doneExpr('$8')} AS muc_done,
-           ${doneExpr('$9')} AS hskt_done` : ''},
+           ${doneExpr('$8')} AS muc_done` : ''},
            sla.tg_vao, sla.sla_phut, sla.canh_bao_truoc_phut
     FROM phan_in pin
     JOIN ma_hang mh ON mh.id = pin.ma_hang_id
@@ -66,7 +65,7 @@ async function listCandidates({
                   WHERE dv.phan_in_id = pin.id
                     AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd WHERE lsd.dot_vai_ve_id = dv.id))
              ) AS tg_vao,
-             $10::int AS sla_phut, $11::int AS canh_bao_truoc_phut
+             $9::int AS sla_phut, $10::int AS canh_bao_truoc_phut
     ) sla ON true
     -- Loại phần in ĐÃ RELEASE (có đợt vải nằm trong 1 lệnh ≠ HUY): nó đã rời trạm READY, không hiển thị ở màn READY
     -- (kể cả sau khi xóa mềm xác nhận READY — tránh phần in vừa ở READY vừa ở Test Run/Sản xuất).
@@ -77,9 +76,10 @@ async function listCandidates({
       AND ${SEARCH}`;
 
   // Mặc định (màn kỹ thuật): mọi phần in chưa QC xong.
-  // onlyQcReady (màn QC): chỉ phần in ĐÃ ĐỦ 4 mục kỹ thuật & chưa QC.
+  // onlyQcReady (màn QC): chỉ phần in ĐÃ ĐỦ đủ mục kỹ thuật & chưa QC.
+  const tt = Number.isInteger(techTotal) ? techTotal : 3; // số nguyên do code kiểm soát (an toàn khi nội suy)
   const OUTER_WHERE = onlyQcReady
-    ? 'WHERE q.qc_done = false AND q.n_tech_done >= 4'
+    ? `WHERE q.qc_done = false AND q.n_tech_done >= ${tt}`
     : 'WHERE q.qc_done = false';
 
   // Gộp data + total vào 1 query bằng COUNT(*) OVER() (1 round-trip thay vì 2).
@@ -90,7 +90,7 @@ async function listCandidates({
     ORDER BY q.n_tech_done DESC, q.ma_phan
     LIMIT $4 OFFSET $5`;
 
-  const { rows } = await query(dataSql, [search, inputIds, qcId, limit, offset, khuonId, filmId, mucId, hsktId, readySla, readyCanhBao]);
+  const { rows } = await query(dataSql, [search, inputIds, qcId, limit, offset, khuonId, filmId, mucId, readySla, readyCanhBao]);
   const total = rows.length ? rows[0].total_count : 0;
   // Bỏ cột phụ total_count khỏi từng dòng trả về.
   const items = rows.map(({ total_count, ...r }) => r);
@@ -145,7 +145,7 @@ async function listConfirmHistory({ date, search = '' }) {
 }
 
 // Danh sách phần in ĐÃ HOÀN THÀNH checkpoint READY theo ngày (giờ VN) — cho DonePanel.
-//  scope='tech': phần in đủ 4 mục kỹ thuật (mốc hoàn thành = lần xác nhận mục cuối cùng trong ngày).
+//  scope='tech': phần in đủ 3 mục kỹ thuật (mốc hoàn thành = lần xác nhận mục cuối cùng trong ngày).
 //  scope='qc':   phần in đã QC_XAC_NHAN = DAT trong ngày.
 async function doneByDate(date, scope = 'tech') {
   const info = `pin.ma_phan AS ma, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.so_luong_don_hang AS so_luong,
@@ -173,11 +173,11 @@ async function doneByDate(date, scope = 'tech') {
         FROM ket_qua_checkpoint kq
         JOIN checkpoint cp ON cp.id = kq.checkpoint_id
         JOIN tram t ON t.id = cp.tram_id
-        WHERE t.ma_tram = 'READY' AND cp.ma_checkpoint IN ('KHUON','FILM','MUC','HSKT') AND kq.trang_thai = 'DAT'
+        WHERE t.ma_tram = 'READY' AND cp.ma_checkpoint IN ('KHUON','FILM','MUC') AND kq.trang_thai = 'DAT'
       ),
       agg AS (
         SELECT phan_in_id, count(*) AS n, max(tg_xac_nhan) AS tg_done
-        FROM tech GROUP BY phan_in_id HAVING count(*) >= 4
+        FROM tech GROUP BY phan_in_id HAVING count(*) >= 3
       )
       SELECT a.tg_done AS tg, nx.ho_ten AS nguoi, ${info}
       FROM agg a
