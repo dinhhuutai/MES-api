@@ -115,17 +115,47 @@ async function listVaiVe({ search = '', filters = {}, stage = '', offset = 0, li
            pin.so_luong_don_hang, pin.loi_nhuan,
            mh.ma_hang, mh.ten_ma_hang, dh.ma_don_hang, dh.so_po,
            kh.ma_khach_hang, kh.ten_khach_hang,
-           count(dv.id)::int AS so_dot,
-           COALESCE(json_agg(json_build_object(
-             'dot_vai_id', dv.id, 'ma_dot_vai', dv.ma_dot_vai, 'so_luong_vai_ve', dv.so_luong_vai_ve,
-             'ngay_vai_ve', dv.ngay_vai_ve, 'han_giao_hang', dv.han_giao_hang
-           ) ORDER BY dv.ngay_vai_ve NULLS LAST, dv.ma_dot_vai)
-           FILTER (WHERE dv.id IS NOT NULL), '[]') AS dot_vai,
+           dvj.so_dot, dvj.dot_vai,
+           ts.pcs_in, ts.so_tem, ts.sl_dat, ts.sl_sua, ts.sl_sua_dat, ts.tems,
            COUNT(*) OVER()::int AS total_count
     ${BASE_JOINS}
-    LEFT JOIN dot_vai_ve dv ON dv.phan_in_id = pin.id
+    LEFT JOIN LATERAL (
+      SELECT count(*)::int AS so_dot,
+             COALESCE(json_agg(json_build_object(
+               'dot_vai_id', dv.id, 'ma_dot_vai', dv.ma_dot_vai, 'so_luong_vai_ve', dv.so_luong_vai_ve,
+               'ngay_vai_ve', dv.ngay_vai_ve, 'han_giao_hang', dv.han_giao_hang
+             ) ORDER BY dv.ngay_vai_ve NULLS LAST, dv.ma_dot_vai), '[]') AS dot_vai
+      FROM dot_vai_ve dv WHERE dv.phan_in_id = pin.id
+    ) dvj ON true
+    LEFT JOIN LATERAL (
+      WITH tp AS (
+        SELECT tm.id, tm.ma_tem, tm.so_luong, tm.trang_thai, tm.created_date
+        FROM tem tm
+        JOIN phieu_san_xuat ps ON ps.id=tm.phieu_san_xuat_id
+        JOIN lenh_san_xuat ls ON ls.id=ps.lenh_san_xuat_id AND ls.trang_thai<>'HUY'
+        JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id=ls.id
+        JOIN dot_vai_ve dv2 ON dv2.id=lsd.dot_vai_ve_id AND dv2.phan_in_id=pin.id
+      )
+      SELECT
+        COALESCE(SUM(so_luong) FILTER (WHERE trang_thai<>'HUY'),0)::int AS pcs_in,
+        count(*) FILTER (WHERE trang_thai<>'HUY')::int AS so_tem,
+        (SELECT COALESCE(SUM(so_luong_dat),0)::int FROM kcs k WHERE k.tem_id IN (SELECT id FROM tp)) AS sl_dat,
+        (SELECT COALESCE(SUM(GREATEST(so_luong_loi-COALESCE(so_luong_huy,0),0)),0)::int FROM kcs k WHERE k.tem_id IN (SELECT id FROM tp)) AS sl_sua,
+        (SELECT COALESCE(SUM(so_luong_sua_dat),0)::int FROM sua s WHERE s.tem_id IN (SELECT id FROM tp)) AS sl_sua_dat,
+        COALESCE((
+          SELECT json_agg(json_build_object(
+            'tem_id', tp2.id, 'ma_tem', tp2.ma_tem, 'so_luong', tp2.so_luong, 'trang_thai', tp2.trang_thai,
+            'kcs_dat', k.so_luong_dat, 'kcs_loi', k.so_luong_loi, 'sua_dat', s.so_luong_sua_dat, 'oqc_ket_qua', o.ket_qua
+          ) ORDER BY tp2.created_date, tp2.ma_tem)
+          FROM tp tp2
+          LEFT JOIN LATERAL (SELECT so_luong_dat, so_luong_loi FROM kcs WHERE tem_id=tp2.id ORDER BY created_date DESC LIMIT 1) k ON true
+          LEFT JOIN LATERAL (SELECT so_luong_sua_dat FROM sua WHERE tem_id=tp2.id ORDER BY created_date DESC LIMIT 1) s ON true
+          LEFT JOIN LATERAL (SELECT ket_qua FROM oqc WHERE tem_id=tp2.id ORDER BY created_date DESC LIMIT 1) o ON true
+          WHERE tp2.trang_thai<>'HUY'
+        ), '[]') AS tems
+      FROM tp
+    ) ts ON true
     WHERE ${cond.join(' AND ')}
-    GROUP BY pin.id, mh.ma_hang, mh.ten_ma_hang, dh.ma_don_hang, dh.so_po, kh.ma_khach_hang, kh.ten_khach_hang
     ORDER BY kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, pin.ma_phan
     LIMIT ${limitP} OFFSET ${offsetP}`;
   const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), params);
@@ -263,6 +293,32 @@ async function getPhanInTimeline(phanInId) {
   return [...byTram.values()].sort((a, b) => a.thu_tu - b.thu_tu);
 }
 
+// Tổng hợp SỐ LƯỢNG theo tem của 1 phần in (hợp nhất mọi tem của phần in) — từ chờ khô trở đi.
+//  pcs_in    = tổng pcs đã in (tem không HUY)
+//  sl_dat    = tổng đạt (KCS)
+//  sl_sua    = tổng chuyển sửa (KCS: lỗi - hủy tại KCS)
+//  sl_sua_dat= tổng sửa đạt (bảng sửa)
+async function getPhanInTemSummary(phanInId) {
+  const sql = `
+    WITH t_pin AS (
+      SELECT tm.id AS tem_id, tm.so_luong, tm.trang_thai
+      FROM tem tm
+      JOIN phieu_san_xuat ps ON ps.id = tm.phieu_san_xuat_id
+      JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id AND ls.trang_thai <> 'HUY'
+      JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
+      JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id AND dv.phan_in_id = $1
+    )
+    SELECT
+      COALESCE(SUM(t.so_luong) FILTER (WHERE t.trang_thai <> 'HUY'), 0)::int AS pcs_in,
+      COALESCE((SELECT SUM(k.so_luong_dat) FROM kcs k WHERE k.tem_id IN (SELECT tem_id FROM t_pin)), 0)::int AS sl_dat,
+      COALESCE((SELECT SUM(GREATEST(k.so_luong_loi - COALESCE(k.so_luong_huy,0), 0)) FROM kcs k WHERE k.tem_id IN (SELECT tem_id FROM t_pin)), 0)::int AS sl_sua,
+      COALESCE((SELECT SUM(s.so_luong_sua_dat) FROM sua s WHERE s.tem_id IN (SELECT tem_id FROM t_pin)), 0)::int AS sl_sua_dat,
+      (SELECT count(*) FROM t_pin WHERE trang_thai <> 'HUY')::int AS so_tem
+    FROM t_pin t`;
+  const { rows } = await query(sql.replace(/\s+/g, ' '), [phanInId]);
+  return rows[0] || { pcs_in: 0, sl_dat: 0, sl_sua: 0, sl_sua_dat: 0, so_tem: 0 };
+}
+
 async function setLoiNhuan(id, loiNhuan, actorId) {
   const { rowCount } = await query(
     'UPDATE phan_in SET loi_nhuan = $2, updated_by = $3, updated_date = CURRENT_TIMESTAMP WHERE id = $1',
@@ -297,4 +353,4 @@ async function profitHistoryByDate(date) {
   return rows;
 }
 
-module.exports = { list, listVaiVe, findById, listDotVai, getPhanInTimeline, setLoiNhuan, logProfitChange, profitHistoryByDate };
+module.exports = { list, listVaiVe, findById, listDotVai, getPhanInTimeline, getPhanInTemSummary, setLoiNhuan, logProfitChange, profitHistoryByDate };

@@ -86,13 +86,13 @@ async function stageCounts() {
                     WHERE k.phan_in_id = dv.phan_in_id AND c.ma_checkpoint IN ('KHUON','FILM','MUC','HSKT') AND k.trang_thai = 'DAT') >= 4 THEN 'READY_QA'
               ELSE 'READY_KT'
             END
-          WHEN ${temEx("t.trang_thai = 'DA_GIAO'")} THEN 'DA_GIAO'
-          WHEN ${temEx("t.trang_thai = 'OQC_DAT'")} THEN 'DANG_GIAO'
-          WHEN ${temEx("t.trang_thai = 'CHO_OQC'")} THEN 'OQC'
-          WHEN ${temEx("t.trang_thai = 'CHO_SUA'")} THEN 'SUA'
-          WHEN ${temEx("t.trang_thai = 'DA_KHO'")} THEN 'KCS'
-          WHEN ${temEx("t.trang_thai IN ('IN','DANG_PHOI')")} THEN 'CHO_KHO'
           WHEN EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = lk.lenh_id AND ps.trang_thai = 'DANG_CHAY') THEN 'SAN_XUAT'
+          WHEN ${temEx("t.trang_thai IN ('IN','DANG_PHOI')")} THEN 'CHO_KHO'
+          WHEN ${temEx("t.trang_thai = 'DA_KHO'")} THEN 'KCS'
+          WHEN ${temEx("t.trang_thai = 'CHO_SUA'")} THEN 'SUA'
+          WHEN ${temEx("t.trang_thai = 'CHO_OQC'")} THEN 'OQC'
+          WHEN ${temEx("t.trang_thai = 'OQC_DAT'")} THEN 'DANG_GIAO'
+          WHEN ${temEx("t.trang_thai = 'DA_GIAO'")} THEN 'DA_GIAO'
           WHEN lk.lenh_tt = 'RELEASE_2' THEN 'CHO_SAN_XUAT'
           WHEN EXISTS (SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id = k.checkpoint_id
                        WHERE k.lenh_san_xuat_id = lk.lenh_id AND c.ma_checkpoint = 'TEST_CNSP' AND k.trang_thai = 'DAT')
@@ -106,15 +106,41 @@ async function stageCounts() {
     )
     SELECT stage, count(DISTINCT phan_in_id)::int AS n_phan_in, count(DISTINCT ma_hang_id)::int AS n_ma
     FROM staged GROUP BY stage`;
-  const [stageRows, totals] = await Promise.all([
+
+  // Tổng pcs đã in theo giai đoạn — tính ở MỨC LỆNH (tránh nhân đôi khi gom set nhiều đợt vải chung 1 lệnh).
+  const temEx2 = (cond) => `EXISTS (SELECT 1 FROM phieu_san_xuat ps JOIN tem t ON t.phieu_san_xuat_id=ps.id WHERE ps.lenh_san_xuat_id=ls.id AND t.trang_thai<>'HUY' AND ${cond})`;
+  const pcsSql = `
+    SELECT stage, COALESCE(SUM(pcs),0)::int AS pcs FROM (
+      SELECT ls.id,
+        CASE
+          WHEN EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id=ls.id AND ps.trang_thai='DANG_CHAY') THEN 'SAN_XUAT'
+          WHEN ${temEx2("t.trang_thai IN ('IN','DANG_PHOI')")} THEN 'CHO_KHO'
+          WHEN ${temEx2("t.trang_thai = 'DA_KHO'")} THEN 'KCS'
+          WHEN ${temEx2("t.trang_thai = 'CHO_SUA'")} THEN 'SUA'
+          WHEN ${temEx2("t.trang_thai = 'CHO_OQC'")} THEN 'OQC'
+          WHEN ${temEx2("t.trang_thai = 'OQC_DAT'")} THEN 'DANG_GIAO'
+          WHEN ${temEx2("t.trang_thai = 'DA_GIAO'")} THEN 'DA_GIAO'
+          ELSE NULL
+        END AS stage,
+        COALESCE((SELECT SUM(t.so_luong) FROM phieu_san_xuat ps JOIN tem t ON t.phieu_san_xuat_id=ps.id WHERE ps.lenh_san_xuat_id=ls.id AND t.trang_thai<>'HUY'),0) AS pcs
+      FROM lenh_san_xuat ls
+      WHERE ls.trang_thai<>'HUY' AND EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id=ls.id)
+    ) x WHERE stage IS NOT NULL GROUP BY stage`;
+
+  const [stageRows, totals, pcsRows] = await Promise.all([
     query(stageSql.replace(/\s+/g, ' ')),
     query(`SELECT
               (SELECT count(*) FROM don_hang WHERE trang_thai IS DISTINCT FROM 'CLOSED_FINANCE')::int AS so_don,
               (SELECT count(*) FROM ma_hang)::int AS so_ma,
               (SELECT count(*) FROM phan_in)::int AS so_phan_in`.replace(/\s+/g, ' ')),
+    query(pcsSql.replace(/\s+/g, ' ')),
   ]);
   const stages = {};
-  stageRows.rows.forEach((r) => { stages[r.stage] = { phan_in: r.n_phan_in, ma: r.n_ma }; });
+  stageRows.rows.forEach((r) => { stages[r.stage] = { phan_in: r.n_phan_in, ma: r.n_ma, pcs: 0 }; });
+  pcsRows.rows.forEach((r) => {
+    stages[r.stage] = stages[r.stage] || { phan_in: 0, ma: 0, pcs: 0 };
+    stages[r.stage].pcs = r.pcs;
+  });
   return { totals: totals.rows[0], stages };
 }
 
@@ -223,8 +249,26 @@ async function tinhTrangDetail(phanInId) {
   const tlByDot = {}; timelines.forEach((t) => { (tlByDot[t.dot_vai_ve_id] = tlByDot[t.dot_vai_ve_id] || []).push(t); });
   const temByDot = {}; tems.forEach((t) => { (temByDot[t.dot_vai_ve_id] = temByDot[t.dot_vai_ve_id] || []).push(t); });
 
+  // Tổng hợp số lượng theo tem (hợp nhất theo phần in) — pcs / đạt / sửa / sửa đạt.
+  const temSummary = (await query(
+    `WITH tp AS (
+       SELECT tm.id, tm.so_luong, tm.trang_thai FROM tem tm
+       JOIN phieu_san_xuat ps ON ps.id=tm.phieu_san_xuat_id
+       JOIN lenh_san_xuat ls ON ls.id=ps.lenh_san_xuat_id AND ls.trang_thai<>'HUY'
+       JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id=ls.id
+       JOIN dot_vai_ve dv ON dv.id=lsd.dot_vai_ve_id AND dv.phan_in_id=$1)
+     SELECT COALESCE(SUM(so_luong) FILTER (WHERE trang_thai<>'HUY'),0)::int AS pcs_in,
+            count(*) FILTER (WHERE trang_thai<>'HUY')::int AS so_tem,
+            (SELECT COALESCE(SUM(so_luong_dat),0)::int FROM kcs k WHERE k.tem_id IN (SELECT id FROM tp)) AS sl_dat,
+            (SELECT COALESCE(SUM(GREATEST(so_luong_loi-COALESCE(so_luong_huy,0),0)),0)::int FROM kcs k WHERE k.tem_id IN (SELECT id FROM tp)) AS sl_sua,
+            (SELECT COALESCE(SUM(so_luong_sua_dat),0)::int FROM sua s WHERE s.tem_id IN (SELECT id FROM tp)) AS sl_sua_dat
+     FROM tp`.replace(/\s+/g, ' '),
+    [phanInId]
+  )).rows[0];
+
   return {
     phan_in: info,
+    tem_summary: temSummary,
     dot_vai: dotVai.map((d) => ({
       ...d,
       current: d.cur_ma_tram ? {
@@ -241,30 +285,101 @@ async function tinhTrangDetail(phanInId) {
 
 // Các đợt vải đang ở 1 trạm (ton_tram) + SLA trạm + phần in + owner xử lý.
 // tramMa='' → tất cả; luôn loại CLOSED_FINANCE (đã ra khỏi dòng chảy).
+// Trạm HIỆN TẠI của mỗi đợt vải suy TRỰC TIẾP từ trạng thái runtime (KHÔNG dùng ton_tram — hay bị kẹt).
+// tg_vao = mốc vào trạm hiện tại (xấp xỉ theo nguồn tin cậy nhất của từng giai đoạn) để tính SLA.
 async function flowRows(tramMa = '') {
-  const { rows } = await query(
-    `SELECT tt.id, tt.dot_vai_ve_id, tt.tg_vao, tt.so_luong,
-            tr.id AS tram_id, tr.ma_tram, tr.ten_tram, tr.thu_tu,
-            tr.thoi_gian_quy_dinh_phut AS sla_phut, tr.canh_bao_truoc_phut,
-            dv.ma_dot_vai, dv.han_giao_hang,
-            pi.ma_phan, pi.mau_vai, pi.kich_vai, pi.kich_phim,
-            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
-            u.ho_ten AS owner_ho_ten,
-            floor(EXTRACT(EPOCH FROM (now() - tt.tg_vao)) / 60)::int AS phut_da_o
-     FROM ton_tram tt
-     JOIN tram tr ON tr.id = tt.tram_id
-     JOIN dot_vai_ve dv ON dv.id = tt.dot_vai_ve_id
-     JOIN phan_in pi ON pi.id = dv.phan_in_id
-     JOIN ma_hang mh ON mh.id = pi.ma_hang_id
-     JOIN don_hang dh ON dh.id = mh.don_hang_id
-     JOIN khach_hang kh ON kh.id = dh.khach_hang_id
-     LEFT JOIN nguoi_dung u ON u.id = tt.owner_id
-     WHERE tt.dot_vai_ve_id IS NOT NULL
-       AND tr.ma_tram <> 'CLOSED_FINANCE'
-       AND ($1 = '' OR tr.ma_tram = $1)
-     ORDER BY tr.thu_tu NULLS LAST, phut_da_o DESC`.replace(/\s+/g, ' '),
-    [tramMa]
-  );
+  const sql = `
+    WITH dvbase AS (
+      SELECT dv.id AS dot_vai_ve_id, dv.phan_in_id, dv.ma_dot_vai, dv.han_giao_hang,
+             COALESCE(dv.created_date, dv.ngay_vai_ve::timestamptz) AS dv_tg,
+             pi.ma_phan, pi.mau_vai, pi.kich_vai, pi.kich_phim,
+             mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang
+      FROM dot_vai_ve dv
+      JOIN phan_in pi ON pi.id = dv.phan_in_id
+      JOIN ma_hang mh ON mh.id = pi.ma_hang_id
+      JOIN don_hang dh ON dh.id = mh.don_hang_id AND dh.trang_thai IS DISTINCT FROM 'CLOSED_FINANCE'
+      JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+    ),
+    lk AS (
+      SELECT DISTINCT ON (lsd.dot_vai_ve_id) lsd.dot_vai_ve_id, ls.id AS lenh_id, ls.trang_thai AS lenh_tt, ls.created_date AS lenh_tg
+      FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
+      WHERE ls.trang_thai <> 'HUY'
+      ORDER BY lsd.dot_vai_ve_id, ls.created_date DESC
+    ),
+    ph AS (
+      SELECT lk.dot_vai_ve_id, min(ps.tg_bd) AS phieu_tg, bool_or(ps.trang_thai='DANG_CHAY') AS co_chay
+      FROM lk JOIN phieu_san_xuat ps ON ps.lenh_san_xuat_id = lk.lenh_id
+      GROUP BY lk.dot_vai_ve_id
+    ),
+    ta AS (
+      SELECT lk.dot_vai_ve_id,
+             COALESCE(SUM(t.so_luong) FILTER (WHERE t.trang_thai<>'HUY'),0)::int AS pcs,
+             min(t.created_date) AS tem_tg,
+             bool_or(t.trang_thai='DA_GIAO') AS has_giao,
+             bool_or(t.trang_thai='OQC_DAT') AS has_oqcdat,
+             bool_or(t.trang_thai='CHO_OQC') AS has_choqc,
+             bool_or(t.trang_thai='CHO_SUA') AS has_chosua,
+             bool_or(t.trang_thai='DA_KHO') AS has_dakho,
+             bool_or(t.trang_thai IN ('IN','DANG_PHOI')) AS has_phoi
+      FROM lk JOIN phieu_san_xuat ps ON ps.lenh_san_xuat_id = lk.lenh_id
+      JOIN tem t ON t.phieu_san_xuat_id = ps.id
+      GROUP BY lk.dot_vai_ve_id
+    ),
+    ev AS (
+      SELECT lk.dot_vai_ve_id,
+             max(k.created_date) AS kcs_tg, max(s.created_date) AS sua_tg,
+             max(o.created_date) AS oqc_tg, max(txp.tg_kt_phoi) AS dry_tg
+      FROM lk JOIN phieu_san_xuat ps ON ps.lenh_san_xuat_id = lk.lenh_id
+      JOIN tem t ON t.phieu_san_xuat_id = ps.id
+      LEFT JOIN kcs k ON k.tem_id = t.id
+      LEFT JOIN sua s ON s.tem_id = t.id
+      LEFT JOIN oqc o ON o.tem_id = t.id
+      LEFT JOIN tem_xe_phoi txp ON txp.tem_id = t.id
+      GROUP BY lk.dot_vai_ve_id
+    )
+    SELECT b.dot_vai_ve_id AS id, b.dot_vai_ve_id,
+           b.ma_dot_vai, b.han_giao_hang, b.ma_phan, b.mau_vai, b.kich_vai, b.kich_phim,
+           b.ma_hang, b.ma_don_hang, b.ten_khach_hang,
+           COALESCE(ta.pcs,0) AS pcs,
+           cur.ma_tram, tr.ten_tram, tr.thu_tu,
+           tr.thoi_gian_quy_dinh_phut AS sla_phut, tr.canh_bao_truoc_phut,
+           tv.tg_vao,
+           floor(EXTRACT(EPOCH FROM (now() - tv.tg_vao)) / 60)::int AS phut_da_o,
+           NULL::text AS owner_ho_ten
+    FROM dvbase b
+    LEFT JOIN lk ON lk.dot_vai_ve_id = b.dot_vai_ve_id
+    LEFT JOIN ph ON ph.dot_vai_ve_id = b.dot_vai_ve_id
+    LEFT JOIN ta ON ta.dot_vai_ve_id = b.dot_vai_ve_id
+    LEFT JOIN ev ON ev.dot_vai_ve_id = b.dot_vai_ve_id
+    CROSS JOIN LATERAL (SELECT (CASE
+        WHEN lk.lenh_id IS NULL THEN (CASE WHEN EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint c ON c.id=kq.checkpoint_id WHERE kq.phan_in_id=b.phan_in_id AND c.ma_checkpoint='QC_XAC_NHAN' AND kq.trang_thai='DAT') THEN 'RELEASE_1' ELSE 'READY' END)
+        WHEN ph.co_chay THEN 'SAN_XUAT'
+        WHEN ta.has_phoi THEN 'CHO_KHO'
+        WHEN ta.has_dakho THEN 'KIEM'
+        WHEN ta.has_chosua THEN 'SUA'
+        WHEN ta.has_choqc THEN 'OQC'
+        WHEN ta.has_oqcdat THEN 'FINISH'
+        WHEN ta.pcs IS NOT NULL THEN 'DONE_DELIVERY'
+        WHEN lk.lenh_tt='RELEASE_2' THEN 'RELEASE_2'
+        ELSE 'TEST_RUN'
+      END) AS ma_tram) cur
+    CROSS JOIN LATERAL (SELECT (CASE cur.ma_tram
+        WHEN 'TEST_RUN' THEN lk.lenh_tg
+        WHEN 'RELEASE_2' THEN lk.lenh_tg
+        WHEN 'SAN_XUAT' THEN ph.phieu_tg
+        WHEN 'CHO_KHO' THEN ta.tem_tg
+        WHEN 'KIEM' THEN COALESCE(ev.dry_tg, ta.tem_tg)
+        WHEN 'SUA' THEN COALESCE(ev.kcs_tg, ta.tem_tg)
+        WHEN 'OQC' THEN COALESCE(GREATEST(ev.kcs_tg, ev.sua_tg), ta.tem_tg)
+        WHEN 'FINISH' THEN COALESCE(ev.oqc_tg, ta.tem_tg)
+        ELSE b.dv_tg
+      END) AS tg_vao) tv
+    JOIN tram tr ON tr.ma_tram = cur.ma_tram
+    JOIN workflow_version wv ON wv.id = tr.workflow_version_id AND wv.la_hien_hanh = true
+    WHERE cur.ma_tram <> 'DONE_DELIVERY'
+      AND ($1 = '' OR cur.ma_tram = $1)
+    ORDER BY tr.thu_tu NULLS LAST, phut_da_o DESC`;
+  const { rows } = await query(sql.replace(/\s+/g, ' '), [tramMa]);
   return rows;
 }
 
