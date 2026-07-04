@@ -280,17 +280,17 @@ async function getLenhBasic(lenhId) {
   return rows[0] || null;
 }
 
-// ----- LẬP KẾ HOẠCH LẠI (lệnh đã RELEASE_2 nhưng chưa bắt đầu sản xuất) -----
+// ----- LẬP KẾ HOẠCH LẠI (lệnh đang Test Run (RELEASE_1) hoặc đã RELEASE_2, chưa bắt đầu sản xuất) -----
 async function listReplanCandidates({ search = '', offset = 0, limit = 50 }) {
   const FROM = `
     FROM lenh_san_xuat ls
     LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
     ${PHAN_INFO_LATERAL}
-    WHERE ls.trang_thai = 'RELEASE_2'
+    WHERE ls.trang_thai IN ('RELEASE_1','RELEASE_2')
       AND NOT EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = ls.id)
       AND ($1 = '' OR ls.ma_lenh_san_xuat ILIKE '%'||$1||'%' OR ${lenhPhanInMatch('ls.id', '$1')})`;
   const dataSql = `
-    SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.ngay_ke_hoach, ls.chuyen_id,
+    SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.ngay_ke_hoach, ls.chuyen_id, ls.trang_thai,
            cs.ma_chuyen, cs.ten_chuyen,
            info.ten_khach_hang, info.ma_don_hang, info.ma_hang,
            info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan,
@@ -462,25 +462,38 @@ async function getTestRuns(lenhId) {
   return rows;
 }
 
+// Trạng thái Test Run của lệnh + NGƯỜI + GIỜ xác nhận từng mục (CNSP/QA) — cho sidebar hiển thị.
+// Mỗi (lenh, checkpoint) chỉ có tối đa 1 dòng ket_qua_checkpoint nên LEFT JOIN không nhân dòng.
 async function getLenhTestStatus(lenhId, cnspId, qaId) {
   const { rows } = await query(
     `SELECT
-       EXISTS (SELECT 1 FROM ket_qua_checkpoint k WHERE k.lenh_san_xuat_id=$1 AND k.checkpoint_id=$2 AND k.trang_thai='DAT') AS cnsp_done,
-       EXISTS (SELECT 1 FROM ket_qua_checkpoint k WHERE k.lenh_san_xuat_id=$1 AND k.checkpoint_id=$3 AND k.trang_thai='DAT') AS qa_done`,
+       (cn.id IS NOT NULL) AS cnsp_done, cnu.ho_ten AS cnsp_nguoi, cn.tg_xac_nhan AS cnsp_tg,
+       (qa.id IS NOT NULL) AS qa_done, qau.ho_ten AS qa_nguoi, qa.tg_xac_nhan AS qa_tg
+     FROM (SELECT 1) x
+     LEFT JOIN ket_qua_checkpoint cn ON cn.lenh_san_xuat_id=$1 AND cn.checkpoint_id=$2 AND cn.trang_thai='DAT'
+     LEFT JOIN nguoi_dung cnu ON cnu.id = cn.nguoi_xac_nhan_id
+     LEFT JOIN ket_qua_checkpoint qa ON qa.lenh_san_xuat_id=$1 AND qa.checkpoint_id=$3 AND qa.trang_thai='DAT'
+     LEFT JOIN nguoi_dung qau ON qau.id = qa.nguoi_xac_nhan_id`,
     [lenhId, cnspId, qaId]
   );
   return rows[0];
 }
 
+const INSERT_TEST_RUN_SQL =
+  `INSERT INTO test_run (lenh_san_xuat_id, lan_test, so_luong, ket_qua, tg_bd_test, ghi_chu, created_by)
+   VALUES ($1,
+           (SELECT COALESCE(MAX(lan_test),0)+1 FROM test_run WHERE lenh_san_xuat_id=$1),
+           $2,$3,CURRENT_TIMESTAMP,$4,$5)
+   RETURNING id, lan_test`;
+
 async function insertTestRun(lenhId, { soLuong, ketQua, ghiChu }, actorId) {
-  const { rows } = await query(
-    `INSERT INTO test_run (lenh_san_xuat_id, lan_test, so_luong, ket_qua, tg_bd_test, ghi_chu, created_by)
-     VALUES ($1,
-             (SELECT COALESCE(MAX(lan_test),0)+1 FROM test_run WHERE lenh_san_xuat_id=$1),
-             $2,$3,CURRENT_TIMESTAMP,$4,$5)
-     RETURNING id, lan_test`,
-    [lenhId, soLuong ?? null, ketQua ?? null, ghiChu ?? null, actorId]
-  );
+  const { rows } = await query(INSERT_TEST_RUN_SQL, [lenhId, soLuong ?? null, ketQua ?? null, ghiChu ?? null, actorId]);
+  return rows[0];
+}
+
+// Bản transaction (dùng khi ghi lần test đạt cùng lúc với xác nhận QA).
+async function insertTestRunTx(client, lenhId, { soLuong, ketQua, ghiChu }, actorId) {
+  const { rows } = await client.query(INSERT_TEST_RUN_SQL, [lenhId, soLuong ?? null, ketQua ?? null, ghiChu ?? null, actorId]);
   return rows[0];
 }
 
@@ -614,7 +627,7 @@ module.exports = {
   release1DoneByDate, planDoneByDate, testDoneByDate,
   testedDotVaiIds, getDotVaiQty, addLenhDotVai, dotVaiAlreadyReleased,
   listTestRunCandidates, listRelease2Candidates, getLenhBasic, getLenhDotVai, getTestRuns,
-  getLenhTestStatus, insertTestRun, upsertLenhResult, insertStatusLog, setLenhTrangThai,
+  getLenhTestStatus, insertTestRun, insertTestRunTx, upsertLenhResult, insertStatusLog, setLenhTrangThai,
   testRunHistoryByDate,
   listReplanCandidates, getLenhForReplan, updateLenhPlan, logPlanChange, planHistoryByDate,
   listCancelableLenh, getLenhForCancel, cancelLenhOrder, cancelReadyQcForDotVai, logLenhCancel,

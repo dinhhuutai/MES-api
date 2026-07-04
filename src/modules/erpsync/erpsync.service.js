@@ -61,7 +61,14 @@ async function fetchErp(fromDate) {
       transformResponse: [(d) => d],      // GIỮ NGUYÊN VĂN chuỗi response (không để axios tự JSON.parse)
     });
     if (res.status < 200 || res.status >= 300) {
-      throw new AppError(`ERP trả về HTTP ${res.status}`, { status: 502, errorCode: 'ERP_HTTP' });
+      // Đọc thông điệp lỗi ERP trả về (nếu có) để báo đúng nguyên nhân thay vì chỉ "HTTP 500".
+      let erpMsg = '';
+      try {
+        const body = typeof res.data === 'string' ? JSON.parse(res.data) : res.data;
+        erpMsg = body?.error || body?.message || '';
+      } catch { erpMsg = typeof res.data === 'string' ? res.data.slice(0, 300) : ''; }
+      console.error(`[erp-sync] ✗ HTTP ${res.status}: ${erpMsg}`);
+      throw new AppError(`ERP trả về HTTP ${res.status}${erpMsg ? `: ${erpMsg}` : ''}`, { status: 502, errorCode: 'ERP_HTTP' });
     }
     const rawText = typeof res.data === 'string' ? res.data : JSON.stringify(res.data); // chuỗi gốc
     let json;

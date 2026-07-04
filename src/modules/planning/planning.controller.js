@@ -38,7 +38,7 @@ const confirmCNSP = asyncHandler(async (req, res) =>
   ok(res, await service.confirmTest(req.params.lenhId, 'cnsp', req.user.id), 'CNSP đã xác nhận'));
 
 const confirmQA = asyncHandler(async (req, res) =>
-  ok(res, await service.confirmTest(req.params.lenhId, 'qa', req.user.id), 'QA đã xác nhận'));
+  ok(res, await service.confirmTest(req.params.lenhId, 'qa', req.user.id, { soLuong: req.body?.soLuong ?? null }), 'QA đã xác nhận'));
 
 const cancelCNSP = asyncHandler(async (req, res) =>
   ok(res, await service.cancelTest(req.params.lenhId, 'cnsp', req.user.id), 'Đã hủy xác nhận CNSP'));

@@ -17,6 +17,7 @@ router.post('/phieu/:phieuId/finish', rbac('PROD_RUN'), c.finish);
 router.post('/tem/:temId/in-lai', rbac('PROD_RUN'), c.reprintTem);
 router.get('/tem/:temId/label', rbac('PROD_RUN', 'PROD_MONITOR'), c.temLabel);
 router.get('/phieu/:phieuId/tem-logs', rbac('PROD_RUN', 'PROD_MONITOR'), c.temLogs);
+router.post('/phieu/:phieuId/vai-huy', rbac('PROD_RUN'), c.addVaiHuy);
 router.post('/phieu/:phieuId/ngung', rbac('PROD_RUN'), c.stopLine);
 router.post('/phieu/:phieuId/hoat-dong-lai', rbac('PROD_RUN'), c.resumeLine);
 

@@ -18,10 +18,37 @@ async function getRun(lenhId) {
   const phieu = await repo.getActivePhieu(lenhId);
   const tems = phieu ? await repo.getTemsByPhieu(phieu.id) : [];
   const printed = tems.reduce((s, t) => s + (t.trang_thai === 'HUY' ? 0 : (Number(t.so_luong) || 0)), 0);
-  const [ngungList, ngungActive] = phieu
-    ? await Promise.all([repo.listNgungByPhieu(phieu.id), repo.getActiveNgung(phieu.id)])
-    : [[], null];
-  return { lenh, phieu, tems, printed, ngung_list: ngungList, ngung_active: ngungActive };
+  const [ngungList, ngungActive, dotVai, vaiHuy] = phieu
+    ? await Promise.all([repo.listNgungByPhieu(phieu.id), repo.getActiveNgung(phieu.id),
+                         repo.getLenhDotVaiList(lenhId), repo.listVaiHuyByLenh(lenhId)])
+    : [[], null, await repo.getLenhDotVaiList(lenhId), await repo.listVaiHuyByLenh(lenhId)];
+  return { lenh, phieu, tems, printed, ngung_list: ngungList, ngung_active: ngungActive,
+           dot_vai: dotVai, vai_huy: vaiHuy };
+}
+
+// Ghi 1 lần vải hủy trong lúc sản xuất, theo đợt vải / phần in của lệnh.
+async function addVaiHuy(phieuId, { dotVaiId, soLuong, lyDo }, actorId) {
+  const qty = Number(soLuong);
+  if (!qty || qty <= 0) throw new AppError('Số lượng vải hủy phải > 0', { status: 422, errorCode: 'INVALID_QTY' });
+  const phieu = await repo.getPhieuById(phieuId);
+  if (!phieu) throw new AppError('Phiếu sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  const dotVaiList = await repo.getLenhDotVaiList(phieu.lenh_san_xuat_id);
+  if (dotVaiList.length === 0) throw new AppError('Lệnh chưa có phần in', { status: 409, errorCode: 'NO_DOT_VAI' });
+  // Nếu không chọn (lệnh chỉ 1 phần in) → mặc định phần in duy nhất.
+  const chosen = dotVaiId
+    ? dotVaiList.find((d) => d.dot_vai_ve_id === dotVaiId)
+    : (dotVaiList.length === 1 ? dotVaiList[0] : null);
+  if (!chosen) throw new AppError('Chọn phần in cần ghi vải hủy', { status: 422, errorCode: 'NO_PHAN_IN' });
+  try {
+    await repo.insertVaiHuy({
+      phieuId, lenhId: phieu.lenh_san_xuat_id, dotVaiId: chosen.dot_vai_ve_id,
+      phanInId: chosen.phan_in_id, soLuong: qty, lyDo,
+    }, actorId);
+  } catch (e) {
+    throw new AppError('Chưa ghi được vải hủy (kiểm tra migration 039_vai_huy)', { status: 500, errorCode: 'VAI_HUY_FAILED' });
+  }
+  sockets.emit('production:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'vai-huy' });
+  return getRun(phieu.lenh_san_xuat_id);
 }
 
 // Ngừng chuyền (đang sản xuất) — kèm lý do; cho ngừng nhiều lần/phiếu.
@@ -231,5 +258,5 @@ async function confirmDry(temId, actorId) {
 module.exports = {
   listCandidates, getRun, startProduction, printTem, reprintTem, temLabel, temLogs, finishRun, monitor,
   getXePhoi, listTemChoPhoi, addToXe, adjustPhoi, listDrying, confirmDry, redry,
-  stopLine, resumeLine,
+  stopLine, resumeLine, addVaiHuy,
 };

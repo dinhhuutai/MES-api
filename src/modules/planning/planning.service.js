@@ -176,7 +176,7 @@ async function recordTestRun(lenhId, body, actorId) {
   return getLenhDetail(lenhId);
 }
 
-async function confirmTest(lenhId, which, actorId) {
+async function confirmTest(lenhId, which, actorId, extra = {}) {
   const { byMa } = await loadTestConfig();
   const cpMa = which === 'cnsp' ? CNSP_CP : QA_CP;
   const lenh = await repo.getLenhBasic(lenhId);
@@ -185,11 +185,20 @@ async function confirmTest(lenhId, which, actorId) {
     throw new AppError('Lệnh không ở trạng thái Test Run', { status: 409, errorCode: 'WRONG_STAGE' });
   }
   const datId = await wf.getTrangThaiId('DAT');
+  // QA xác nhận đạt = ghi 1 LẦN TEST (đạt). Chỉ ghi khi QA đang từ chưa-đạt → đạt (tránh trùng khi xác nhận lại).
+  let recordPass = false;
+  if (which === 'qa') {
+    const st = await repo.getLenhTestStatus(lenhId, byMa[CNSP_CP].id, byMa[QA_CP].id);
+    recordPass = !st.qa_done;
+  }
   await withTransaction(async (client) => {
     const kqId = await repo.upsertLenhResult(client, {
       lenhId, checkpointId: byMa[cpMa].id, trangThai: 'DAT', nguoiXacNhanId: actorId, actorId,
     });
     await repo.insertStatusLog(client, { ketQuaId: kqId, trangThaiMoiId: datId, nguoiId: actorId, lyDo: `${cpMa} xác nhận test` });
+    if (recordPass) {
+      await repo.insertTestRunTx(client, lenhId, { soLuong: extra.soLuong ?? null, ketQua: 'DAT', ghiChu: null }, actorId);
+    }
   });
   await tracking.moveByLenh(lenhId, TEST_TRAM, actorId); // theo dõi dòng chảy: vào trạm TEST_RUN
   sockets.emit('workflow:updated', { lenhId, stage: 'TEST_RUN', confirm: which });
@@ -344,8 +353,9 @@ async function replan(lenhId, { chuyenId, ngayKeHoach, lyDo }, actorId) {
 
   const lenh = await repo.getLenhForReplan(lenhId);
   if (!lenh) throw new AppError('Lệnh sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
-  if (lenh.trang_thai !== 'RELEASE_2' || lenh.co_phieu) {
-    throw new AppError('Chỉ lập lại kế hoạch cho lệnh đã Release 2 và chưa bắt đầu sản xuất',
+  // Cho lập lại kế hoạch khi lệnh đang Test Run (RELEASE_1) HOẶC đã Release 2 — miễn chưa bắt đầu sản xuất.
+  if (!['RELEASE_1', 'RELEASE_2'].includes(lenh.trang_thai) || lenh.co_phieu) {
+    throw new AppError('Chỉ lập lại kế hoạch cho lệnh đang Test Run / đã Release 2 và chưa bắt đầu sản xuất',
       { status: 409, errorCode: 'NOT_REPLANNABLE' });
   }
 

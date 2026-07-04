@@ -119,6 +119,51 @@ async function getLenhBasic(lenhId) {
   return rows[0] || null;
 }
 
+// Danh sách đợt vải / phần in của 1 lệnh (cho ô chọn "vải hủy theo phần in" khi lệnh có nhiều phần in).
+async function getLenhDotVaiList(lenhId) {
+  const { rows } = await query(
+    `SELECT dv.id AS dot_vai_ve_id, dv.ma_dot_vai, dv.so_luong_vai_ve,
+            pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim
+     FROM lenh_sx_dot_vai lsd
+     JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+     JOIN phan_in pin ON pin.id = dv.phan_in_id
+     WHERE lsd.lenh_san_xuat_id = $1
+     ORDER BY pin.ma_phan, dv.ma_dot_vai`,
+    [lenhId]
+  );
+  return rows;
+}
+
+// Ghi 1 lần vải hủy. Best-effort: nếu bảng chưa tạo (migration 039 chưa chạy) → ném lỗi để service báo.
+async function insertVaiHuy({ phieuId, lenhId, dotVaiId, phanInId, soLuong, lyDo }, actorId) {
+  const { rows } = await query(
+    `INSERT INTO vai_huy (phieu_san_xuat_id, lenh_san_xuat_id, dot_vai_ve_id, phan_in_id, so_luong, ly_do, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+    [phieuId || null, lenhId || null, dotVaiId || null, phanInId || null, soLuong, lyDo || null, actorId]
+  );
+  return rows[0].id;
+}
+
+// Lịch sử vải hủy của 1 lệnh (best-effort: bảng chưa có → trả []).
+async function listVaiHuyByLenh(lenhId) {
+  try {
+    const { rows } = await query(
+      `SELECT vh.id, vh.so_luong, vh.ly_do, vh.created_date,
+              pin.ma_phan, pin.mau_vai, dv.ma_dot_vai, nd.ho_ten AS nguoi
+       FROM vai_huy vh
+       LEFT JOIN phan_in pin ON pin.id = vh.phan_in_id
+       LEFT JOIN dot_vai_ve dv ON dv.id = vh.dot_vai_ve_id
+       LEFT JOIN nguoi_dung nd ON nd.id = vh.created_by
+       WHERE vh.lenh_san_xuat_id = $1
+       ORDER BY vh.created_date DESC`,
+      [lenhId]
+    );
+    return rows;
+  } catch (e) {
+    return []; // migration 039 chưa chạy
+  }
+}
+
 async function getActivePhieu(lenhId) {
   const { rows } = await query(
     `SELECT id, ma_phieu_san_xuat, trang_thai, so_luong_in, tg_bd, tg_kt
@@ -496,6 +541,7 @@ async function listNgungByPhieu(phieuId) {
 
 module.exports = {
   listProductionCandidates, getPrintedTotal, getDefaultXePhoi, nextMaPhieu, createPhieu, setLenhChuyen, setLenhTrangThai, getLenhBasic,
+  getLenhDotVaiList, insertVaiHuy, listVaiHuyByLenh,
   getActivePhieu, getPhieuById, getTemsByPhieu, getTemContext, cancelTem, getTemLabelData,
   listTemLogByPhieu, nextReprint, logReprint,
   nextMaTem, createTem, logTemPrint, finishPhieu,

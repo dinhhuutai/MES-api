@@ -127,13 +127,25 @@ async function stageCounts() {
       WHERE ls.trang_thai<>'HUY' AND EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id=ls.id)
     ) x WHERE stage IS NOT NULL GROUP BY stage`;
 
-  const [stageRows, totals, pcsRows] = await Promise.all([
+  // Số lượng TEM đang ở các giai đoạn theo tem (Chờ khô / KCS / Sửa) — đếm tem theo trạng thái thực tế.
+  const temCountSql = `
+    SELECT
+      count(*) FILTER (WHERE t.trang_thai IN ('IN','DANG_PHOI'))::int AS cho_kho,
+      count(*) FILTER (WHERE t.trang_thai = 'DA_KHO')::int AS kcs,
+      count(*) FILTER (WHERE t.trang_thai = 'CHO_SUA')::int AS sua
+    FROM tem t
+    JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+    JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id AND ls.trang_thai <> 'HUY'
+    WHERE t.trang_thai <> 'HUY'`;
+
+  const [stageRows, totals, pcsRows, temRows] = await Promise.all([
     query(stageSql.replace(/\s+/g, ' ')),
     query(`SELECT
               (SELECT count(*) FROM don_hang WHERE trang_thai IS DISTINCT FROM 'CLOSED_FINANCE')::int AS so_don,
               (SELECT count(*) FROM ma_hang)::int AS so_ma,
               (SELECT count(*) FROM phan_in)::int AS so_phan_in`.replace(/\s+/g, ' ')),
     query(pcsSql.replace(/\s+/g, ' ')),
+    query(temCountSql.replace(/\s+/g, ' ')),
   ]);
   const stages = {};
   stageRows.rows.forEach((r) => { stages[r.stage] = { phan_in: r.n_phan_in, ma: r.n_ma, pcs: 0 }; });
@@ -141,6 +153,15 @@ async function stageCounts() {
     stages[r.stage] = stages[r.stage] || { phan_in: 0, ma: 0, pcs: 0 };
     stages[r.stage].pcs = r.pcs;
   });
+  // Gắn số tem cho các giai đoạn tem (Chờ khô / KCS / Sửa).
+  const tc = temRows.rows[0] || {};
+  const setTem = (stage, n) => {
+    stages[stage] = stages[stage] || { phan_in: 0, ma: 0, pcs: 0 };
+    stages[stage].so_tem = n;
+  };
+  setTem('CHO_KHO', tc.cho_kho || 0);
+  setTem('KCS', tc.kcs || 0);
+  setTem('SUA', tc.sua || 0);
   return { totals: totals.rows[0], stages };
 }
 
