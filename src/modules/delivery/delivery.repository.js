@@ -11,10 +11,11 @@ const DON_SUB = (col, alias) => `(SELECT string_agg(DISTINCT ${col}, ', ')
     JOIN khach_hang kh ON kh.id = dh.khach_hang_id
     WHERE lsd.lenh_san_xuat_id = ls.id) AS ${alias}`;
 
-// Tem OQC đạt, chưa nằm trong phiếu giao nào
+// Tem còn phần CHỜ GIAO (con_giao = sl_oqc_dat − sl_da_giao > 0) — cho giao TỪNG PHẦN nhiều lần.
 async function listTemSanSang({ search = '' }) {
   const { rows } = await query(
-    `SELECT t.id AS tem_id, t.ma_tem, t.so_luong, ls.ma_lenh_san_xuat,
+    `SELECT t.id AS tem_id, t.ma_tem, t.so_luong, (t.sl_oqc_dat - t.sl_da_giao) AS con_giao,
+            t.sl_oqc_dat, t.sl_da_giao, ls.ma_lenh_san_xuat,
             (SELECT string_agg(DISTINCT pin.ma_phan, ', ')
                FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
                JOIN phan_in pin ON pin.id = dv.phan_in_id WHERE lsd.lenh_san_xuat_id = ls.id) AS phan_list,
@@ -37,8 +38,7 @@ async function listTemSanSang({ search = '' }) {
        JOIN tram tr ON tr.id = tt.tram_id
        WHERE lsd.lenh_san_xuat_id = ls.id ORDER BY tt.tg_vao LIMIT 1
      ) sla ON true
-     WHERE t.trang_thai = 'OQC_DAT'
-       AND NOT EXISTS (SELECT 1 FROM giao_hang_tem gt WHERE gt.tem_id = t.id)
+     WHERE (t.sl_oqc_dat - t.sl_da_giao) > 0
        AND ($1 = '' OR t.ma_tem ILIKE '%'||$1||'%' OR ls.ma_lenh_san_xuat ILIKE '%'||$1||'%'
             OR ${lenhPhanInMatch('ls.id', '$1')})
      ORDER BY t.created_date`,
@@ -81,12 +81,14 @@ async function createGiaoHang(client, { maPhieu, donHangId, ngayGiao, ghiChu }, 
   return rows[0].id;
 }
 
-async function addTem(client, giaoHangId, temId, actorId) {
+// Thêm tem vào phiếu giao với SL giao TỪNG PHẦN. soLuong không nhập → mặc định = con_giao còn lại.
+async function addTem(client, giaoHangId, temId, soLuong, actorId) {
   await client.query(
     `INSERT INTO giao_hang_tem (giao_hang_id, tem_id, so_luong_giao, created_by)
-     SELECT $1, $2, t.so_luong, $3 FROM tem t WHERE t.id = $2
-     ON CONFLICT (giao_hang_id, tem_id) DO NOTHING`,
-    [giaoHangId, temId, actorId]
+     SELECT $1, $2, LEAST(COALESCE($4, (t.sl_oqc_dat - t.sl_da_giao)), (t.sl_oqc_dat - t.sl_da_giao)), $3
+     FROM tem t WHERE t.id = $2
+     ON CONFLICT (giao_hang_id, tem_id) DO UPDATE SET so_luong_giao = EXCLUDED.so_luong_giao`,
+    [giaoHangId, temId, actorId, soLuong ?? null]
   );
 }
 
@@ -139,20 +141,40 @@ async function getGiaoHangTems(giaoHangId) {
   return rows;
 }
 
-async function confirmGiao(client, giaoHangId, actorId) {
+// Xác nhận giao: đóng phiếu. (Sổ cái sl_da_giao + recompute trạng thái tem xử lý ở service theo từng tem.)
+async function markGiaoDone(client, giaoHangId, actorId) {
   await client.query(
     `UPDATE giao_hang SET trang_thai='DA_GIAO', ngay_giao=COALESCE(ngay_giao, CURRENT_DATE),
        updated_by=$2, updated_date=CURRENT_TIMESTAMP WHERE id=$1`,
     [giaoHangId, actorId]
   );
-  await client.query(
-    `UPDATE tem SET trang_thai='DA_GIAO', updated_by=$2, updated_date=CURRENT_TIMESTAMP
-     WHERE id IN (SELECT tem_id FROM giao_hang_tem WHERE giao_hang_id=$1)`,
-    [giaoHangId, actorId]
-  );
+}
+
+// Cộng dồn đã giao cho tem + cập nhật trạng thái dominant (chỉ DA_GIAO khi đã giao đủ).
+async function applyGiaoLedger(client, giaoHangId, actorId) {
+  const { rows } = await client.query('SELECT tem_id, so_luong_giao FROM giao_hang_tem WHERE giao_hang_id=$1', [giaoHangId]);
+  for (const r of rows) {
+    await client.query(
+      `UPDATE tem SET sl_da_giao = sl_da_giao + COALESCE($2,0), updated_by=$3, updated_date=CURRENT_TIMESTAMP WHERE id=$1`,
+      [r.tem_id, r.so_luong_giao, actorId]
+    );
+    await client.query(
+      `UPDATE tem SET trang_thai = CASE
+          WHEN trang_thai IN ('IN','DANG_PHOI','HUY') THEN trang_thai
+          WHEN (so_luong-(sl_kcs_dat+sl_kcs_sua+sl_kcs_huy)) > 0 THEN 'DA_KHO'
+          WHEN (sl_kcs_sua-(sl_sua_dat+sl_sua_huy)) > 0 THEN 'CHO_SUA'
+          WHEN ((sl_kcs_dat+sl_sua_dat)-sl_oqc_dat) > 0 THEN 'CHO_OQC'
+          WHEN (sl_oqc_dat-sl_da_giao) > 0 THEN 'OQC_DAT'
+          WHEN sl_da_giao > 0 THEN 'DA_GIAO'
+          ELSE 'LOAI' END,
+         updated_date=CURRENT_TIMESTAMP WHERE id=$1`,
+      [r.tem_id]
+    );
+  }
+  return rows.map((r) => r.tem_id);
 }
 
 module.exports = {
   listTemSanSang, donHangIdsForTems, nextMaPhieuGiao, createGiaoHang, addTem,
-  getGiaoHang, listGiaoHang, getGiaoHangTems, confirmGiao,
+  getGiaoHang, listGiaoHang, getGiaoHangTems, markGiaoDone, applyGiaoLedger,
 };

@@ -92,6 +92,10 @@ const cancelableLenh = asyncHandler(async (req, res) => {
 const cancelLenh = asyncHandler(async (req, res) =>
   ok(res, await service.rollbackLenh(req.params.lenhId, req.body, req.user.id), 'Đã hoàn tác chuyển trạm'));
 
+// Test Run QC trả về Release 1 (hủy lệnh + lý do).
+const returnTestRun = asyncHandler(async (req, res) =>
+  ok(res, await service.returnTestRunToRelease1(req.params.lenhId, req.body, req.user.id), 'Đã trả về Release 1'));
+
 const today = () => new Date().toISOString().slice(0, 10);
 const release1Done = asyncHandler(async (req, res) => ok(res, await service.release1Done(req.query.date || today())));
 const release2Done = asyncHandler(async (req, res) => ok(res, await service.release2Done(req.query.date || today())));
@@ -105,6 +109,6 @@ module.exports = {
   confirmCNSP, confirmQA, cancelCNSP, cancelQA, confirmCNSPBatch, confirmQABatch,
   release2Candidates, approveRelease2, approveRelease2Batch, testRunHistory,
   replanCandidates, replan, replanBatch, planHistory,
-  cancelableLenh, cancelLenh,
+  cancelableLenh, cancelLenh, returnTestRun,
   release1Done, release2Done, replanDone, testCnspDone, testQaDone,
 };

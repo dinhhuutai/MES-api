@@ -98,7 +98,12 @@ const confirmHistory = asyncHandler(async (req, res) => {
   return ok(res, await service.confirmHistory(date, req.query.search || ''));
 });
 
+// QC chuẩn bị kỹ thuật trả về Ready kỹ thuật (chọn checklist rớt + lý do).
+const returnToTech = asyncHandler(async (req, res) =>
+  ok(res, await service.returnToTech(req.params.phanInId, req.body, req.user.id), 'Đã trả về kỹ thuật'));
+
 module.exports = {
   config, candidates, qcCandidates, detail, history, done,
   confirmItem, confirmItemsBatch, confirmBulk, confirmQC, qcConfirmBatch, cancelItem, confirmHistory,
+  returnToTech,
 };

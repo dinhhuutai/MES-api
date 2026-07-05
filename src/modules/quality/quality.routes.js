@@ -21,7 +21,11 @@ router.post('/sua/:temId', rbac('SUA'), c.recordSua);
 router.get('/oqc/candidates', rbac('OQC'), c.oqcCandidates);
 router.get('/oqc/history', rbac('OQC'), c.oqcHistory);
 router.get('/oqc/done', rbac('OQC'), c.oqcDone);
+router.post('/oqc/:temId/tra-ve', rbac('OQC'), c.oqcReturn);
 router.post('/oqc/:temId', rbac('OQC'), c.recordOqc);
+
+// Lịch sử QC trả về (toggle READY/TEST_RUN/OQC)
+router.get('/qc-tra-ve', rbac('QC_TRAVE_VIEW'), c.qcTraVeHistory);
 
 // QC in-line (kiểm tại chuyền) — route tĩnh trước route động /:phieuId
 router.get('/inline/candidates', rbac('QC_INLINE'), c.inlineCandidates);
@@ -35,5 +39,12 @@ router.get('/loai-loi', rbac('LOI_MANAGE'), c.loaiLoiList);
 router.post('/loai-loi', rbac('LOI_MANAGE'), c.loaiLoiCreate);
 router.patch('/loai-loi/:id/active', rbac('LOI_MANAGE'), c.loaiLoiToggle);
 router.patch('/loai-loi/:id', rbac('LOI_MANAGE'), c.loaiLoiUpdate);
+
+// Danh mục trường hợp giao đặc biệt (OQC dropdown dùng OQC; quản lý dùng GIAODB_MANAGE)
+router.get('/giao-dac-biet', rbac('OQC', 'GIAODB_MANAGE'), c.giaoDacBietActive);
+router.get('/giao-dac-biet/all', rbac('GIAODB_MANAGE'), c.giaoDacBietList);
+router.post('/giao-dac-biet', rbac('GIAODB_MANAGE'), c.giaoDacBietCreate);
+router.patch('/giao-dac-biet/:id/active', rbac('GIAODB_MANAGE'), c.giaoDacBietToggle);
+router.patch('/giao-dac-biet/:id', rbac('GIAODB_MANAGE'), c.giaoDacBietUpdate);
 
 module.exports = router;

@@ -3,9 +3,17 @@
 const { query } = require('../../config/db');
 const { lenhPhanInMatch } = require('../../utils/search');
 
+// SỔ CÁI SỐ LƯỢNG tem (migration 043): SL còn lại từng công đoạn (dùng cho lọc + hiển thị).
+const CON_KCS = '(t.so_luong - (t.sl_kcs_dat + t.sl_kcs_sua + t.sl_kcs_huy))';
+const CON_SUA = '(t.sl_kcs_sua - (t.sl_sua_dat + t.sl_sua_huy))';
+const CON_OQC = '((t.sl_kcs_dat + t.sl_sua_dat) - t.sl_oqc_dat)';
+const CON_GIAO = '(t.sl_oqc_dat - t.sl_da_giao)';
+
 const TEM_CTX = `
-  SELECT t.id AS tem_id, t.ma_tem, t.so_luong, t.trang_thai,
-         ls.ma_lenh_san_xuat, cs.ma_chuyen,
+  SELECT t.id AS tem_id, t.ma_tem, t.so_luong, t.trang_thai, t.da_qua_phoi,
+         t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy, t.sl_sua_dat, t.sl_sua_huy, t.sl_oqc_dat, t.sl_da_giao,
+         ${CON_KCS} AS con_kcs, ${CON_SUA} AS con_sua, ${CON_OQC} AS con_oqc, ${CON_GIAO} AS con_giao,
+         ls.ma_lenh_san_xuat, cs.ma_chuyen, cs.ten_chuyen,
          info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.mau_vai, info.kich_vai, info.kich_phim,
          sla.tg_vao, sla.sla_phut, sla.canh_bao_truoc_phut,
          (SELECT string_agg(DISTINCT pin.ma_phan, ', ')
@@ -31,20 +39,97 @@ const TEM_CTX = `
     WHERE lsd.lenh_san_xuat_id = ls.id ORDER BY tt.tg_vao LIMIT 1
   ) sla ON true`;
 
-async function listByTemStatus(status, { search = '' }) {
+// Danh sách tem cho 1 công đoạn — lọc theo SL CÒN LẠI (con_X > 0), cho phép 1 tem xuất hiện đồng thời
+// ở nhiều công đoạn nếu còn phần chưa xử lý (kiểm/giao nhiều lần).
+async function listCandByCon(condExpr, { search = '' }) {
   const { rows } = await query(
     `${TEM_CTX}
-     WHERE t.trang_thai = $1 AND ($2 = '' OR t.ma_tem ILIKE '%'||$2||'%' OR ls.ma_lenh_san_xuat ILIKE '%'||$2||'%'
-            OR ${lenhPhanInMatch('ls.id', '$2')})
+     WHERE ${condExpr}
+       AND ($1 = '' OR t.ma_tem ILIKE '%'||$1||'%' OR ls.ma_lenh_san_xuat ILIKE '%'||$1||'%'
+            OR ${lenhPhanInMatch('ls.id', '$1')})
      ORDER BY t.created_date`,
-    [status, search]
+    [search]
   );
   return rows;
 }
+// KCS: tem đã khô, còn phần chưa kiểm. Sửa: còn phần chờ sửa. OQC: còn phần chờ kiểm cuối.
+// (con_sua/con_oqc > 0 ⟹ đã qua KCS ⟹ đã khô — không cần lọc thêm da_qua_phoi.)
+const listKcsCand = (opt) => listCandByCon(`t.trang_thai = 'DA_KHO' AND ${CON_KCS} > 0`, opt);
+const listSuaCand = (opt) => listCandByCon(`${CON_SUA} > 0`, opt);
+const listOqcCand = (opt) => listCandByCon(`${CON_OQC} > 0`, opt);
 
 async function getTemBasic(temId) {
   const { rows } = await query('SELECT id, ma_tem, so_luong, trang_thai FROM tem WHERE id = $1', [temId]);
   return rows[0] || null;
+}
+
+// ----- SỔ CÁI SỐ LƯỢNG (migration 043) -----
+// Đọc ledger + SL còn lại từng công đoạn (để service validate số nhập ≤ còn lại).
+async function getTemLedger(temId) {
+  const { rows } = await query(
+    `SELECT id, ma_tem, so_luong, trang_thai, da_qua_phoi, phieu_san_xuat_id,
+            sl_kcs_dat, sl_kcs_sua, sl_kcs_huy, sl_sua_dat, sl_sua_huy, sl_oqc_dat, sl_da_giao,
+            (so_luong - (sl_kcs_dat+sl_kcs_sua+sl_kcs_huy)) AS con_kcs,
+            (sl_kcs_sua - (sl_sua_dat+sl_sua_huy)) AS con_sua,
+            ((sl_kcs_dat+sl_sua_dat) - sl_oqc_dat) AS con_oqc,
+            (sl_oqc_dat - sl_da_giao) AS con_giao
+     FROM tem WHERE id = $1`,
+    [temId]
+  );
+  return rows[0] || null;
+}
+
+// Cộng dồn ledger theo công đoạn (client trong transaction).
+async function addKcsLedger(client, temId, { dat = 0, sua = 0, huy = 0 }, actorId) {
+  await client.query(
+    `UPDATE tem SET sl_kcs_dat = sl_kcs_dat+$2, sl_kcs_sua = sl_kcs_sua+$3, sl_kcs_huy = sl_kcs_huy+$4,
+       updated_by=$5, updated_date=CURRENT_TIMESTAMP WHERE id=$1`,
+    [temId, dat, sua, huy, actorId]
+  );
+}
+async function addSuaLedger(client, temId, { dat = 0, huy = 0 }, actorId) {
+  await client.query(
+    `UPDATE tem SET sl_sua_dat = sl_sua_dat+$2, sl_sua_huy = sl_sua_huy+$3,
+       updated_by=$4, updated_date=CURRENT_TIMESTAMP WHERE id=$1`,
+    [temId, dat, huy, actorId]
+  );
+}
+async function addOqcLedger(client, temId, dat, actorId) {
+  await client.query(
+    `UPDATE tem SET sl_oqc_dat = sl_oqc_dat+$2, updated_by=$3, updated_date=CURRENT_TIMESTAMP WHERE id=$1`,
+    [temId, dat, actorId]
+  );
+}
+async function addGiaoLedger(client, temId, qty, actorId) {
+  await client.query(
+    `UPDATE tem SET sl_da_giao = sl_da_giao+$2, updated_by=$3, updated_date=CURRENT_TIMESTAMP WHERE id=$1`,
+    [temId, qty, actorId]
+  );
+}
+// OQC trả về KCS: đưa phần chờ OQC (đạt KCS) quay lại "chưa kiểm" (giảm sl_kcs_dat).
+async function reduceKcsDat(client, temId, qty, actorId) {
+  await client.query(
+    `UPDATE tem SET sl_kcs_dat = GREATEST(sl_kcs_dat-$2,0), updated_by=$3, updated_date=CURRENT_TIMESTAMP WHERE id=$1`,
+    [temId, qty, actorId]
+  );
+}
+
+// Cập nhật trang_thai = công đoạn KÉM tiến độ nhất còn hàng (dominant) — cho dashboard/đơn hàng.
+// Không đụng tem đang phơi (IN/DANG_PHOI) hay đã hủy (HUY).
+async function recomputeTemStage(client, temId, actorId) {
+  await client.query(
+    `UPDATE tem SET trang_thai = CASE
+        WHEN trang_thai IN ('IN','DANG_PHOI','HUY') THEN trang_thai
+        WHEN (so_luong-(sl_kcs_dat+sl_kcs_sua+sl_kcs_huy)) > 0 THEN 'DA_KHO'
+        WHEN (sl_kcs_sua-(sl_sua_dat+sl_sua_huy)) > 0 THEN 'CHO_SUA'
+        WHEN ((sl_kcs_dat+sl_sua_dat)-sl_oqc_dat) > 0 THEN 'CHO_OQC'
+        WHEN (sl_oqc_dat-sl_da_giao) > 0 THEN 'OQC_DAT'
+        WHEN sl_da_giao > 0 THEN 'DA_GIAO'
+        ELSE 'LOAI' END,
+       updated_by=$2, updated_date=CURRENT_TIMESTAMP
+     WHERE id=$1`,
+    [temId, actorId]
+  );
 }
 
 // ----- QC IN-LINE (kiểm tại chuyền — phiếu đang chạy) -----
@@ -256,10 +341,51 @@ async function nextOqcRound(temId) {
 async function insertOqc(client, temId, d, actorId) {
   await client.query(
     `INSERT INTO oqc (tem_id, lan_kiem_cua_phan, so_luong_kiem, so_luong_dat, so_luong_loi, ket_qua,
-                      cho_giao, ly_do_cho_giao, owner_cho_giao_id, ghi_chu, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+                      cho_giao, ly_do_cho_giao, owner_cho_giao_id, truong_hop_giao_id, ghi_chu, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
     [temId, d.lanKiem, d.soLuongKiem, d.soLuongDat, d.soLuongLoi, d.ketQua,
-     d.choGiao === true, d.lyDoChoGiao || null, d.ownerChoGiaoId || null, d.ghiChu || null, actorId]
+     d.choGiao === true, d.lyDoChoGiao || null, d.ownerChoGiaoId || null, d.truongHopGiaoId || null,
+     d.ghiChu || null, actorId]
+  );
+}
+
+// ----- DANH MỤC TRƯỜNG HỢP GIAO ĐẶC BIỆT (truong_hop_giao_dac_biet) -----
+async function listGiaoDacBietActive() {
+  const { rows } = await query(
+    'SELECT id, ma, ten FROM truong_hop_giao_dac_biet WHERE dang_hoat_dong = true ORDER BY ten'
+  );
+  return rows;
+}
+
+async function listGiaoDacBietAll(search = '') {
+  const { rows } = await query(
+    `SELECT id, ma, ten, dang_hoat_dong FROM truong_hop_giao_dac_biet
+     WHERE ($1 = '' OR ma ILIKE '%'||$1||'%' OR ten ILIKE '%'||$1||'%')
+     ORDER BY dang_hoat_dong DESC, ten`,
+    [search]
+  );
+  return rows;
+}
+
+async function insertGiaoDacBiet({ ma, ten }, actorId) {
+  const { rows } = await query(
+    `INSERT INTO truong_hop_giao_dac_biet (ma, ten, created_by) VALUES ($1,$2,$3) RETURNING id`,
+    [ma, ten, actorId]
+  );
+  return rows[0].id;
+}
+
+async function updateGiaoDacBiet(id, { ten }, actorId) {
+  await query(
+    `UPDATE truong_hop_giao_dac_biet SET ten = $2, updated_by = $3, updated_date = CURRENT_TIMESTAMP WHERE id = $1`,
+    [id, ten, actorId]
+  );
+}
+
+async function setGiaoDacBietActive(id, active, actorId) {
+  await query(
+    `UPDATE truong_hop_giao_dac_biet SET dang_hoat_dong = $2, updated_by = $3, updated_date = CURRENT_TIMESTAMP WHERE id = $1`,
+    [id, active, actorId]
   );
 }
 
@@ -348,12 +474,92 @@ async function inlineDoneByDate(date) {
   return rows;
 }
 
+// ============ QC TRẢ VỀ (qc_tra_ve) — dùng chung 3 luồng READY/TEST_RUN/OQC ============
+const RETURN_COL = { READY: 'phan_in_id', TEST_RUN: 'dot_vai_ve_id', OQC: 'tem_id' };
+
+// Ghi 1 lần QC trả về (không transaction — gọi sau khi commit nghiệp vụ chính).
+// Best-effort: bảng chưa tạo (migration 042 chưa chạy) → chỉ log, không làm hỏng thao tác trả về.
+async function insertQcTraVe({ loai, phanInId, dotVaiId, lenhId, temId, checklistList, lyDo }, actorId) {
+  try {
+    await query(
+      `INSERT INTO qc_tra_ve (loai, phan_in_id, dot_vai_ve_id, lenh_san_xuat_id, tem_id, checklist_list, ly_do, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [loai, phanInId || null, dotVaiId || null, lenhId || null, temId || null, checklistList || null, lyDo, actorId]
+    );
+  } catch (e) {
+    console.error(`[qc-tra-ve] ✗ ghi trả về lỗi (kiểm tra migration 042): ${e.message}`);
+  }
+}
+
+// Map { objId: ly_do } các bản ghi trả về CHƯA xử lý — để gắn badge lên list. Best-effort (bảng chưa có → {}).
+async function activeReturnsMap(loai, ids) {
+  const col = RETURN_COL[loai];
+  if (!col || !Array.isArray(ids) || ids.length === 0) return {};
+  try {
+    const { rows } = await query(
+      `SELECT DISTINCT ON (${col}) ${col} AS obj_id, ly_do
+       FROM qc_tra_ve WHERE loai = $1 AND da_xu_ly = false AND ${col} = ANY($2::uuid[])
+       ORDER BY ${col}, created_date DESC`,
+      [loai, ids]
+    );
+    const m = {};
+    rows.forEach((r) => { m[r.obj_id] = r.ly_do; });
+    return m;
+  } catch (e) { return {}; }
+}
+
+// Tắt cờ trả về (da_xu_ly=true) khi đối tượng đã làm lại xong. Best-effort.
+async function resolveReturns(loai, id) {
+  const col = RETURN_COL[loai];
+  if (!col || !id) return;
+  try {
+    await query(
+      `UPDATE qc_tra_ve SET da_xu_ly = true, updated_date = CURRENT_TIMESTAMP WHERE loai = $1 AND ${col} = $2 AND da_xu_ly = false`,
+      [loai, id]
+    );
+  } catch (e) { /* migration 042 chưa chạy */ }
+}
+
+async function resolveReturnsMany(loai, ids) {
+  for (const id of (ids || [])) await resolveReturns(loai, id);
+}
+
+// Lịch sử QC trả về theo loại + ngày (giờ VN) — cho trang "Lịch sử QC trả về".
+async function listQcTraVe(loai, date) {
+  const sql = `
+    SELECT qtv.created_date AS tg, nd.ho_ten AS nguoi, qtv.ly_do, qtv.checklist_list, qtv.da_xu_ly,
+           COALESCE(pin.ma_phan, pin2.ma_phan) AS ma_phan,
+           COALESCE(mh.ma_hang, mh2.ma_hang) AS ma_hang,
+           COALESCE(kh.ten_khach_hang, kh2.ten_khach_hang) AS ten_khach_hang,
+           ls.ma_lenh_san_xuat, dv.ma_dot_vai, t.ma_tem
+    FROM qc_tra_ve qtv
+    LEFT JOIN nguoi_dung nd ON nd.id = qtv.created_by
+    LEFT JOIN phan_in pin ON pin.id = qtv.phan_in_id
+    LEFT JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+    LEFT JOIN don_hang dh ON dh.id = mh.don_hang_id
+    LEFT JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+    LEFT JOIN lenh_san_xuat ls ON ls.id = qtv.lenh_san_xuat_id
+    LEFT JOIN dot_vai_ve dv ON dv.id = qtv.dot_vai_ve_id
+    LEFT JOIN phan_in pin2 ON pin2.id = dv.phan_in_id
+    LEFT JOIN ma_hang mh2 ON mh2.id = pin2.ma_hang_id
+    LEFT JOIN don_hang dh2 ON dh2.id = mh2.don_hang_id
+    LEFT JOIN khach_hang kh2 ON kh2.id = dh2.khach_hang_id
+    LEFT JOIN tem t ON t.id = qtv.tem_id
+    WHERE qtv.loai = $1 AND (qtv.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $2::date
+    ORDER BY qtv.created_date DESC`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [loai, date]);
+  return rows;
+}
+
 module.exports = {
-  listByTemStatus, getTemBasic, setTemTrangThai, setTemStatusQty,
+  insertQcTraVe, activeReturnsMap, resolveReturns, resolveReturnsMany, listQcTraVe,
+  listKcsCand, listSuaCand, listOqcCand, getTemBasic, setTemTrangThai, setTemStatusQty,
+  getTemLedger, addKcsLedger, addSuaLedger, addOqcLedger, addGiaoLedger, reduceKcsDat, recomputeTemStage,
   nextMaTem, createChildTem, insertTemSplit, getTemForSplit,
   insertKcs, insertSua, nextOqcRound, insertOqc,
   kcsHistoryByDate, suaHistoryByDate, oqcHistoryByDate,
   temDoneByDate, inlineDoneByDate,
   listInlineCandidates, getPhieuRun, nextInlineRound, insertQcInline, insertQcInlineLoi, inlineHistoryByDate,
   listLoaiLoiActive, listLoaiLoiAll, insertLoaiLoi, updateLoaiLoi, setLoaiLoiActive,
+  listGiaoDacBietActive, listGiaoDacBietAll, insertGiaoDacBiet, updateGiaoDacBiet, setGiaoDacBietActive,
 };

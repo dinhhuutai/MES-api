@@ -18,6 +18,12 @@ async function scalar(sql) {
   return v == null ? 0 : Number(v);
 }
 
+// Helper: lấy 1 CHUỖI (text) từ SQL trả cột `v` — cho metric kiểu ngày/giờ/văn bản.
+async function scalarText(sql) {
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim());
+  return rows[0] && rows[0].v != null ? String(rows[0].v) : '';
+}
+
 // Ngày hôm nay theo giờ VN (dùng chung cho mọi lọc "hôm nay").
 const VN_TODAY = "(now() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date";
 // Lọc "hôm nay" cho cột TIMESTAMPTZ.
@@ -35,8 +41,19 @@ const tonTram = (maTram) =>
   `SELECT count(*)::numeric AS v FROM ton_tram tt JOIN tram tr ON tr.id = tt.tram_id
    WHERE tt.dot_vai_ve_id IS NOT NULL AND tr.ma_tram = '${maTram}'`;
 
-// mỗi def: { ma, ten, mo_ta, nhom, don_vi, run() }
+// mỗi def: { ma, ten, mo_ta, nhom, don_vi, kieu?, run() }
 const DEFS = [
+  // ---------- THỜI GIAN HIỆN TẠI (text — tự cập nhật mỗi lần render) ----------
+  { ma: 'NGAY_GIO_HIEN_TAI', ten: 'Ngày giờ hiện tại', nhom: 'Thời gian hiện tại', don_vi: 'giờ VN', kieu: 'text',
+    mo_ta: 'Ngày giờ hiện tại (giờ VN), dạng DD/MM/YYYY HH:mm. Tự cập nhật mỗi lần Xem trước / Xuất.',
+    run: () => scalarText(`SELECT to_char(now() AT TIME ZONE 'Asia/Ho_Chi_Minh', 'DD/MM/YYYY HH24:MI') AS v`) },
+  { ma: 'NGAY_HIEN_TAI', ten: 'Ngày hiện tại', nhom: 'Thời gian hiện tại', don_vi: 'giờ VN', kieu: 'text',
+    mo_ta: 'Ngày hiện tại (giờ VN), dạng DD/MM/YYYY. Tự cập nhật mỗi lần Xem trước / Xuất.',
+    run: () => scalarText(`SELECT to_char(now() AT TIME ZONE 'Asia/Ho_Chi_Minh', 'DD/MM/YYYY') AS v`) },
+  { ma: 'GIO_HIEN_TAI', ten: 'Giờ hiện tại', nhom: 'Thời gian hiện tại', don_vi: 'giờ VN', kieu: 'text',
+    mo_ta: 'Giờ:phút hiện tại (giờ VN), dạng HH:mm. Tự cập nhật mỗi lần Xem trước / Xuất.',
+    run: () => scalarText(`SELECT to_char(now() AT TIME ZONE 'Asia/Ho_Chi_Minh', 'HH24:MI') AS v`) },
+
   // ---------- ĐƠN HÀNG (hôm nay) ----------
   { ma: 'SO_DON_HOM_NAY', ten: 'Số đơn hàng hôm nay', nhom: 'Đơn hàng (hôm nay)', don_vi: 'đơn',
     mo_ta: 'Số đơn hàng tạo trong hôm nay (giờ VN).',
@@ -263,7 +280,7 @@ const BY_MA = Object.fromEntries(DEFS.map((d) => [d.ma, d]));
 
 // Danh mục cho FE (không kèm hàm run).
 function catalog() {
-  return DEFS.map(({ run, ...d }) => ({ ...d, kieu: 'so' }));
+  return DEFS.map(({ run, ...d }) => ({ ...d, kieu: d.kieu || 'so' }));
 }
 
 // Tính giá trị cho 1 tập mã metric (chỉ metric được dùng) → { ma: value }. Giá trị realtime.

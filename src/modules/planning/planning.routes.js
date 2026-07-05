@@ -31,6 +31,8 @@ router.post('/test-run/:lenhId/confirm-cnsp', rbac('TESTRUN_CNSP'), c.confirmCNS
 router.post('/test-run/:lenhId/confirm-qa', rbac('TESTRUN_QA'), c.confirmQA);
 router.post('/test-run/:lenhId/cancel-cnsp', rbac('TESTRUN_CNSP'), c.cancelCNSP);
 router.post('/test-run/:lenhId/cancel-qa', rbac('TESTRUN_QA'), c.cancelQA);
+// Test Run QC trả về Release 1 (hủy lệnh, đợt vải về pool) — kèm lý do.
+router.post('/test-run/:lenhId/tra-ve-release1', rbac('TESTRUN_QA'), c.returnTestRun);
 
 // Release 2 (Kế hoạch duyệt cuối)
 router.get('/release2/candidates', rbac('RELEASE2'), c.release2Candidates);

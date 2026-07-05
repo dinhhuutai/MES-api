@@ -2,6 +2,7 @@
 
 const { withTransaction } = require('../../config/db');
 const repo = require('./planning.repository');
+const qaRepo = require('../quality/quality.repository'); // qc_tra_ve dùng chung
 const wf = require('../workflow/workflow.repository');
 const AppError = require('../../utils/AppError');
 const { buildMeta } = require('../../utils/pagination');
@@ -29,6 +30,9 @@ async function loadTestConfig() {
 // ----- RELEASE 1 -----
 async function listRelease1Candidates({ search, page, limit, offset }) {
   const { rows, total } = await repo.listRelease1Candidates({ search, offset, limit });
+  // Đánh dấu đợt vải bị Test Run trả về (badge + lọc).
+  const rm = await qaRepo.activeReturnsMap('TEST_RUN', rows.map((r) => r.dot_vai_id));
+  rows.forEach((r) => { r.tra_ve_ly_do = rm[r.dot_vai_id] || null; });
   return { items: rows, meta: buildMeta(page, limit, total) };
 }
 
@@ -72,6 +76,7 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
   for (const c of created) {
     await tracking.moveDotVaiTo([c.dot_vai_id], c.trang_thai === 'RELEASE_2' ? 'RELEASE_2' : 'RELEASE_1', actorId);
   }
+  await qaRepo.resolveReturnsMany('TEST_RUN', created.map((c) => c.dot_vai_id)); // release lại → tắt cờ "bị Test Run trả về"
   created.forEach((c) => sockets.emit('workflow:updated', { lenhId: c.id, stage: c.trang_thai }));
   sockets.emit('dashboard:refresh', {});
 
@@ -145,6 +150,7 @@ async function releaseSet(setId, { chuyenId, soLuongRelease, ngayKeHoach }, acto
   });
 
   await tracking.moveDotVaiTo(dotVaiIds, 'RELEASE_1', actorId); // theo dõi dòng chảy (cả set)
+  await qaRepo.resolveReturnsMany('TEST_RUN', dotVaiIds); // release lại → tắt cờ "bị Test Run trả về"
   sockets.emit('workflow:updated', { lenhId, stage: 'RELEASE_1', fromSet: setId });
   sockets.emit('dashboard:refresh', {});
   return getLenhDetail(lenhId);
@@ -341,6 +347,23 @@ async function rollbackLenh(lenhId, { target, lyDo }, actorId) {
   return { id: lenhId, target: TARGET, dot_vai: dotVaiIds.length, tu_set: lenh.tu_set === true };
 }
 
+// Test Run QC TRẢ VỀ Release 1: hủy lệnh (đợt vải về pool Release 1) + đánh dấu QC trả về (lý do bắt buộc).
+async function returnTestRunToRelease1(lenhId, { lyDo }, actorId) {
+  const reason = (lyDo || '').trim();
+  if (!reason) throw new AppError('Nhập lý do trả về Release 1', { status: 422, errorCode: 'NO_LY_DO' });
+  const lenh = await repo.getLenhBasic(lenhId);
+  if (!lenh) throw new AppError('Lệnh sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  if (lenh.trang_thai !== 'RELEASE_1') {
+    throw new AppError('Chỉ trả về Release 1 khi lệnh đang ở Test Run', { status: 409, errorCode: 'WRONG_STAGE' });
+  }
+  const dotVaiIds = await tracking.dotVaiFromLenh(lenhId);
+  await rollbackLenh(lenhId, { target: 'RELEASE_1', lyDo: reason }, actorId); // hủy lệnh → đợt vải về pool
+  for (const dvId of dotVaiIds) {
+    await qaRepo.insertQcTraVe({ loai: 'TEST_RUN', dotVaiId: dvId, lenhId, lyDo: reason }, actorId);
+  }
+  return { lenh_id: lenhId, dot_vai: dotVaiIds.length };
+}
+
 // ----- LẬP KẾ HOẠCH LẠI -----
 async function listReplanCandidates({ search, page, limit, offset }) {
   const { rows, total } = await repo.listReplanCandidates({ search, offset, limit });
@@ -436,6 +459,6 @@ module.exports = {
   listTestRunCandidates, getLenhDetail, recordTestRun, confirmTest, confirmTestBatch, cancelTest,
   listRelease2Candidates, approveRelease2, approveRelease2Batch, testRunHistory,
   listReplanCandidates, replan, replanBatch, planHistory,
-  listCancelableLenh, rollbackLenh,
+  listCancelableLenh, rollbackLenh, returnTestRunToRelease1,
   release1Done, release2Done, replanDone, testCnspDone, testQaDone,
 };

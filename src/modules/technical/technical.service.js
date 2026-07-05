@@ -2,6 +2,7 @@
 
 const { withTransaction } = require('../../config/db');
 const repo = require('./technical.repository');
+const qaRepo = require('../quality/quality.repository'); // qc_tra_ve dùng chung
 const wf = require('../workflow/workflow.repository');
 const AppError = require('../../utils/AppError');
 const { buildMeta } = require('../../utils/pagination');
@@ -77,11 +78,46 @@ async function listCandidates({ search, page, limit, offset, onlyQcReady = false
     khuonId: byMa.KHUON?.id, filmId: byMa.FILM?.id, mucId: byMa.MUC?.id,
     onlyQcReady, offset, limit, readySla, readyCanhBao, techTotal: TECH_TOTAL,
   });
+  // Đánh dấu phần in bị QC (READY) trả về (badge + lọc "chỉ hiện phần bị trả về").
+  const rm = await qaRepo.activeReturnsMap('READY', rows.map((r) => r.id));
   const items = rows.map((r) => ({
     ...r,
     trang_thai_ready: r.qc_done ? 'DONE' : r.n_tech_done >= TECH_TOTAL ? 'CHO_QC' : r.n_tech_done > 0 ? 'DANG' : 'CHUA',
+    tra_ve_ly_do: rm[r.id] || null,
   }));
   return { items, meta: buildMeta(page, limit, total) };
+}
+
+// QC chuẩn bị kỹ thuật TRẢ VỀ Ready kỹ thuật: chọn các checklist rớt → hủy xác nhận các mục đó
+// (+ hủy QC nếu đã có) để bộ phận kỹ thuật làm lại. Lý do bắt buộc.
+async function returnToTech(phanInId, { checklists, lyDo }, actorId) {
+  const reason = (lyDo || '').trim();
+  if (!reason) throw new AppError('Nhập lý do trả về', { status: 422, errorCode: 'NO_LY_DO' });
+  const chosen = (Array.isArray(checklists) ? checklists : [])
+    .map((m) => String(m || '').toUpperCase()).filter((m) => INPUT_CPS.includes(m));
+  if (chosen.length === 0) throw new AppError('Chọn ít nhất 1 mục kỹ thuật không đạt', { status: 422, errorCode: 'NO_ITEM' });
+
+  if (await repo.isPhanInReleased(phanInId)) {
+    throw new AppError('Phần in đã release — không thể trả về kỹ thuật', { status: 409, errorCode: 'ALREADY_RELEASED' });
+  }
+  const { tram, byMa } = await loadConfig();
+  const results = await repo.getResults(tram.id, phanInId);
+  const state = buildState(results);
+
+  const huyList = [];
+  await withTransaction(async (client) => {
+    for (const ma of chosen) {
+      if (!byMa[ma]) continue;
+      const cur = results.find((r) => r.ma_checkpoint === ma);
+      if (cur?.trang_thai === 'DAT') { await repo.cancelResult(client, phanInId, byMa[ma].id, actorId); huyList.push(ma); }
+    }
+    // Hủy luôn QC nếu đã xác nhận (để làm lại từ kỹ thuật → QC).
+    if (state.qc_done && byMa[QC_CP]) { await repo.cancelResult(client, phanInId, byMa[QC_CP].id, actorId); }
+  });
+  await qaRepo.insertQcTraVe({ loai: 'READY', phanInId, checklistList: chosen.join(','), lyDo: reason }, actorId);
+  sockets.emit('ready:confirmed', { phanInId, tra_ve: chosen });
+  sockets.emit('dashboard:refresh', {});
+  return { phan_in_id: phanInId, huy: huyList, checklists: chosen };
 }
 
 async function getDetail(phanInId) {
@@ -241,6 +277,7 @@ async function confirmQC(phanInId, actorId) {
     });
     await repo.insertStatusLog(client, { ketQuaId: kqId, trangThaiMoiId: datId, nguoiId: actorId, lyDo: 'QC xác nhận — READY hoàn thành' });
   });
+  await qaRepo.resolveReturns('READY', phanInId); // QC đạt lại → tắt cờ "bị QC trả về"
   sockets.emit('ready:confirmed', { phanInId, buoc: 'QC', ready: true });
   sockets.emit('dashboard:refresh', {});
   return getDetail(phanInId);
@@ -327,5 +364,5 @@ async function done(date, scope) {
 
 module.exports = {
   getConfig, listCandidates, getDetail, confirmItem, confirmItemsBatch, confirmItemBulk,
-  confirmQC, confirmQcBatch, cancelItem, history, done, confirmHistory,
+  confirmQC, confirmQcBatch, cancelItem, history, done, confirmHistory, returnToTech,
 };

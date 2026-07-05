@@ -24,6 +24,8 @@ router.get('/:phanInId', rbac('READY_VIEW'), c.detail);
 router.post('/:phanInId/confirm-batch', rbac('READY_KHUON', 'READY_FILM', 'READY_MUC', 'READY_HSKT'), c.confirmItemsBatch);
 router.post('/:phanInId/confirm/:ma', rbac('READY_KHUON', 'READY_FILM', 'READY_MUC', 'READY_HSKT'), c.confirmItem);
 router.post('/:phanInId/confirm-qc', rbac('READY_QC'), c.confirmQC);
+// QC trả về Ready kỹ thuật (chọn checklist rớt + lý do).
+router.post('/:phanInId/tra-ve', rbac('READY_QC'), c.returnToTech);
 // Hủy xác nhận (Admin/READY_CANCEL) — khi bấm nhầm khuôn/film/mực/HSKT/QC.
 router.post('/:phanInId/huy', rbac('READY_CANCEL'), c.cancelItem);
 

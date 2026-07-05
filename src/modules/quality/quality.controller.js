@@ -15,6 +15,12 @@ const recordSua = asyncHandler(async (req, res) =>
 const oqcCandidates = asyncHandler(async (req, res) => ok(res, await service.listOqcCandidates(req.query.search || '')));
 const recordOqc = asyncHandler(async (req, res) =>
   ok(res, await service.recordOqc(req.params.temId, req.body, req.user.id), 'Đã ghi nhận OQC'));
+const oqcReturn = asyncHandler(async (req, res) =>
+  ok(res, await service.returnOqcToKcs(req.params.temId, req.body, req.user.id), 'Đã trả tem về KCS'));
+
+// Lịch sử QC trả về (toggle 3 loại)
+const qcTraVeHistory = asyncHandler(async (req, res) =>
+  ok(res, await service.qcTraVeHistory(req.query.loai || 'READY', req.query.date || new Date().toISOString().slice(0, 10))));
 
 const today = () => new Date().toISOString().slice(0, 10);
 const kcsHistory = asyncHandler(async (req, res) => ok(res, await service.kcsHistory(req.query.date || today())));
@@ -39,10 +45,19 @@ const loaiLoiCreate = asyncHandler(async (req, res) => ok(res, await service.cre
 const loaiLoiUpdate = asyncHandler(async (req, res) => ok(res, await service.updateLoaiLoi(req.params.id, req.body, req.user.id), 'Đã cập nhật loại lỗi'));
 const loaiLoiToggle = asyncHandler(async (req, res) => ok(res, await service.toggleLoaiLoi(req.params.id, req.body.active, req.user.id), 'Đã đổi trạng thái'));
 
+// Danh mục trường hợp giao đặc biệt
+const giaoDacBietActive = asyncHandler(async (req, res) => ok(res, await service.listGiaoDacBiet()));
+const giaoDacBietList = asyncHandler(async (req, res) => ok(res, await service.listGiaoDacBietAll(req.query.search || '')));
+const giaoDacBietCreate = asyncHandler(async (req, res) => ok(res, await service.createGiaoDacBiet(req.body, req.user.id), 'Đã thêm trường hợp'));
+const giaoDacBietUpdate = asyncHandler(async (req, res) => ok(res, await service.updateGiaoDacBiet(req.params.id, req.body, req.user.id), 'Đã cập nhật trường hợp'));
+const giaoDacBietToggle = asyncHandler(async (req, res) => ok(res, await service.toggleGiaoDacBiet(req.params.id, req.body.active, req.user.id), 'Đã đổi trạng thái'));
+
 module.exports = {
   kcsCandidates, recordKcs, suaCandidates, recordSua, oqcCandidates, recordOqc,
   kcsHistory, suaHistory, oqcHistory,
   kcsDone, suaDone, oqcDone, inlineDone,
   inlineCandidates, inlineLoaiLoi, inlineHistory, recordInline,
   loaiLoiList, loaiLoiCreate, loaiLoiUpdate, loaiLoiToggle,
+  giaoDacBietActive, giaoDacBietList, giaoDacBietCreate, giaoDacBietUpdate, giaoDacBietToggle,
+  oqcReturn, qcTraVeHistory,
 };

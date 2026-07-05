@@ -126,6 +126,10 @@ function evaluateGrid(cells = {}, metricValues = {}) {
     const c = cells[key];
     if (c.loai === 'text') { out[key] = { value: c.gia_tri ?? '', kieu: 'text' }; continue; }
     if (c.loai === 'tha_xuong') { out[key] = { value: c.gia_tri ?? '', kieu: 'text' }; continue; }
+    // Metric kiểu văn bản (vd thời gian hiện tại) → giữ nguyên chuỗi, không ép thành số.
+    if (c.loai === 'metric' && typeof metricValues[c.metric] === 'string') {
+      out[key] = { value: metricValues[c.metric], kieu: 'text' }; continue;
+    }
     if (c.loai === 'hop_kiem') { out[key] = { value: c.gia_tri === true, kieu: 'bool' }; continue; }
     try { out[key] = { value: resolve(key), kieu: 'so' }; }
     catch (e) { out[key] = { value: e.message, kieu: 'loi', loi: true }; }

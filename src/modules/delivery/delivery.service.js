@@ -17,17 +17,21 @@ async function getDetail(giaoHangId) {
   return { ...gh, tems };
 }
 
-async function createGiaoHang({ temIds, ngayGiao, ghiChu }, actorId) {
-  if (!Array.isArray(temIds) || temIds.length === 0) {
-    throw new AppError('Chọn ít nhất một tem để giao', { status: 422, errorCode: 'NO_TEM' });
-  }
-  const donIds = await repo.donHangIdsForTems(temIds);
+// items: [{ temId, soLuong }] — soLuong = SL giao lần này (không nhập → giao hết phần còn lại).
+// Vẫn nhận temIds (mảng id) để tương thích: giao hết phần còn lại của mỗi tem.
+async function createGiaoHang({ items, temIds, ngayGiao, ghiChu }, actorId) {
+  const list = Array.isArray(items) && items.length
+    ? items.map((it) => ({ temId: it.temId, soLuong: it.soLuong != null ? Number(it.soLuong) : null }))
+    : (Array.isArray(temIds) ? temIds.map((t) => ({ temId: t, soLuong: null })) : []);
+  if (list.length === 0) throw new AppError('Chọn ít nhất một tem để giao', { status: 422, errorCode: 'NO_TEM' });
+  const temIdList = list.map((x) => x.temId);
+  const donIds = await repo.donHangIdsForTems(temIdList);
   const donHangId = donIds.length === 1 ? donIds[0] : null;
   const maPhieu = await repo.nextMaPhieuGiao();
 
   const id = await withTransaction(async (client) => {
     const ghId = await repo.createGiaoHang(client, { maPhieu, donHangId, ngayGiao, ghiChu }, actorId);
-    for (const temId of temIds) await repo.addTem(client, ghId, temId, actorId);
+    for (const it of list) await repo.addTem(client, ghId, it.temId, it.soLuong, actorId);
     return ghId;
   });
   sockets.emit('delivery:updated', { giaoHangId: id, stage: 'TAO' });
@@ -44,7 +48,11 @@ async function confirmGiao(giaoHangId, actorId) {
   if (gh.trang_thai === 'DA_GIAO') throw new AppError('Phiếu đã giao', { status: 409, errorCode: 'ALREADY' });
   if (gh.so_tem === 0) throw new AppError('Phiếu chưa có tem', { status: 422, errorCode: 'EMPTY' });
 
-  await withTransaction((client) => repo.confirmGiao(client, giaoHangId, actorId));
+  // Cộng dồn sổ cái đã giao + đóng phiếu; tem chỉ chuyển DA_GIAO khi đã giao đủ (recompute dominant).
+  await withTransaction(async (client) => {
+    await repo.applyGiaoLedger(client, giaoHangId, actorId);
+    await repo.markGiaoDone(client, giaoHangId, actorId);
+  });
   // Theo dõi dòng chảy: các tem trong phiếu giao → trạm DONE_DELIVERY.
   const tems = await repo.getGiaoHangTems(giaoHangId);
   for (const t of tems) await tracking.moveByTem(t.tem_id || t.id, 'DONE_DELIVERY', actorId);
