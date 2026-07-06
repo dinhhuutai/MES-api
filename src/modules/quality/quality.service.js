@@ -61,37 +61,43 @@ async function recordKcs(temId, body, actorId) {
   const conKcs = Number(tem.con_kcs) || 0;
   if (conKcs <= 0) throw new AppError('Tem không còn phần chờ KCS', { status: 409, errorCode: 'DONE' });
 
-  const dat = num(body.soLuongDat);
+  const dat = num(body.soLuongDat);                          // đạt → chờ OQC
+  const hu = num(body.soLuongHu);                            // hư (khuyết tật)
+  const quyetDinhSua = Math.min(num(body.soLuongSua), hu);   // ≤ hư (mặc định = hư) → chờ sửa
+  const huyTrucTiep = num(body.soLuongHuy);                  // hủy nhập trực tiếp → loại
+  const mau = num(body.soLuongMau);                          // mẫu: ghi nhận tham khảo, KHÔNG tính vào SL kiểm
   const thieu = num(body.soLuongThieu);
   const du = num(body.soLuongDu);
-  const mau = num(body.soLuongMau);
-  const hu = num(body.soLuongHu);
-  const quyetDinhSua = Math.min(num(body.soLuongSua), hu);   // ≤ hư
-  const huyTaiKcs = hu - quyetDinhSua;
+  const chenh = du - thieu;                                  // dư(+)/thiếu(−) → đổi TỔNG CẦN KIỂM = so_luong + Σchênh
 
-  // SL kiểm lần này = đạt + hư + mẫu (mẫu tính vào phần đã kiểm/hủy). Không vượt SL còn lại.
-  const kiem = dat + hu + mau;
-  if (kiem <= 0) throw new AppError('Nhập số lượng kiểm', { status: 422, errorCode: 'EMPTY' });
-  if (kiem > conKcs) throw new AppError(`SL kiểm lần này (${kiem}) vượt SL còn lại (${conKcs})`, { status: 422, errorCode: 'OVER' });
+  const huyTaiKcs = (hu - quyetDinhSua) + huyTrucTiep;       // phần hư không sửa + hủy trực tiếp → loại
+  // SL kiểm được lần này = đạt + hư + hủy (= đạt + sửa + hủyTạiKcs). Mẫu không tính; ≤ SL còn lại (± chênh lệch).
+  const kiem = dat + hu + huyTrucTiep;
+  if (kiem <= 0) throw new AppError('Nhập số lượng kiểm (đạt/hư/hủy)', { status: 422, errorCode: 'EMPTY' });
+  const conSauChenh = conKcs + chenh; // dư làm tăng, thiếu làm giảm phần còn được kiểm
+  if (kiem > conSauChenh) {
+    throw new AppError(`SL kiểm lần này (${kiem}) vượt SL còn lại (${conSauChenh}${chenh ? ` = còn ${conKcs} ${chenh > 0 ? '+ dư ' + chenh : '− thiếu ' + -chenh}` : ''})`,
+      { status: 422, errorCode: 'OVER' });
+  }
 
   const data = {
     soLuongKiem: kiem, soLuongMau: mau, soLuongDat: dat, soLuongLoi: hu,
-    soLuongHuy: huyTaiKcs, soLuongChenhLech: du - thieu,
-    ketQua: hu > 0 ? 'CO_LOI' : 'DAT', ghiChu: body.ghiChu,
+    soLuongHuy: huyTaiKcs, soLuongChenhLech: chenh,
+    ketQua: (hu > 0 || huyTrucTiep > 0) ? 'CO_LOI' : 'DAT', ghiChu: body.ghiChu,
   };
 
   await withTransaction(async (client) => {
     await repo.insertKcs(client, temId, data, actorId);
-    // Cộng dồn sổ cái: đạt → chờ OQC; sửa → chờ sửa; (hủy + mẫu) → hủy.
-    await repo.addKcsLedger(client, temId, { dat, sua: quyetDinhSua, huy: huyTaiKcs + mau }, actorId);
+    // Cộng dồn sổ cái: đạt → chờ OQC; quyết định sửa → chờ sửa; (hư không sửa + hủy) → loại; chênh lệch → tổng cần kiểm.
+    await repo.addKcsLedger(client, temId, { dat, sua: quyetDinhSua, huy: huyTaiKcs, chenh }, actorId);
     await repo.recomputeTemStage(client, temId, actorId);
   });
   await tracking.moveByTem(temId, 'KIEM', actorId);
   await repo.resolveReturns('OQC', temId); // KCS làm lại xong → tắt cờ "bị OQC trả về"
   sockets.emit('quality:updated', { temId, stage: 'KCS' });
   sockets.emit('dashboard:refresh', {});
-  const conLai = conKcs - kiem;
-  return { tem_id: temId, next: 'KCS', so_luong_dat: dat, so_luong_sua: quyetDinhSua, con_kcs: conLai };
+  const conLai = conSauChenh - kiem; // SL chưa kiểm còn lại (đã tính chênh lệch)
+  return { tem_id: temId, next: 'KCS', so_luong_dat: dat, so_luong_sua: quyetDinhSua, so_luong_huy: huyTaiKcs, con_kcs: conLai };
 }
 
 // ----- SỬA (còn phần chờ sửa: con_sua > 0) -----

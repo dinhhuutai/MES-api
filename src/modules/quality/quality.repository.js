@@ -4,13 +4,14 @@ const { query } = require('../../config/db');
 const { lenhPhanInMatch } = require('../../utils/search');
 
 // SỔ CÁI SỐ LƯỢNG tem (migration 043): SL còn lại từng công đoạn (dùng cho lọc + hiển thị).
-const CON_KCS = '(t.so_luong - (t.sl_kcs_dat + t.sl_kcs_sua + t.sl_kcs_huy))';
+// con_kcs tính theo TỔNG CẦN KIỂM = so_luong + sl_chenh_lech (dư/thiếu — mig 044).
+const CON_KCS = '((t.so_luong + t.sl_chenh_lech) - (t.sl_kcs_dat + t.sl_kcs_sua + t.sl_kcs_huy))';
 const CON_SUA = '(t.sl_kcs_sua - (t.sl_sua_dat + t.sl_sua_huy))';
 const CON_OQC = '((t.sl_kcs_dat + t.sl_sua_dat) - t.sl_oqc_dat)';
 const CON_GIAO = '(t.sl_oqc_dat - t.sl_da_giao)';
 
 const TEM_CTX = `
-  SELECT t.id AS tem_id, t.ma_tem, t.so_luong, t.trang_thai, t.da_qua_phoi,
+  SELECT t.id AS tem_id, t.ma_tem, t.so_luong, t.trang_thai, t.da_qua_phoi, t.sl_chenh_lech,
          t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy, t.sl_sua_dat, t.sl_sua_huy, t.sl_oqc_dat, t.sl_da_giao,
          ${CON_KCS} AS con_kcs, ${CON_SUA} AS con_sua, ${CON_OQC} AS con_oqc, ${CON_GIAO} AS con_giao,
          ls.ma_lenh_san_xuat, cs.ma_chuyen, cs.ten_chuyen,
@@ -67,9 +68,9 @@ async function getTemBasic(temId) {
 // Đọc ledger + SL còn lại từng công đoạn (để service validate số nhập ≤ còn lại).
 async function getTemLedger(temId) {
   const { rows } = await query(
-    `SELECT id, ma_tem, so_luong, trang_thai, da_qua_phoi, phieu_san_xuat_id,
+    `SELECT id, ma_tem, so_luong, trang_thai, da_qua_phoi, phieu_san_xuat_id, sl_chenh_lech,
             sl_kcs_dat, sl_kcs_sua, sl_kcs_huy, sl_sua_dat, sl_sua_huy, sl_oqc_dat, sl_da_giao,
-            (so_luong - (sl_kcs_dat+sl_kcs_sua+sl_kcs_huy)) AS con_kcs,
+            ((so_luong + sl_chenh_lech) - (sl_kcs_dat+sl_kcs_sua+sl_kcs_huy)) AS con_kcs,
             (sl_kcs_sua - (sl_sua_dat+sl_sua_huy)) AS con_sua,
             ((sl_kcs_dat+sl_sua_dat) - sl_oqc_dat) AS con_oqc,
             (sl_oqc_dat - sl_da_giao) AS con_giao
@@ -79,12 +80,12 @@ async function getTemLedger(temId) {
   return rows[0] || null;
 }
 
-// Cộng dồn ledger theo công đoạn (client trong transaction).
-async function addKcsLedger(client, temId, { dat = 0, sua = 0, huy = 0 }, actorId) {
+// Cộng dồn ledger KCS (client trong transaction). `chenh` = dư−thiếu đợt này (cộng vào tổng cần kiểm).
+async function addKcsLedger(client, temId, { dat = 0, sua = 0, huy = 0, chenh = 0 }, actorId) {
   await client.query(
     `UPDATE tem SET sl_kcs_dat = sl_kcs_dat+$2, sl_kcs_sua = sl_kcs_sua+$3, sl_kcs_huy = sl_kcs_huy+$4,
-       updated_by=$5, updated_date=CURRENT_TIMESTAMP WHERE id=$1`,
-    [temId, dat, sua, huy, actorId]
+       sl_chenh_lech = sl_chenh_lech+$5, updated_by=$6, updated_date=CURRENT_TIMESTAMP WHERE id=$1`,
+    [temId, dat, sua, huy, chenh, actorId]
   );
 }
 async function addSuaLedger(client, temId, { dat = 0, huy = 0 }, actorId) {
@@ -120,7 +121,7 @@ async function recomputeTemStage(client, temId, actorId) {
   await client.query(
     `UPDATE tem SET trang_thai = CASE
         WHEN trang_thai IN ('IN','DANG_PHOI','HUY') THEN trang_thai
-        WHEN (so_luong-(sl_kcs_dat+sl_kcs_sua+sl_kcs_huy)) > 0 THEN 'DA_KHO'
+        WHEN ((so_luong+sl_chenh_lech)-(sl_kcs_dat+sl_kcs_sua+sl_kcs_huy)) > 0 THEN 'DA_KHO'
         WHEN (sl_kcs_sua-(sl_sua_dat+sl_sua_huy)) > 0 THEN 'CHO_SUA'
         WHEN ((sl_kcs_dat+sl_sua_dat)-sl_oqc_dat) > 0 THEN 'CHO_OQC'
         WHEN (sl_oqc_dat-sl_da_giao) > 0 THEN 'OQC_DAT'

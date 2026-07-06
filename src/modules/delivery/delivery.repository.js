@@ -161,7 +161,7 @@ async function applyGiaoLedger(client, giaoHangId, actorId) {
     await client.query(
       `UPDATE tem SET trang_thai = CASE
           WHEN trang_thai IN ('IN','DANG_PHOI','HUY') THEN trang_thai
-          WHEN (so_luong-(sl_kcs_dat+sl_kcs_sua+sl_kcs_huy)) > 0 THEN 'DA_KHO'
+          WHEN ((so_luong+sl_chenh_lech)-(sl_kcs_dat+sl_kcs_sua+sl_kcs_huy)) > 0 THEN 'DA_KHO'
           WHEN (sl_kcs_sua-(sl_sua_dat+sl_sua_huy)) > 0 THEN 'CHO_SUA'
           WHEN ((sl_kcs_dat+sl_sua_dat)-sl_oqc_dat) > 0 THEN 'CHO_OQC'
           WHEN (sl_oqc_dat-sl_da_giao) > 0 THEN 'OQC_DAT'
