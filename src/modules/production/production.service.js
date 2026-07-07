@@ -282,9 +282,61 @@ async function cancelPrintTem(temId, lyDo, actorId) {
   return { id: temId, ma_tem: tem.ma_tem, ma_lenh_san_xuat: tem.ma_lenh_san_xuat, so_luong: tem.so_luong };
 }
 
+// ----- ĐÓNG LỆNH SẢN XUẤT (= Chạy hoàn tất, cưỡng bức khi lệch SL không bấm được ở màn SX) -----
+async function listCloseCandidates() {
+  return repo.monitorRunning(); // các phiếu đang chạy (DANG_CHAY) + printed/target để thấy lệch
+}
+
+async function closeProduction(phieuId, lyDo, actorId) {
+  const phieu = await repo.getPhieuById(phieuId);
+  if (!phieu) throw new AppError('Phiếu sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  if (phieu.trang_thai !== 'DANG_CHAY') {
+    throw new AppError('Phiếu không ở trạng thái đang chạy (có thể đã hoàn tất)', { status: 409, errorCode: 'WRONG_STAGE' });
+  }
+  const [printed, lenh] = await Promise.all([
+    repo.getPrintedTotal(phieuId),
+    repo.getLenhBasic(phieu.lenh_san_xuat_id),
+  ]);
+  await repo.finishPhieu(phieuId, actorId); // giống "Chạy hoàn tất": phiếu → HOAN_TAT (giai đoạn suy sang CHỜ KHÔ)
+  await repo.logCloseProduction(phieuId, lenh?.ma_lenh_san_xuat || null, (lyDo || '').trim() || null,
+    printed, lenh?.so_luong_release ?? null, actorId);
+  sockets.emit('production:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'finish' });
+  sockets.emit('dashboard:refresh', {});
+  return { phieu_id: phieuId, lenh_id: phieu.lenh_san_xuat_id, ma_lenh_san_xuat: lenh?.ma_lenh_san_xuat, printed };
+}
+
+// ----- HỦY LỆNH ĐANG CHẠY (bấm nhầm Xác nhận chạy) → đưa về danh sách chờ chạy -----
+async function listUndoStartCandidates() {
+  const running = await repo.monitorRunning();
+  return running.filter((r) => Number(r.so_tem) === 0); // chỉ lệnh CHƯA in tem nào
+}
+
+async function undoStartProduction(phieuId, actorId) {
+  const phieu = await repo.getPhieuById(phieuId);
+  if (!phieu) throw new AppError('Phiếu sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  if (phieu.trang_thai !== 'DANG_CHAY') {
+    throw new AppError('Phiếu không ở trạng thái đang chạy', { status: 409, errorCode: 'WRONG_STAGE' });
+  }
+  const printed = await repo.getPrintedTotal(phieuId);
+  if (printed > 0) {
+    throw new AppError('Lệnh đã in tem — không thể hủy xác nhận chạy (dùng Hủy lệnh in tem / Đóng lệnh)', { status: 409, errorCode: 'HAS_TEM' });
+  }
+  const lenh = await repo.getLenhBasic(phieu.lenh_san_xuat_id);
+  await withTransaction(async (client) => {
+    await repo.cancelPhieuStart(client, phieuId, actorId);                       // phiếu → HUY
+    await repo.setLenhTrangThai(client, phieu.lenh_san_xuat_id, 'RELEASE_2', actorId); // lệnh về "chờ chạy"
+  });
+  await repo.logUndoStart(phieuId, lenh?.ma_lenh_san_xuat || null, actorId);
+  sockets.emit('production:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'undo-start' });
+  sockets.emit('dashboard:refresh', {});
+  return { lenh_id: phieu.lenh_san_xuat_id, ma_lenh_san_xuat: lenh?.ma_lenh_san_xuat };
+}
+
 module.exports = {
   listCandidates, getRun, startProduction, printTem, reprintTem, temLabel, temLogs, finishRun, monitor,
   getXePhoi, listTemChoPhoi, addToXe, adjustPhoi, listDrying, confirmDry, redry,
   stopLine, resumeLine, addVaiHuy,
   listCancelableTem, cancelPrintTem,
+  listCloseCandidates, closeProduction,
+  listUndoStartCandidates, undoStartProduction,
 };

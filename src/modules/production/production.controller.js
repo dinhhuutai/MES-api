@@ -66,9 +66,23 @@ const cancelableTem = asyncHandler(async (req, res) => {
 const cancelPrintTem = asyncHandler(async (req, res) =>
   ok(res, await service.cancelPrintTem(req.params.temId, req.body.lyDo, req.user.id), 'Đã hủy lệnh in tem'));
 
+// Đóng lệnh sản xuất (= Chạy hoàn tất)
+const closeCandidates = asyncHandler(async (req, res) => ok(res, await service.listCloseCandidates()));
+
+const closeProduction = asyncHandler(async (req, res) =>
+  ok(res, await service.closeProduction(req.params.phieuId, req.body.lyDo, req.user.id), 'Đã đóng lệnh sản xuất'));
+
+// Hủy lệnh đang chạy (bấm nhầm Xác nhận chạy) → về chờ chạy
+const undoStartCandidates = asyncHandler(async (req, res) => ok(res, await service.listUndoStartCandidates()));
+
+const undoStartProduction = asyncHandler(async (req, res) =>
+  ok(res, await service.undoStartProduction(req.params.phieuId, req.user.id), 'Đã hủy lệnh đang chạy — đưa về chờ chạy'));
+
 module.exports = {
   candidates, getRun, start, printTem, reprintTem, temLabel, temLogs, finish, monitor,
   xePhoi, temChoPhoi, themTem, adjustPhoi, drying, confirmDry, redry,
   stopLine, resumeLine, addVaiHuy,
   cancelableTem, cancelPrintTem,
+  closeCandidates, closeProduction,
+  undoStartCandidates, undoStartProduction,
 };

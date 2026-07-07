@@ -25,6 +25,14 @@ router.post('/phieu/:phieuId/hoat-dong-lai', rbac('PROD_RUN'), c.resumeLine);
 router.get('/huy-tem/candidates', rbac('PROD_RUN'), c.cancelableTem);
 router.post('/huy-tem/:temId', rbac('PROD_RUN'), c.cancelPrintTem);
 
+// Đóng lệnh sản xuất (= Chạy hoàn tất, khi lệch SL không bấm được ở màn SX) — trang Hủy lệnh xác nhận
+router.get('/dong-lenh/candidates', rbac('PROD_RUN'), c.closeCandidates);
+router.post('/dong-lenh/:phieuId', rbac('PROD_RUN'), c.closeProduction);
+
+// Hủy lệnh đang chạy (bấm nhầm Xác nhận chạy) → đưa về danh sách chờ chạy — trang Hủy lệnh xác nhận
+router.get('/huy-chay/candidates', rbac('PROD_RUN'), c.undoStartCandidates);
+router.post('/huy-chay/:phieuId', rbac('PROD_RUN'), c.undoStartProduction);
+
 // Theo dõi chuyền
 router.get('/monitor', rbac('PROD_MONITOR'), c.monitor);
 

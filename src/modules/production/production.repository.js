@@ -11,7 +11,8 @@ const PHAN_AGG = `(SELECT string_agg(DISTINCT pin.ma_phan, ', ')
 const PHAN_INFO_LATERAL = `
   LEFT JOIN LATERAL (
     SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang,
-           pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.ma_phan, dv.han_giao_hang, dv.so_luong_vai_ve
+           pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.ma_phan, pin.so_luong_don_hang,
+           dv.han_giao_hang, dv.so_luong_vai_ve
     FROM lenh_sx_dot_vai lsd
     JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
     JOIN phan_in pin ON pin.id = dv.phan_in_id
@@ -270,13 +271,41 @@ async function logTemCancel(temId, maTem, lyDo, actorId) {
   );
 }
 
+// Hủy xác nhận chạy (bấm nhầm): soft-cancel phiếu → HUY (không xóa vì thiếu quyền DELETE).
+async function cancelPhieuStart(client, phieuId, actorId) {
+  await client.query(
+    "UPDATE phieu_san_xuat SET trang_thai='HUY', tg_kt=CURRENT_TIMESTAMP, updated_by=$2, updated_date=CURRENT_TIMESTAMP WHERE id=$1",
+    [phieuId, actorId]
+  );
+}
+
+// Ghi audit_log hủy xác nhận chạy (đưa lệnh về chờ chạy).
+async function logUndoStart(phieuId, maLenh, actorId) {
+  await query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('phieu_san_xuat', $1, 'HUY_XAC_NHAN_CHAY', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`,
+    [String(phieuId), JSON.stringify({ ma_lenh: maLenh || null }), actorId]
+  );
+}
+
+// Ghi audit_log đóng lệnh sản xuất (Chạy hoàn tất cưỡng bức khi lệch số lượng).
+async function logCloseProduction(phieuId, maLenh, lyDo, printed, target, actorId) {
+  await query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('phieu_san_xuat', $1, 'DONG_LENH_SX', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`,
+    [String(phieuId), JSON.stringify({ ma_lenh: maLenh || null, ly_do: lyDo || null, da_in: printed, sl_release: target }), actorId]
+  );
+}
+
 // Dữ liệu in NHÃN TEM (thông tin tem + phần in + lệnh + người in).
 async function getTemLabelData(temId) {
   const { rows } = await query(
     `SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.created_date,
             ls.ma_lenh_san_xuat, cs.ma_chuyen, cs.ten_chuyen, ps.tg_bd AS tg_bd_in,
             info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan,
-            info.mau_vai, info.kich_vai, info.kich_phim,
+            info.mau_vai, info.kich_vai, info.kich_phim, info.so_luong_don_hang,
+            (SELECT txp.tg_bd_phoi FROM tem_xe_phoi txp WHERE txp.tem_id = t.id ORDER BY txp.tg_bd_phoi DESC LIMIT 1) AS tg_bd_phoi,
+            (SELECT txp.tg_kt_phoi FROM tem_xe_phoi txp WHERE txp.tem_id = t.id ORDER BY txp.tg_bd_phoi DESC LIMIT 1) AS tg_kt_phoi,
             (SELECT nd.ho_ten FROM log_tem lt LEFT JOIN nguoi_dung nd ON nd.id = lt.nguoi_in_id
              WHERE lt.tem_id = t.id ORDER BY lt.tg_in LIMIT 1) AS nguoi_in
      FROM tem t
@@ -611,7 +640,8 @@ module.exports = {
   listProductionCandidates, getPrintedTotal, getDefaultXePhoi, nextMaPhieu, createPhieu, setLenhChuyen, setLenhTrangThai, getLenhBasic,
   getLenhDotVaiList, insertVaiHuy, listVaiHuyByLenh,
   getActivePhieu, getPhieuById, getTemsByPhieu, getTemContext, cancelTem, getTemLabelData,
-  listCancelableTem, getTemForCancel, logTemCancel,
+  listCancelableTem, getTemForCancel, logTemCancel, logCloseProduction,
+  cancelPhieuStart, logUndoStart,
   listTemLogByPhieu, nextReprint, logReprint,
   nextMaTem, createTem, logTemPrint, finishPhieu,
   monitorRunning, monitorQueue, listXePhoi, listCurrentPhoi, listTemChoPhoi, addTemToXe, adjustPhoi,
