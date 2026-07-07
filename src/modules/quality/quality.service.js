@@ -185,12 +185,16 @@ const q0 = (v) => (v === null || v === undefined ? 0 : v);
 
 async function kcsHistory(date) {
   const rows = await repo.kcsHistoryByDate(date);
-  return rows.map((r) => ({
-    tg: r.tg, nguoi: r.nguoi || '—',
-    hanh_dong: `KCS${r.ket_qua ? ' · ' + r.ket_qua : ''}`,
-    doi_tuong: r.ma_tem || '',
-    chi_tiet: `Đạt ${q0(r.so_luong_dat)} · Lỗi ${q0(r.so_luong_loi)}`,
-  }));
+  return rows.map((r) => {
+    const cl = q0(r.so_luong_chenh_lech);
+    const chenh = cl ? ` · Chênh ${cl > 0 ? '+' + cl : cl}` : '';
+    return {
+      tg: r.tg, nguoi: r.nguoi || '—',
+      hanh_dong: `KCS${r.ket_qua ? ' · ' + r.ket_qua : ''}`,
+      doi_tuong: r.ma_tem || '',
+      chi_tiet: `Đạt ${q0(r.so_luong_dat)} · Hư ${q0(r.so_luong_loi)} · Hủy ${q0(r.so_luong_huy)}${chenh}`,
+    };
+  });
 }
 
 async function suaHistory(date) {
@@ -210,6 +214,36 @@ async function oqcHistory(date) {
     doi_tuong: r.ma_tem || '',
     chi_tiet: `Đạt ${q0(r.so_luong_dat)} · Lỗi ${q0(r.so_luong_loi)}`,
   }));
+}
+
+// Hành trình 1 tem (gộp KCS/Sửa/OQC/Giao) — cho panel "Hành trình theo tem".
+async function temHanhTrinh(temId) {
+  const tem = await repo.getTemLedger(temId);
+  if (!tem) throw new AppError('Tem không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  const rows = await repo.temTimeline(temId);
+  const events = rows.map((r) => {
+    const n = (v) => q0(v);
+    let chi_tiet = '';
+    if (r.loai === 'KCS') {
+      const cl = n(r.n5);
+      chi_tiet = `Kiểm ${n(r.n1)} · Đạt ${n(r.n2)} · Hư ${n(r.n3)} · Hủy ${n(r.n4)}`
+        + (cl ? ` · Chênh ${cl > 0 ? '+' + cl : cl}` : '') + (r.txt ? ` · ${r.txt}` : '');
+    } else if (r.loai === 'SUA') {
+      chi_tiet = `Sửa ${n(r.n1)} · Đạt ${n(r.n2)} · Hủy ${n(r.n3)}`;
+    } else if (r.loai === 'OQC') {
+      chi_tiet = `Kiểm ${n(r.n1)} · Đạt ${n(r.n2)} · Lỗi ${n(r.n3)}` + (r.txt ? ` · ${r.txt}` : '');
+    } else if (r.loai === 'GIAO') {
+      chi_tiet = `Giao ${n(r.n1)}` + (r.txt ? ` · Phiếu ${r.txt}` : '');
+    }
+    return { loai: r.loai, tg: r.tg, nguoi: r.nguoi || '—', so_luong: n(r.n1), chi_tiet };
+  });
+  return {
+    tem: {
+      tem_id: tem.id, ma_tem: tem.ma_tem, so_luong: tem.so_luong, trang_thai: tem.trang_thai,
+      con_kcs: tem.con_kcs, con_sua: tem.con_sua, con_oqc: tem.con_oqc, con_giao: tem.con_giao,
+    },
+    events,
+  };
 }
 
 // ----- Danh sách "đã hoàn thành" theo ngày (cho DonePanel bên trái) -----
@@ -307,7 +341,7 @@ async function toggleGiaoDacBiet(id, active, actorId) {
 
 module.exports = {
   listKcsCandidates, recordKcs, listSuaCandidates, recordSua, listOqcCandidates, recordOqc,
-  kcsHistory, suaHistory, oqcHistory,
+  kcsHistory, suaHistory, oqcHistory, temHanhTrinh,
   kcsDone, suaDone, oqcDone, inlineDone,
   listInlineCandidates, listLoaiLoi, recordQcInline, inlineHistory,
   listLoaiLoiAll, createLoaiLoi, updateLoaiLoi, toggleLoaiLoi,

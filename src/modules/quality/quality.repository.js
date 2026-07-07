@@ -393,10 +393,25 @@ async function setGiaoDacBietActive(id, active, actorId) {
 // ----- Lịch sử theo ngày (giờ VN) cho KCS / Sửa / OQC -----
 const HIST_DATE = `(x.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date`;
 
+// Hành trình 1 tem: gộp KCS / Sửa / OQC / Giao theo thời gian (n1..n5 số, txt phụ chú).
+async function temTimeline(temId) {
+  const sql = `SELECT loai, tg, nguoi, n1, n2, n3, n4, n5, txt FROM (
+      SELECT 'KCS' AS loai, x.created_date AS tg, nd.ho_ten AS nguoi, x.so_luong_kiem AS n1, x.so_luong_dat AS n2, x.so_luong_loi AS n3, x.so_luong_huy AS n4, x.so_luong_chenh_lech AS n5, x.ket_qua::text AS txt FROM kcs x LEFT JOIN nguoi_dung nd ON nd.id = x.created_by WHERE x.tem_id = $1
+      UNION ALL
+      SELECT 'SUA', x.created_date, nd.ho_ten, x.so_luong_sua, x.so_luong_sua_dat, x.so_luong_sua_huy, NULL, NULL, NULL FROM sua x LEFT JOIN nguoi_dung nd ON nd.id = x.created_by WHERE x.tem_id = $1
+      UNION ALL
+      SELECT 'OQC', x.created_date, nd.ho_ten, x.so_luong_kiem, x.so_luong_dat, x.so_luong_loi, NULL, NULL, x.ket_qua::text FROM oqc x LEFT JOIN nguoi_dung nd ON nd.id = x.created_by WHERE x.tem_id = $1
+      UNION ALL
+      SELECT 'GIAO', COALESCE(gh.ngay_giao::timestamptz, gt.created_date), nd.ho_ten, gt.so_luong_giao, NULL, NULL, NULL, NULL, (gh.ma_phieu_giao || ' · ' || gh.trang_thai) FROM giao_hang_tem gt JOIN giao_hang gh ON gh.id = gt.giao_hang_id LEFT JOIN nguoi_dung nd ON nd.id = gt.created_by WHERE gt.tem_id = $1
+    ) e ORDER BY tg ASC NULLS LAST, loai`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [temId]);
+  return rows;
+}
+
 async function kcsHistoryByDate(date) {
   const { rows } = await query(
     `SELECT x.created_date AS tg, nd.ho_ten AS nguoi, x.ket_qua,
-            x.so_luong_dat, x.so_luong_loi, t.ma_tem
+            x.so_luong_dat, x.so_luong_loi, x.so_luong_huy, x.so_luong_chenh_lech, t.ma_tem
      FROM kcs x JOIN tem t ON t.id = x.tem_id
      LEFT JOIN nguoi_dung nd ON nd.id = x.created_by
      WHERE ${HIST_DATE} ORDER BY x.created_date DESC`,
@@ -556,6 +571,7 @@ module.exports = {
   insertQcTraVe, activeReturnsMap, resolveReturns, resolveReturnsMany, listQcTraVe,
   listKcsCand, listSuaCand, listOqcCand, getTemBasic, setTemTrangThai, setTemStatusQty,
   getTemLedger, addKcsLedger, addSuaLedger, addOqcLedger, addGiaoLedger, reduceKcsDat, recomputeTemStage,
+  temTimeline,
   nextMaTem, createChildTem, insertTemSplit, getTemForSplit,
   insertKcs, insertSua, nextOqcRound, insertOqc,
   kcsHistoryByDate, suaHistoryByDate, oqcHistoryByDate,

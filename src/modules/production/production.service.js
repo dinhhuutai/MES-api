@@ -255,8 +255,36 @@ async function confirmDry(temId, actorId) {
   return { ma_tem: tem.ma_tem };
 }
 
+// ----- HỦY LỆNH IN TEM: HỦY tem chưa kiểm + gỡ khỏi xe phơi, trả SL in về -----
+async function listCancelableTem({ search, page, limit, offset }) {
+  const { rows, total } = await repo.listCancelableTem({ search, offset, limit });
+  return { items: rows, meta: buildMeta(page, limit, total) };
+}
+
+// Hủy 1 lệnh in tem: đánh dấu tem HỦY (loại khỏi tổng đã in ⇒ trả SL release về) + gỡ xe phơi.
+// Chỉ khi tem CHƯA kiểm (IN/phơi/khô, sổ cái KCS/OQC/giao = 0) để không hỏng sổ cái.
+async function cancelPrintTem(temId, lyDo, actorId) {
+  const tem = await repo.getTemForCancel(temId);
+  if (!tem) throw new AppError('Tem không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  if (tem.trang_thai === 'HUY') throw new AppError('Tem đã hủy', { status: 409, errorCode: 'ALREADY' });
+  if (!['IN', 'DANG_PHOI', 'DA_KHO'].includes(tem.trang_thai)) {
+    throw new AppError('Tem đã qua kiểm/giao — không thể hủy lệnh in tem', { status: 409, errorCode: 'WRONG_STAGE' });
+  }
+  const daKiem = tem.sl_kcs_dat + tem.sl_kcs_sua + tem.sl_kcs_huy + tem.sl_oqc_dat + tem.sl_da_giao;
+  if (daKiem > 0) {
+    throw new AppError('Tem đã được kiểm/giao một phần — không thể hủy lệnh in tem', { status: 409, errorCode: 'HAS_LEDGER' });
+  }
+  await withTransaction((client) => repo.cancelTem(client, temId, actorId)); // HỦY tem + gỡ khỏi xe phơi
+  await repo.logTemCancel(temId, tem.ma_tem, (lyDo || '').trim() || null, actorId);
+  sockets.emit('production:updated', { lenhId: tem.lenh_san_xuat_id, action: 'huy-tem', temId });
+  sockets.emit('drying:updated', { lenhId: tem.lenh_san_xuat_id, action: 'huy-tem' });
+  sockets.emit('dashboard:refresh', {});
+  return { id: temId, ma_tem: tem.ma_tem, ma_lenh_san_xuat: tem.ma_lenh_san_xuat, so_luong: tem.so_luong };
+}
+
 module.exports = {
   listCandidates, getRun, startProduction, printTem, reprintTem, temLabel, temLogs, finishRun, monitor,
   getXePhoi, listTemChoPhoi, addToXe, adjustPhoi, listDrying, confirmDry, redry,
   stopLine, resumeLine, addVaiHuy,
+  listCancelableTem, cancelPrintTem,
 };

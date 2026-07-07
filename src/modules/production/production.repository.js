@@ -211,11 +211,70 @@ async function cancelTem(client, temId, actorId) {
   );
 }
 
+// ----- HỦY LỆNH IN TEM (tem chưa kiểm) -----
+// Danh sách tem đã in còn hủy được: chưa HỦY, đang IN/phơi/khô, sổ cái KCS/OQC/giao = 0 (chưa kiểm).
+async function listCancelableTem({ search = '', offset = 0, limit = 50 }) {
+  const FROM = `
+    FROM tem t
+    JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+    JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+    LEFT JOIN chuyen_san_xuat cs ON cs.id = ps.chuyen_id
+    ${PHAN_INFO_LATERAL}
+    WHERE t.trang_thai IN ('IN','DANG_PHOI','DA_KHO')
+      AND COALESCE(t.sl_kcs_dat,0)=0 AND COALESCE(t.sl_kcs_sua,0)=0 AND COALESCE(t.sl_kcs_huy,0)=0
+      AND COALESCE(t.sl_oqc_dat,0)=0 AND COALESCE(t.sl_da_giao,0)=0
+      AND ($1='' OR t.ma_tem ILIKE '%'||$1||'%' OR ls.ma_lenh_san_xuat ILIKE '%'||$1||'%'
+           OR ${lenhPhanInMatch('ls.id', '$1')})`;
+  const dataSql = `
+    SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.created_date,
+           ls.id AS lenh_id, ls.ma_lenh_san_xuat, ps.id AS phieu_id,
+           cs.ma_chuyen, cs.ten_chuyen,
+           info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan,
+           info.mau_vai, info.kich_vai, info.kich_phim,
+           (SELECT nd.ho_ten FROM log_tem lt LEFT JOIN nguoi_dung nd ON nd.id = lt.nguoi_in_id
+            WHERE lt.tem_id = t.id ORDER BY lt.tg_in LIMIT 1) AS nguoi_in
+    ${FROM}
+    ORDER BY t.created_date DESC
+    LIMIT $2 OFFSET $3`;
+  const countSql = `SELECT count(*)::int AS total ${FROM}`;
+  const [data, count] = await Promise.all([
+    query(dataSql.replace(/\s+/g, ' '), [search, limit, offset]),
+    query(countSql.replace(/\s+/g, ' '), [search]),
+  ]);
+  return { rows: data.rows, total: count.rows[0].total };
+}
+
+// Tem + sổ cái để validate trước khi hủy lệnh in tem.
+async function getTemForCancel(temId) {
+  const { rows } = await query(
+    `SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.phieu_san_xuat_id,
+            ps.lenh_san_xuat_id, ls.ma_lenh_san_xuat,
+            COALESCE(t.sl_kcs_dat,0) AS sl_kcs_dat, COALESCE(t.sl_kcs_sua,0) AS sl_kcs_sua,
+            COALESCE(t.sl_kcs_huy,0) AS sl_kcs_huy, COALESCE(t.sl_oqc_dat,0) AS sl_oqc_dat,
+            COALESCE(t.sl_da_giao,0) AS sl_da_giao
+     FROM tem t
+     JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+     JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+     WHERE t.id = $1`.replace(/\s+/g, ' '),
+    [temId]
+  );
+  return rows[0] || null;
+}
+
+// Ghi audit_log hủy lệnh in tem (forward-only).
+async function logTemCancel(temId, maTem, lyDo, actorId) {
+  await query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('tem', $1, 'HUY_IN_TEM', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`,
+    [String(temId), JSON.stringify({ ma_tem: maTem, ly_do: lyDo || null }), actorId]
+  );
+}
+
 // Dữ liệu in NHÃN TEM (thông tin tem + phần in + lệnh + người in).
 async function getTemLabelData(temId) {
   const { rows } = await query(
     `SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.created_date,
-            ls.ma_lenh_san_xuat, cs.ma_chuyen, cs.ten_chuyen,
+            ls.ma_lenh_san_xuat, cs.ma_chuyen, cs.ten_chuyen, ps.tg_bd AS tg_bd_in,
             info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan,
             info.mau_vai, info.kich_vai, info.kich_phim,
             (SELECT nd.ho_ten FROM log_tem lt LEFT JOIN nguoi_dung nd ON nd.id = lt.nguoi_in_id
@@ -232,14 +291,23 @@ async function getTemLabelData(temId) {
 }
 
 // Lịch sử in tem của 1 phiếu (in lần đầu + in lại), mới nhất trước.
+// Kèm trạng thái tem + thông tin HỦY lệnh in tem (lý do/người/thời gian) từ audit_log.
 async function listTemLogByPhieu(phieuId) {
   const { rows } = await query(
-    `SELECT lt.id, lt.ma_tem, lt.so_lan_in, lt.ly_do_in_lai, lt.tg_in, nd.ho_ten AS nguoi
+    `SELECT lt.id, lt.ma_tem, lt.so_lan_in, lt.ly_do_in_lai, lt.tg_in, nd.ho_ten AS nguoi,
+            t.trang_thai AS tem_trang_thai,
+            hy.ly_do_huy, hy.nguoi_huy, hy.tg_huy
      FROM log_tem lt
      JOIN tem t ON t.id = lt.tem_id
      LEFT JOIN nguoi_dung nd ON nd.id = lt.nguoi_in_id
+     LEFT JOIN LATERAL (
+       SELECT a.gia_tri_moi->>'ly_do' AS ly_do_huy, ndh.ho_ten AS nguoi_huy, a.thoi_gian AS tg_huy
+       FROM audit_log a LEFT JOIN nguoi_dung ndh ON ndh.id = a.nguoi_thuc_hien_id
+       WHERE a.ten_bang='tem' AND a.hanh_dong='HUY_IN_TEM' AND a.id_ban_ghi = t.id::text
+       ORDER BY a.thoi_gian DESC LIMIT 1
+     ) hy ON true
      WHERE t.phieu_san_xuat_id = $1
-     ORDER BY lt.tg_in DESC, lt.so_lan_in DESC`,
+     ORDER BY lt.tg_in DESC, lt.so_lan_in DESC`.replace(/\s+/g, ' '),
     [phieuId]
   );
   return rows;
@@ -302,8 +370,8 @@ async function monitorRunning() {
             cs.dinh_muc_gio, ps.tg_bd, ls.ma_lenh_san_xuat, ls.ngay_ke_hoach,
             ls.so_luong_release AS target, ${PHAN_AGG} AS phan_list,
             info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan, info.mau_vai, info.kich_vai, info.kich_phim,
-            (SELECT COALESCE(SUM(t.so_luong),0)::int FROM tem t WHERE t.phieu_san_xuat_id=ps.id) AS printed,
-            (SELECT count(*) FROM tem t WHERE t.phieu_san_xuat_id=ps.id)::int AS so_tem,
+            (SELECT COALESCE(SUM(t.so_luong),0)::int FROM tem t WHERE t.phieu_san_xuat_id=ps.id AND t.trang_thai <> 'HUY') AS printed,
+            (SELECT count(*) FROM tem t WHERE t.phieu_san_xuat_id=ps.id AND t.trang_thai <> 'HUY')::int AS so_tem,
             EXISTS (SELECT 1 FROM ngung_chuyen n WHERE n.phieu_san_xuat_id=ps.id AND n.trang_thai='DANG_NGUNG') AS dang_ngung,
             (SELECT COALESCE(SUM(
                CASE WHEN n.trang_thai='DA_HOAT_DONG_LAI' THEN COALESCE(n.so_phut,0)
@@ -543,6 +611,7 @@ module.exports = {
   listProductionCandidates, getPrintedTotal, getDefaultXePhoi, nextMaPhieu, createPhieu, setLenhChuyen, setLenhTrangThai, getLenhBasic,
   getLenhDotVaiList, insertVaiHuy, listVaiHuyByLenh,
   getActivePhieu, getPhieuById, getTemsByPhieu, getTemContext, cancelTem, getTemLabelData,
+  listCancelableTem, getTemForCancel, logTemCancel,
   listTemLogByPhieu, nextReprint, logReprint,
   nextMaTem, createTem, logTemPrint, finishPhieu,
   monitorRunning, monitorQueue, listXePhoi, listCurrentPhoi, listTemChoPhoi, addTemToXe, adjustPhoi,

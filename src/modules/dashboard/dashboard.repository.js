@@ -39,17 +39,101 @@ async function summary() {
   };
 }
 
-async function activity(limit = 12) {
-  const { rows } = await query(
-    `SELECT lst.id, lst.ly_do, lst.tg_thuc_hien,
-            tt.ten_trang_thai AS trang_thai_moi, u.ho_ten AS nguoi
-     FROM lich_su_trang_thai lst
-     LEFT JOIN trang_thai tt ON tt.id = lst.trang_thai_moi_id
-     LEFT JOIN nguoi_dung u ON u.id = lst.nguoi_thuc_hien_id
-     ORDER BY lst.tg_thuc_hien DESC NULLS LAST, lst.created_date DESC
-     LIMIT $1`,
-    [limit]
-  );
+// Hoạt động gần đây — GỘP MỌI XÁC NHẬN checkpoint/checklist từ READY → Giao
+// (ket_qua_checkpoint READY+Test · Release lệnh · bắt đầu SX · KCS/Sửa/OQC/QC in-line · Giao).
+async function activity(limit = 20) {
+  const sql = `
+    WITH ev AS (
+      SELECT COALESCE(k.tg_xac_nhan, k.created_date) AS tg,
+             COALESCE(k.nguoi_xac_nhan_id, k.created_by) AS nguoi_id,
+             'Xác nhận' AS loai,
+             (cp.ten_checkpoint || COALESCE(' · ' || pi.ma_phan, ' · ' || l.ma_lenh_san_xuat, '')) AS mo_ta
+      FROM ket_qua_checkpoint k
+      JOIN checkpoint cp ON cp.id = k.checkpoint_id
+      LEFT JOIN phan_in pi ON pi.id = k.phan_in_id
+      LEFT JOIN lenh_san_xuat l ON l.id = k.lenh_san_xuat_id
+      WHERE k.trang_thai = 'DAT'
+      UNION ALL
+      SELECT ls.created_date, ls.created_by, 'Release', ('Lệnh ' || ls.ma_lenh_san_xuat || ' · ' || ls.trang_thai)
+      FROM lenh_san_xuat ls WHERE ls.trang_thai <> 'HUY'
+      UNION ALL
+      SELECT ps.created_date, ps.created_by, 'Bắt đầu SX', ('Phiếu ' || ps.ma_phieu_san_xuat)
+      FROM phieu_san_xuat ps
+      UNION ALL
+      SELECT k.created_date, k.created_by, 'KCS', ('Tem ' || t.ma_tem || ' · đạt ' || COALESCE(k.so_luong_dat,0))
+      FROM kcs k JOIN tem t ON t.id = k.tem_id
+      UNION ALL
+      SELECT s.created_date, s.created_by, 'Sửa', ('Tem ' || t.ma_tem || ' · đạt ' || COALESCE(s.so_luong_sua_dat,0))
+      FROM sua s JOIN tem t ON t.id = s.tem_id
+      UNION ALL
+      SELECT o.created_date, o.created_by, 'OQC', ('Tem ' || t.ma_tem || ' · ' || o.ket_qua)
+      FROM oqc o JOIN tem t ON t.id = o.tem_id
+      UNION ALL
+      SELECT q.created_date, q.created_by, 'QC in-line', ('Phiếu ' || ps.ma_phieu_san_xuat || ' · ' || q.ket_qua)
+      FROM qc_in_line q JOIN phieu_san_xuat ps ON ps.id = q.phieu_san_xuat_id
+      UNION ALL
+      SELECT COALESCE(gh.ngay_giao::timestamptz, gh.created_date), gh.created_by, 'Giao', ('Phiếu giao ' || gh.ma_phieu_giao)
+      FROM giao_hang gh WHERE gh.trang_thai = 'DA_GIAO'
+    )
+    SELECT ev.tg, ev.loai, ev.mo_ta, u.ho_ten AS nguoi
+    FROM ev LEFT JOIN nguoi_dung u ON u.id = ev.nguoi_id
+    ORDER BY ev.tg DESC NULLS LAST
+    LIMIT $1`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [limit]);
+  return rows.map((r, i) => ({ ...r, id: i }));
+}
+
+// Xác nhận HÔM NAY (giờ VN) gộp theo checkpoint/checklist — cho thẻ "Hoàn thành hôm nay".
+async function confirmTodayGroups() {
+  const sql = `
+    WITH ev AS (
+      SELECT cp.ten_checkpoint AS nhom, COALESCE(k.tg_xac_nhan, k.created_date) AS tg, COALESCE(k.nguoi_xac_nhan_id, k.created_by) AS nguoi_id
+      FROM ket_qua_checkpoint k JOIN checkpoint cp ON cp.id = k.checkpoint_id WHERE k.trang_thai = 'DAT'
+      UNION ALL SELECT 'KCS', k.created_date, k.created_by FROM kcs k
+      UNION ALL SELECT 'Sửa', s.created_date, s.created_by FROM sua s
+      UNION ALL SELECT 'OQC', o.created_date, o.created_by FROM oqc o
+      UNION ALL SELECT 'QC in-line', q.created_date, q.created_by FROM qc_in_line q
+      UNION ALL SELECT 'Giao', COALESCE(gh.ngay_giao::timestamptz, gh.created_date), gh.created_by FROM giao_hang gh WHERE gh.trang_thai = 'DA_GIAO'
+    )
+    SELECT e.nhom, count(*)::int AS n, max(e.tg) AS last_tg,
+           (array_agg(u.ho_ten ORDER BY e.tg DESC))[1] AS last_nguoi
+    FROM ev e LEFT JOIN nguoi_dung u ON u.id = e.nguoi_id
+    WHERE (e.tg AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = (now() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date
+    GROUP BY e.nhom ORDER BY n DESC`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim());
+  return rows;
+}
+
+// Chi tiết xác nhận HÔM NAY (giờ VN): mỗi lượt kèm đối tượng (phần in / tem / lệnh / phiếu giao) + người.
+async function confirmTodayDetail() {
+  const sql = `
+    WITH ev AS (
+      SELECT cp.ten_checkpoint AS nhom, pi.ma_phan AS doi_tuong, k.phan_in_id, pi.ma_phan,
+             pi.mau_vai, mh.ma_hang, COALESCE(k.tg_xac_nhan, k.created_date) AS tg, COALESCE(k.nguoi_xac_nhan_id, k.created_by) AS nguoi_id
+      FROM ket_qua_checkpoint k JOIN checkpoint cp ON cp.id = k.checkpoint_id
+      JOIN phan_in pi ON pi.id = k.phan_in_id JOIN ma_hang mh ON mh.id = pi.ma_hang_id
+      WHERE k.trang_thai = 'DAT' AND k.phan_in_id IS NOT NULL
+      UNION ALL
+      SELECT cp.ten_checkpoint, l.ma_lenh_san_xuat, NULL::uuid, NULL, NULL, NULL,
+             COALESCE(k.tg_xac_nhan, k.created_date), COALESCE(k.nguoi_xac_nhan_id, k.created_by)
+      FROM ket_qua_checkpoint k JOIN checkpoint cp ON cp.id = k.checkpoint_id
+      JOIN lenh_san_xuat l ON l.id = k.lenh_san_xuat_id
+      WHERE k.trang_thai = 'DAT' AND k.phan_in_id IS NULL AND k.lenh_san_xuat_id IS NOT NULL
+      UNION ALL
+      SELECT 'KCS', t.ma_tem, NULL::uuid, NULL, NULL, NULL, k.created_date, k.created_by FROM kcs k JOIN tem t ON t.id = k.tem_id
+      UNION ALL
+      SELECT 'Sửa', t.ma_tem, NULL::uuid, NULL, NULL, NULL, s.created_date, s.created_by FROM sua s JOIN tem t ON t.id = s.tem_id
+      UNION ALL
+      SELECT 'OQC', t.ma_tem, NULL::uuid, NULL, NULL, NULL, o.created_date, o.created_by FROM oqc o JOIN tem t ON t.id = o.tem_id
+      UNION ALL
+      SELECT 'Giao', gh.ma_phieu_giao, NULL::uuid, NULL, NULL, NULL, COALESCE(gh.ngay_giao::timestamptz, gh.created_date), gh.created_by
+      FROM giao_hang gh WHERE gh.trang_thai = 'DA_GIAO'
+    )
+    SELECT ev.nhom, ev.doi_tuong, ev.phan_in_id, ev.ma_phan, ev.mau_vai, ev.ma_hang, ev.tg, u.ho_ten AS nguoi
+    FROM ev LEFT JOIN nguoi_dung u ON u.id = ev.nguoi_id
+    WHERE (ev.tg AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = (now() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date
+    ORDER BY ev.tg DESC`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim());
   return rows;
 }
 
@@ -358,7 +442,7 @@ async function flowRows(tramMa = '') {
       LEFT JOIN tem_xe_phoi txp ON txp.tem_id = t.id
       GROUP BY lk.dot_vai_ve_id
     )
-    SELECT b.dot_vai_ve_id AS id, b.dot_vai_ve_id,
+    SELECT b.dot_vai_ve_id AS id, b.dot_vai_ve_id, b.phan_in_id, lk.lenh_id,
            b.ma_dot_vai, b.han_giao_hang, b.ma_phan, b.mau_vai, b.kich_vai, b.kich_phim,
            b.ma_hang, b.ma_don_hang, b.ten_khach_hang,
            COALESCE(ta.pcs,0) AS pcs,
@@ -467,5 +551,5 @@ async function checkpointOwnersActive() {
 
 module.exports = {
   summary, activity, stageCounts, flowRows, flowTimeline, tramOwnersActive, checkpointOwnersActive,
-  tinhTrangActiveRows, tinhTrangPhanInList, tinhTrangDetail,
+  tinhTrangActiveRows, tinhTrangPhanInList, tinhTrangDetail, confirmTodayGroups, confirmTodayDetail,
 };

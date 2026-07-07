@@ -8,6 +8,9 @@ const rbac = require('../../middlewares/rbac');
 const router = express.Router();
 router.use(auth);
 
+// Hành trình 1 tem (gộp KCS/Sửa/OQC/Giao) — cho panel "Hành trình theo tem"
+router.get('/tem/:temId/hanh-trinh', rbac('KCS', 'SUA', 'OQC', 'DELIVERY_VIEW', 'DELIVERY_MANAGE'), c.temHanhTrinh);
+
 router.get('/kcs/candidates', rbac('KCS'), c.kcsCandidates);
 router.get('/kcs/history', rbac('KCS'), c.kcsHistory);
 router.get('/kcs/done', rbac('KCS'), c.kcsDone);

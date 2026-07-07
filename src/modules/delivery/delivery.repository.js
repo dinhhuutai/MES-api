@@ -150,6 +150,20 @@ async function markGiaoDone(client, giaoHangId, actorId) {
   );
 }
 
+// Ghi audit_log khi xác nhận giao: ai giao, lúc nào, SL bao nhiêu (chi tiết từng tem).
+async function insertGiaoAudit(giaoHangId, maPhieu, tems, actorId) {
+  const tongSl = tems.reduce((s, t) => s + (Number(t.so_luong_giao) || 0), 0);
+  const chiTiet = {
+    ma_phieu_giao: maPhieu, so_tem: tems.length, tong_sl: tongSl,
+    tems: tems.map((t) => ({ ma_tem: t.ma_tem, so_luong_giao: Number(t.so_luong_giao) || 0 })),
+  };
+  await query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('giao_hang', $1, 'XAC_NHAN_GIAO', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`,
+    [String(giaoHangId), JSON.stringify(chiTiet), actorId]
+  );
+}
+
 // Cộng dồn đã giao cho tem + cập nhật trạng thái dominant (chỉ DA_GIAO khi đã giao đủ).
 async function applyGiaoLedger(client, giaoHangId, actorId) {
   const { rows } = await client.query('SELECT tem_id, so_luong_giao FROM giao_hang_tem WHERE giao_hang_id=$1', [giaoHangId]);
@@ -176,5 +190,5 @@ async function applyGiaoLedger(client, giaoHangId, actorId) {
 
 module.exports = {
   listTemSanSang, donHangIdsForTems, nextMaPhieuGiao, createGiaoHang, addTem,
-  getGiaoHang, listGiaoHang, getGiaoHangTems, markGiaoDone, applyGiaoLedger,
+  getGiaoHang, listGiaoHang, getGiaoHangTems, markGiaoDone, applyGiaoLedger, insertGiaoAudit,
 };

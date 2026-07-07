@@ -56,6 +56,8 @@ async function confirmGiao(giaoHangId, actorId) {
   // Theo dõi dòng chảy: các tem trong phiếu giao → trạm DONE_DELIVERY.
   const tems = await repo.getGiaoHangTems(giaoHangId);
   for (const t of tems) await tracking.moveByTem(t.tem_id || t.id, 'DONE_DELIVERY', actorId);
+  // Ghi audit_log (ai giao / lúc nào / SL bao nhiêu) — best-effort, không chặn luồng giao.
+  try { await repo.insertGiaoAudit(giaoHangId, gh.ma_phieu_giao, tems, actorId); } catch (e) { /* bỏ qua */ }
   sockets.emit('delivery:updated', { giaoHangId, stage: 'DA_GIAO' });
   sockets.emit('dashboard:refresh', {});
   return getDetail(giaoHangId);

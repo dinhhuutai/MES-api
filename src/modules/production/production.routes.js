@@ -21,6 +21,10 @@ router.post('/phieu/:phieuId/vai-huy', rbac('PROD_RUN'), c.addVaiHuy);
 router.post('/phieu/:phieuId/ngung', rbac('PROD_RUN'), c.stopLine);
 router.post('/phieu/:phieuId/hoat-dong-lai', rbac('PROD_RUN'), c.resumeLine);
 
+// Hủy lệnh in tem (xóa/HỦY tem chưa kiểm + gỡ xe phơi, trả SL về) — dùng ở trang Hủy lệnh xác nhận
+router.get('/huy-tem/candidates', rbac('PROD_RUN'), c.cancelableTem);
+router.post('/huy-tem/:temId', rbac('PROD_RUN'), c.cancelPrintTem);
+
 // Theo dõi chuyền
 router.get('/monitor', rbac('PROD_MONITOR'), c.monitor);
 

@@ -57,8 +57,18 @@ const confirmDry = asyncHandler(async (req, res) =>
 const redry = asyncHandler(async (req, res) =>
   ok(res, await service.redry(req.params.temId, req.body.phut, req.user.id), 'Đã đưa tem phơi lại'));
 
+// Hủy lệnh in tem (tem chưa kiểm)
+const cancelableTem = asyncHandler(async (req, res) => {
+  const { page, limit, offset } = getPaging(req.query);
+  return ok(res, await service.listCancelableTem({ search: req.query.search || '', page, limit, offset }));
+});
+
+const cancelPrintTem = asyncHandler(async (req, res) =>
+  ok(res, await service.cancelPrintTem(req.params.temId, req.body.lyDo, req.user.id), 'Đã hủy lệnh in tem'));
+
 module.exports = {
   candidates, getRun, start, printTem, reprintTem, temLabel, temLogs, finish, monitor,
   xePhoi, temChoPhoi, themTem, adjustPhoi, drying, confirmDry, redry,
   stopLine, resumeLine, addVaiHuy,
+  cancelableTem, cancelPrintTem,
 };

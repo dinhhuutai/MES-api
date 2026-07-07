@@ -23,6 +23,7 @@ const qcTraVeHistory = asyncHandler(async (req, res) =>
   ok(res, await service.qcTraVeHistory(req.query.loai || 'READY', req.query.date || new Date().toISOString().slice(0, 10))));
 
 const today = () => new Date().toISOString().slice(0, 10);
+const temHanhTrinh = asyncHandler(async (req, res) => ok(res, await service.temHanhTrinh(req.params.temId)));
 const kcsHistory = asyncHandler(async (req, res) => ok(res, await service.kcsHistory(req.query.date || today())));
 const suaHistory = asyncHandler(async (req, res) => ok(res, await service.suaHistory(req.query.date || today())));
 const oqcHistory = asyncHandler(async (req, res) => ok(res, await service.oqcHistory(req.query.date || today())));
@@ -59,5 +60,5 @@ module.exports = {
   inlineCandidates, inlineLoaiLoi, inlineHistory, recordInline,
   loaiLoiList, loaiLoiCreate, loaiLoiUpdate, loaiLoiToggle,
   giaoDacBietActive, giaoDacBietList, giaoDacBietCreate, giaoDacBietUpdate, giaoDacBietToggle,
-  oqcReturn, qcTraVeHistory,
+  oqcReturn, qcTraVeHistory, temHanhTrinh,
 };
