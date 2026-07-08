@@ -338,7 +338,8 @@ async function getPhanInKcsByDot(phanInId) {
            COALESCE(k.sl_kiem,0)::int AS sl_kiem, COALESCE(k.sl_dat,0)::int AS sl_dat,
            COALESCE(k.sl_hu,0)::int AS sl_hu, COALESCE(k.sl_sua,0)::int AS sl_sua,
            COALESCE(k.sl_huy,0)::int AS sl_huy, COALESCE(k.sl_du,0)::int AS sl_du,
-           COALESCE(k.sl_thieu,0)::int AS sl_thieu, COALESCE(s.sl_sua_dat,0)::int AS sl_sua_dat
+           COALESCE(k.sl_thieu,0)::int AS sl_thieu, COALESCE(s.sl_sua_dat,0)::int AS sl_sua_dat,
+           COALESCE(s.sl_sua_huy,0)::int AS sl_sua_huy
     FROM ad
     LEFT JOIN LATERAL (
       SELECT SUM(kc.so_luong_kiem) AS sl_kiem, SUM(kc.so_luong_dat) AS sl_dat,
@@ -350,7 +351,7 @@ async function getPhanInKcsByDot(phanInId) {
       FROM kcs kc WHERE kc.tem_id IN (SELECT tem_id FROM td WHERE td.dot_vai_ve_id = ad.dot_vai_ve_id)
     ) k ON true
     LEFT JOIN LATERAL (
-      SELECT SUM(su.so_luong_sua_dat) AS sl_sua_dat
+      SELECT SUM(su.so_luong_sua_dat) AS sl_sua_dat, SUM(su.so_luong_sua_huy) AS sl_sua_huy
       FROM sua su WHERE su.tem_id IN (SELECT tem_id FROM td WHERE td.dot_vai_ve_id = ad.dot_vai_ve_id)
     ) s ON true
     ORDER BY ad.ma_dot_vai`;
@@ -359,7 +360,7 @@ async function getPhanInKcsByDot(phanInId) {
   if (dot.length === 0) return { dot: [], tong: null };
   let tong = null;
   if (dot.length > 1) {
-    const keys = ['sl_kiem', 'sl_dat', 'sl_hu', 'sl_sua', 'sl_huy', 'sl_du', 'sl_thieu', 'sl_sua_dat'];
+    const keys = ['sl_kiem', 'sl_dat', 'sl_hu', 'sl_sua', 'sl_huy', 'sl_du', 'sl_thieu', 'sl_sua_dat', 'sl_sua_huy'];
     tong = keys.reduce((acc, kk) => { acc[kk] = dot.reduce((s, r) => s + (r[kk] || 0), 0); return acc; }, {});
   }
   return { dot, tong };

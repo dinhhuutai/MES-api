@@ -106,6 +106,15 @@ async function confirmTodayGroups() {
 }
 
 // Chi tiết xác nhận HÔM NAY (giờ VN): mỗi lượt kèm đối tượng (phần in / tem / lệnh / phiếu giao) + người.
+// Suy phần in từ 1 tem `t` (tem → phiếu → lệnh → đợt vải → phần in); LIMIT 1 khi gom set nhiều đợt.
+const TEM_PIN = `SELECT dv.phan_in_id, pi.ma_phan, pi.mau_vai, mh.ma_hang
+  FROM phieu_san_xuat ps
+  JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ps.lenh_san_xuat_id
+  JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+  JOIN phan_in pi ON pi.id = dv.phan_in_id
+  JOIN ma_hang mh ON mh.id = pi.ma_hang_id
+  WHERE ps.id = t.phieu_san_xuat_id LIMIT 1`;
+
 async function confirmTodayDetail() {
   const sql = `
     WITH ev AS (
@@ -115,20 +124,36 @@ async function confirmTodayDetail() {
       JOIN phan_in pi ON pi.id = k.phan_in_id JOIN ma_hang mh ON mh.id = pi.ma_hang_id
       WHERE k.trang_thai = 'DAT' AND k.phan_in_id IS NOT NULL
       UNION ALL
-      SELECT cp.ten_checkpoint, l.ma_lenh_san_xuat, NULL::uuid, NULL, NULL, NULL,
+      SELECT cp.ten_checkpoint, l.ma_lenh_san_xuat, lpin.phan_in_id, lpin.ma_phan, lpin.mau_vai, lpin.ma_hang,
              COALESCE(k.tg_xac_nhan, k.created_date), COALESCE(k.nguoi_xac_nhan_id, k.created_by)
       FROM ket_qua_checkpoint k JOIN checkpoint cp ON cp.id = k.checkpoint_id
       JOIN lenh_san_xuat l ON l.id = k.lenh_san_xuat_id
+      LEFT JOIN LATERAL (SELECT dv.phan_in_id, pi.ma_phan, pi.mau_vai, mh.ma_hang
+        FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+        JOIN phan_in pi ON pi.id = dv.phan_in_id JOIN ma_hang mh ON mh.id = pi.ma_hang_id
+        WHERE lsd.lenh_san_xuat_id = l.id LIMIT 1) lpin ON true
       WHERE k.trang_thai = 'DAT' AND k.phan_in_id IS NULL AND k.lenh_san_xuat_id IS NOT NULL
       UNION ALL
-      SELECT 'KCS', t.ma_tem, NULL::uuid, NULL, NULL, NULL, k.created_date, k.created_by FROM kcs k JOIN tem t ON t.id = k.tem_id
+      SELECT 'KCS', t.ma_tem, tp.phan_in_id, tp.ma_phan, tp.mau_vai, tp.ma_hang, k.created_date, k.created_by
+      FROM kcs k JOIN tem t ON t.id = k.tem_id LEFT JOIN LATERAL (${TEM_PIN}) tp ON true
       UNION ALL
-      SELECT 'Sửa', t.ma_tem, NULL::uuid, NULL, NULL, NULL, s.created_date, s.created_by FROM sua s JOIN tem t ON t.id = s.tem_id
+      SELECT 'Sửa', t.ma_tem, tp.phan_in_id, tp.ma_phan, tp.mau_vai, tp.ma_hang, s.created_date, s.created_by
+      FROM sua s JOIN tem t ON t.id = s.tem_id LEFT JOIN LATERAL (${TEM_PIN}) tp ON true
       UNION ALL
-      SELECT 'OQC', t.ma_tem, NULL::uuid, NULL, NULL, NULL, o.created_date, o.created_by FROM oqc o JOIN tem t ON t.id = o.tem_id
+      SELECT 'OQC', t.ma_tem, tp.phan_in_id, tp.ma_phan, tp.mau_vai, tp.ma_hang, o.created_date, o.created_by
+      FROM oqc o JOIN tem t ON t.id = o.tem_id LEFT JOIN LATERAL (${TEM_PIN}) tp ON true
       UNION ALL
-      SELECT 'Giao', gh.ma_phieu_giao, NULL::uuid, NULL, NULL, NULL, COALESCE(gh.ngay_giao::timestamptz, gh.created_date), gh.created_by
-      FROM giao_hang gh WHERE gh.trang_thai = 'DA_GIAO'
+      SELECT 'Giao', gh.ma_phieu_giao, ghp.phan_in_id, ghp.ma_phan, ghp.mau_vai, ghp.ma_hang,
+             COALESCE(gh.ngay_giao::timestamptz, gh.created_date), gh.created_by
+      FROM giao_hang gh
+      LEFT JOIN LATERAL (SELECT dv.phan_in_id, pi.ma_phan, pi.mau_vai, mh.ma_hang
+        FROM giao_hang_tem ght JOIN tem t ON t.id = ght.tem_id
+        JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+        JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ps.lenh_san_xuat_id
+        JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+        JOIN phan_in pi ON pi.id = dv.phan_in_id JOIN ma_hang mh ON mh.id = pi.ma_hang_id
+        WHERE ght.giao_hang_id = gh.id LIMIT 1) ghp ON true
+      WHERE gh.trang_thai = 'DA_GIAO'
     )
     SELECT ev.nhom, ev.doi_tuong, ev.phan_in_id, ev.ma_phan, ev.mau_vai, ev.ma_hang, ev.tg, u.ho_ten AS nguoi
     FROM ev LEFT JOIN nguoi_dung u ON u.id = ev.nguoi_id
@@ -223,7 +248,34 @@ async function stageCounts() {
     JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id AND ls.trang_thai <> 'HUY'
     WHERE t.trang_thai <> 'HUY'`;
 
-  const [stageRows, totals, pcsRows, temRows] = await Promise.all([
+  // GIAO theo SỔ CÁI tem (không dùng giai đoạn "kém tiến độ nhất" — tem đã OQC đạt vẫn hiện dù đợt còn tem ở trạm khác):
+  //  Đang chờ giao = con_giao>0 (OQC đạt, chưa giao xong) · Đã giao = đã có SL giao.
+  const deliverySql = `
+    SELECT
+      count(*) FILTER (WHERE con_giao > 0)::int AS dg_tem,
+      count(DISTINCT phan_in_id) FILTER (WHERE con_giao > 0)::int AS dg_phan_in,
+      count(DISTINCT ma_hang_id) FILTER (WHERE con_giao > 0)::int AS dg_ma,
+      COALESCE(SUM(con_giao) FILTER (WHERE con_giao > 0),0)::int AS dg_pcs,
+      count(*) FILTER (WHERE sl_da_giao > 0 AND con_giao = 0)::int AS gd_tem,
+      count(DISTINCT phan_in_id) FILTER (WHERE sl_da_giao > 0)::int AS gd_phan_in,
+      count(DISTINCT ma_hang_id) FILTER (WHERE sl_da_giao > 0)::int AS gd_ma,
+      COALESCE(SUM(sl_da_giao),0)::int AS gd_pcs
+    FROM (
+      SELECT DISTINCT ON (t.id) t.id AS tem_id, dv.phan_in_id, pi.ma_hang_id,
+             (COALESCE(t.sl_oqc_dat,0)-COALESCE(t.sl_da_giao,0)) AS con_giao, COALESCE(t.sl_da_giao,0) AS sl_da_giao
+      FROM tem t
+      JOIN phieu_san_xuat ps ON ps.id=t.phieu_san_xuat_id
+      JOIN lenh_san_xuat ls ON ls.id=ps.lenh_san_xuat_id AND ls.trang_thai<>'HUY'
+      JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id=ls.id
+      JOIN dot_vai_ve dv ON dv.id=lsd.dot_vai_ve_id
+      JOIN phan_in pi ON pi.id=dv.phan_in_id
+      JOIN ma_hang mh ON mh.id=pi.ma_hang_id
+      JOIN don_hang dh ON dh.id=mh.don_hang_id AND dh.trang_thai IS DISTINCT FROM 'CLOSED_FINANCE'
+      WHERE t.trang_thai<>'HUY'
+      ORDER BY t.id
+    ) z`;
+
+  const [stageRows, totals, pcsRows, temRows, deliveryRows] = await Promise.all([
     query(stageSql.replace(/\s+/g, ' ')),
     query(`SELECT
               (SELECT count(*) FROM don_hang WHERE trang_thai IS DISTINCT FROM 'CLOSED_FINANCE')::int AS so_don,
@@ -231,6 +283,7 @@ async function stageCounts() {
               (SELECT count(*) FROM phan_in)::int AS so_phan_in`.replace(/\s+/g, ' ')),
     query(pcsSql.replace(/\s+/g, ' ')),
     query(temCountSql.replace(/\s+/g, ' ')),
+    query(deliverySql.replace(/\s+/g, ' ')),
   ]);
   const stages = {};
   stageRows.rows.forEach((r) => { stages[r.stage] = { phan_in: r.n_phan_in, ma: r.n_ma, pcs: 0 }; });
@@ -247,6 +300,10 @@ async function stageCounts() {
   setTem('CHO_KHO', tc.cho_kho || 0);
   setTem('KCS', tc.kcs || 0);
   setTem('SUA', tc.sua || 0);
+  // GIAO: thay số "giai đoạn kém tiến độ nhất" bằng số theo SỔ CÁI tem (đang chờ giao / đã giao).
+  const dl = deliveryRows.rows[0] || {};
+  stages.DANG_GIAO = { phan_in: dl.dg_phan_in || 0, ma: dl.dg_ma || 0, so_tem: dl.dg_tem || 0, pcs: dl.dg_pcs || 0 };
+  stages.DA_GIAO = { phan_in: dl.gd_phan_in || 0, ma: dl.gd_ma || 0, so_tem: dl.gd_tem || 0, pcs: dl.gd_pcs || 0 };
   return { totals: totals.rows[0], stages };
 }
 
