@@ -319,6 +319,81 @@ async function getPhanInTemSummary(phanInId) {
   return rows[0] || { pcs_in: 0, sl_dat: 0, sl_sua: 0, sl_sua_dat: 0, so_tem: 0 };
 }
 
+// KCS theo TỪNG ĐỢT VẢI của 1 phần in (mỗi tem gắn đợt qua lenh_sx_dot_vai).
+//  Trả về { dot: [{ma_dot_vai, sl_kiem, sl_dat, sl_hu, sl_sua, sl_huy, sl_du, sl_thieu, sl_sua_dat}], tong }.
+//  sl_sua = quyết định sửa = hư − hủy (theo quy ước hiện có); tong chỉ có khi ≥2 đợt có KCS.
+async function getPhanInKcsByDot(phanInId) {
+  const sql = `
+    WITH td AS (
+      SELECT DISTINCT dv.id AS dot_vai_ve_id, t.id AS tem_id
+      FROM dot_vai_ve dv
+      JOIN lenh_sx_dot_vai lsd ON lsd.dot_vai_ve_id = dv.id
+      JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id AND ls.trang_thai <> 'HUY'
+      JOIN phieu_san_xuat ps ON ps.lenh_san_xuat_id = ls.id
+      JOIN tem t ON t.phieu_san_xuat_id = ps.id AND t.trang_thai <> 'HUY'
+      WHERE dv.phan_in_id = $1
+    ),
+    ad AS (SELECT id AS dot_vai_ve_id, ma_dot_vai FROM dot_vai_ve WHERE phan_in_id = $1)
+    SELECT ad.dot_vai_ve_id, ad.ma_dot_vai,
+           COALESCE(k.sl_kiem,0)::int AS sl_kiem, COALESCE(k.sl_dat,0)::int AS sl_dat,
+           COALESCE(k.sl_hu,0)::int AS sl_hu, COALESCE(k.sl_sua,0)::int AS sl_sua,
+           COALESCE(k.sl_huy,0)::int AS sl_huy, COALESCE(k.sl_du,0)::int AS sl_du,
+           COALESCE(k.sl_thieu,0)::int AS sl_thieu, COALESCE(s.sl_sua_dat,0)::int AS sl_sua_dat
+    FROM ad
+    LEFT JOIN LATERAL (
+      SELECT SUM(kc.so_luong_kiem) AS sl_kiem, SUM(kc.so_luong_dat) AS sl_dat,
+             SUM(kc.so_luong_loi) AS sl_hu,
+             SUM(GREATEST(kc.so_luong_loi - COALESCE(kc.so_luong_huy,0), 0)) AS sl_sua,
+             SUM(kc.so_luong_huy) AS sl_huy,
+             SUM(GREATEST(kc.so_luong_chenh_lech, 0)) AS sl_du,
+             SUM(GREATEST(-kc.so_luong_chenh_lech, 0)) AS sl_thieu
+      FROM kcs kc WHERE kc.tem_id IN (SELECT tem_id FROM td WHERE td.dot_vai_ve_id = ad.dot_vai_ve_id)
+    ) k ON true
+    LEFT JOIN LATERAL (
+      SELECT SUM(su.so_luong_sua_dat) AS sl_sua_dat
+      FROM sua su WHERE su.tem_id IN (SELECT tem_id FROM td WHERE td.dot_vai_ve_id = ad.dot_vai_ve_id)
+    ) s ON true
+    ORDER BY ad.ma_dot_vai`;
+  const { rows } = await query(sql.replace(/\s+/g, ' '), [phanInId]);
+  const dot = rows.filter((r) => r.sl_kiem > 0 || r.sl_dat > 0 || r.sl_hu > 0 || r.sl_huy > 0);
+  if (dot.length === 0) return { dot: [], tong: null };
+  let tong = null;
+  if (dot.length > 1) {
+    const keys = ['sl_kiem', 'sl_dat', 'sl_hu', 'sl_sua', 'sl_huy', 'sl_du', 'sl_thieu', 'sl_sua_dat'];
+    tong = keys.reduce((acc, kk) => { acc[kk] = dot.reduce((s, r) => s + (r[kk] || 0), 0); return acc; }, {});
+  }
+  return { dot, tong };
+}
+
+// SL theo TRẠM (hợp nhất theo phần in) để hiện tại node hành trình:
+//  sl_release (Release 1) · sl_in_xong (Sản xuất) · oqc_dat (OQC) + nhánh kcs_dat/sua_dat (qua sửa).
+async function getPhanInStagePcs(phanInId) {
+  const sql = `
+    WITH lp AS (
+      SELECT DISTINCT ls.id, ls.so_luong_release, ls.la_in_lai
+      FROM lenh_san_xuat ls
+      JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
+      JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id AND dv.phan_in_id = $1
+      WHERE ls.trang_thai <> 'HUY'
+    ),
+    tp AS (
+      SELECT DISTINCT tm.id, tm.so_luong, tm.trang_thai
+      FROM tem tm
+      JOIN phieu_san_xuat ps ON ps.id = tm.phieu_san_xuat_id
+      JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id AND ls.trang_thai <> 'HUY'
+      JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
+      JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id AND dv.phan_in_id = $1
+    )
+    SELECT
+      COALESCE((SELECT SUM(so_luong_release) FROM lp WHERE la_in_lai IS NOT TRUE), 0)::int AS sl_release,
+      COALESCE((SELECT SUM(so_luong) FROM tp WHERE trang_thai <> 'HUY'), 0)::int AS sl_in_xong,
+      COALESCE((SELECT SUM(so_luong_dat) FROM kcs WHERE tem_id IN (SELECT id FROM tp)), 0)::int AS kcs_dat,
+      COALESCE((SELECT SUM(so_luong_sua_dat) FROM sua WHERE tem_id IN (SELECT id FROM tp)), 0)::int AS sua_dat,
+      COALESCE((SELECT SUM(so_luong_dat) FROM oqc WHERE tem_id IN (SELECT id FROM tp)), 0)::int AS oqc_dat`;
+  const { rows } = await query(sql.replace(/\s+/g, ' '), [phanInId]);
+  return rows[0] || { sl_release: 0, sl_in_xong: 0, kcs_dat: 0, sua_dat: 0, oqc_dat: 0 };
+}
+
 // Thời gian chờ khô (phút) của phần in — best-effort (cần migration 038).
 async function getDryMin(id) {
   try {
@@ -367,4 +442,4 @@ async function profitHistoryByDate(date) {
   return rows;
 }
 
-module.exports = { list, listVaiVe, findById, listDotVai, getPhanInTimeline, getPhanInTemSummary, getDryMin, setDryMin, setLoiNhuan, logProfitChange, profitHistoryByDate };
+module.exports = { list, listVaiVe, findById, listDotVai, getPhanInTimeline, getPhanInTemSummary, getPhanInKcsByDot, getPhanInStagePcs, getDryMin, setDryMin, setLoiNhuan, logProfitChange, profitHistoryByDate };

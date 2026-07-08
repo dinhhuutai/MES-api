@@ -1,6 +1,7 @@
 'use strict';
 
 const { query } = require('../../config/db');
+const ordersRepo = require('../orders/orders.repository');
 
 const groupMap = (rows, keyCol, valCol = 'n') =>
   rows.reduce((acc, r) => { acc[r[keyCol]] = Number(r[valCol]); return acc; }, {});
@@ -371,9 +372,15 @@ async function tinhTrangDetail(phanInId) {
     [phanInId]
   )).rows[0];
 
+  const [kcsByDot, stagePcs] = await Promise.all([
+    ordersRepo.getPhanInKcsByDot(phanInId), ordersRepo.getPhanInStagePcs(phanInId),
+  ]);
+
   return {
     phan_in: info,
     tem_summary: temSummary,
+    kcs_by_dot: kcsByDot,
+    stage_pcs: stagePcs,
     dot_vai: dotVai.map((d) => ({
       ...d,
       current: d.cur_ma_tram ? {
