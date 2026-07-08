@@ -10,10 +10,8 @@ const release1Candidates = asyncHandler(async (req, res) => {
   return ok(res, await service.listRelease1Candidates({ search: req.query.search || '', page, limit, offset }));
 });
 
-const autoPlanCandidates = asyncHandler(async (req, res) => {
-  const { page, limit, offset } = getPaging(req.query);
-  return ok(res, await service.autoPlanCandidates({ search: req.query.search || '', page, limit, offset }));
-});
+const autoPlanCandidates = asyncHandler(async (req, res) =>
+  ok(res, await service.autoPlanCandidates({ search: req.query.search || '' })));
 
 const createRelease1 = asyncHandler(async (req, res) =>
   created(res, await service.createRelease1(req.body, req.user.id), 'Đã Release 1 — tạo lệnh sản xuất'));

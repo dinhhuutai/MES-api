@@ -71,27 +71,52 @@ function tinhNangSuat(hskt, soPassChuyen, soLuongVaiVe) {
   };
 }
 
-async function autoPlanCandidates({ search, page, limit, offset }) {
-  const { rows, total } = await repo.listRelease1Candidates({ search, offset, limit });
+const DAILY_HOURS = 8; // giờ SX / ngày (dùng để đóng gói lịch theo ngày trên chuyền)
+const pad2 = (n) => String(n).padStart(2, '0');
+const isoDate = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+const addDaysIso = (baseDate, n) => { const d = new Date(baseDate); d.setDate(d.getDate() + n); return isoDate(d); };
+
+async function autoPlanCandidates({ search }) {
+  const { rows } = await repo.listRelease1Candidates({ search, offset: 0, limit: 1000 });
   const rm = await qaRepo.activeReturnsMap('TEST_RUN', rows.map((r) => r.dot_vai_id));
-  const chuyens = (await chuyenRepo.listChuyen({ search: '' })).filter((c) => c.dang_hoat_dong);
+  const chuyens = (await chuyenRepo.listChuyen({ search: '' }))
+    .filter((c) => c.dang_hoat_dong)
+    .map((c) => ({ id: c.id, ma_chuyen: c.ma_chuyen, ten_chuyen: c.ten_chuyen, so_pass: mockPassChuyen(c.id) }));
+
   const items = rows.map((r) => {
     const hskt = mockHskt(r.phan_in_id);
     const chuyenOptions = chuyens
       .map((c) => ({
-        chuyen_id: c.id, ma_chuyen: c.ma_chuyen, ten_chuyen: c.ten_chuyen,
-        so_pass: mockPassChuyen(c.id), ...tinhNangSuat(hskt, mockPassChuyen(c.id), r.so_luong_vai_ve),
+        chuyen_id: c.id, ma_chuyen: c.ma_chuyen, ten_chuyen: c.ten_chuyen, so_pass: c.so_pass,
+        ...tinhNangSuat(hskt, c.so_pass, r.so_luong_vai_ve),
       }))
       .sort((a, b) => b.nang_suat_gio - a.nang_suat_gio);
-    return {
-      ...r,
-      tra_ve_ly_do: rm[r.dot_vai_id] || null,
-      hskt,
-      chuyen_options: chuyenOptions,
-      best_chuyen: chuyenOptions[0] || null,
-    };
+    return { ...r, tra_ve_ly_do: rm[r.dot_vai_id] || null, hskt, chuyen_options: chuyenOptions, best_chuyen: chuyenOptions[0] || null };
   });
-  return { items, meta: buildMeta(page, limit, total) };
+
+  // Xếp lịch THEO NGÀY trên từng chuyền: gán đợt vào chuyền năng suất tốt nhất, đóng gói tuần tự
+  // theo giờ SX (ưu tiên hạn giao sớm) → mỗi đợt có ngay_ke_hoach + so_gio_sx.
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const byChuyen = {};
+  items.forEach((it) => { const cid = it.best_chuyen && it.best_chuyen.chuyen_id; if (cid) (byChuyen[cid] = byChuyen[cid] || []).push(it); });
+  Object.values(byChuyen).forEach((list) => {
+    list.sort((a, b) => {
+      const ha = a.han_giao_hang ? new Date(a.han_giao_hang).getTime() : Infinity;
+      const hb = b.han_giao_hang ? new Date(b.han_giao_hang).getTime() : Infinity;
+      return ha - hb;
+    });
+    let cumHours = 0;
+    list.forEach((it) => {
+      const ns = (it.best_chuyen && it.best_chuyen.nang_suat_gio) || 0;
+      const hours = ns > 0 ? (Number(it.so_luong_vai_ve) || 0) / ns : DAILY_HOURS;
+      it.so_gio_sx = Math.round(hours * 10) / 10;
+      it.ngay_ke_hoach = addDaysIso(today, Math.floor(cumHours / DAILY_HOURS));
+      cumHours += hours;
+    });
+  });
+  items.forEach((it) => { if (!it.ngay_ke_hoach) it.ngay_ke_hoach = isoDate(today); });
+
+  return { items, chuyens };
 }
 
 async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach }, actorId) {
