@@ -628,7 +628,42 @@ async function testDoneByDate(date, maCheckpoint) {
   return rows;
 }
 
+// ----- CÀI ĐẶT CA THEO TUẦN (migration 046) — best-effort nếu bảng chưa tạo -----
+async function listCaTuan() {
+  try {
+    const { rows } = await query(
+      `SELECT id, nam, tuan, loai_ca, ghi_chu, updated_date
+       FROM cai_dat_ca_tuan ORDER BY nam DESC, tuan DESC`.replace(/\s+/g, ' ')
+    );
+    return rows;
+  } catch (e) { return []; }
+}
+
+// Map "nam-tuan" → loai_ca (để suy ca hàng loạt). Rỗng nếu bảng chưa có.
+async function caModeMap() {
+  const map = new Map();
+  try {
+    const { rows } = await query('SELECT nam, tuan, loai_ca FROM cai_dat_ca_tuan');
+    rows.forEach((r) => map.set(`${r.nam}-${r.tuan}`, r.loai_ca));
+  } catch (e) { /* bảng chưa tạo → mặc định NGAN ở nơi dùng */ }
+  return map;
+}
+
+async function upsertCaTuan({ nam, tuan, loaiCa, ghiChu }, actorId) {
+  const { rows } = await query(
+    `INSERT INTO cai_dat_ca_tuan (nam, tuan, loai_ca, ghi_chu, created_by, updated_by, updated_date)
+     VALUES ($1,$2,$3,$4,$5,$5, now())
+     ON CONFLICT (nam, tuan) DO UPDATE
+       SET loai_ca = EXCLUDED.loai_ca, ghi_chu = EXCLUDED.ghi_chu,
+           updated_by = EXCLUDED.updated_by, updated_date = now()
+     RETURNING id, nam, tuan, loai_ca, ghi_chu`.replace(/\s+/g, ' '),
+    [nam, tuan, loaiCa, ghiChu || null, actorId]
+  );
+  return rows[0];
+}
+
 module.exports = {
+  listCaTuan, caModeMap, upsertCaTuan,
   listRelease1Candidates, release1HistoryByDate, nextMaLenh, nextMaLenhTx, createLenh,
   release1DoneByDate, planDoneByDate, testDoneByDate,
   testedDotVaiIds, getDotVaiQty, addLenhDotVai, dotVaiAlreadyReleased,

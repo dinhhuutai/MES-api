@@ -505,6 +505,17 @@ async function testRunHistory(date) {
   }));
 }
 
+// ----- CÀI ĐẶT CA THEO TUẦN -----
+async function listCaTuan() { return repo.listCaTuan(); }
+
+async function upsertCaTuan({ nam, tuan, loaiCa, ghiChu }, actorId) {
+  const y = Number(nam); const w = Number(tuan);
+  if (!Number.isInteger(y) || y < 2000 || y > 2100) throw new AppError('Năm không hợp lệ', { status: 422, errorCode: 'INVALID' });
+  if (!Number.isInteger(w) || w < 1 || w > 53) throw new AppError('Tuần không hợp lệ (1–53)', { status: 422, errorCode: 'INVALID' });
+  if (!['NGAN', 'DAI'].includes(loaiCa)) throw new AppError('Loại ca phải là NGAN hoặc DAI', { status: 422, errorCode: 'INVALID' });
+  return repo.upsertCaTuan({ nam: y, tuan: w, loaiCa, ghiChu }, actorId);
+}
+
 // ----- Danh sách "đã hoàn thành" theo ngày (cho DonePanel bên trái) -----
 async function release1Done(date) { return repo.release1DoneByDate(date); }
 async function release2Done(date) { return repo.planDoneByDate(date, 'RELEASE_2'); }
@@ -519,4 +530,5 @@ module.exports = {
   listReplanCandidates, replan, replanBatch, planHistory,
   listCancelableLenh, rollbackLenh, returnTestRunToRelease1,
   release1Done, release2Done, replanDone, testCnspDone, testQaDone,
+  listCaTuan, upsertCaTuan,
 };

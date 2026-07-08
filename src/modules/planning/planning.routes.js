@@ -10,6 +10,10 @@ router.use(auth);
 
 const TEST_VIEW = ['TESTRUN_CNSP', 'TESTRUN_QA', 'RELEASE1', 'RELEASE2'];
 
+// Cài đặt ca theo tuần (Ngắn/Dài)
+router.get('/ca-tuan', rbac('RELEASE1', 'RELEASE2'), c.listCaTuan);
+router.post('/ca-tuan', rbac('RELEASE1', 'RELEASE2'), c.upsertCaTuan);
+
 // Kế hoạch tự động (đề xuất chuyền tối ưu theo năng suất — nguồn = candidate Release 1)
 router.get('/auto-plan/candidates', rbac('RELEASE1'), c.autoPlanCandidates);
 

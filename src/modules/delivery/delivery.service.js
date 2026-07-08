@@ -6,8 +6,8 @@ const AppError = require('../../utils/AppError');
 const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
 
-async function listTemSanSang(search) {
-  return repo.listTemSanSang({ search });
+async function listTemSanSang(search, ngay) {
+  return repo.listTemSanSang({ search, ngay });
 }
 
 async function getDetail(giaoHangId) {

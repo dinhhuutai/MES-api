@@ -6,6 +6,8 @@ const AppError = require('../../utils/AppError');
 const { buildMeta } = require('../../utils/pagination');
 const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
+const planningRepo = require('../planning/planning.repository');
+const { caFromParts } = require('../../utils/ca');
 
 async function listCandidates({ search, page, limit, offset }) {
   const { rows, total } = await repo.listProductionCandidates({ search, offset, limit });
@@ -174,6 +176,9 @@ async function reprintTem(temId, lyDo, actorId) {
 async function temLabel(temId) {
   const data = await repo.getTemLabelData(temId);
   if (!data) throw new AppError('Tem không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  // Ca sản xuất = suy từ giờ VN lúc sản xuất + loại ca của tuần (Ngắn/Dài). Query nhẹ riêng (IPS-safe).
+  const [parts, map] = await Promise.all([repo.caPartsForTem(temId), planningRepo.caModeMap()]);
+  data.ca = caFromParts(parts.ca_gio, parts.ca_nam, parts.ca_tuan, map);
   return data;
 }
 

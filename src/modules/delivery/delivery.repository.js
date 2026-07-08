@@ -12,9 +12,15 @@ const DON_SUB = (col, alias) => `(SELECT string_agg(DISTINCT ${col}, ', ')
     WHERE lsd.lenh_san_xuat_id = ls.id) AS ${alias}`;
 
 // Tem còn phần CHỜ GIAO (con_giao = sl_oqc_dat − sl_da_giao > 0) — cho giao TỪNG PHẦN nhiều lần.
-async function listTemSanSang({ search = '' }) {
+async function listTemSanSang({ search = '', ngay = '' } = {}) {
+  const params = [search];
+  let ngayCond = '';
+  if (ngay) {
+    params.push(ngay);
+    ngayCond = ` AND (t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $${params.length}::date`;
+  }
   const { rows } = await query(
-    `SELECT t.id AS tem_id, t.ma_tem, t.so_luong, (t.sl_oqc_dat - t.sl_da_giao) AS con_giao,
+    `SELECT t.id AS tem_id, t.ma_tem, t.so_luong, t.created_date AS ngay_in_tem, (t.sl_oqc_dat - t.sl_da_giao) AS con_giao,
             t.sl_oqc_dat, t.sl_da_giao, ls.ma_lenh_san_xuat,
             (SELECT string_agg(DISTINCT pin.ma_phan, ', ')
                FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
@@ -40,9 +46,9 @@ async function listTemSanSang({ search = '' }) {
      ) sla ON true
      WHERE (t.sl_oqc_dat - t.sl_da_giao) > 0
        AND ($1 = '' OR t.ma_tem ILIKE '%'||$1||'%' OR ls.ma_lenh_san_xuat ILIKE '%'||$1||'%'
-            OR ${lenhPhanInMatch('ls.id', '$1')})
+            OR ${lenhPhanInMatch('ls.id', '$1')})${ngayCond}
      ORDER BY t.created_date`,
-    [search]
+    params
   );
   return rows;
 }

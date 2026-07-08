@@ -171,7 +171,7 @@ async function stageCounts() {
   // tem cùng lệnh của đợt vải: EXISTS (phiếu → tem) theo trạng thái.
   const temEx = (cond) => `EXISTS (SELECT 1 FROM phieu_san_xuat ps JOIN tem t ON t.phieu_san_xuat_id = ps.id
     WHERE ps.lenh_san_xuat_id = lk.lenh_id AND t.trang_thai <> 'HUY' AND ${cond})`;
-  const stageSql = `
+  const STAGED_WITH = `
     WITH dv AS (
       SELECT d.id AS dot_vai_id, d.phan_in_id, pi.ma_hang_id
       FROM dot_vai_ve d
@@ -213,7 +213,8 @@ async function stageCounts() {
           ELSE 'TESTRUN_CNSP'
         END AS stage
       FROM dv LEFT JOIN lk ON lk.dot_vai_ve_id = dv.dot_vai_id
-    )
+    )`;
+  const stageSql = `${STAGED_WITH}
     SELECT stage, count(DISTINCT phan_in_id)::int AS n_phan_in, count(DISTINCT ma_hang_id)::int AS n_ma
     FROM staged GROUP BY stage`;
 
@@ -238,42 +239,44 @@ async function stageCounts() {
     ) x WHERE stage IS NOT NULL GROUP BY stage`;
 
   // Số lượng TEM đang ở các giai đoạn theo tem (Chờ khô / KCS / Sửa) — đếm tem theo trạng thái thực tế.
+  // Đếm TEM + pcs theo sổ cái (Chờ khô/KCS/Sửa theo trạng thái; OQC/Chờ giao/Đã giao theo con_X) — query nhẹ.
   const temCountSql = `
     SELECT
       count(*) FILTER (WHERE t.trang_thai IN ('IN','DANG_PHOI'))::int AS cho_kho,
       count(*) FILTER (WHERE t.trang_thai = 'DA_KHO')::int AS kcs,
-      count(*) FILTER (WHERE t.trang_thai = 'CHO_SUA')::int AS sua
+      count(*) FILTER (WHERE t.trang_thai = 'CHO_SUA')::int AS sua,
+      count(*) FILTER (WHERE (COALESCE(t.sl_kcs_dat,0)+COALESCE(t.sl_sua_dat,0)) > COALESCE(t.sl_oqc_dat,0))::int AS oqc,
+      COALESCE(SUM((COALESCE(t.sl_kcs_dat,0)+COALESCE(t.sl_sua_dat,0)) - COALESCE(t.sl_oqc_dat,0))
+               FILTER (WHERE (COALESCE(t.sl_kcs_dat,0)+COALESCE(t.sl_sua_dat,0)) > COALESCE(t.sl_oqc_dat,0)),0)::int AS oqc_pcs,
+      count(*) FILTER (WHERE COALESCE(t.sl_oqc_dat,0) > COALESCE(t.sl_da_giao,0))::int AS dg_tem,
+      COALESCE(SUM(COALESCE(t.sl_oqc_dat,0)-COALESCE(t.sl_da_giao,0)) FILTER (WHERE COALESCE(t.sl_oqc_dat,0) > COALESCE(t.sl_da_giao,0)),0)::int AS dg_pcs,
+      count(*) FILTER (WHERE COALESCE(t.sl_da_giao,0) > 0 AND COALESCE(t.sl_oqc_dat,0) = COALESCE(t.sl_da_giao,0))::int AS gd_tem,
+      COALESCE(SUM(COALESCE(t.sl_da_giao,0)),0)::int AS gd_pcs
     FROM tem t
     JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
     JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id AND ls.trang_thai <> 'HUY'
     WHERE t.trang_thai <> 'HUY'`;
 
-  // GIAO theo SỔ CÁI tem (không dùng giai đoạn "kém tiến độ nhất" — tem đã OQC đạt vẫn hiện dù đợt còn tem ở trạm khác):
-  //  Đang chờ giao = con_giao>0 (OQC đạt, chưa giao xong) · Đã giao = đã có SL giao.
-  const deliverySql = `
+  // GIAO tính theo PHẦN IN — chỉ tính khi TẤT CẢ ĐỢT VẢI của phần in đã tới giai đoạn giao
+  // (dùng chính phân loại `staged` theo đợt → tránh sót đợt CHƯA CÓ TEM: chờ SX / release / đóng lệnh).
+  //   Đang chờ giao = mọi đợt ∈ {DANG_GIAO, DA_GIAO} nhưng chưa giao hết.
+  //   Đã giao       = mọi đợt = DA_GIAO.
+  //   tem/pcs lấy từ sổ cái tem (chờ giao dùng con_giao, đã giao dùng sl_da_giao).
+  // Số PHẦN IN / MÃ ở Giao: strict theo ĐỢT (mọi đợt phải tới giai đoạn giao) — khớp tổng, không
+  // double-count với Sản xuất. (tem/pcs lấy từ temCountSql theo sổ cái — hiện cả khi phần in chưa đủ đợt.)
+  const deliverPinSql = `${STAGED_WITH},
+    sa AS (
+      SELECT phan_in_id, ma_hang_id,
+             bool_and(stage IN ('DANG_GIAO','DA_GIAO')) AS all_deliv,
+             bool_and(stage = 'DA_GIAO') AS all_giao
+      FROM staged GROUP BY phan_in_id, ma_hang_id
+    )
     SELECT
-      count(*) FILTER (WHERE con_giao > 0)::int AS dg_tem,
-      count(DISTINCT phan_in_id) FILTER (WHERE con_giao > 0)::int AS dg_phan_in,
-      count(DISTINCT ma_hang_id) FILTER (WHERE con_giao > 0)::int AS dg_ma,
-      COALESCE(SUM(con_giao) FILTER (WHERE con_giao > 0),0)::int AS dg_pcs,
-      count(*) FILTER (WHERE sl_da_giao > 0 AND con_giao = 0)::int AS gd_tem,
-      count(DISTINCT phan_in_id) FILTER (WHERE sl_da_giao > 0)::int AS gd_phan_in,
-      count(DISTINCT ma_hang_id) FILTER (WHERE sl_da_giao > 0)::int AS gd_ma,
-      COALESCE(SUM(sl_da_giao),0)::int AS gd_pcs
-    FROM (
-      SELECT DISTINCT ON (t.id) t.id AS tem_id, dv.phan_in_id, pi.ma_hang_id,
-             (COALESCE(t.sl_oqc_dat,0)-COALESCE(t.sl_da_giao,0)) AS con_giao, COALESCE(t.sl_da_giao,0) AS sl_da_giao
-      FROM tem t
-      JOIN phieu_san_xuat ps ON ps.id=t.phieu_san_xuat_id
-      JOIN lenh_san_xuat ls ON ls.id=ps.lenh_san_xuat_id AND ls.trang_thai<>'HUY'
-      JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id=ls.id
-      JOIN dot_vai_ve dv ON dv.id=lsd.dot_vai_ve_id
-      JOIN phan_in pi ON pi.id=dv.phan_in_id
-      JOIN ma_hang mh ON mh.id=pi.ma_hang_id
-      JOIN don_hang dh ON dh.id=mh.don_hang_id AND dh.trang_thai IS DISTINCT FROM 'CLOSED_FINANCE'
-      WHERE t.trang_thai<>'HUY'
-      ORDER BY t.id
-    ) z`;
+      count(*) FILTER (WHERE all_deliv AND NOT all_giao)::int AS dg_phan_in,
+      count(DISTINCT ma_hang_id) FILTER (WHERE all_deliv AND NOT all_giao)::int AS dg_ma,
+      count(*) FILTER (WHERE all_giao)::int AS gd_phan_in,
+      count(DISTINCT ma_hang_id) FILTER (WHERE all_giao)::int AS gd_ma
+    FROM sa`;
 
   const [stageRows, totals, pcsRows, temRows, deliveryRows] = await Promise.all([
     query(stageSql.replace(/\s+/g, ' ')),
@@ -283,7 +286,7 @@ async function stageCounts() {
               (SELECT count(*) FROM phan_in)::int AS so_phan_in`.replace(/\s+/g, ' ')),
     query(pcsSql.replace(/\s+/g, ' ')),
     query(temCountSql.replace(/\s+/g, ' ')),
-    query(deliverySql.replace(/\s+/g, ' ')),
+    query(deliverPinSql.replace(/\s+/g, ' ')),
   ]);
   const stages = {};
   stageRows.rows.forEach((r) => { stages[r.stage] = { phan_in: r.n_phan_in, ma: r.n_ma, pcs: 0 }; });
@@ -300,10 +303,13 @@ async function stageCounts() {
   setTem('CHO_KHO', tc.cho_kho || 0);
   setTem('KCS', tc.kcs || 0);
   setTem('SUA', tc.sua || 0);
-  // GIAO: thay số "giai đoạn kém tiến độ nhất" bằng số theo SỔ CÁI tem (đang chờ giao / đã giao).
-  const dl = deliveryRows.rows[0] || {};
-  stages.DANG_GIAO = { phan_in: dl.dg_phan_in || 0, ma: dl.dg_ma || 0, so_tem: dl.dg_tem || 0, pcs: dl.dg_pcs || 0 };
-  stages.DA_GIAO = { phan_in: dl.gd_phan_in || 0, ma: dl.gd_ma || 0, so_tem: dl.gd_tem || 0, pcs: dl.gd_pcs || 0 };
+  // OQC: thêm số TEM + pcs chờ OQC (theo sổ cái con_oqc); giữ nguyên số phần in từ `staged`.
+  setTem('OQC', tc.oqc || 0);
+  if (stages.OQC) stages.OQC.pcs = tc.oqc_pcs || 0;
+  // GIAO: số PHẦN IN/MÃ strict theo đợt (khớp tổng); số TEM/PCS theo sổ cái tem (SL thực chờ giao/đã giao).
+  const dp = deliveryRows.rows[0] || {};
+  stages.DANG_GIAO = { phan_in: dp.dg_phan_in || 0, ma: dp.dg_ma || 0, so_tem: tc.dg_tem || 0, pcs: tc.dg_pcs || 0 };
+  stages.DA_GIAO = { phan_in: dp.gd_phan_in || 0, ma: dp.gd_ma || 0, so_tem: tc.gd_tem || 0, pcs: tc.gd_pcs || 0 };
   return { totals: totals.rows[0], stages };
 }
 

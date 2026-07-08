@@ -5,6 +5,8 @@ const repo = require('./quality.repository');
 const AppError = require('../../utils/AppError');
 const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
+const planningRepo = require('../planning/planning.repository');
+const { caFromParts } = require('../../utils/ca');
 
 const num = (x) => Math.max(0, Number(x) || 0);
 
@@ -19,10 +21,10 @@ async function requireTem(temId, expectStatus) {
 
 // ----- KCS (đầu vào: tem DA_KHO) -----
 const prodRepo = require('../production/production.repository');
-async function listKcsCandidates(search) {
+async function listKcsCandidates({ search, filters }) {
   // Tem hết giờ phơi → tự động sang DA_KHO (chờ KCS) trước khi liệt kê.
   try { await prodRepo.promoteFinishedDrying(); } catch (e) { /* bỏ qua */ }
-  const rows = await repo.listKcsCand({ search }); // còn phần chưa kiểm (con_kcs > 0)
+  const rows = await repo.listKcsCand({ search, filters }); // còn phần chưa kiểm (con_kcs > 0)
   // Đánh dấu tem bị OQC trả về (badge + lọc).
   const rm = await repo.activeReturnsMap('OQC', rows.map((r) => r.tem_id));
   rows.forEach((r) => { r.tra_ve_ly_do = rm[r.tem_id] || null; });
@@ -101,7 +103,20 @@ async function recordKcs(temId, body, actorId) {
 }
 
 // ----- SỬA (còn phần chờ sửa: con_sua > 0) -----
-async function listSuaCandidates({ search, filters }) { return repo.listSuaCand({ search, filters }); }
+async function listSuaCandidates({ search, filters }) {
+  const rows = await repo.listSuaCand({ search, filters });
+  if (rows.length === 0) return rows;
+  // Suy ca sản xuất: giờ/tuần VN (query nhẹ riêng) + loại ca của tuần (Ngắn/Dài).
+  const [parts, map] = await Promise.all([
+    repo.caPartsForTems(rows.map((r) => r.tem_id)),
+    planningRepo.caModeMap(),
+  ]);
+  const partMap = new Map(parts.map((p) => [p.tem_id, p]));
+  return rows.map((r) => {
+    const p = partMap.get(r.tem_id) || {};
+    return { ...r, ca: caFromParts(p.ca_gio, p.ca_nam, p.ca_tuan, map) };
+  });
+}
 
 async function recordSua(temId, body, actorId) {
   const tem = await repo.getTemLedger(temId);
@@ -130,7 +145,7 @@ async function recordSua(temId, body, actorId) {
 }
 
 // ----- OQC (còn phần chờ kiểm cuối: con_oqc > 0) -----
-async function listOqcCandidates(search) { return repo.listOqcCand({ search }); }
+async function listOqcCandidates({ search, filters }) { return repo.listOqcCand({ search, filters }); }
 
 async function recordOqc(temId, body, actorId) {
   const tem = await repo.getTemLedger(temId);

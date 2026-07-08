@@ -108,7 +108,12 @@ const replanDone = asyncHandler(async (req, res) => ok(res, await service.replan
 const testCnspDone = asyncHandler(async (req, res) => ok(res, await service.testCnspDone(req.query.date || today())));
 const testQaDone = asyncHandler(async (req, res) => ok(res, await service.testQaDone(req.query.date || today())));
 
+const listCaTuan = asyncHandler(async (req, res) => ok(res, await service.listCaTuan()));
+const upsertCaTuan = asyncHandler(async (req, res) =>
+  ok(res, await service.upsertCaTuan(req.body, req.user.id), 'Đã lưu cài đặt ca tuần'));
+
 module.exports = {
+  listCaTuan, upsertCaTuan,
   release1Candidates, autoPlanCandidates, createRelease1, release1History, releaseSets, releaseSet,
   testRunCandidates, lenhDetail, recordTestRun,
   confirmCNSP, confirmQA, cancelCNSP, cancelQA, confirmCNSPBatch, confirmQABatch,

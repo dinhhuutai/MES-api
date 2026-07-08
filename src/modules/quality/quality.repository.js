@@ -11,7 +11,7 @@ const CON_OQC = '((t.sl_kcs_dat + t.sl_sua_dat) - t.sl_oqc_dat)';
 const CON_GIAO = '(t.sl_oqc_dat - t.sl_da_giao)';
 
 const TEM_CTX = `
-  SELECT t.id AS tem_id, t.ma_tem, t.so_luong, t.trang_thai, t.da_qua_phoi, t.sl_chenh_lech,
+  SELECT t.id AS tem_id, t.ma_tem, t.so_luong, t.trang_thai, t.da_qua_phoi, t.sl_chenh_lech, t.created_date AS ngay_in_tem,
          t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy, t.sl_sua_dat, t.sl_sua_huy, t.sl_oqc_dat, t.sl_da_giao,
          ${CON_KCS} AS con_kcs, ${CON_SUA} AS con_sua, ${CON_OQC} AS con_oqc, ${CON_GIAO} AS con_giao,
          ls.ma_lenh_san_xuat, cs.ma_chuyen, cs.ten_chuyen,
@@ -44,22 +44,33 @@ const TEM_CTX = `
 // ở nhiều công đoạn nếu còn phần chưa xử lý (kiểm/giao nhiều lần).
 async function listCandByCon(condExpr, { search = '', filters = {} } = {}) {
   const f = filters || {};
-  const params = [
-    search, f.khach || '', f.don || '', f.maHang || '', f.mauVai || '', f.kichVai || '', f.kichPhim || '',
-  ];
-  // Gửi SQL 1 dòng (IPS-safe — nhiều ILIKE/LATERAL). TEM_CTX không có comment '--' nên gộp an toàn.
-  const sql = `
-    ${TEM_CTX}
-     WHERE ${condExpr}
-       AND ($1 = '' OR t.ma_tem ILIKE '%'||$1||'%' OR ls.ma_lenh_san_xuat ILIKE '%'||$1||'%'
-            OR ${lenhPhanInMatch('ls.id', '$1')})
-       AND ($2 = '' OR info.ten_khach_hang ILIKE '%'||$2||'%')
-       AND ($3 = '' OR info.ma_don_hang ILIKE '%'||$3||'%')
-       AND ($4 = '' OR info.ma_hang ILIKE '%'||$4||'%')
-       AND ($5 = '' OR info.mau_vai ILIKE '%'||$5||'%')
-       AND ($6 = '' OR info.kich_vai ILIKE '%'||$6||'%')
-       AND ($7 = '' OR info.kich_phim ILIKE '%'||$7||'%')
-     ORDER BY t.created_date`;
+  const params = [];
+  const conds = [condExpr];
+  // Ô tìm kiếm chung (chỉ thêm ILIKE vào SQL khi CÓ nhập — giữ query gọn cho IPS khi không lọc).
+  if (search) {
+    params.push(search);
+    const i = params.length;
+    conds.push(`(t.ma_tem ILIKE '%'||$${i}||'%' OR ls.ma_lenh_san_xuat ILIKE '%'||$${i}||'%' OR ${lenhPhanInMatch('ls.id', `$${i}`)})`);
+  }
+  // Lọc từng trường — chỉ nối điều kiện cho trường thực sự được nhập.
+  const addFilter = (val, col) => {
+    if (!val) return;
+    params.push(val);
+    conds.push(`${col} ILIKE '%'||$${params.length}||'%'`);
+  };
+  addFilter(f.khach, 'info.ten_khach_hang');
+  addFilter(f.don, 'info.ma_don_hang');
+  addFilter(f.maHang, 'info.ma_hang');
+  addFilter(f.mauVai, 'info.mau_vai');
+  addFilter(f.kichVai, 'info.kich_vai');
+  addFilter(f.kichPhim, 'info.kich_phim');
+  // Lọc theo NGÀY IN TEM (created_date, giờ VN) — chỉ thêm khi có chọn.
+  if (f.ngay) {
+    params.push(f.ngay);
+    conds.push(`(t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $${params.length}::date`);
+  }
+  // Gửi SQL 1 dòng (IPS-safe). TEM_CTX không có comment '--' nên gộp an toàn.
+  const sql = `${TEM_CTX} WHERE ${conds.join(' AND ')} ORDER BY t.created_date`;
   const { rows } = await query(sql.replace(/\s+/g, ' '), params);
   return rows;
 }
@@ -72,6 +83,20 @@ const listOqcCand = (opt) => listCandByCon(`${CON_OQC} > 0`, opt);
 async function getTemBasic(temId) {
   const { rows } = await query('SELECT id, ma_tem, so_luong, trang_thai FROM tem WHERE id = $1', [temId]);
   return rows[0] || null;
+}
+
+// Giờ/tuần VN (để suy ca) cho danh sách tem — query nhẹ theo PK, tách khỏi TEM_CTX (IPS-safe).
+async function caPartsForTems(temIds) {
+  if (!temIds || temIds.length === 0) return [];
+  const { rows } = await query(
+    `SELECT id AS tem_id,
+            EXTRACT(HOUR    FROM created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS ca_gio,
+            EXTRACT(ISOYEAR FROM created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS ca_nam,
+            EXTRACT(WEEK    FROM created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS ca_tuan
+     FROM tem WHERE id = ANY($1::uuid[])`.replace(/\s+/g, ' '),
+    [temIds]
+  );
+  return rows;
 }
 
 // ----- SỔ CÁI SỐ LƯỢNG (migration 043) -----
@@ -472,8 +497,10 @@ const TEM_INFO_LATERAL = `
 // table ∈ 'kcs'|'sua'|'oqc' (nội bộ, không nhận từ user).
 async function temDoneByDate(table, date) {
   const qtyCol = table === 'sua' ? 'so_luong_sua_dat' : 'so_luong_dat';
+  const kiemCol = table === 'sua' ? 'so_luong_sua' : 'so_luong_kiem'; // SL đã kiểm (cho in tem KCS)
   const sql = `
-    SELECT x.created_date AS tg, nd.ho_ten AS nguoi, t.ma_tem AS ma, x.${qtyCol} AS so_luong,
+    SELECT x.created_date AS tg, nd.ho_ten AS nguoi, t.ma_tem AS ma, t.id AS tem_id,
+           x.${qtyCol} AS so_luong, x.${kiemCol} AS so_luong_kiem,
            info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.mau_vai, info.kich_vai, info.kich_phim
     FROM ${table} x JOIN tem t ON t.id = x.tem_id
     LEFT JOIN nguoi_dung nd ON nd.id = x.created_by
@@ -579,7 +606,7 @@ async function listQcTraVe(loai, date) {
 
 module.exports = {
   insertQcTraVe, activeReturnsMap, resolveReturns, resolveReturnsMany, listQcTraVe,
-  listKcsCand, listSuaCand, listOqcCand, getTemBasic, setTemTrangThai, setTemStatusQty,
+  listKcsCand, listSuaCand, listOqcCand, caPartsForTems, getTemBasic, setTemTrangThai, setTemStatusQty,
   getTemLedger, addKcsLedger, addSuaLedger, addOqcLedger, addGiaoLedger, reduceKcsDat, recomputeTemStage,
   temTimeline,
   nextMaTem, createChildTem, insertTemSplit, getTemForSplit,

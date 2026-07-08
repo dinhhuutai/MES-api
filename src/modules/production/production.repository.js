@@ -298,6 +298,18 @@ async function logCloseProduction(phieuId, maLenh, lyDo, printed, target, actorI
 }
 
 // Dữ liệu in NHÃN TEM (thông tin tem + phần in + lệnh + người in).
+// Giờ/tuần VN của 1 tem (để suy ca) — query nhẹ riêng, tách khỏi query nhãn (IPS-safe).
+async function caPartsForTem(temId) {
+  const { rows } = await query(
+    `SELECT EXTRACT(HOUR    FROM created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS ca_gio,
+            EXTRACT(ISOYEAR FROM created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS ca_nam,
+            EXTRACT(WEEK    FROM created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS ca_tuan
+     FROM tem WHERE id = $1`.replace(/\s+/g, ' '),
+    [temId]
+  );
+  return rows[0] || {};
+}
+
 async function getTemLabelData(temId) {
   const { rows } = await query(
     `SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.created_date,
@@ -639,7 +651,7 @@ async function listNgungByPhieu(phieuId) {
 module.exports = {
   listProductionCandidates, getPrintedTotal, getDefaultXePhoi, nextMaPhieu, createPhieu, setLenhChuyen, setLenhTrangThai, getLenhBasic,
   getLenhDotVaiList, insertVaiHuy, listVaiHuyByLenh,
-  getActivePhieu, getPhieuById, getTemsByPhieu, getTemContext, cancelTem, getTemLabelData,
+  getActivePhieu, getPhieuById, getTemsByPhieu, getTemContext, cancelTem, getTemLabelData, caPartsForTem,
   listCancelableTem, getTemForCancel, logTemCancel, logCloseProduction,
   cancelPhieuStart, logUndoStart,
   listTemLogByPhieu, nextReprint, logReprint,
