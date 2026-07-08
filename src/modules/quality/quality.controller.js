@@ -8,7 +8,13 @@ const kcsCandidates = asyncHandler(async (req, res) => ok(res, await service.lis
 const recordKcs = asyncHandler(async (req, res) =>
   ok(res, await service.recordKcs(req.params.temId, req.body, req.user.id), 'Đã ghi nhận KCS'));
 
-const suaCandidates = asyncHandler(async (req, res) => ok(res, await service.listSuaCandidates(req.query.search || '')));
+const suaCandidates = asyncHandler(async (req, res) => {
+  const { search, khach, don, maHang, mauVai, kichVai, kichPhim } = req.query;
+  return ok(res, await service.listSuaCandidates({
+    search: search || '',
+    filters: { khach, don, maHang, mauVai, kichVai, kichPhim },
+  }));
+});
 const recordSua = asyncHandler(async (req, res) =>
   ok(res, await service.recordSua(req.params.temId, req.body, req.user.id), 'Đã ghi nhận sửa'));
 

@@ -3,6 +3,7 @@
 const { withTransaction } = require('../../config/db');
 const repo = require('./planning.repository');
 const qaRepo = require('../quality/quality.repository'); // qc_tra_ve dùng chung
+const chuyenRepo = require('../chuyen/chuyen.repository');
 const wf = require('../workflow/workflow.repository');
 const AppError = require('../../utils/AppError');
 const { buildMeta } = require('../../utils/pagination');
@@ -34,6 +35,63 @@ async function listRelease1Candidates({ search, page, limit, offset }) {
   const rm = await qaRepo.activeReturnsMap('TEST_RUN', rows.map((r) => r.dot_vai_id));
   rows.forEach((r) => { r.tra_ve_ly_do = rm[r.dot_vai_id] || null; });
   return { items: rows, meta: buildMeta(page, limit, total) };
+}
+
+// ----- KẾ HOẠCH TỰ ĐỘNG -----
+// Thông số HSKT & số pass/chuyền hiện là DỮ LIỆU GIẢ (deterministic theo id để ổn định giữa các lần tải);
+// về sau lấy từ ERP. Công thức năng suất theo spec nghiệp vụ (xem tinhNangSuat).
+function seedFrom(str) {
+  let h = 2166136261;
+  const s = String(str || '');
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+function mockHskt(phanInId) {
+  const h = seedFrom(phanInId);
+  return {
+    so_luong_vai_pass: 20 + (h % 41),         // 20..60 (vải/pass)
+    so_lan_in: 3 + (Math.floor(h / 41) % 10), // 3..12 (số lần in)
+    so_pass_bo: Math.floor(h / 4100) % 4,     // 0..3 (số pass bỏ)
+  };
+}
+function mockPassChuyen(chuyenId) {
+  return 2 + (seedFrom(chuyenId) % 5); // 2..6 (số pass mỗi chuyền)
+}
+// Năng suất/giờ = X × 60 / thời-gian-SX; X = min(SL nhận vải, số vải/vòng in).
+function tinhNangSuat(hskt, soPassChuyen, soLuongVaiVe) {
+  const soVaiVongIn = hskt.so_luong_vai_pass * soPassChuyen;
+  const X = Math.min(Number(soLuongVaiVe) || 0, soVaiVongIn);
+  const thoiGianSx = hskt.so_lan_in * (10 / (hskt.so_pass_bo + 1)) + 30; // phút
+  const nangSuatGio = thoiGianSx > 0 ? (X * 60) / thoiGianSx : 0;
+  return {
+    so_vai_vong_in: soVaiVongIn,
+    x: X,
+    thoi_gian_sx: Math.round(thoiGianSx * 10) / 10,
+    nang_suat_gio: Math.round(nangSuatGio),
+  };
+}
+
+async function autoPlanCandidates({ search, page, limit, offset }) {
+  const { rows, total } = await repo.listRelease1Candidates({ search, offset, limit });
+  const rm = await qaRepo.activeReturnsMap('TEST_RUN', rows.map((r) => r.dot_vai_id));
+  const chuyens = (await chuyenRepo.listChuyen({ search: '' })).filter((c) => c.dang_hoat_dong);
+  const items = rows.map((r) => {
+    const hskt = mockHskt(r.phan_in_id);
+    const chuyenOptions = chuyens
+      .map((c) => ({
+        chuyen_id: c.id, ma_chuyen: c.ma_chuyen, ten_chuyen: c.ten_chuyen,
+        so_pass: mockPassChuyen(c.id), ...tinhNangSuat(hskt, mockPassChuyen(c.id), r.so_luong_vai_ve),
+      }))
+      .sort((a, b) => b.nang_suat_gio - a.nang_suat_gio);
+    return {
+      ...r,
+      tra_ve_ly_do: rm[r.dot_vai_id] || null,
+      hskt,
+      chuyen_options: chuyenOptions,
+      best_chuyen: chuyenOptions[0] || null,
+    };
+  });
+  return { items, meta: buildMeta(page, limit, total) };
 }
 
 async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach }, actorId) {
@@ -455,7 +513,7 @@ async function testCnspDone(date) { return repo.testDoneByDate(date, CNSP_CP); }
 async function testQaDone(date) { return repo.testDoneByDate(date, QA_CP); }
 
 module.exports = {
-  listRelease1Candidates, createRelease1, release1History, listReleaseSets, releaseSet,
+  listRelease1Candidates, autoPlanCandidates, createRelease1, release1History, listReleaseSets, releaseSet,
   listTestRunCandidates, getLenhDetail, recordTestRun, confirmTest, confirmTestBatch, cancelTest,
   listRelease2Candidates, approveRelease2, approveRelease2Batch, testRunHistory,
   listReplanCandidates, replan, replanBatch, planHistory,

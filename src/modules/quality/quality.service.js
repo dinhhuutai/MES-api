@@ -101,7 +101,7 @@ async function recordKcs(temId, body, actorId) {
 }
 
 // ----- SỬA (còn phần chờ sửa: con_sua > 0) -----
-async function listSuaCandidates(search) { return repo.listSuaCand({ search }); }
+async function listSuaCandidates({ search, filters }) { return repo.listSuaCand({ search, filters }); }
 
 async function recordSua(temId, body, actorId) {
   const tem = await repo.getTemLedger(temId);

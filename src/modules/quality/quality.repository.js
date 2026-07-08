@@ -42,15 +42,25 @@ const TEM_CTX = `
 
 // Danh sách tem cho 1 công đoạn — lọc theo SL CÒN LẠI (con_X > 0), cho phép 1 tem xuất hiện đồng thời
 // ở nhiều công đoạn nếu còn phần chưa xử lý (kiểm/giao nhiều lần).
-async function listCandByCon(condExpr, { search = '' }) {
-  const { rows } = await query(
-    `${TEM_CTX}
+async function listCandByCon(condExpr, { search = '', filters = {} } = {}) {
+  const f = filters || {};
+  const params = [
+    search, f.khach || '', f.don || '', f.maHang || '', f.mauVai || '', f.kichVai || '', f.kichPhim || '',
+  ];
+  // Gửi SQL 1 dòng (IPS-safe — nhiều ILIKE/LATERAL). TEM_CTX không có comment '--' nên gộp an toàn.
+  const sql = `
+    ${TEM_CTX}
      WHERE ${condExpr}
        AND ($1 = '' OR t.ma_tem ILIKE '%'||$1||'%' OR ls.ma_lenh_san_xuat ILIKE '%'||$1||'%'
             OR ${lenhPhanInMatch('ls.id', '$1')})
-     ORDER BY t.created_date`,
-    [search]
-  );
+       AND ($2 = '' OR info.ten_khach_hang ILIKE '%'||$2||'%')
+       AND ($3 = '' OR info.ma_don_hang ILIKE '%'||$3||'%')
+       AND ($4 = '' OR info.ma_hang ILIKE '%'||$4||'%')
+       AND ($5 = '' OR info.mau_vai ILIKE '%'||$5||'%')
+       AND ($6 = '' OR info.kich_vai ILIKE '%'||$6||'%')
+       AND ($7 = '' OR info.kich_phim ILIKE '%'||$7||'%')
+     ORDER BY t.created_date`;
+  const { rows } = await query(sql.replace(/\s+/g, ' '), params);
   return rows;
 }
 // KCS: tem đã khô, còn phần chưa kiểm. Sửa: còn phần chờ sửa. OQC: còn phần chờ kiểm cuối.

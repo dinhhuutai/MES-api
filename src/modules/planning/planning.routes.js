@@ -10,6 +10,9 @@ router.use(auth);
 
 const TEST_VIEW = ['TESTRUN_CNSP', 'TESTRUN_QA', 'RELEASE1', 'RELEASE2'];
 
+// Kế hoạch tự động (đề xuất chuyền tối ưu theo năng suất — nguồn = candidate Release 1)
+router.get('/auto-plan/candidates', rbac('RELEASE1'), c.autoPlanCandidates);
+
 // Release 1 (Kế hoạch)
 router.get('/release1/candidates', rbac('RELEASE1'), c.release1Candidates);
 router.get('/release1/history', rbac('RELEASE1'), c.release1History);
