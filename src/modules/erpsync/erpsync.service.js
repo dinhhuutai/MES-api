@@ -112,15 +112,16 @@ async function processRow(r, maPhan, maDotVai, loaiDotVaiId) {
   });
 }
 
-// Loại đợt vải theo trường ERP `loaikd`; ERP không trả → '3I'. Cache theo lần sync
-// (nhiều dòng chung 1 loại) + best-effort (không tạo được → null → đợt vải để loai trống, không phá sync).
+// Map trường ERP `loaikd` → loại đợt vải CHUẨN đã seed: 3I = SO_LUONG, 5I = BO_SUNG.
+// Thiếu / mã khác → mặc định SO_LUONG. Chỉ TRA id loại có sẵn (không tạo loại rác kiểu '3I').
+const LOAIKD_MAP = { '3I': 'SO_LUONG', '5I': 'BO_SUNG' };
 function makeLoaiResolver() {
   const cache = new Map();
   return async (loaikd) => {
-    const ma = (clean(loaikd) || '3I').slice(0, 50);
-    if (cache.has(ma)) return cache.get(ma);
-    const id = await repo.upsertLoaiDotVai({ maLoai: ma, tenLoai: ma.slice(0, 255) });
-    cache.set(ma, id);
+    const maLoai = LOAIKD_MAP[clean(loaikd).toUpperCase()] || 'SO_LUONG';
+    if (cache.has(maLoai)) return cache.get(maLoai);
+    const id = await repo.getLoaiDotVaiId(maLoai);
+    cache.set(maLoai, id);
     return id;
   };
 }

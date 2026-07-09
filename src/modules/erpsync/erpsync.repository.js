@@ -121,17 +121,12 @@ async function setPhanInDryMin(phanInId, phut) {
   } catch (e) { /* migration 038 chưa chạy — bỏ qua */ }
 }
 
-// Loại đợt vải theo trường ERP `loaikd`. Upsert theo ma_loai; ten_loai hiển thị trực tiếp.
-// Chạy NGOÀI transaction chính (autocommit) + best-effort → trả null nếu không tạo/đọc được (không phá sync).
-async function upsertLoaiDotVai({ maLoai, tenLoai }) {
+// Tra id loại đợt vải CHUẨN theo ma_loai (SO_LUONG/BO_SUNG/MAU — đã seed). KHÔNG tạo mới loại rác từ mã ERP.
+// Best-effort → null nếu không đọc được (đợt vải để loại trống, không phá sync).
+async function getLoaiDotVaiId(maLoai) {
   try {
-    const { rows } = await query(
-      `INSERT INTO loai_dot_vai (ma_loai, ten_loai) VALUES ($1,$2)
-       ON CONFLICT (ma_loai) DO UPDATE SET ten_loai = EXCLUDED.ten_loai
-       RETURNING id`,
-      [maLoai, tenLoai || maLoai]
-    );
-    return rows[0].id;
+    const { rows } = await query('SELECT id FROM loai_dot_vai WHERE ma_loai = $1 LIMIT 1', [maLoai]);
+    return rows[0] ? rows[0].id : null;
   } catch (e) { return null; }
 }
 
@@ -152,5 +147,5 @@ async function upsertDotVai(client, { maDotVai, phanInId, loaiDotVaiId, ngayVaiV
 
 module.exports = {
   createSyncLog, finishSyncLog, listSyncHistory, insertRawBatch, saveSyncRaw, getSyncRaw,
-  upsertKhachHang, upsertDonHang, upsertMaHang, upsertPhanIn, setPhanInDryMin, upsertLoaiDotVai, upsertDotVai,
+  upsertKhachHang, upsertDonHang, upsertMaHang, upsertPhanIn, setPhanInDryMin, getLoaiDotVaiId, upsertDotVai,
 };
