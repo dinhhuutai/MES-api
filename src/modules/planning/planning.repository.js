@@ -3,7 +3,13 @@
 const { query } = require('../../config/db');
 const { lenhPhanInMatch } = require('../../utils/search');
 
-// ----- RELEASE 1: đợt vải của phần in đã READY, chưa nằm trong lệnh nào -----
+// SL đã release của 1 đợt vải = Σ so_luong_release các lệnh non-HUY gắn đợt đó (cho Release 1 THEO SỐ LƯỢNG).
+const DA_REL = `COALESCE((SELECT SUM(ls.so_luong_release) FROM lenh_sx_dot_vai lsd
+    JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
+    WHERE lsd.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY'),0)`;
+
+// ----- RELEASE 1: đợt vải của phần in đã READY, CÒN phần chưa release (SL vải về − đã release > 0) -----
+// Release theo số lượng: 1 đợt có thể release nhiều lần → nhiều lệnh; đợt ở lại pool tới khi release đủ.
 async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
   const SEARCH = `($1 = '' OR pin.ma_phan ILIKE '%'||$1||'%' OR kh.ten_khach_hang ILIKE '%'||$1||'%'
                   OR mh.ma_hang ILIKE '%'||$1||'%' OR pin.mau_vai ILIKE '%'||$1||'%'
@@ -18,8 +24,7 @@ async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
     LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id
     WHERE EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
                   WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT')
-      AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
-                      WHERE lsd.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY')
+      AND (COALESCE(dv.so_luong_vai_ve,0) - ${DA_REL}) > 0
       AND NOT EXISTS (SELECT 1 FROM gom_set_dot_vai gsd JOIN gom_set gs ON gs.id = gsd.gom_set_id
                       WHERE gsd.dot_vai_ve_id = dv.id AND gs.trang_thai = 'MO')
       AND ${SEARCH}`;
@@ -28,7 +33,9 @@ async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
     SELECT dv.id AS dot_vai_id, dv.ma_dot_vai, dv.so_luong_vai_ve, dv.ngay_vai_ve, dv.han_giao_hang,
            pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim,
            pin.so_luong_don_hang, ldv.ten_loai AS loai_dot_vai,
-           mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang
+           mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
+           ${DA_REL}::int AS da_release,
+           (COALESCE(dv.so_luong_vai_ve,0) - ${DA_REL})::int AS con_release
     ${FROM}
     ORDER BY pin.mau_vai, pin.ma_phan, dv.ma_dot_vai
     LIMIT $2 OFFSET $3`;
@@ -39,6 +46,19 @@ async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
     query(countSql, [search]),
   ]);
   return { rows: data.rows, total: count.rows[0].total };
+}
+
+// SL đã release / còn lại của từng đợt vải (cho createRelease1 validate + prefill).
+async function getDotVaiRemaining(dotVaiIds) {
+  const { rows } = await query(
+    `SELECT dv.id::text AS id, COALESCE(dv.so_luong_vai_ve,0)::int AS so_luong,
+            COALESCE((SELECT SUM(ls.so_luong_release) FROM lenh_sx_dot_vai lsd
+                      JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
+                      WHERE lsd.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY'),0)::int AS da_release
+     FROM dot_vai_ve dv WHERE dv.id = ANY($1::uuid[])`,
+    [dotVaiIds]
+  );
+  return rows.map((r) => ({ id: r.id, so_luong: r.so_luong, da_release: r.da_release, con_release: Math.max(0, r.so_luong - r.da_release) }));
 }
 
 const NEXT_MA_SQL =
@@ -666,7 +686,7 @@ module.exports = {
   listCaTuan, caModeMap, upsertCaTuan,
   listRelease1Candidates, release1HistoryByDate, nextMaLenh, nextMaLenhTx, createLenh,
   release1DoneByDate, planDoneByDate, testDoneByDate,
-  testedDotVaiIds, getDotVaiQty, addLenhDotVai, dotVaiAlreadyReleased,
+  testedDotVaiIds, getDotVaiQty, getDotVaiRemaining, addLenhDotVai, dotVaiAlreadyReleased,
   listTestRunCandidates, listRelease2Candidates, getLenhBasic, getLenhDotVai, getTestRuns,
   getLenhTestStatus, insertTestRun, insertTestRunTx, upsertLenhResult, insertStatusLog, setLenhTrangThai,
   testRunHistoryByDate,

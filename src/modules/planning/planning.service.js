@@ -85,10 +85,11 @@ async function autoPlanCandidates({ search }) {
 
   const items = rows.map((r) => {
     const hskt = mockHskt(r.phan_in_id);
+    const qtyPlan = Number(r.con_release ?? r.so_luong_vai_ve) || 0; // xếp theo SL CÒN LẠI cần release
     const chuyenOptions = chuyens
       .map((c) => ({
         chuyen_id: c.id, ma_chuyen: c.ma_chuyen, ten_chuyen: c.ten_chuyen, so_pass: c.so_pass,
-        ...tinhNangSuat(hskt, c.so_pass, r.so_luong_vai_ve),
+        ...tinhNangSuat(hskt, c.so_pass, qtyPlan),
       }))
       .sort((a, b) => b.nang_suat_gio - a.nang_suat_gio);
     return { ...r, tra_ve_ly_do: rm[r.dot_vai_id] || null, hskt, chuyen_options: chuyenOptions, best_chuyen: chuyenOptions[0] || null };
@@ -108,7 +109,7 @@ async function autoPlanCandidates({ search }) {
     let cumHours = 0;
     list.forEach((it) => {
       const ns = (it.best_chuyen && it.best_chuyen.nang_suat_gio) || 0;
-      const hours = ns > 0 ? (Number(it.so_luong_vai_ve) || 0) / ns : DAILY_HOURS;
+      const hours = ns > 0 ? (Number(it.con_release ?? it.so_luong_vai_ve) || 0) / ns : DAILY_HOURS;
       it.so_gio_sx = Math.round(hours * 10) / 10;
       it.ngay_ke_hoach = addDaysIso(today, Math.floor(cumHours / DAILY_HOURS));
       cumHours += hours;
@@ -125,29 +126,38 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
   }
   if (!chuyenId) throw new AppError('Chọn chuyền sản xuất', { status: 422, errorCode: 'NO_CHUYEN' });
 
-  const daReleased = await repo.dotVaiAlreadyReleased(dotVaiIds);
-  if (daReleased.length > 0) {
-    throw new AppError('Có đợt vải đã được release', { status: 409, errorCode: 'ALREADY_RELEASED', details: daReleased });
-  }
+  // RELEASE THEO SỐ LƯỢNG: mỗi đợt còn "con_release = SL vải về − đã release". Release 1 lần = 1 lệnh với
+  // SL nhập (≤ còn lại); đợt Ở LẠI pool tới khi release đủ ⇒ 1 đợt có thể có NHIỀU lệnh.
+  const remain = await repo.getDotVaiRemaining(dotVaiIds);
+  const conMap = Object.fromEntries(remain.map((r) => [r.id, r.con_release]));
+  const single = dotVaiIds.length === 1;
 
-  // Mỗi đợt vải tạo 1 lệnh sản xuất riêng (xác nhận nhiều cùng lúc, KHÔNG gom chung vào 1 lệnh).
+  // Xác định SL release từng đợt + validate. Single có nhập SL → dùng SL nhập; còn lại → release hết phần còn.
+  const plan = [];
+  for (const dvId of dotVaiIds) {
+    const con = Number(conMap[dvId]) || 0;
+    if (single && soLuongRelease != null) {
+      const qty = Number(soLuongRelease);
+      if (!(qty > 0)) throw new AppError('Số lượng release phải > 0', { status: 422, errorCode: 'INVALID_QTY' });
+      if (qty > con) throw new AppError(`SL release (${qty}) vượt SL còn lại (${con})`, { status: 422, errorCode: 'OVER' });
+      plan.push({ dvId, qty });
+    } else if (con > 0) {
+      plan.push({ dvId, qty: con }); // batch: release hết phần còn lại; bỏ qua đợt đã release đủ
+    }
+  }
+  if (plan.length === 0) throw new AppError('Các đợt vải đã release đủ số lượng', { status: 409, errorCode: 'ALL_RELEASED' });
+
   // Test Run theo code phần: đợt vải của phần in đã test xong (CNSP+QA) → vào thẳng RELEASE_2, bỏ qua test run.
   const { version, byMa } = await loadTestConfig();
-  const testedSet = new Set(await repo.testedDotVaiIds(dotVaiIds, byMa[CNSP_CP].id, byMa[QA_CP].id));
-
-  // SL release từng lệnh = SL vải về của đợt vải đó; nếu release đúng 1 đợt và người dùng nhập SL thì dùng giá trị nhập.
-  const qtyRows = await repo.getDotVaiQty(dotVaiIds);
-  const qtyMap = Object.fromEntries(qtyRows.map((r) => [r.id, r.so_luong]));
-  const single = dotVaiIds.length === 1;
+  const testedSet = new Set(await repo.testedDotVaiIds(plan.map((p) => p.dvId), byMa[CNSP_CP].id, byMa[QA_CP].id));
 
   const created = await withTransaction(async (client) => {
     const out = [];
-    for (const dvId of dotVaiIds) {
+    for (const { dvId, qty } of plan) {
       const maLenh = await repo.nextMaLenhTx(client);
       const trangThai = testedSet.has(dvId) ? 'RELEASE_2' : 'RELEASE_1';
-      const soLuong = (single && soLuongRelease != null) ? soLuongRelease : (qtyMap[dvId] || 0);
       const id = await repo.createLenh(client, {
-        versionId: version.id, maLenh, chuyenId, soLuongRelease: soLuong, ngayKeHoach, trangThai,
+        versionId: version.id, maLenh, chuyenId, soLuongRelease: qty, ngayKeHoach, trangThai,
       }, actorId);
       await repo.addLenhDotVai(client, id, dvId, actorId);
       out.push({ id, ma_lenh_san_xuat: maLenh, trang_thai: trangThai, so_dot_vai: 1, dot_vai_id: dvId });
