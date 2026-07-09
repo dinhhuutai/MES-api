@@ -111,21 +111,46 @@ async function upsertPhanIn(client, { maHangId, maPhan, mauVai, kichVai, kichPhi
   return rows[0].id;
 }
 
+// Ghi thời gian chờ khô (ERP tgphoi) vào phần in — BEST-EFFORT, tách khỏi transaction chính:
+// nếu cột chưa có (migration 038 chưa chạy ở môi trường nào đó) thì bỏ qua, KHÔNG làm hỏng cả lần sync.
+async function setPhanInDryMin(phanInId, phut) {
+  if (phut == null) return;
+  try {
+    await query('UPDATE phan_in SET thoi_gian_cho_kho_phut = $2, updated_date = CURRENT_TIMESTAMP WHERE id = $1',
+      [phanInId, phut]);
+  } catch (e) { /* migration 038 chưa chạy — bỏ qua */ }
+}
+
+// Loại đợt vải theo trường ERP `loaikd`. Upsert theo ma_loai; ten_loai hiển thị trực tiếp.
+// Chạy NGOÀI transaction chính (autocommit) + best-effort → trả null nếu không tạo/đọc được (không phá sync).
+async function upsertLoaiDotVai({ maLoai, tenLoai }) {
+  try {
+    const { rows } = await query(
+      `INSERT INTO loai_dot_vai (ma_loai, ten_loai) VALUES ($1,$2)
+       ON CONFLICT (ma_loai) DO UPDATE SET ten_loai = EXCLUDED.ten_loai
+       RETURNING id`,
+      [maLoai, tenLoai || maLoai]
+    );
+    return rows[0].id;
+  } catch (e) { return null; }
+}
+
 // Trả về { id, inserted } — inserted=true nếu là đợt vải mới (xmax=0).
-async function upsertDotVai(client, { maDotVai, phanInId, ngayVaiVe, hanGiao, soLuong }) {
+async function upsertDotVai(client, { maDotVai, phanInId, loaiDotVaiId, ngayVaiVe, hanGiao, soLuong }) {
   const { rows } = await client.query(
-    `INSERT INTO dot_vai_ve (phan_in_id, ma_dot_vai, ngay_vai_ve, han_giao_hang, so_luong_vai_ve, trang_thai)
-     VALUES ($1,$2,$3,$4,$5,'NHAN_VAI')
+    `INSERT INTO dot_vai_ve (phan_in_id, loai_dot_vai_id, ma_dot_vai, ngay_vai_ve, han_giao_hang, so_luong_vai_ve, trang_thai)
+     VALUES ($1,$2,$3,$4,$5,$6,'NHAN_VAI')
      ON CONFLICT (ma_dot_vai) DO UPDATE SET
+       loai_dot_vai_id = COALESCE(EXCLUDED.loai_dot_vai_id, dot_vai_ve.loai_dot_vai_id),
        ngay_vai_ve = EXCLUDED.ngay_vai_ve, han_giao_hang = EXCLUDED.han_giao_hang,
        so_luong_vai_ve = EXCLUDED.so_luong_vai_ve, updated_date = CURRENT_TIMESTAMP
      RETURNING id, (xmax = 0) AS inserted`,
-    [phanInId, maDotVai, ngayVaiVe || null, hanGiao || null, soLuong ?? null]
+    [phanInId, loaiDotVaiId || null, maDotVai, ngayVaiVe || null, hanGiao || null, soLuong ?? null]
   );
   return { id: rows[0].id, inserted: rows[0].inserted };
 }
 
 module.exports = {
   createSyncLog, finishSyncLog, listSyncHistory, insertRawBatch, saveSyncRaw, getSyncRaw,
-  upsertKhachHang, upsertDonHang, upsertMaHang, upsertPhanIn, upsertDotVai,
+  upsertKhachHang, upsertDonHang, upsertMaHang, upsertPhanIn, setPhanInDryMin, upsertLoaiDotVai, upsertDotVai,
 };

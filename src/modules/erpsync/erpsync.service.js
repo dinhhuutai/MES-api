@@ -94,7 +94,7 @@ async function fetchErp(fromDate) {
   }
 }
 
-async function processRow(r, maPhan, maDotVai) {
+async function processRow(r, maPhan, maDotVai, loaiDotVaiId) {
   return withTransaction(async (client) => {
     const khId = await repo.upsertKhachHang(client, { ma: clean(r.customer_name), ten: clean(r.customer_name) });
     const donId = await repo.upsertDonHang(client, { maDon: clean(r.order_name), khachHangId: khId });
@@ -105,11 +105,24 @@ async function processRow(r, maPhan, maDotVai) {
       soLuongDonHang: r.order_qty ?? null,
     });
     const { id: dotVaiId, inserted } = await repo.upsertDotVai(client, {
-      maDotVai, phanInId: pinId,
+      maDotVai, phanInId: pinId, loaiDotVaiId,
       ngayVaiVe: toDate(r.erp_datetime || r.created_date), hanGiao: toDate(r.due_date), soLuong: r.received_qty ?? null,
     });
-    return { inserted, dotVaiId };
+    return { inserted, dotVaiId, pinId };
   });
+}
+
+// Loại đợt vải theo trường ERP `loaikd`; ERP không trả → '3I'. Cache theo lần sync
+// (nhiều dòng chung 1 loại) + best-effort (không tạo được → null → đợt vải để loai trống, không phá sync).
+function makeLoaiResolver() {
+  const cache = new Map();
+  return async (loaikd) => {
+    const ma = (clean(loaikd) || '3I').slice(0, 50);
+    if (cache.has(ma)) return cache.get(ma);
+    const id = await repo.upsertLoaiDotVai({ maLoai: ma, tenLoai: ma.slice(0, 255) });
+    cache.set(ma, id);
+    return id;
+  };
 }
 
 // fromDate mặc định = THỜI ĐIỂM HIỆN TẠI, định dạng 'YYYY-MM-DDTHH:mm:ss' (giờ local, không hậu tố 'Z' UTC).
@@ -131,13 +144,13 @@ async function syncPhieuNhanVai({ fromDate, actorId = null, tuDong = false } = {
     catch (e) { console.error(`[erp-sync] ✗ Lưu chuỗi thô lỗi: ${e.message}`); }
 
     // Tính khóa định danh cho TỪNG dòng (mỗi bản ghi = 1 đợt; xem buildKeys).
-    // Bỏ qua khi: (1) không đúng khách 'SD', hoặc (2) không có code_part.
+    // Bỏ qua khi: (1) không đúng khách 'SL', hoặc (2) không có code_part.
     const seen = new Map();
     const prepared = rows.map((r) => {
-      const notSd = clean(r.customer_name).toUpperCase() !== 'SD';
+      const notSl = clean(r.customer_name).toUpperCase() !== 'SL';
       const noCode = !clean(r.code_part);
       const { maPhan, maDotVai } = buildKeys(r, seen);
-      return { r, maPhan, maDotVai, skip: notSd || noCode, notSd, noCode };
+      return { r, maPhan, maDotVai, skip: notSl || noCode, notSl, noCode };
     });
 
     // Task 1: LƯU DỮ LIỆU THÔ trước khi xử lý (gồm cả dòng bị bỏ qua).
@@ -149,19 +162,24 @@ async function syncPhieuNhanVai({ fromDate, actorId = null, tuDong = false } = {
       console.error(`[erp-sync] ✗ Lưu dữ liệu thô lỗi: ${e.message}`);
     }
 
-    let soMoi = 0; let soCapNhat = 0; let soBoQua = 0; let soKhongSd = 0; let soKhongCode = 0;
+    let soMoi = 0; let soCapNhat = 0; let soBoQua = 0; let soKhongSl = 0; let soKhongCode = 0;
     const errors = [];
     const newDotVaiIds = [];
+    const resolveLoai = makeLoaiResolver();
     for (const p of prepared) {
-      // Bỏ qua dòng không phải khách 'SD' hoặc không có code_part.
+      // Bỏ qua dòng không phải khách 'SL' hoặc không có code_part.
       if (p.skip) {
         soBoQua += 1;
-        if (p.notSd) soKhongSd += 1; else if (p.noCode) soKhongCode += 1;
+        if (p.notSl) soKhongSl += 1; else if (p.noCode) soKhongCode += 1;
         continue;
       }
       try {
-        const { inserted, dotVaiId } = await processRow(p.r, p.maPhan, p.maDotVai);
+        const loaiDotVaiId = await resolveLoai(p.r.loaikd);            // ngoài transaction, best-effort
+        const { inserted, dotVaiId, pinId } = await processRow(p.r, p.maPhan, p.maDotVai, loaiDotVaiId);
         if (inserted) { soMoi += 1; newDotVaiIds.push(dotVaiId); } else soCapNhat += 1;
+        // tgphoi (phút) → thời gian chờ khô của phần in (best-effort, không phá sync nếu thiếu cột).
+        const tgPhoi = Number(p.r.tgphoi);
+        if (Number.isFinite(tgPhoi) && tgPhoi > 0) await repo.setPhanInDryMin(pinId, Math.round(tgPhoi));
       } catch (e) {
         errors.push(e.message);
       }
@@ -171,7 +189,7 @@ async function syncPhieuNhanVai({ fromDate, actorId = null, tuDong = false } = {
     if (newDotVaiIds.length) await tracking.moveDotVaiTo(newDotVaiIds, 'READY', actorId);
     const trangThai = errors.length && soMoi + soCapNhat === 0 ? 'LOI' : 'THANH_CONG';
     const notes = [];
-    if (soKhongSd) notes.push(`bỏ qua ${soKhongSd} dòng không phải khách 'SD'`);
+    if (soKhongSl) notes.push(`bỏ qua ${soKhongSl} dòng không phải khách 'SL'`);
     if (soKhongCode) notes.push(`bỏ qua ${soKhongCode} dòng không có code_part`);
     if (errors.length) notes.push(`lỗi ${errors.length}/${rows.length}: ${errors.slice(0, 3).join(' | ')}`);
     await repo.finishSyncLog(logId, {
