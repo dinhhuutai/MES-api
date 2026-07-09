@@ -13,4 +13,14 @@ const history = asyncHandler(async (req, res) =>
     limit: parseInt(req.query.limit || '500', 10),
   })));
 
-module.exports = { online, history };
+const activity = asyncHandler(async (req, res) =>
+  ok(res, await service.activity({
+    date: req.query.date || null,
+    userId: req.query.userId || null,
+    loai: req.query.loai || null,
+    search: (req.query.search || '').trim() || null,
+    page: parseInt(req.query.page || '1', 10),
+    limit: parseInt(req.query.limit || '50', 10),
+  })));
+
+module.exports = { online, history, activity };
