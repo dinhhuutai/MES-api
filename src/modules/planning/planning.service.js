@@ -81,7 +81,8 @@ async function autoPlanCandidates({ search }) {
   const rm = await qaRepo.activeReturnsMap('TEST_RUN', rows.map((r) => r.dot_vai_id));
   const chuyens = (await chuyenRepo.listChuyen({ search: '' }))
     .filter((c) => c.dang_hoat_dong)
-    .map((c) => ({ id: c.id, ma_chuyen: c.ma_chuyen, ten_chuyen: c.ten_chuyen, so_pass: mockPassChuyen(c.id) }));
+    // Số pass lấy từ cấu hình chuyền (mig 048); chưa cấu hình (null/0/1 mặc định) → giữ mock để năng suất còn ý nghĩa.
+    .map((c) => ({ id: c.id, ma_chuyen: c.ma_chuyen, ten_chuyen: c.ten_chuyen, so_pass: Number(c.so_pass) > 1 ? Number(c.so_pass) : mockPassChuyen(c.id) }));
 
   const items = rows.map((r) => {
     const hskt = mockHskt(r.phan_in_id);
@@ -117,7 +118,14 @@ async function autoPlanCandidates({ search }) {
   });
   items.forEach((it) => { if (!it.ngay_ke_hoach) it.ngay_ke_hoach = isoDate(today); });
 
-  return { items, chuyens };
+  // "ĐÃ LÊN KẾ HOẠCH" = lệnh đã Release 1 → chờ sản xuất (RELEASE_1/RELEASE_2) CHƯA có phiếu SX
+  // (đã xác nhận chạy → có phiếu → tự loại). Gắn best_chuyen theo chuyền đã chọn để xếp trên sơ đồ.
+  const planned = (await repo.listReplanCandidates({ search, offset: 0, limit: 1000 })).rows.map((r) => ({
+    ...r, planned: true, dot_vai_id: null,
+    best_chuyen: r.chuyen_id ? { chuyen_id: r.chuyen_id, ma_chuyen: r.ma_chuyen, ten_chuyen: r.ten_chuyen, nang_suat_gio: null } : null,
+  }));
+
+  return { items, planned, chuyens };
 }
 
 async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach }, actorId) {

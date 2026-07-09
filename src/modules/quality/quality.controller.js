@@ -4,8 +4,13 @@ const service = require('./quality.service');
 const asyncHandler = require('../../utils/asyncHandler');
 const { ok } = require('../../utils/response');
 
-const kcsCandidates = asyncHandler(async (req, res) =>
-  ok(res, await service.listKcsCandidates({ search: req.query.search || '', filters: { ngay: req.query.ngay } })));
+const kcsCandidates = asyncHandler(async (req, res) => {
+  const { search, khach, don, maHang, mauVai, kichVai, kichPhim, ngay } = req.query;
+  return ok(res, await service.listKcsCandidates({
+    search: search || '',
+    filters: { khach, don, maHang, mauVai, kichVai, kichPhim, ngay },
+  }));
+});
 const recordKcs = asyncHandler(async (req, res) =>
   ok(res, await service.recordKcs(req.params.temId, req.body, req.user.id), 'Đã ghi nhận KCS'));
 

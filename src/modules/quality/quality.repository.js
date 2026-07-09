@@ -9,6 +9,9 @@ const CON_KCS = '((t.so_luong + t.sl_chenh_lech) - (t.sl_kcs_dat + t.sl_kcs_sua 
 const CON_SUA = '(t.sl_kcs_sua - (t.sl_sua_dat + t.sl_sua_huy))';
 const CON_OQC = '((t.sl_kcs_dat + t.sl_sua_dat) - t.sl_oqc_dat)';
 const CON_GIAO = '(t.sl_oqc_dat - t.sl_da_giao)';
+// Tách theo NGUỒN ở OQC (mig 047): phần chờ OQC từ KCS-đạt (tem 15-) vs Sửa-đạt (tem 17-).
+const CON_OQC_KCS = '(t.sl_kcs_dat - (t.sl_oqc_dat - t.sl_oqc_dat_sua))';
+const CON_OQC_SUA = '(t.sl_sua_dat - t.sl_oqc_dat_sua)';
 
 // Đánh dấu bản ghi KCS/Sửa/OQC đã bị HỦY XÁC NHẬN trong audit_log (không xóa cứng).
 // `table` là literal nội bộ ('kcs'|'sua'|'oqc'), không nhận từ user → nội suy an toàn.
@@ -20,6 +23,7 @@ const TEM_CTX = `
   SELECT t.id AS tem_id, t.ma_tem, t.so_luong, t.trang_thai, t.da_qua_phoi, t.sl_chenh_lech, t.created_date AS ngay_in_tem,
          t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy, t.sl_sua_dat, t.sl_sua_huy, t.sl_oqc_dat, t.sl_da_giao,
          ${CON_KCS} AS con_kcs, ${CON_SUA} AS con_sua, ${CON_OQC} AS con_oqc, ${CON_GIAO} AS con_giao,
+         ${CON_OQC_KCS} AS con_oqc_kcs, ${CON_OQC_SUA} AS con_oqc_sua,
          ls.ma_lenh_san_xuat, cs.ma_chuyen, cs.ten_chuyen,
          info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.mau_vai, info.kich_vai, info.kich_phim,
          sla.tg_vao, sla.sla_phut, sla.canh_bao_truoc_phut,
@@ -134,9 +138,12 @@ async function getTemLedger(temId) {
   const { rows } = await query(
     `SELECT id, ma_tem, so_luong, trang_thai, da_qua_phoi, phieu_san_xuat_id, sl_chenh_lech,
             sl_kcs_dat, sl_kcs_sua, sl_kcs_huy, sl_sua_dat, sl_sua_huy, sl_oqc_dat, sl_da_giao,
+            sl_oqc_dat_sua,
             ((so_luong + sl_chenh_lech) - (sl_kcs_dat+sl_kcs_sua+sl_kcs_huy)) AS con_kcs,
             (sl_kcs_sua - (sl_sua_dat+sl_sua_huy)) AS con_sua,
             ((sl_kcs_dat+sl_sua_dat) - sl_oqc_dat) AS con_oqc,
+            (sl_kcs_dat - (sl_oqc_dat - sl_oqc_dat_sua)) AS con_oqc_kcs,
+            (sl_sua_dat - sl_oqc_dat_sua) AS con_oqc_sua,
             (sl_oqc_dat - sl_da_giao) AS con_giao
      FROM tem WHERE id = $1`,
     [temId]
@@ -159,10 +166,12 @@ async function addSuaLedger(client, temId, { dat = 0, huy = 0 }, actorId) {
     [temId, dat, huy, actorId]
   );
 }
-async function addOqcLedger(client, temId, dat, actorId) {
+// Cộng dồn OQC-đạt (→ chờ giao). `nguonSua` true ⇒ phần nguồn SỬA (cộng cả sub-counter sl_oqc_dat_sua).
+async function addOqcLedger(client, temId, dat, actorId, nguonSua = false) {
   await client.query(
-    `UPDATE tem SET sl_oqc_dat = sl_oqc_dat+$2, updated_by=$3, updated_date=CURRENT_TIMESTAMP WHERE id=$1`,
-    [temId, dat, actorId]
+    `UPDATE tem SET sl_oqc_dat = sl_oqc_dat+$2, sl_oqc_dat_sua = sl_oqc_dat_sua + $3,
+       updated_by=$4, updated_date=CURRENT_TIMESTAMP WHERE id=$1`,
+    [temId, dat, nguonSua ? dat : 0, actorId]
   );
 }
 async function addGiaoLedger(client, temId, qty, actorId) {
@@ -406,11 +415,12 @@ async function nextOqcRound(temId) {
 async function insertOqc(client, temId, d, actorId) {
   await client.query(
     `INSERT INTO oqc (tem_id, lan_kiem_cua_phan, so_luong_kiem, so_luong_dat, so_luong_loi, ket_qua,
-                      cho_giao, ly_do_cho_giao, owner_cho_giao_id, truong_hop_giao_id, ghi_chu, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+                      cho_giao, ly_do_cho_giao, owner_cho_giao_id, truong_hop_giao_id, ghi_chu,
+                      nguon, sl_qua_giao, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
     [temId, d.lanKiem, d.soLuongKiem, d.soLuongDat, d.soLuongLoi, d.ketQua,
      d.choGiao === true, d.lyDoChoGiao || null, d.ownerChoGiaoId || null, d.truongHopGiaoId || null,
-     d.ghiChu || null, actorId]
+     d.ghiChu || null, d.nguon || 'KCS', d.slQuaGiao || 0, actorId]
   );
 }
 
@@ -678,7 +688,7 @@ async function listCancelOqc(date) {
 
 // Lấy 1 bản ghi xác nhận + SỔ CÁI hiện tại của tem (để service validate đảo ngược an toàn).
 const CANCEL_TARGET_TEM_COLS =
-  `t.ma_tem, t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy, t.sl_sua_dat, t.sl_sua_huy, t.sl_oqc_dat, t.sl_da_giao, t.sl_chenh_lech`;
+  `t.ma_tem, t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy, t.sl_sua_dat, t.sl_sua_huy, t.sl_oqc_dat, t.sl_oqc_dat_sua, t.sl_da_giao, t.sl_chenh_lech`;
 
 async function getCancelKcsRow(id) {
   const { rows } = await query(
@@ -700,7 +710,7 @@ async function getCancelSuaRow(id) {
 }
 async function getCancelOqcRow(id) {
   const { rows } = await query(
-    `SELECT x.id, x.tem_id, x.so_luong_dat, x.so_luong_loi, x.cho_giao,
+    `SELECT x.id, x.tem_id, x.so_luong_dat, x.so_luong_loi, x.cho_giao, x.nguon, x.sl_qua_giao,
             ${CANCEL_TARGET_TEM_COLS}, ${cancelledQc('x', 'oqc')} AS da_huy
      FROM oqc x JOIN tem t ON t.id = x.tem_id WHERE x.id = $1`.replace(/\s+/g, ' '),
     [id]

@@ -4,7 +4,7 @@ const { query } = require('../../config/db');
 
 async function listChuyen({ search = '' }) {
   const { rows } = await query(
-    `SELECT cs.id, cs.ma_chuyen, cs.ten_chuyen, cs.loai_chuyen_id, cs.dinh_muc_gio, cs.dang_hoat_dong,
+    `SELECT cs.id, cs.ma_chuyen, cs.ten_chuyen, cs.loai_chuyen_id, cs.dinh_muc_gio, cs.so_pass, cs.dang_hoat_dong,
             lc.ma_loai AS loai_ma, lc.ten_loai AS loai_ten
      FROM chuyen_san_xuat cs
      LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
@@ -17,9 +17,9 @@ async function listChuyen({ search = '' }) {
 
 async function createChuyen(d, actor) {
   const { rows } = await query(
-    `INSERT INTO chuyen_san_xuat (ma_chuyen, ten_chuyen, loai_chuyen_id, dinh_muc_gio, created_by)
-     VALUES ($1,$2,$3,$4,$5) RETURNING id`,
-    [d.maChuyen, d.tenChuyen, d.loaiChuyenId || null, d.dinhMucGio ?? null, actor]
+    `INSERT INTO chuyen_san_xuat (ma_chuyen, ten_chuyen, loai_chuyen_id, dinh_muc_gio, so_pass, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+    [d.maChuyen, d.tenChuyen, d.loaiChuyenId || null, d.dinhMucGio ?? null, d.soPass ?? 1, actor]
   );
   return rows[0].id;
 }
@@ -27,8 +27,8 @@ async function createChuyen(d, actor) {
 async function updateChuyen(id, d, actor) {
   await query(
     `UPDATE chuyen_san_xuat SET ten_chuyen = COALESCE($2, ten_chuyen), loai_chuyen_id = $3, dinh_muc_gio = $4,
-       updated_by = $5, updated_date = CURRENT_TIMESTAMP WHERE id = $1`,
-    [id, d.tenChuyen ?? null, d.loaiChuyenId || null, d.dinhMucGio ?? null, actor]
+       so_pass = COALESCE($6, so_pass), updated_by = $5, updated_date = CURRENT_TIMESTAMP WHERE id = $1`,
+    [id, d.tenChuyen ?? null, d.loaiChuyenId || null, d.dinhMucGio ?? null, actor, d.soPass ?? null]
   );
 }
 

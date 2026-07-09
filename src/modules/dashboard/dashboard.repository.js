@@ -511,6 +511,12 @@ async function flowRows(tramMa = '') {
       LEFT JOIN oqc o ON o.tem_id = t.id
       LEFT JOIN tem_xe_phoi txp ON txp.tem_id = t.id
       GROUP BY lk.dot_vai_ve_id
+    ),
+    qc AS (
+      SELECT kq.phan_in_id, max(COALESCE(kq.tg_xac_nhan, kq.created_date)) AS qc_tg
+      FROM ket_qua_checkpoint kq JOIN checkpoint c ON c.id = kq.checkpoint_id
+      WHERE c.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT'
+      GROUP BY kq.phan_in_id
     )
     SELECT b.dot_vai_ve_id AS id, b.dot_vai_ve_id, b.phan_in_id, lk.lenh_id,
            b.ma_dot_vai, b.han_giao_hang, b.ma_phan, b.mau_vai, b.kich_vai, b.kich_phim,
@@ -526,6 +532,7 @@ async function flowRows(tramMa = '') {
     LEFT JOIN ph ON ph.dot_vai_ve_id = b.dot_vai_ve_id
     LEFT JOIN ta ON ta.dot_vai_ve_id = b.dot_vai_ve_id
     LEFT JOIN ev ON ev.dot_vai_ve_id = b.dot_vai_ve_id
+    LEFT JOIN qc ON qc.phan_in_id = b.phan_in_id
     CROSS JOIN LATERAL (SELECT (CASE
         WHEN lk.lenh_id IS NULL THEN (CASE WHEN EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint c ON c.id=kq.checkpoint_id WHERE kq.phan_in_id=b.phan_in_id AND c.ma_checkpoint='QC_XAC_NHAN' AND kq.trang_thai='DAT') THEN 'RELEASE_1' ELSE 'READY' END)
         WHEN ph.co_chay THEN 'SAN_XUAT'
@@ -539,6 +546,7 @@ async function flowRows(tramMa = '') {
         ELSE 'TEST_RUN'
       END) AS ma_tram) cur
     CROSS JOIN LATERAL (SELECT (CASE cur.ma_tram
+        WHEN 'RELEASE_1' THEN COALESCE(qc.qc_tg, b.dv_tg)
         WHEN 'TEST_RUN' THEN lk.lenh_tg
         WHEN 'RELEASE_2' THEN lk.lenh_tg
         WHEN 'SAN_XUAT' THEN ph.phieu_tg

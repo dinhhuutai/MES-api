@@ -162,16 +162,24 @@ async function listOqcCandidates({ search, filters }) {
   return rows;
 }
 
+// OQC = kiểm BỐC MẪU theo từng NGUỒN (KCS-đạt = tem 15- / Sửa-đạt = tem 17-):
+//  - so_luong_kiem = SL BỐC MẪU (mẫu lấy ra), so_luong_dat ≤ bốc mẫu.
+//  - Kết quả ĐẠT (hoặc cho giao ngoại lệ) → TOÀN BỘ phần chờ OQC của nguồn đó qua Giao (không phải kiểm bao nhiêu qua bấy nhiêu).
+//  - Không đạt & không cho giao → nằm lại OQC (cả lô).
 async function recordOqc(temId, body, actorId) {
   const tem = await repo.getTemLedger(temId);
   if (!tem) throw new AppError('Tem không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
-  const conOqc = Number(tem.con_oqc) || 0;
-  if (conOqc <= 0) throw new AppError('Tem không còn phần chờ OQC', { status: 409, errorCode: 'DONE' });
-  const dat = num(body.soLuongDat);
-  const loi = num(body.soLuongLoi);
-  const kiem = dat + loi;
-  if (kiem <= 0) throw new AppError('Nhập số lượng kiểm', { status: 422, errorCode: 'EMPTY' });
-  if (kiem > conOqc) throw new AppError(`SL kiểm lần này (${kiem}) vượt SL chờ OQC (${conOqc})`, { status: 422, errorCode: 'OVER' });
+  const nguon = body.nguon === 'SUA' ? 'SUA' : 'KCS';
+  const pending = nguon === 'SUA' ? (Number(tem.con_oqc_sua) || 0) : (Number(tem.con_oqc_kcs) || 0);
+  const nhan = nguon === 'SUA' ? 'đã sửa (tem 17-)' : 'đạt từ KCS (tem 15-)';
+  if (pending <= 0) throw new AppError(`Tem không còn phần chờ OQC nguồn ${nhan}`, { status: 409, errorCode: 'DONE' });
+
+  const bocMau = num(body.soLuongKiem);   // SL bốc mẫu
+  const dat = num(body.soLuongDat);        // đạt trong mẫu
+  if (bocMau <= 0) throw new AppError('Nhập SL bốc mẫu', { status: 422, errorCode: 'EMPTY' });
+  if (dat > bocMau) throw new AppError(`SL đạt (${dat}) không vượt SL bốc mẫu (${bocMau})`, { status: 422, errorCode: 'DAT_OVER' });
+  if (bocMau > pending) throw new AppError(`SL bốc mẫu (${bocMau}) vượt SL chờ OQC của nguồn ${nhan} (${pending})`, { status: 422, errorCode: 'OVER' });
+  const loi = bocMau - dat;
   const ketQua = body.ketQua === 'KHONG_DAT' ? 'KHONG_DAT' : 'DAT';
   const lanKiem = await repo.nextOqcRound(temId);
 
@@ -182,33 +190,33 @@ async function recordOqc(temId, body, actorId) {
   let next;
 
   if (ketQua === 'DAT') {
-    next = 'OQC_DAT'; // đạt → sẵn sàng giao
+    next = 'OQC_DAT'; // đạt → sẵn sàng giao (cả lô nguồn)
   } else if (ownerChoGiaoId) {
     // Không đạt nhưng CHO GIAO NGOẠI LỆ — bắt buộc có TRƯỜNG HỢP giao đặc biệt + lý do + owner.
     if (!truongHopGiaoId) throw new AppError('Cho giao ngoại lệ cần chọn trường hợp giao đặc biệt', { status: 422, errorCode: 'NO_TRUONG_HOP' });
     if (!lyDoChoGiao) throw new AppError('Cho giao ngoại lệ cần nhập lý do', { status: 422, errorCode: 'NO_LY_DO' });
     choGiao = true;
-    next = 'CHO_GIAO_NGOAI_LE'; // tem → OQC_DAT (đánh dấu cho giao ngoại lệ)
+    next = 'CHO_GIAO_NGOAI_LE';
   } else {
-    next = 'GIU_OQC'; // không đạt & chưa có owner cho giao → NẰM LẠI OQC
+    next = 'GIU_OQC'; // không đạt & chưa có owner cho giao → NẰM LẠI OQC (cả lô)
   }
 
-  // SL cộng vào "chờ giao": phần đạt; nếu cho giao ngoại lệ thì cả phần lỗi cũng cho giao.
-  const oqcDatInc = dat + (choGiao ? loi : 0);
+  // ĐẠT / cho giao ngoại lệ → TOÀN BỘ phần chờ OQC của nguồn qua "chờ giao".
+  const quaGiao = (ketQua === 'DAT' || choGiao) ? pending : 0;
   await withTransaction(async (client) => {
     await repo.insertOqc(client, temId, {
-      lanKiem, soLuongKiem: kiem, soLuongDat: dat, soLuongLoi: loi,
+      lanKiem, soLuongKiem: bocMau, soLuongDat: dat, soLuongLoi: loi,
       ketQua, choGiao, lyDoChoGiao, ownerChoGiaoId, truongHopGiaoId, ghiChu: body.ghiChu,
+      nguon, slQuaGiao: quaGiao,
     }, actorId);
-    if (oqcDatInc > 0) await repo.addOqcLedger(client, temId, oqcDatInc, actorId); // → chờ giao
-    // GIU_OQC (lỗi không cho giao): không cộng → phần lỗi vẫn nằm ở con_oqc (nằm lại OQC)
+    if (quaGiao > 0) await repo.addOqcLedger(client, temId, quaGiao, actorId, nguon === 'SUA');
     await repo.recomputeTemStage(client, temId, actorId);
   });
-  await tracking.moveByTem(temId, 'OQC', actorId); // theo dõi dòng chảy: OQC kiểm cuối
-  if (oqcDatInc > 0) await tracking.moveByTem(temId, 'FINISH', actorId); // có phần cho giao → FINISH
+  await tracking.moveByTem(temId, 'OQC', actorId);
+  if (quaGiao > 0) await tracking.moveByTem(temId, 'FINISH', actorId);
   sockets.emit('quality:updated', { temId, stage: 'OQC', next });
   sockets.emit('dashboard:refresh', {});
-  return { tem_id: temId, next };
+  return { tem_id: temId, next, nguon, qua_giao: quaGiao };
 }
 
 const q0 = (v) => (v === null || v === undefined ? 0 : v);
@@ -315,7 +323,11 @@ async function cancelOqc(oqcId, lyDo, actorId) {
   const r = await repo.getCancelOqcRow(oqcId);
   if (!r) throw new AppError('Bản ghi OQC không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   if (r.da_huy) throw new AppError('Lần xác nhận này đã bị hủy', { status: 409, errorCode: 'ALREADY' });
-  const oqcDatInc = N(r.so_luong_dat) + (r.cho_giao ? N(r.so_luong_loi) : 0); // phần đã cộng vào "chờ giao"
+  const nguonSua = r.nguon === 'SUA';
+  // SL đã cộng vào "chờ giao" ở lần này = sl_qua_giao (mig 047). Dữ liệu cũ (null) suy theo công thức cũ.
+  const oqcDatInc = r.sl_qua_giao != null && r.nguon != null
+    ? N(r.sl_qua_giao)
+    : N(r.so_luong_dat) + (r.cho_giao ? N(r.so_luong_loi) : 0);
   const newOqcDat = N(r.sl_oqc_dat) - oqcDatInc;
   if (newOqcDat < 0) {
     throw new AppError('Không thể đảo sổ cái (số liệu đã đổi) — không hủy được lần OQC này', { status: 409, errorCode: 'LEDGER' });
@@ -323,8 +335,12 @@ async function cancelOqc(oqcId, lyDo, actorId) {
   if (newOqcDat < N(r.sl_da_giao)) {
     throw new AppError('Phần OQC đạt của lần này đã được GIAO — không thể hủy xác nhận OQC', { status: 409, errorCode: 'DELIVERED' });
   }
+  // Nguồn SỬA: đảm bảo không âm sl_oqc_dat_sua khi đảo.
+  if (nguonSua && N(r.sl_oqc_dat_sua) - oqcDatInc < 0) {
+    throw new AppError('Không thể đảo sổ cái nguồn sửa — không hủy được lần OQC này', { status: 409, errorCode: 'LEDGER' });
+  }
   await withTransaction(async (client) => {
-    if (oqcDatInc > 0) await repo.addOqcLedger(client, r.tem_id, -oqcDatInc, actorId);
+    if (oqcDatInc > 0) await repo.addOqcLedger(client, r.tem_id, -oqcDatInc, actorId, nguonSua);
     await repo.recomputeTemStage(client, r.tem_id, actorId);
   });
   await repo.logCancelQc('oqc', oqcId, r.tem_id, r.ma_tem, lyDo, actorId);
