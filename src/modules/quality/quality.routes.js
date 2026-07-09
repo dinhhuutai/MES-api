@@ -27,6 +27,14 @@ router.get('/oqc/done', rbac('OQC'), c.oqcDone);
 router.post('/oqc/:temId/tra-ve', rbac('OQC'), c.oqcReturn);
 router.post('/oqc/:temId', rbac('OQC'), c.recordOqc);
 
+// Hủy xác nhận KCS / Sửa / OQC (lỡ xác nhận lộn / nhập sai số) — trang Hủy lệnh xác nhận
+router.get('/kcs/cancelable', rbac('KCS'), c.cancelKcsList);
+router.post('/kcs/:id/huy', rbac('KCS'), c.cancelKcs);
+router.get('/sua/cancelable', rbac('SUA'), c.cancelSuaList);
+router.post('/sua/:id/huy', rbac('SUA'), c.cancelSua);
+router.get('/oqc/cancelable', rbac('OQC'), c.cancelOqcList);
+router.post('/oqc/:id/huy', rbac('OQC'), c.cancelOqc);
+
 // Lịch sử QC trả về (toggle READY/TEST_RUN/OQC)
 router.get('/qc-tra-ve', rbac('QC_TRAVE_VIEW'), c.qcTraVeHistory);
 

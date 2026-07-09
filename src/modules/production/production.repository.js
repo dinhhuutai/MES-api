@@ -49,6 +49,11 @@ async function listProductionCandidates({ search = '', offset = 0, limit = 20 })
            info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan,
            info.han_giao_hang, info.so_luong_vai_ve,
            (SELECT count(*) FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id)::int AS so_dot_vai,
+           (SELECT COALESCE(SUM(t.so_luong),0)::int FROM tem t JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+              WHERE ps.lenh_san_xuat_id = ls.id AND t.trang_thai <> 'HUY') AS da_in_truoc,
+           (SELECT a.thoi_gian FROM audit_log a WHERE a.ten_bang = 'lenh_san_xuat'
+              AND a.hanh_dong = 'NGUNG_LENH_CHAY' AND a.id_ban_ghi = ls.id::text
+              ORDER BY a.thoi_gian DESC LIMIT 1) AS tg_ngung,
            ${PHAN_AGG} AS phan_list
     ${FROM}
     ORDER BY ls.ngay_ke_hoach NULLS LAST, ls.created_date
@@ -297,6 +302,67 @@ async function logCloseProduction(phieuId, maLenh, lyDo, printed, target, actorI
   );
 }
 
+// ----- MỞ LẠI LỆNH SẢN XUẤT (đóng nhầm / cần in tiếp) — trong 2 ngày gần nhất -----
+// Phiếu đã HOÀN TẤT gần đây (≤ 2 ngày) — mở lại được để in tiếp, giữ nguyên số liệu.
+async function listReopenCandidates() {
+  const { rows } = await query(
+    `SELECT ps.id AS phieu_id, ps.ma_phieu_san_xuat, ps.tg_kt, ls.id AS lenh_id, ls.ma_lenh_san_xuat,
+            ls.so_luong_release AS target, cs.ma_chuyen, cs.ten_chuyen,
+            info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan,
+            info.mau_vai, info.kich_vai, info.kich_phim,
+            (SELECT COALESCE(SUM(t.so_luong),0)::int FROM tem t
+               WHERE t.phieu_san_xuat_id = ps.id AND t.trang_thai <> 'HUY') AS printed
+     FROM phieu_san_xuat ps
+     JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+     JOIN chuyen_san_xuat cs ON cs.id = ps.chuyen_id
+     ${PHAN_INFO_LATERAL}
+     WHERE ps.trang_thai = 'HOAN_TAT' AND ps.tg_kt >= now() - interval '2 days'
+     ORDER BY ps.tg_kt DESC`
+  );
+  return rows;
+}
+
+// Phiếu + thông tin lệnh (để mở lại / ngừng lệnh chạy).
+async function getPhieuFull(phieuId) {
+  const { rows } = await query(
+    `SELECT ps.id, ps.trang_thai, ps.tg_kt, ps.lenh_san_xuat_id, ls.ma_lenh_san_xuat, ls.trang_thai AS lenh_trang_thai
+     FROM phieu_san_xuat ps JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+     WHERE ps.id = $1`.replace(/\s+/g, ' '),
+    [phieuId]
+  );
+  return rows[0] || null;
+}
+
+// Mở lại 1 phiếu đã hoàn tất: phiếu HOAN_TAT → DANG_CHAY (giữ tem/số lượng) + lệnh về SAN_XUAT.
+async function reopenPhieuTx(client, phieuId, lenhId, actorId) {
+  await client.query(
+    "UPDATE phieu_san_xuat SET trang_thai='DANG_CHAY', tg_kt=NULL, updated_by=$2, updated_date=CURRENT_TIMESTAMP WHERE id=$1",
+    [phieuId, actorId]
+  );
+  await client.query(
+    "UPDATE lenh_san_xuat SET trang_thai='SAN_XUAT', updated_by=$2, updated_date=CURRENT_TIMESTAMP WHERE id=$1",
+    [lenhId, actorId]
+  );
+}
+
+// Ghi audit_log mở lại lệnh sản xuất.
+async function logReopenProduction(phieuId, maLenh, actorId) {
+  await query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('phieu_san_xuat', $1, 'MO_LAI_LENH_SX', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`,
+    [String(phieuId), JSON.stringify({ ma_lenh: maLenh || null }), actorId]
+  );
+}
+
+// Ghi audit_log ngừng lệnh chạy (đưa lệnh về chờ chạy để in hàng gấp) — kèm SL đã in + thời điểm.
+async function logPauseLenhChay(lenhId, maLenh, printed, actorId) {
+  await query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('lenh_san_xuat', $1, 'NGUNG_LENH_CHAY', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`,
+    [String(lenhId), JSON.stringify({ ma_lenh: maLenh || null, da_in: printed }), actorId]
+  );
+}
+
 // Dữ liệu in NHÃN TEM (thông tin tem + phần in + lệnh + người in).
 // Giờ/tuần VN của 1 tem (để suy ca) — query nhẹ riêng, tách khỏi query nhãn (IPS-safe).
 async function caPartsForTem(temId) {
@@ -411,6 +477,7 @@ async function monitorRunning() {
             cs.dinh_muc_gio, ps.tg_bd, ls.ma_lenh_san_xuat, ls.ngay_ke_hoach,
             ls.so_luong_release AS target, ${PHAN_AGG} AS phan_list,
             info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan, info.mau_vai, info.kich_vai, info.kich_phim,
+            info.han_giao_hang,
             (SELECT COALESCE(SUM(t.so_luong),0)::int FROM tem t WHERE t.phieu_san_xuat_id=ps.id AND t.trang_thai <> 'HUY') AS printed,
             (SELECT count(*) FROM tem t WHERE t.phieu_san_xuat_id=ps.id AND t.trang_thai <> 'HUY')::int AS so_tem,
             EXISTS (SELECT 1 FROM ngung_chuyen n WHERE n.phieu_san_xuat_id=ps.id AND n.trang_thai='DANG_NGUNG') AS dang_ngung,
@@ -428,11 +495,26 @@ async function monitorRunning() {
   return rows;
 }
 
+// Tổng SLA (phút) các TRẠM SAU sản xuất tới khi HÀNG SẴN SÀNG GIAO (Chờ khô/KCS/OQC/Hoàn tất) theo
+// workflow hiện hành → dự phóng thời gian còn lại. Loại Sửa (nhánh rework) + Đã giao/Đóng tài chính (sau giao).
+async function downstreamSlaAfterProduction() {
+  const { rows } = await query(
+    `SELECT COALESCE(SUM(t.thoi_gian_quy_dinh_phut),0)::int AS phut
+     FROM tram t
+     JOIN workflow_version wv ON wv.id = t.workflow_version_id AND wv.la_hien_hanh = true
+     WHERE t.ma_tram NOT IN ('SUA','DONE_DELIVERY','CLOSED_FINANCE')
+       AND t.thu_tu > COALESCE((SELECT t2.thu_tu FROM tram t2
+         JOIN workflow_version wv2 ON wv2.id = t2.workflow_version_id AND wv2.la_hien_hanh = true
+         WHERE t2.ma_tram = 'SAN_XUAT' LIMIT 1), 0)`.replace(/\s+/g, ' ')
+  );
+  return rows[0]?.phut || 0;
+}
+
 async function monitorQueue() {
   const { rows } = await query(
     `SELECT ls.ma_lenh_san_xuat, ls.so_luong_release AS target, ls.ngay_ke_hoach,
             cs.ma_chuyen, cs.ten_chuyen,
-            info.ten_khach_hang, info.ma_hang, info.ma_phan, info.mau_vai, info.kich_vai, info.kich_phim
+            info.ten_khach_hang, info.ma_hang, info.ma_phan, info.mau_vai, info.kich_vai, info.kich_phim, info.han_giao_hang
      FROM lenh_san_xuat ls
      JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
      ${PHAN_INFO_LATERAL}
@@ -653,10 +735,11 @@ module.exports = {
   getLenhDotVaiList, insertVaiHuy, listVaiHuyByLenh,
   getActivePhieu, getPhieuById, getTemsByPhieu, getTemContext, cancelTem, getTemLabelData, caPartsForTem,
   listCancelableTem, getTemForCancel, logTemCancel, logCloseProduction,
+  listReopenCandidates, getPhieuFull, reopenPhieuTx, logReopenProduction, logPauseLenhChay,
   cancelPhieuStart, logUndoStart,
   listTemLogByPhieu, nextReprint, logReprint,
   nextMaTem, createTem, logTemPrint, finishPhieu,
-  monitorRunning, monitorQueue, listXePhoi, listCurrentPhoi, listTemChoPhoi, addTemToXe, adjustPhoi,
+  monitorRunning, monitorQueue, downstreamSlaAfterProduction, listXePhoi, listCurrentPhoi, listTemChoPhoi, addTemToXe, adjustPhoi,
   listDryingTems, confirmDry, getTemBasic,
   promoteFinishedDrying, redryTem, getDryMinForPhieu,
   getActiveNgung, startNgung, resumeNgung, listNgungByPhieu,

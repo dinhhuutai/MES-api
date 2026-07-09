@@ -26,6 +26,18 @@ const recordOqc = asyncHandler(async (req, res) =>
 const oqcReturn = asyncHandler(async (req, res) =>
   ok(res, await service.returnOqcToKcs(req.params.temId, req.body, req.user.id), 'Đã trả tem về KCS'));
 
+// Hủy xác nhận KCS / Sửa / OQC (lỡ xác nhận lộn / nhập sai số) — trang Hủy lệnh xác nhận
+const todayD = () => new Date().toISOString().slice(0, 10);
+const cancelKcsList = asyncHandler(async (req, res) => ok(res, await service.listCancelKcs(req.query.date || todayD())));
+const cancelSuaList = asyncHandler(async (req, res) => ok(res, await service.listCancelSua(req.query.date || todayD())));
+const cancelOqcList = asyncHandler(async (req, res) => ok(res, await service.listCancelOqc(req.query.date || todayD())));
+const cancelKcs = asyncHandler(async (req, res) =>
+  ok(res, await service.cancelKcs(req.params.id, (req.body.lyDo || '').trim() || null, req.user.id), 'Đã hủy xác nhận KCS'));
+const cancelSua = asyncHandler(async (req, res) =>
+  ok(res, await service.cancelSua(req.params.id, (req.body.lyDo || '').trim() || null, req.user.id), 'Đã hủy xác nhận Sửa'));
+const cancelOqc = asyncHandler(async (req, res) =>
+  ok(res, await service.cancelOqc(req.params.id, (req.body.lyDo || '').trim() || null, req.user.id), 'Đã hủy xác nhận OQC'));
+
 // Lịch sử QC trả về (toggle 3 loại)
 const qcTraVeHistory = asyncHandler(async (req, res) =>
   ok(res, await service.qcTraVeHistory(req.query.loai || 'READY', req.query.date || new Date().toISOString().slice(0, 10))));
@@ -69,4 +81,5 @@ module.exports = {
   loaiLoiList, loaiLoiCreate, loaiLoiUpdate, loaiLoiToggle,
   giaoDacBietActive, giaoDacBietList, giaoDacBietCreate, giaoDacBietUpdate, giaoDacBietToggle,
   oqcReturn, qcTraVeHistory, temHanhTrinh,
+  cancelKcsList, cancelSuaList, cancelOqcList, cancelKcs, cancelSua, cancelOqc,
 };

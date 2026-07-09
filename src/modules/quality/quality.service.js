@@ -231,6 +231,94 @@ async function oqcHistory(date) {
   }));
 }
 
+// ----- HỦY XÁC NHẬN KCS / SỬA / OQC (lỡ xác nhận lộn / nhập sai số) -----
+// Đảo sổ cái tem về trước lần xác nhận + đánh dấu bản ghi đã hủy (audit_log). Chỉ hủy được khi phần
+// SL của lần đó CHƯA đi tiếp công đoạn sau (đạt chưa lên OQC, sửa chưa xử lý, OQC chưa giao).
+async function listCancelKcs(date) { return repo.listCancelKcs(date); }
+async function listCancelSua(date) { return repo.listCancelSua(date); }
+async function listCancelOqc(date) { return repo.listCancelOqc(date); }
+
+const N = (v) => Number(v) || 0;
+
+async function cancelKcs(kcsId, lyDo, actorId) {
+  const r = await repo.getCancelKcsRow(kcsId);
+  if (!r) throw new AppError('Bản ghi KCS không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  if (r.da_huy) throw new AppError('Lần xác nhận này đã bị hủy', { status: 409, errorCode: 'ALREADY' });
+  const dat = N(r.so_luong_dat);
+  const sua = N(r.so_luong_kiem) - N(r.so_luong_dat) - N(r.so_luong_huy); // = quyết định sửa lần đó
+  const huy = N(r.so_luong_huy);
+  const chenh = N(r.so_luong_chenh_lech);
+  const newDat = N(r.sl_kcs_dat) - dat;
+  const newSua = N(r.sl_kcs_sua) - sua;
+  const newHuy = N(r.sl_kcs_huy) - huy;
+  if (newDat < 0 || newSua < 0 || newHuy < 0) {
+    throw new AppError('Không thể đảo sổ cái (số liệu đã đổi) — không hủy được lần KCS này', { status: 409, errorCode: 'LEDGER' });
+  }
+  if (newDat + N(r.sl_sua_dat) < N(r.sl_oqc_dat)) {
+    throw new AppError('Phần đạt của lần KCS này đã đi tiếp OQC — hủy xác nhận OQC trước', { status: 409, errorCode: 'CONSUMED_OQC' });
+  }
+  if (newSua < N(r.sl_sua_dat) + N(r.sl_sua_huy)) {
+    throw new AppError('Phần sửa của lần KCS này đã được xử lý ở màn Sửa — hủy xác nhận Sửa trước', { status: 409, errorCode: 'CONSUMED_SUA' });
+  }
+  await withTransaction(async (client) => {
+    await repo.addKcsLedger(client, r.tem_id, { dat: -dat, sua: -sua, huy: -huy, chenh: -chenh }, actorId);
+    await repo.recomputeTemStage(client, r.tem_id, actorId);
+  });
+  await repo.logCancelQc('kcs', kcsId, r.tem_id, r.ma_tem, lyDo, actorId);
+  await tracking.moveByTem(r.tem_id, 'KIEM', actorId);
+  sockets.emit('quality:updated', { temId: r.tem_id, stage: 'KCS', huy: true });
+  sockets.emit('dashboard:refresh', {});
+  return { tem_id: r.tem_id, ma_tem: r.ma_tem };
+}
+
+async function cancelSua(suaId, lyDo, actorId) {
+  const r = await repo.getCancelSuaRow(suaId);
+  if (!r) throw new AppError('Bản ghi Sửa không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  if (r.da_huy) throw new AppError('Lần xác nhận này đã bị hủy', { status: 409, errorCode: 'ALREADY' });
+  const dat = N(r.so_luong_sua_dat);
+  const huy = N(r.so_luong_sua_huy);
+  const newDat = N(r.sl_sua_dat) - dat;
+  const newHuy = N(r.sl_sua_huy) - huy;
+  if (newDat < 0 || newHuy < 0) {
+    throw new AppError('Không thể đảo sổ cái (số liệu đã đổi) — không hủy được lần Sửa này', { status: 409, errorCode: 'LEDGER' });
+  }
+  if (N(r.sl_kcs_dat) + newDat < N(r.sl_oqc_dat)) {
+    throw new AppError('Phần sửa đạt của lần này đã đi tiếp OQC — hủy xác nhận OQC trước', { status: 409, errorCode: 'CONSUMED_OQC' });
+  }
+  await withTransaction(async (client) => {
+    await repo.addSuaLedger(client, r.tem_id, { dat: -dat, huy: -huy }, actorId);
+    await repo.recomputeTemStage(client, r.tem_id, actorId);
+  });
+  await repo.logCancelQc('sua', suaId, r.tem_id, r.ma_tem, lyDo, actorId);
+  await tracking.moveByTem(r.tem_id, 'SUA', actorId);
+  sockets.emit('quality:updated', { temId: r.tem_id, stage: 'SUA', huy: true });
+  sockets.emit('dashboard:refresh', {});
+  return { tem_id: r.tem_id, ma_tem: r.ma_tem };
+}
+
+async function cancelOqc(oqcId, lyDo, actorId) {
+  const r = await repo.getCancelOqcRow(oqcId);
+  if (!r) throw new AppError('Bản ghi OQC không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  if (r.da_huy) throw new AppError('Lần xác nhận này đã bị hủy', { status: 409, errorCode: 'ALREADY' });
+  const oqcDatInc = N(r.so_luong_dat) + (r.cho_giao ? N(r.so_luong_loi) : 0); // phần đã cộng vào "chờ giao"
+  const newOqcDat = N(r.sl_oqc_dat) - oqcDatInc;
+  if (newOqcDat < 0) {
+    throw new AppError('Không thể đảo sổ cái (số liệu đã đổi) — không hủy được lần OQC này', { status: 409, errorCode: 'LEDGER' });
+  }
+  if (newOqcDat < N(r.sl_da_giao)) {
+    throw new AppError('Phần OQC đạt của lần này đã được GIAO — không thể hủy xác nhận OQC', { status: 409, errorCode: 'DELIVERED' });
+  }
+  await withTransaction(async (client) => {
+    if (oqcDatInc > 0) await repo.addOqcLedger(client, r.tem_id, -oqcDatInc, actorId);
+    await repo.recomputeTemStage(client, r.tem_id, actorId);
+  });
+  await repo.logCancelQc('oqc', oqcId, r.tem_id, r.ma_tem, lyDo, actorId);
+  await tracking.moveByTem(r.tem_id, 'OQC', actorId);
+  sockets.emit('quality:updated', { temId: r.tem_id, stage: 'OQC', huy: true });
+  sockets.emit('dashboard:refresh', {});
+  return { tem_id: r.tem_id, ma_tem: r.ma_tem };
+}
+
 // Hành trình 1 tem (gộp KCS/Sửa/OQC/Giao) — cho panel "Hành trình theo tem".
 async function temHanhTrinh(temId) {
   const tem = await repo.getTemLedger(temId);
@@ -356,6 +444,7 @@ async function toggleGiaoDacBiet(id, active, actorId) {
 
 module.exports = {
   listKcsCandidates, recordKcs, listSuaCandidates, recordSua, listOqcCandidates, recordOqc,
+  listCancelKcs, listCancelSua, listCancelOqc, cancelKcs, cancelSua, cancelOqc,
   kcsHistory, suaHistory, oqcHistory, temHanhTrinh,
   kcsDone, suaDone, oqcDone, inlineDone,
   listInlineCandidates, listLoaiLoi, recordQcInline, inlineHistory,

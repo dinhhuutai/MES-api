@@ -10,6 +10,12 @@ const CON_SUA = '(t.sl_kcs_sua - (t.sl_sua_dat + t.sl_sua_huy))';
 const CON_OQC = '((t.sl_kcs_dat + t.sl_sua_dat) - t.sl_oqc_dat)';
 const CON_GIAO = '(t.sl_oqc_dat - t.sl_da_giao)';
 
+// Đánh dấu bản ghi KCS/Sửa/OQC đã bị HỦY XÁC NHẬN trong audit_log (không xóa cứng).
+// `table` là literal nội bộ ('kcs'|'sua'|'oqc'), không nhận từ user → nội suy an toàn.
+const cancelledQc = (alias, table) =>
+  `EXISTS (SELECT 1 FROM audit_log a WHERE a.ten_bang='${table}' AND a.hanh_dong='HUY_XAC_NHAN' AND a.id_ban_ghi = ${alias}.id::text)`;
+const notCancelledQc = (alias, table) => `NOT ${cancelledQc(alias, table)}`;
+
 const TEM_CTX = `
   SELECT t.id AS tem_id, t.ma_tem, t.so_luong, t.trang_thai, t.da_qua_phoi, t.sl_chenh_lech, t.created_date AS ngay_in_tem,
          t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy, t.sl_sua_dat, t.sl_sua_huy, t.sl_oqc_dat, t.sl_da_giao,
@@ -431,11 +437,11 @@ const HIST_DATE = `(x.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::
 // Hành trình 1 tem: gộp KCS / Sửa / OQC / Giao theo thời gian (n1..n5 số, txt phụ chú).
 async function temTimeline(temId) {
   const sql = `SELECT loai, tg, nguoi, n1, n2, n3, n4, n5, txt FROM (
-      SELECT 'KCS' AS loai, x.created_date AS tg, nd.ho_ten AS nguoi, x.so_luong_kiem AS n1, x.so_luong_dat AS n2, x.so_luong_loi AS n3, x.so_luong_huy AS n4, x.so_luong_chenh_lech AS n5, x.ket_qua::text AS txt FROM kcs x LEFT JOIN nguoi_dung nd ON nd.id = x.created_by WHERE x.tem_id = $1
+      SELECT 'KCS' AS loai, x.created_date AS tg, nd.ho_ten AS nguoi, x.so_luong_kiem AS n1, x.so_luong_dat AS n2, x.so_luong_loi AS n3, x.so_luong_huy AS n4, x.so_luong_chenh_lech AS n5, x.ket_qua::text AS txt FROM kcs x LEFT JOIN nguoi_dung nd ON nd.id = x.created_by WHERE x.tem_id = $1 AND ${notCancelledQc('x', 'kcs')}
       UNION ALL
-      SELECT 'SUA', x.created_date, nd.ho_ten, x.so_luong_sua, x.so_luong_sua_dat, x.so_luong_sua_huy, NULL, NULL, NULL FROM sua x LEFT JOIN nguoi_dung nd ON nd.id = x.created_by WHERE x.tem_id = $1
+      SELECT 'SUA', x.created_date, nd.ho_ten, x.so_luong_sua, x.so_luong_sua_dat, x.so_luong_sua_huy, NULL, NULL, NULL FROM sua x LEFT JOIN nguoi_dung nd ON nd.id = x.created_by WHERE x.tem_id = $1 AND ${notCancelledQc('x', 'sua')}
       UNION ALL
-      SELECT 'OQC', x.created_date, nd.ho_ten, x.so_luong_kiem, x.so_luong_dat, x.so_luong_loi, NULL, NULL, x.ket_qua::text FROM oqc x LEFT JOIN nguoi_dung nd ON nd.id = x.created_by WHERE x.tem_id = $1
+      SELECT 'OQC', x.created_date, nd.ho_ten, x.so_luong_kiem, x.so_luong_dat, x.so_luong_loi, NULL, NULL, x.ket_qua::text FROM oqc x LEFT JOIN nguoi_dung nd ON nd.id = x.created_by WHERE x.tem_id = $1 AND ${notCancelledQc('x', 'oqc')}
       UNION ALL
       SELECT 'GIAO', COALESCE(gh.ngay_giao::timestamptz, gt.created_date), nd.ho_ten, gt.so_luong_giao, NULL, NULL, NULL, NULL, (gh.ma_phieu_giao || ' · ' || gh.trang_thai) FROM giao_hang_tem gt JOIN giao_hang gh ON gh.id = gt.giao_hang_id LEFT JOIN nguoi_dung nd ON nd.id = gt.created_by WHERE gt.tem_id = $1
     ) e ORDER BY tg ASC NULLS LAST, loai`;
@@ -449,7 +455,7 @@ async function kcsHistoryByDate(date) {
             x.so_luong_dat, x.so_luong_loi, x.so_luong_huy, x.so_luong_chenh_lech, t.ma_tem
      FROM kcs x JOIN tem t ON t.id = x.tem_id
      LEFT JOIN nguoi_dung nd ON nd.id = x.created_by
-     WHERE ${HIST_DATE} ORDER BY x.created_date DESC`,
+     WHERE ${HIST_DATE} AND ${notCancelledQc('x', 'kcs')} ORDER BY x.created_date DESC`,
     [date]
   );
   return rows;
@@ -461,7 +467,7 @@ async function suaHistoryByDate(date) {
             x.so_luong_sua, x.so_luong_sua_dat, t.ma_tem
      FROM sua x JOIN tem t ON t.id = x.tem_id
      LEFT JOIN nguoi_dung nd ON nd.id = x.created_by
-     WHERE ${HIST_DATE} ORDER BY x.created_date DESC`,
+     WHERE ${HIST_DATE} AND ${notCancelledQc('x', 'sua')} ORDER BY x.created_date DESC`,
     [date]
   );
   return rows;
@@ -473,7 +479,7 @@ async function oqcHistoryByDate(date) {
             x.so_luong_dat, x.so_luong_loi, t.ma_tem
      FROM oqc x JOIN tem t ON t.id = x.tem_id
      LEFT JOIN nguoi_dung nd ON nd.id = x.created_by
-     WHERE ${HIST_DATE} ORDER BY x.created_date DESC`,
+     WHERE ${HIST_DATE} AND ${notCancelledQc('x', 'oqc')} ORDER BY x.created_date DESC`,
     [date]
   );
   return rows;
@@ -506,6 +512,7 @@ async function temDoneByDate(table, date) {
     LEFT JOIN nguoi_dung nd ON nd.id = x.created_by
     ${TEM_INFO_LATERAL}
     WHERE (x.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
+      AND ${notCancelledQc('x', table)}
     ORDER BY x.created_date DESC`;
   const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [date]);
   return rows;
@@ -604,8 +611,92 @@ async function listQcTraVe(loai, date) {
   return rows;
 }
 
+// ============ HỦY XÁC NHẬN KCS / SỬA / OQC (đảo sổ cái tem, đánh dấu audit_log) ============
+// Danh sách bản ghi xác nhận theo ngày (giờ VN) — CHƯA bị hủy — để chọn hủy. Kèm ngữ cảnh phần in.
+async function listCancelKcs(date) {
+  const sql = `
+    SELECT x.id, x.created_date AS tg, nd.ho_ten AS nguoi, t.id AS tem_id, t.ma_tem, x.ket_qua,
+           x.so_luong_kiem, x.so_luong_dat, x.so_luong_loi, x.so_luong_huy, x.so_luong_chenh_lech,
+           info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.mau_vai, info.kich_vai, info.kich_phim
+    FROM kcs x JOIN tem t ON t.id = x.tem_id
+    LEFT JOIN nguoi_dung nd ON nd.id = x.created_by
+    ${TEM_INFO_LATERAL}
+    WHERE (x.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date AND ${notCancelledQc('x', 'kcs')}
+    ORDER BY x.created_date DESC`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [date]);
+  return rows;
+}
+async function listCancelSua(date) {
+  const sql = `
+    SELECT x.id, x.created_date AS tg, nd.ho_ten AS nguoi, t.id AS tem_id, t.ma_tem,
+           x.so_luong_sua, x.so_luong_sua_dat, x.so_luong_sua_huy,
+           info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.mau_vai, info.kich_vai, info.kich_phim
+    FROM sua x JOIN tem t ON t.id = x.tem_id
+    LEFT JOIN nguoi_dung nd ON nd.id = x.created_by
+    ${TEM_INFO_LATERAL}
+    WHERE (x.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date AND ${notCancelledQc('x', 'sua')}
+    ORDER BY x.created_date DESC`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [date]);
+  return rows;
+}
+async function listCancelOqc(date) {
+  const sql = `
+    SELECT x.id, x.created_date AS tg, nd.ho_ten AS nguoi, t.id AS tem_id, t.ma_tem, x.ket_qua, x.cho_giao,
+           x.so_luong_kiem, x.so_luong_dat, x.so_luong_loi,
+           info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.mau_vai, info.kich_vai, info.kich_phim
+    FROM oqc x JOIN tem t ON t.id = x.tem_id
+    LEFT JOIN nguoi_dung nd ON nd.id = x.created_by
+    ${TEM_INFO_LATERAL}
+    WHERE (x.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date AND ${notCancelledQc('x', 'oqc')}
+    ORDER BY x.created_date DESC`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [date]);
+  return rows;
+}
+
+// Lấy 1 bản ghi xác nhận + SỔ CÁI hiện tại của tem (để service validate đảo ngược an toàn).
+const CANCEL_TARGET_TEM_COLS =
+  `t.ma_tem, t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy, t.sl_sua_dat, t.sl_sua_huy, t.sl_oqc_dat, t.sl_da_giao, t.sl_chenh_lech`;
+
+async function getCancelKcsRow(id) {
+  const { rows } = await query(
+    `SELECT x.id, x.tem_id, x.so_luong_kiem, x.so_luong_dat, x.so_luong_loi, x.so_luong_huy, x.so_luong_chenh_lech,
+            ${CANCEL_TARGET_TEM_COLS}, ${cancelledQc('x', 'kcs')} AS da_huy
+     FROM kcs x JOIN tem t ON t.id = x.tem_id WHERE x.id = $1`.replace(/\s+/g, ' '),
+    [id]
+  );
+  return rows[0] || null;
+}
+async function getCancelSuaRow(id) {
+  const { rows } = await query(
+    `SELECT x.id, x.tem_id, x.so_luong_sua, x.so_luong_sua_dat, x.so_luong_sua_huy,
+            ${CANCEL_TARGET_TEM_COLS}, ${cancelledQc('x', 'sua')} AS da_huy
+     FROM sua x JOIN tem t ON t.id = x.tem_id WHERE x.id = $1`.replace(/\s+/g, ' '),
+    [id]
+  );
+  return rows[0] || null;
+}
+async function getCancelOqcRow(id) {
+  const { rows } = await query(
+    `SELECT x.id, x.tem_id, x.so_luong_dat, x.so_luong_loi, x.cho_giao,
+            ${CANCEL_TARGET_TEM_COLS}, ${cancelledQc('x', 'oqc')} AS da_huy
+     FROM oqc x JOIN tem t ON t.id = x.tem_id WHERE x.id = $1`.replace(/\s+/g, ' '),
+    [id]
+  );
+  return rows[0] || null;
+}
+
+// Ghi audit_log HỦY XÁC NHẬN (đánh dấu bản ghi đã hủy — loại khỏi mọi danh sách/lịch sử/hành trình).
+async function logCancelQc(table, id, temId, maTem, lyDo, actorId) {
+  await query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ($1, $2, 'HUY_XAC_NHAN', $3::jsonb, $4, CURRENT_TIMESTAMP, $4)`,
+    [table, String(id), JSON.stringify({ tem_id: temId, ma_tem: maTem || null, ly_do: lyDo || null }), actorId]
+  );
+}
+
 module.exports = {
   insertQcTraVe, activeReturnsMap, resolveReturns, resolveReturnsMany, listQcTraVe,
+  listCancelKcs, listCancelSua, listCancelOqc, getCancelKcsRow, getCancelSuaRow, getCancelOqcRow, logCancelQc,
   listKcsCand, listSuaCand, listOqcCand, caPartsForTems, getTemBasic, setTemTrangThai, setTemStatusQty,
   getTemLedger, addKcsLedger, addSuaLedger, addOqcLedger, addGiaoLedger, reduceKcsDat, recomputeTemStage,
   temTimeline,

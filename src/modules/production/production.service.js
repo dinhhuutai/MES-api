@@ -195,8 +195,10 @@ async function finishRun(phieuId, actorId) {
 }
 
 async function monitor() {
-  const [running, queue] = await Promise.all([repo.monitorRunning(), repo.monitorQueue()]);
-  return { running, queue };
+  const [running, queue, slaSauSxPhut] = await Promise.all([
+    repo.monitorRunning(), repo.monitorQueue(), repo.downstreamSlaAfterProduction(),
+  ]);
+  return { running, queue, sla_sau_sx_phut: slaSauSxPhut };
 }
 
 async function getXePhoi() {
@@ -310,6 +312,49 @@ async function closeProduction(phieuId, lyDo, actorId) {
   return { phieu_id: phieuId, lenh_id: phieu.lenh_san_xuat_id, ma_lenh_san_xuat: lenh?.ma_lenh_san_xuat, printed };
 }
 
+// ----- MỞ LẠI LỆNH SẢN XUẤT (đã đóng/hoàn tất, cần in tiếp) — trong 2 ngày gần nhất -----
+async function listReopenCandidates() {
+  return repo.listReopenCandidates();
+}
+
+async function reopenProduction(phieuId, actorId) {
+  const phieu = await repo.getPhieuFull(phieuId);
+  if (!phieu) throw new AppError('Phiếu sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  if (phieu.trang_thai !== 'HOAN_TAT') {
+    throw new AppError('Chỉ mở lại phiếu đã hoàn tất (đang chạy thì không cần mở lại)', { status: 409, errorCode: 'WRONG_STAGE' });
+  }
+  if (!phieu.tg_kt || (Date.now() - new Date(phieu.tg_kt).getTime()) > 2 * 24 * 60 * 60 * 1000) {
+    throw new AppError('Chỉ mở lại được lệnh đã đóng trong 2 ngày gần nhất', { status: 409, errorCode: 'TOO_OLD' });
+  }
+  await withTransaction((client) => repo.reopenPhieuTx(client, phieuId, phieu.lenh_san_xuat_id, actorId));
+  await repo.logReopenProduction(phieuId, phieu.ma_lenh_san_xuat, actorId);
+  await tracking.moveByLenh(phieu.lenh_san_xuat_id, 'SAN_XUAT', actorId);
+  sockets.emit('production:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'reopen' });
+  sockets.emit('dashboard:refresh', {});
+  return { phieu_id: phieuId, lenh_id: phieu.lenh_san_xuat_id, ma_lenh_san_xuat: phieu.ma_lenh_san_xuat };
+}
+
+// ----- NGỪNG LỆNH CHẠY (ngừng phần in đang chạy để in hàng gấp hơn) -----
+// Kết thúc lượt chạy hiện tại (tem đã in đi tiếp Chờ khô/kiểm — giữ nguyên số lượng) và đưa lệnh về
+// "chờ chạy" (RELEASE_2, KHÔNG cần test lại) để lập lại kế hoạch / hoán đổi phần in gấp hơn.
+async function pauseLenhChay(phieuId, actorId) {
+  const phieu = await repo.getPhieuFull(phieuId);
+  if (!phieu) throw new AppError('Phiếu sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  if (phieu.trang_thai !== 'DANG_CHAY') {
+    throw new AppError('Phiếu không ở trạng thái đang chạy', { status: 409, errorCode: 'WRONG_STAGE' });
+  }
+  const printed = await repo.getPrintedTotal(phieuId);
+  await repo.finishPhieu(phieuId, actorId);                                        // lượt chạy này kết thúc (tem đi tiếp)
+  await withTransaction((client) =>
+    repo.setLenhTrangThai(client, phieu.lenh_san_xuat_id, 'RELEASE_2', actorId));  // lệnh về chờ chạy (không test lại)
+  await repo.logPauseLenhChay(phieu.lenh_san_xuat_id, phieu.ma_lenh_san_xuat, printed, actorId);
+  await tracking.moveByLenh(phieu.lenh_san_xuat_id, 'RELEASE_2', actorId);
+  sockets.emit('production:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'ngung-lenh' });
+  sockets.emit('workflow:updated', { lenhId: phieu.lenh_san_xuat_id, stage: 'RELEASE_2' });
+  sockets.emit('dashboard:refresh', {});
+  return { lenh_id: phieu.lenh_san_xuat_id, ma_lenh_san_xuat: phieu.ma_lenh_san_xuat, printed };
+}
+
 // ----- HỦY LỆNH ĐANG CHẠY (bấm nhầm Xác nhận chạy) → đưa về danh sách chờ chạy -----
 async function listUndoStartCandidates() {
   const running = await repo.monitorRunning();
@@ -343,5 +388,6 @@ module.exports = {
   stopLine, resumeLine, addVaiHuy,
   listCancelableTem, cancelPrintTem,
   listCloseCandidates, closeProduction,
+  listReopenCandidates, reopenProduction, pauseLenhChay,
   listUndoStartCandidates, undoStartProduction,
 };

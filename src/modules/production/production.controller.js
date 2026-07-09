@@ -72,6 +72,16 @@ const closeCandidates = asyncHandler(async (req, res) => ok(res, await service.l
 const closeProduction = asyncHandler(async (req, res) =>
   ok(res, await service.closeProduction(req.params.phieuId, req.body.lyDo, req.user.id), 'Đã đóng lệnh sản xuất'));
 
+// Mở lại lệnh sản xuất (đã đóng/hoàn tất, cần in tiếp) — trong 2 ngày
+const reopenCandidates = asyncHandler(async (req, res) => ok(res, await service.listReopenCandidates()));
+
+const reopenProduction = asyncHandler(async (req, res) =>
+  ok(res, await service.reopenProduction(req.params.phieuId, req.user.id), 'Đã mở lại lệnh sản xuất'));
+
+// Ngừng lệnh chạy (ngừng phần in để in hàng gấp) → lệnh về chờ chạy
+const pauseLenhChay = asyncHandler(async (req, res) =>
+  ok(res, await service.pauseLenhChay(req.params.phieuId, req.user.id), 'Đã ngừng lệnh chạy — lệnh về chờ chạy'));
+
 // Hủy lệnh đang chạy (bấm nhầm Xác nhận chạy) → về chờ chạy
 const undoStartCandidates = asyncHandler(async (req, res) => ok(res, await service.listUndoStartCandidates()));
 
@@ -84,5 +94,6 @@ module.exports = {
   stopLine, resumeLine, addVaiHuy,
   cancelableTem, cancelPrintTem,
   closeCandidates, closeProduction,
+  reopenCandidates, reopenProduction, pauseLenhChay,
   undoStartCandidates, undoStartProduction,
 };
