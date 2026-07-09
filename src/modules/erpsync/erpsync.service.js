@@ -6,6 +6,7 @@ const { withTransaction } = require('../../config/db');
 const repo = require('./erpsync.repository');
 const env = require('../../config/env');
 const AppError = require('../../utils/AppError');
+const { buildMeta } = require('../../utils/pagination');
 const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
 
@@ -208,8 +209,9 @@ async function syncPhieuNhanVai({ fromDate, actorId = null, tuDong = false } = {
   }
 }
 
-async function history(limit) {
-  return repo.listSyncHistory(limit || 50);
+async function history({ date, page, limit, offset } = {}) {
+  const { rows, total } = await repo.listSyncHistory({ date: date || null, offset, limit });
+  return { items: rows, meta: buildMeta(page, limit, total) };
 }
 
 // Chuỗi response nguyên văn của 1 lần đồng bộ.

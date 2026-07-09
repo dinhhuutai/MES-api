@@ -32,17 +32,28 @@ async function getSyncRaw(logId) {
   return rows[0] ? (rows[0].du_lieu_tho || null) : null;
 }
 
-async function listSyncHistory(limit = 50) {
-  const { rows } = await query(
-    `SELECT l.id, l.nguon, l.from_date, l.tg_bd, l.tg_kt, l.tong_ban_ghi, l.so_moi, l.so_cap_nhat,
-            l.so_loi, l.trang_thai, l.tu_dong, l.thong_diep, nd.ho_ten AS nguoi,
-            (l.du_lieu_tho IS NOT NULL) AS co_tho,
-            COALESCE(length(l.du_lieu_tho::text), 0) AS so_ky_tu
-     FROM erp_sync_log l LEFT JOIN nguoi_dung nd ON nd.id = l.created_by
-     ORDER BY l.tg_bd DESC LIMIT $1`,
-    [limit]
-  );
-  return rows;
+// Lịch sử đồng bộ — lọc theo NGÀY BẮT ĐẦU (giờ VN) + phân trang.
+async function listSyncHistory({ date, offset = 0, limit = 20 } = {}) {
+  const params = [];
+  let where = '';
+  if (date) {
+    params.push(date);
+    where = `WHERE (l.tg_bd AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $${params.length}::date`;
+  }
+  const dataSql = `
+    SELECT l.id, l.nguon, l.from_date, l.tg_bd, l.tg_kt, l.tong_ban_ghi, l.so_moi, l.so_cap_nhat,
+           l.so_loi, l.trang_thai, l.tu_dong, l.thong_diep, nd.ho_ten AS nguoi,
+           (l.du_lieu_tho IS NOT NULL) AS co_tho,
+           COALESCE(length(l.du_lieu_tho::text), 0) AS so_ky_tu
+    FROM erp_sync_log l LEFT JOIN nguoi_dung nd ON nd.id = l.created_by
+    ${where}
+    ORDER BY l.tg_bd DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+  const countSql = `SELECT count(*)::int AS total FROM erp_sync_log l ${where}`;
+  const [data, count] = await Promise.all([
+    query(dataSql, [...params, limit, offset]),
+    query(countSql, params),
+  ]);
+  return { rows: data.rows, total: count.rows[0].total };
 }
 
 // ----- Lưu dữ liệu THÔ (task 1) -----

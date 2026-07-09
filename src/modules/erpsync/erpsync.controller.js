@@ -3,6 +3,7 @@
 const service = require('./erpsync.service');
 const asyncHandler = require('../../utils/asyncHandler');
 const { ok } = require('../../utils/response');
+const { getPaging } = require('../../utils/pagination');
 
 // Đồng bộ thủ công. fromDate tùy chọn (mặc định = hiện tại - N ngày trong service).
 const syncPhieuNhanVai = asyncHandler(async (req, res) => {
@@ -12,8 +13,10 @@ const syncPhieuNhanVai = asyncHandler(async (req, res) => {
     `Đồng bộ ERP xong: ${result.soMoi} mới, ${result.soCapNhat} cập nhật, ${result.soBoQua || 0} bỏ qua (không có code_part), ${result.soLoi} lỗi`);
 });
 
-const history = asyncHandler(async (req, res) =>
-  ok(res, await service.history(parseInt(req.query.limit || '50', 10))));
+const history = asyncHandler(async (req, res) => {
+  const { page, limit, offset } = getPaging(req.query);
+  return ok(res, await service.history({ date: req.query.date || null, page, limit, offset }));
+});
 
 const rawData = asyncHandler(async (req, res) =>
   ok(res, await service.rawData(req.params.id)));

@@ -147,30 +147,19 @@ async function printTem(phieuId, soLuong, actorId) {
   return { ...run, new_tem_id: newTemId };
 }
 
-// In lại tem: HỦY tem cũ (gỡ khỏi xe phơi) + tạo TEM MỚI (mã/barcode mới) để in lại.
-// Chỉ cho in lại khi tem cũ còn ở giai đoạn IN/DANG_PHOI (chưa khô/kiểm).
+// In lại tem = in lại NHÃN của CHÍNH tem đó — GIỮ NGUYÊN mã tem + sổ cái + xe phơi (không tạo tem mới,
+// không đụng đồng hồ phơi). Dùng khi tem GIẤY bị mất/rách. Chỉ ghi thêm 1 lần in vào log_tem
+// (tăng so_lan_in) + lý do để lưu vết. Cho in lại ở mọi giai đoạn trừ tem đã HỦY.
 async function reprintTem(temId, lyDo, actorId) {
   if (!lyDo || !lyDo.trim()) throw new AppError('Nhập lý do in lại tem', { status: 422, errorCode: 'NO_LY_DO' });
   const ctx = await repo.getTemContext(temId);
   if (!ctx) throw new AppError('Tem không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
-  if (!['IN', 'DANG_PHOI'].includes(ctx.trang_thai)) {
-    throw new AppError('Tem đã qua công đoạn sau (khô/kiểm/giao), không thể in lại', { status: 409, errorCode: 'WRONG_STAGE' });
-  }
-  const xe = await repo.getDefaultXePhoi();
-  if (!xe) throw new AppError('Chưa cấu hình xe phơi', { status: 409, errorCode: 'NO_XE' });
-
-  const maTem = await repo.nextMaTem();
-  let newTemId;
-  await withTransaction(async (client) => {
-    await repo.cancelTem(client, temId, actorId);                 // hủy tem cũ + gỡ xe phơi
-    newTemId = await repo.createTem(client, { phieuId: ctx.phieu_san_xuat_id, maTem, soLuong: ctx.so_luong }, actorId);
-    await repo.logTemPrint(client, { temId: newTemId, maTem, actorId, lyDo: `In lại thay ${ctx.ma_tem}: ${lyDo.trim()}` });
-    await repo.addTemToXe(client, { temId: newTemId, xeId: xe.id, soLuongPhoi: ctx.so_luong, phut: DEFAULT_DRY_MIN }, actorId);
-  });
-  sockets.emit('production:updated', { lenhId: ctx.lenh_san_xuat_id, action: 'reprint', temId: newTemId });
-  sockets.emit('drying:updated', { lenhId: ctx.lenh_san_xuat_id, action: 'auto-phoi' });
+  if (ctx.trang_thai === 'HUY') throw new AppError('Tem đã hủy, không thể in lại', { status: 409, errorCode: 'WRONG_STAGE' });
+  const soLan = await repo.nextReprint(temId);
+  await repo.logReprint(temId, ctx.ma_tem, lyDo.trim(), soLan, actorId);
+  sockets.emit('production:updated', { lenhId: ctx.lenh_san_xuat_id, action: 'reprint', temId });
   const run = await getRun(ctx.lenh_san_xuat_id);
-  return { ...run, new_tem_id: newTemId, huy_tem: ctx.ma_tem };
+  return { ...run, new_tem_id: temId, reprinted: ctx.ma_tem, so_lan_in: soLan };
 }
 
 async function temLabel(temId) {
