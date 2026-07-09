@@ -2,12 +2,18 @@
 
 const { withTransaction } = require('../../config/db');
 const repo = require('./delivery.repository');
+const qualityRepo = require('../quality/quality.repository'); // dùng chung: người xác nhận trạm trước
 const AppError = require('../../utils/AppError');
 const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
 
 async function listTemSanSang(search, ngay) {
-  return repo.listTemSanSang({ search, ngay });
+  const rows = await repo.listTemSanSang({ search, ngay });
+  // Gắn "người xác nhận trạm trước" (Giao ← OQC) — query nhẹ theo tem_id.
+  const pc = await qualityRepo.prevConfirmerByTems(rows.map((r) => r.tem_id));
+  const map = new Map(pc.map((x) => [x.tem_id, x]));
+  rows.forEach((r) => { r.nguoi_truoc = (map.get(r.tem_id) || {}).nguoi_oqc || null; });
+  return rows;
 }
 
 async function getDetail(giaoHangId) {

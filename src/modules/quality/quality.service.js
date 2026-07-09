@@ -28,7 +28,16 @@ async function listKcsCandidates({ search, filters }) {
   // Đánh dấu tem bị OQC trả về (badge + lọc).
   const rm = await repo.activeReturnsMap('OQC', rows.map((r) => r.tem_id));
   rows.forEach((r) => { r.tra_ve_ly_do = rm[r.tem_id] || null; });
+  await attachPrevConfirmer(rows, 'nguoi_in'); // trạm trước của KCS = in tem
   return rows;
+}
+
+// Gắn "người xác nhận trạm trước" vào từng dòng (field `nguoi_truoc`) — query nhẹ theo tem_id.
+async function attachPrevConfirmer(rows, key) {
+  if (!rows || rows.length === 0) return;
+  const pc = await repo.prevConfirmerByTems(rows.map((r) => r.tem_id));
+  const map = new Map(pc.map((x) => [x.tem_id, x]));
+  rows.forEach((r) => { r.nguoi_truoc = (map.get(r.tem_id) || {})[key] || null; });
 }
 
 // OQC trả tem về KCS (kèm lý do bắt buộc). Đưa phần đang CHỜ OQC (con_oqc) quay lại chưa kiểm (con_kcs).
@@ -112,10 +121,12 @@ async function listSuaCandidates({ search, filters }) {
     planningRepo.caModeMap(),
   ]);
   const partMap = new Map(parts.map((p) => [p.tem_id, p]));
-  return rows.map((r) => {
+  const out = rows.map((r) => {
     const p = partMap.get(r.tem_id) || {};
     return { ...r, ca: caFromParts(p.ca_gio, p.ca_nam, p.ca_tuan, map) };
   });
+  await attachPrevConfirmer(out, 'nguoi_kcs'); // trạm trước của Sửa = KCS
+  return out;
 }
 
 async function recordSua(temId, body, actorId) {
@@ -145,7 +156,11 @@ async function recordSua(temId, body, actorId) {
 }
 
 // ----- OQC (còn phần chờ kiểm cuối: con_oqc > 0) -----
-async function listOqcCandidates({ search, filters }) { return repo.listOqcCand({ search, filters }); }
+async function listOqcCandidates({ search, filters }) {
+  const rows = await repo.listOqcCand({ search, filters });
+  await attachPrevConfirmer(rows, 'nguoi_kcs_sua'); // trạm trước của OQC = KCS hoặc Sửa (mới nhất)
+  return rows;
+}
 
 async function recordOqc(temId, body, actorId) {
   const tem = await repo.getTemLedger(temId);

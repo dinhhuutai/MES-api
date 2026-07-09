@@ -105,6 +105,29 @@ async function caPartsForTems(temIds) {
   return rows;
 }
 
+// Người XÁC NHẬN TRẠM TRƯỚC của từng tem (query nhẹ theo PK — IPS-safe, tách khỏi list nặng).
+// nguoi_in (in tem) · nguoi_kcs (KCS) · nguoi_sua (Sửa) · nguoi_oqc (OQC) · nguoi_kcs_sua (KCS/Sửa mới nhất).
+async function prevConfirmerByTems(temIds) {
+  if (!temIds || temIds.length === 0) return [];
+  const sql = `
+    SELECT t.id AS tem_id,
+      (SELECT nd.ho_ten FROM log_tem lt JOIN nguoi_dung nd ON nd.id = lt.nguoi_in_id
+         WHERE lt.tem_id = t.id ORDER BY lt.tg_in LIMIT 1) AS nguoi_in,
+      (SELECT nd.ho_ten FROM kcs x JOIN nguoi_dung nd ON nd.id = x.created_by
+         WHERE x.tem_id = t.id ORDER BY x.created_date DESC LIMIT 1) AS nguoi_kcs,
+      (SELECT nd.ho_ten FROM sua x JOIN nguoi_dung nd ON nd.id = x.created_by
+         WHERE x.tem_id = t.id ORDER BY x.created_date DESC LIMIT 1) AS nguoi_sua,
+      (SELECT nd.ho_ten FROM oqc x JOIN nguoi_dung nd ON nd.id = x.created_by
+         WHERE x.tem_id = t.id ORDER BY x.created_date DESC LIMIT 1) AS nguoi_oqc,
+      (SELECT nd.ho_ten FROM (
+         SELECT created_by AS uid, created_date AS tg FROM kcs WHERE tem_id = t.id
+         UNION ALL SELECT created_by, created_date FROM sua WHERE tem_id = t.id
+       ) e JOIN nguoi_dung nd ON nd.id = e.uid ORDER BY e.tg DESC LIMIT 1) AS nguoi_kcs_sua
+    FROM tem t WHERE t.id = ANY($1::uuid[])`;
+  const { rows } = await query(sql.replace(/\s+/g, ' '), [temIds]);
+  return rows;
+}
+
 // ----- SỔ CÁI SỐ LƯỢNG (migration 043) -----
 // Đọc ledger + SL còn lại từng công đoạn (để service validate số nhập ≤ còn lại).
 async function getTemLedger(temId) {
@@ -697,7 +720,7 @@ async function logCancelQc(table, id, temId, maTem, lyDo, actorId) {
 module.exports = {
   insertQcTraVe, activeReturnsMap, resolveReturns, resolveReturnsMany, listQcTraVe,
   listCancelKcs, listCancelSua, listCancelOqc, getCancelKcsRow, getCancelSuaRow, getCancelOqcRow, logCancelQc,
-  listKcsCand, listSuaCand, listOqcCand, caPartsForTems, getTemBasic, setTemTrangThai, setTemStatusQty,
+  listKcsCand, listSuaCand, listOqcCand, caPartsForTems, prevConfirmerByTems, getTemBasic, setTemTrangThai, setTemStatusQty,
   getTemLedger, addKcsLedger, addSuaLedger, addOqcLedger, addGiaoLedger, reduceKcsDat, recomputeTemStage,
   temTimeline,
   nextMaTem, createChildTem, insertTemSplit, getTemForSplit,
