@@ -4,28 +4,21 @@ const service = require('./quality.service');
 const asyncHandler = require('../../utils/asyncHandler');
 const { ok } = require('../../utils/response');
 
-const kcsCandidates = asyncHandler(async (req, res) => {
-  const { search, khach, don, maHang, mauVai, kichVai, kichPhim, ngay } = req.query;
-  return ok(res, await service.listKcsCandidates({
-    search: search || '',
-    filters: { khach, don, maHang, mauVai, kichVai, kichPhim, ngay },
-  }));
-});
+// Gom bộ lọc chung cho danh sách tem KCS/Sửa/OQC (có khoảng ngày ngayTu/ngayDen).
+const candFilters = (q) => {
+  const { search, khach, don, maHang, mauVai, kichVai, kichPhim, ngay, ngayTu, ngayDen } = q;
+  return { search: search || '', filters: { khach, don, maHang, mauVai, kichVai, kichPhim, ngay, ngayTu, ngayDen } };
+};
+
+const kcsCandidates = asyncHandler(async (req, res) => ok(res, await service.listKcsCandidates(candFilters(req.query))));
 const recordKcs = asyncHandler(async (req, res) =>
   ok(res, await service.recordKcs(req.params.temId, req.body, req.user.id), 'Đã ghi nhận KCS'));
 
-const suaCandidates = asyncHandler(async (req, res) => {
-  const { search, khach, don, maHang, mauVai, kichVai, kichPhim, ngay } = req.query;
-  return ok(res, await service.listSuaCandidates({
-    search: search || '',
-    filters: { khach, don, maHang, mauVai, kichVai, kichPhim, ngay },
-  }));
-});
+const suaCandidates = asyncHandler(async (req, res) => ok(res, await service.listSuaCandidates(candFilters(req.query))));
 const recordSua = asyncHandler(async (req, res) =>
   ok(res, await service.recordSua(req.params.temId, req.body, req.user.id), 'Đã ghi nhận sửa'));
 
-const oqcCandidates = asyncHandler(async (req, res) =>
-  ok(res, await service.listOqcCandidates({ search: req.query.search || '', filters: { ngay: req.query.ngay } })));
+const oqcCandidates = asyncHandler(async (req, res) => ok(res, await service.listOqcCandidates(candFilters(req.query))));
 const recordOqc = asyncHandler(async (req, res) =>
   ok(res, await service.recordOqc(req.params.temId, req.body, req.user.id), 'Đã ghi nhận OQC'));
 const oqcReturn = asyncHandler(async (req, res) =>

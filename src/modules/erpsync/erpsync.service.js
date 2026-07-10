@@ -13,7 +13,7 @@ const tracking = require('../workflow/tracking.service');
 const NGUON = 'phieu_nhan_vai_60';
 
 // CHỈ đồng bộ khách hàng này từ ERP (so khớp customer_name, không phân biệt hoa/thường). Đổi 1 chỗ ở đây.
-const KHACH_ERP = 'VN-CO';
+const KHACH_ERP = 'LM';
 
 const md5 = (s) => crypto.createHash('md5').update(s).digest('hex');
 const clean = (v) => (v == null ? '' : String(v).trim());

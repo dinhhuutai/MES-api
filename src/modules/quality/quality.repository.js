@@ -74,10 +74,18 @@ async function listCandByCon(condExpr, { search = '', filters = {} } = {}) {
   addFilter(f.mauVai, 'info.mau_vai');
   addFilter(f.kichVai, 'info.kich_vai');
   addFilter(f.kichPhim, 'info.kich_phim');
-  // Lọc theo NGÀY IN TEM (created_date, giờ VN) — chỉ thêm khi có chọn.
+  // Lọc theo NGÀY IN TEM (created_date, giờ VN) — hỗ trợ 1 ngày (ngay) hoặc KHOẢNG (ngayTu/ngayDen).
   if (f.ngay) {
     params.push(f.ngay);
     conds.push(`(t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $${params.length}::date`);
+  }
+  if (f.ngayTu) {
+    params.push(f.ngayTu);
+    conds.push(`(t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date >= $${params.length}::date`);
+  }
+  if (f.ngayDen) {
+    params.push(f.ngayDen);
+    conds.push(`(t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date <= $${params.length}::date`);
   }
   // Gửi SQL 1 dòng (IPS-safe). TEM_CTX không có comment '--' nên gộp an toàn.
   const sql = `${TEM_CTX} WHERE ${conds.join(' AND ')} ORDER BY t.created_date`;
