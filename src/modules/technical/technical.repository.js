@@ -97,6 +97,27 @@ async function listCandidates({
   return { rows: items, total };
 }
 
+// Đếm SỐ PHẦN IN CHƯA XÁC NHẬN từng mục (KHUON/FILM/MUC) trên TOÀN HỆ THỐNG (không phân trang).
+// Chỉ tính phần in còn ở READY: chưa release (không có đợt vải trong lệnh ≠ HUY) & chưa QC_XAC_NHAN.
+async function countReadyItems({ khuonId, filmId, mucId, qcId }) {
+  const doneExpr = (param) =>
+    `EXISTS (SELECT 1 FROM ket_qua_checkpoint k WHERE k.phan_in_id = pin.id AND k.checkpoint_id = ${param} AND k.trang_thai = 'DAT')`;
+  const sql = `
+    SELECT count(*) FILTER (WHERE NOT khuon_done)::int AS khuon,
+           count(*) FILTER (WHERE NOT film_done)::int AS film,
+           count(*) FILTER (WHERE NOT muc_done)::int AS muc
+    FROM (
+      SELECT ${doneExpr('$1')} AS khuon_done, ${doneExpr('$2')} AS film_done, ${doneExpr('$3')} AS muc_done
+      FROM phan_in pin
+      WHERE NOT EXISTS (SELECT 1 FROM dot_vai_ve dvr JOIN lenh_sx_dot_vai lsr ON lsr.dot_vai_ve_id = dvr.id
+                        JOIN lenh_san_xuat lr ON lr.id = lsr.lenh_san_xuat_id
+                        WHERE dvr.phan_in_id = pin.id AND lr.trang_thai <> 'HUY')
+        AND NOT (${doneExpr('$4')})
+    ) q`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [khuonId, filmId, mucId, qcId]);
+  return { khuon: rows[0]?.khuon || 0, film: rows[0]?.film || 0, muc: rows[0]?.muc || 0 };
+}
+
 // Lịch sử xác nhận theo ngày (giờ VN). scope: 'tech' (4 mục) | 'qc' (QC_XAC_NHAN).
 async function historyByDate(date, maList) {
   const sql = `
@@ -326,6 +347,6 @@ async function insertStatusLog(client, { ketQuaId, trangThaiMoiId, nguoiId, lyDo
 }
 
 module.exports = {
-  loadReadyConfig, listCandidates, historyByDate, doneByDate, listConfirmHistory, isPhanInReleased, getPhanInBasic, getResults, getBulkStates,
+  loadReadyConfig, listCandidates, countReadyItems, historyByDate, doneByDate, listConfirmHistory, isPhanInReleased, getPhanInBasic, getResults, getBulkStates,
   getReadyEntryTime, findResultId, upsertResult, cancelResult, logCancel, insertStatusLog,
 };

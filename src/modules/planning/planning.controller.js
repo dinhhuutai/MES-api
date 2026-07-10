@@ -24,6 +24,16 @@ const release1History = asyncHandler(async (req, res) => {
 const releaseSets = asyncHandler(async (req, res) =>
   ok(res, await service.listReleaseSets(req.query.search || '')));
 
+// Gộp số lượng đợt vải
+const gopCandidates = asyncHandler(async (req, res) =>
+  ok(res, await service.listGopCandidates({ search: req.query.search || '' })));
+
+const gopDotVai = asyncHandler(async (req, res) =>
+  ok(res, await service.gopDotVai(req.body, req.user.id), 'Đã gộp số lượng đợt vải'));
+
+const gopHistory = asyncHandler(async (req, res) =>
+  ok(res, await service.gopHistory(req.query.date || null)));
+
 const releaseSet = asyncHandler(async (req, res) =>
   created(res, await service.releaseSet(req.params.setId, req.body, req.user.id), 'Đã release set — tạo lệnh sản xuất chung'));
 
@@ -113,6 +123,7 @@ const upsertCaTuan = asyncHandler(async (req, res) =>
 module.exports = {
   listCaTuan, upsertCaTuan,
   release1Candidates, autoPlanCandidates, createRelease1, release1History, releaseSets, releaseSet,
+  gopCandidates, gopDotVai, gopHistory,
   testRunCandidates, lenhDetail, recordTestRun,
   confirmCNSP, confirmQA, cancelCNSP, cancelQA, confirmCNSPBatch, confirmQABatch,
   release2Candidates, approveRelease2, approveRelease2Batch, testRunHistory,

@@ -173,6 +173,16 @@ async function tuChoi(id, lyDo, actorId) {
   );
 }
 
+// Hủy áp dụng: gỡ báo cáo hiện hành khỏi phòng ban (DA_DUYET → HUY). Trả số dòng bị gỡ.
+async function huyApDung(phongBanId, actorId) {
+  const { rowCount } = await query(
+    `UPDATE bao_cao_phong_ban SET trang_thai = 'HUY', updated_by = $2, updated_date = CURRENT_TIMESTAMP
+     WHERE phong_ban_id = $1 AND trang_thai = 'DA_DUYET'`,
+    [phongBanId, actorId]
+  );
+  return rowCount;
+}
+
 async function hienHanh(phongBanId) {
   const { rows } = await query(
     `SELECT b.id, b.ma_bao_cao, b.ten_bao_cao, b.noi_dung_json, b.ky_tu, b.ky_den
@@ -187,5 +197,5 @@ async function hienHanh(phongBanId) {
 module.exports = {
   nextMa, create, list, findById, update, undo, softDelete,
   audit, historyByDate,
-  listPhongBanApDung, listChoDuyet, createDeXuat, getDeXuat, duyet, tuChoi, hienHanh,
+  listPhongBanApDung, listChoDuyet, createDeXuat, getDeXuat, duyet, tuChoi, huyApDung, hienHanh,
 };

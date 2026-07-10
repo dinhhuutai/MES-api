@@ -730,7 +730,60 @@ async function listNgungByPhieu(phieuId) {
   return rows;
 }
 
+// ===== VƯỢT SẢN XUẤT (migration 051) =====
+// Bối cảnh vượt SX: phiếu → lệnh (so_luong_release) + các phần in của lệnh.
+async function getVuotContext(phieuId) {
+  const { rows } = await query(
+    `SELECT ps.id AS phieu_id, ps.lenh_san_xuat_id AS lenh_id,
+            ls.so_luong_release::int AS so_luong_release,
+            (SELECT array_agg(DISTINCT dv.phan_in_id)
+               FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+               WHERE lsd.lenh_san_xuat_id = ls.id) AS phan_in_ids
+     FROM phieu_san_xuat ps JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+     WHERE ps.id = $1`,
+    [phieuId]
+  );
+  return rows[0] || null;
+}
+
+// Đợt vải CHƯA release (da_release=0) của các phần in — để trừ SL vượt. Bỏ đợt đã ẩn (DA_GOP).
+async function listUnreleasedDotVaiForPhanIn(phanInIds) {
+  const { rows } = await query(
+    `SELECT dv.id::text AS id, dv.ma_dot_vai, COALESCE(dv.so_luong_vai_ve,0)::int AS so_luong_vai_ve
+     FROM dot_vai_ve dv
+     WHERE dv.phan_in_id = ANY($1::uuid[]) AND COALESCE(dv.trang_thai,'') <> 'DA_GOP'
+       AND COALESCE(dv.so_luong_vai_ve,0) > 0
+       AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
+                       WHERE lsd.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY')
+     ORDER BY dv.ngay_vai_ve NULLS LAST, dv.ma_dot_vai`,
+    [phanInIds]
+  );
+  return rows;
+}
+
+async function incLenhRelease(client, lenhId, delta, actorId) {
+  const { rows } = await client.query(
+    `UPDATE lenh_san_xuat SET so_luong_release = COALESCE(so_luong_release,0) + $2,
+       updated_by = $3, updated_date = CURRENT_TIMESTAMP
+     WHERE id = $1 RETURNING so_luong_release::int AS so_luong_release`,
+    [lenhId, delta, actorId]
+  );
+  return rows[0].so_luong_release;
+}
+
+async function insertVuotHistory(client, h, actorId) {
+  await client.query(
+    `INSERT INTO lich_su_vuot_san_xuat
+       (phieu_san_xuat_id, lenh_san_xuat_id, phan_in_id, so_luong_vuot, release_truoc, release_sau,
+        so_luong_da_tru, chi_tiet_tru, nguoi_thuc_hien_id, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$9)`,
+    [h.phieuId || null, h.lenhId, h.phanInId || null, h.soLuongVuot, h.releaseTruoc, h.releaseSau,
+     h.soLuongDaTru, JSON.stringify(h.chiTietTru || []), actorId]
+  );
+}
+
 module.exports = {
+  getVuotContext, listUnreleasedDotVaiForPhanIn, incLenhRelease, insertVuotHistory,
   listProductionCandidates, getPrintedTotal, getDefaultXePhoi, nextMaPhieu, createPhieu, setLenhChuyen, setLenhTrangThai, getLenhBasic,
   getLenhDotVaiList, insertVaiHuy, listVaiHuyByLenh,
   getActivePhieu, getPhieuById, getTemsByPhieu, getTemContext, cancelTem, getTemLabelData, caPartsForTem,

@@ -37,6 +37,82 @@ async function listRelease1Candidates({ search, page, limit, offset }) {
   return { items: rows, meta: buildMeta(page, limit, total) };
 }
 
+// ----- GỘP SỐ LƯỢNG ĐỢT VẢI -----
+async function listGopCandidates({ search }) {
+  const rows = await repo.listGopCandidates({ search: search || '' });
+  return { items: rows };
+}
+
+// Gộp SL từ (các) đợt NGUỒN vào 1 đợt ĐÍCH của CÙNG phần in. Nguồn về 0 → ẩn khỏi hệ thống.
+// nguon: [{ dotVaiId, soLuong }].
+async function gopDotVai({ dotDichId, nguon }, actorId) {
+  if (!dotDichId) throw new AppError('Chưa chọn đợt vải đích (gộp vào)', { status: 422, errorCode: 'NO_DICH' });
+  const sources = (Array.isArray(nguon) ? nguon : [])
+    .map((n) => ({ dotVaiId: n.dotVaiId, soLuong: Number(n.soLuong) }))
+    .filter((n) => n.dotVaiId && n.dotVaiId !== dotDichId);
+  if (sources.length === 0) throw new AppError('Chọn ít nhất 1 đợt vải nguồn để gộp', { status: 422, errorCode: 'NO_NGUON' });
+
+  const result = await withTransaction(async (client) => {
+    const ids = [dotDichId, ...sources.map((s) => s.dotVaiId)];
+    const rows = await repo.getDotVaiForMerge(client, ids);
+    const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
+
+    const dich = byId[dotDichId];
+    if (!dich) throw new AppError('Đợt vải đích không tồn tại', { status: 404, errorCode: 'DICH_NOT_FOUND' });
+    if (dich.trang_thai === 'DA_GOP') throw new AppError('Đợt vải đích đã bị ẩn', { status: 409, errorCode: 'DICH_GOP' });
+    if (dich.da_release > 0) throw new AppError('Đợt vải đích đã release — không thể gộp', { status: 409, errorCode: 'DICH_RELEASED' });
+
+    let dichQty = dich.so_luong_vai_ve;
+    const done = [];
+    for (const s of sources) {
+      const src = byId[s.dotVaiId];
+      if (!src) throw new AppError('Đợt vải nguồn không tồn tại', { status: 404, errorCode: 'NGUON_NOT_FOUND' });
+      if (src.phan_in_id !== dich.phan_in_id) {
+        throw new AppError('Chỉ gộp được các đợt vải của CÙNG một phần in', { status: 422, errorCode: 'DIFF_PHAN_IN' });
+      }
+      if (src.trang_thai === 'DA_GOP') throw new AppError(`Đợt ${src.ma_dot_vai} đã bị ẩn`, { status: 409, errorCode: 'NGUON_GOP' });
+      if (src.da_release > 0) throw new AppError(`Đợt ${src.ma_dot_vai} đã release — không thể gộp`, { status: 409, errorCode: 'NGUON_RELEASED' });
+      if (!(s.soLuong > 0)) throw new AppError(`SL gộp của đợt ${src.ma_dot_vai} phải > 0`, { status: 422, errorCode: 'INVALID_QTY' });
+      if (s.soLuong > src.so_luong_vai_ve) {
+        throw new AppError(`SL gộp (${s.soLuong}) vượt SL đợt ${src.ma_dot_vai} (${src.so_luong_vai_ve})`, { status: 422, errorCode: 'OVER' });
+      }
+
+      const dichTruoc = dichQty;
+      const nguonTruoc = src.so_luong_vai_ve;
+      dichQty = await repo.adjustDotVaiQty(client, dotDichId, s.soLuong, actorId);
+      const nguonSau = await repo.adjustDotVaiQty(client, s.dotVaiId, -s.soLuong, actorId);
+      const nguonHet = nguonSau <= 0;
+      if (nguonHet) await repo.markDotVaiGop(client, s.dotVaiId, actorId);
+      src.so_luong_vai_ve = nguonSau; // cập nhật cho vòng lặp (không dùng lại nhưng an toàn)
+      await repo.insertGopHistory(client, {
+        dotDichId, dotNguonId: s.dotVaiId, phanInId: dich.phan_in_id, soLuongGop: s.soLuong,
+        soLuongDichTruoc: dichTruoc, soLuongDichSau: dichQty,
+        soLuongNguonTruoc: nguonTruoc, soLuongNguonSau: nguonSau, nguonHet,
+      }, actorId);
+      done.push({ dot_nguon_id: s.dotVaiId, so_luong_gop: s.soLuong, nguon_het: nguonHet });
+    }
+    return { dot_dich_id: dotDichId, so_luong_dich: dichQty, gop: done };
+  });
+
+  sockets.emit('workflow:updated', { gop: true });
+  sockets.emit('order:updated', { source: 'gop' });
+  sockets.emit('dashboard:refresh', {});
+  return result;
+}
+
+async function gopHistory(date) {
+  const rows = await repo.gopHistoryByDate(date || new Date().toISOString().slice(0, 10));
+  return rows.map((r) => ({
+    tg: r.tg,
+    nguoi: r.nguoi || '—',
+    hanh_dong: 'Gộp số lượng',
+    doi_tuong: [r.ma_phan, r.mau_vai].filter(Boolean).join(' · '),
+    chi_tiet: `${r.dot_nguon || '?'} → ${r.dot_dich || '?'}: +${r.so_luong_gop}`
+      + ` (đích ${r.so_luong_dich_truoc}→${r.so_luong_dich_sau})`
+      + (r.nguon_het ? ' · nguồn hết → ẩn' : ''),
+  }));
+}
+
 // ----- KẾ HOẠCH TỰ ĐỘNG -----
 // Thông số HSKT & số pass/chuyền hiện là DỮ LIỆU GIẢ (deterministic theo id để ổn định giữa các lần tải);
 // về sau lấy từ ERP. Công thức năng suất theo spec nghiệp vụ (xem tinhNangSuat).
@@ -568,6 +644,7 @@ async function testQaDone(date) { return repo.testDoneByDate(date, QA_CP); }
 
 module.exports = {
   listRelease1Candidates, autoPlanCandidates, createRelease1, release1History, listReleaseSets, releaseSet,
+  listGopCandidates, gopDotVai, gopHistory,
   listTestRunCandidates, getLenhDetail, recordTestRun, confirmTest, confirmTestBatch, cancelTest,
   listRelease2Candidates, approveRelease2, approveRelease2Batch, testRunHistory,
   listReplanCandidates, replan, replanBatch, planHistory,

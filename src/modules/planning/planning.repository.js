@@ -61,6 +61,106 @@ async function getDotVaiRemaining(dotVaiIds) {
   return rows.map((r) => ({ id: r.id, so_luong: r.so_luong, da_release: r.da_release, con_release: Math.max(0, r.so_luong - r.da_release) }));
 }
 
+// ===== GỘP SỐ LƯỢNG ĐỢT VẢI (migration 050) =====
+// Ứng viên gộp: đợt vải của phần in đã QC (READY xong), CHƯA release lần nào (da_release=0),
+// còn SL (>0), không nằm trong set đang mở, chưa bị gộp ẩn (trang_thai<>'DA_GOP').
+// Gộp chỉ trong CÙNG phần in nên trả kèm phan_in_id để FE nhóm.
+async function listGopCandidates({ search = '' }) {
+  const SEARCH = `($1 = '' OR pin.ma_phan ILIKE '%'||$1||'%' OR kh.ten_khach_hang ILIKE '%'||$1||'%'
+                  OR mh.ma_hang ILIKE '%'||$1||'%' OR pin.mau_vai ILIKE '%'||$1||'%'
+                  OR pin.kich_vai ILIKE '%'||$1||'%' OR pin.kich_phim ILIKE '%'||$1||'%'
+                  OR dv.ma_dot_vai ILIKE '%'||$1||'%')`;
+  const sql = `
+    SELECT dv.id AS dot_vai_id, dv.ma_dot_vai, dv.so_luong_vai_ve::int AS so_luong_vai_ve,
+           dv.ngay_vai_ve, dv.han_giao_hang,
+           pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.so_luong_don_hang,
+           ldv.ten_loai AS loai_dot_vai, mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang
+    FROM dot_vai_ve dv
+    JOIN phan_in pin ON pin.id = dv.phan_in_id
+    JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+    JOIN don_hang dh ON dh.id = mh.don_hang_id
+    JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+    LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id
+    WHERE COALESCE(dv.trang_thai,'') <> 'DA_GOP'
+      AND COALESCE(dv.so_luong_vai_ve,0) > 0
+      AND EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
+                  WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT')
+      AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
+                      WHERE lsd.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY')
+      AND NOT EXISTS (SELECT 1 FROM gom_set_dot_vai gsd JOIN gom_set gs ON gs.id = gsd.gom_set_id
+                      WHERE gsd.dot_vai_ve_id = dv.id AND gs.trang_thai = 'MO')
+      AND ${SEARCH}
+    ORDER BY pin.mau_vai, pin.ma_phan, dv.ngay_vai_ve NULLS LAST, dv.ma_dot_vai`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [search]);
+  return rows;
+}
+
+// Chi tiết đợt vải để validate gộp (trong transaction dùng client). da_release>0 → không cho gộp.
+async function getDotVaiForMerge(client, dotVaiIds) {
+  const run = client || { query };
+  const { rows } = await run.query(
+    `SELECT dv.id::text AS id, dv.phan_in_id::text AS phan_in_id, dv.ma_dot_vai,
+            COALESCE(dv.so_luong_vai_ve,0)::int AS so_luong_vai_ve, COALESCE(dv.trang_thai,'') AS trang_thai,
+            COALESCE((SELECT SUM(ls.so_luong_release) FROM lenh_sx_dot_vai lsd
+                      JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
+                      WHERE lsd.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY'),0)::int AS da_release
+     FROM dot_vai_ve dv WHERE dv.id = ANY($1::uuid[])`,
+    [dotVaiIds]
+  );
+  return rows;
+}
+
+// Cộng/trừ SL đợt vải (delta có thể âm). Trả về SL sau.
+async function adjustDotVaiQty(client, dotVaiId, delta, actorId) {
+  const { rows } = await client.query(
+    `UPDATE dot_vai_ve SET so_luong_vai_ve = COALESCE(so_luong_vai_ve,0) + $2,
+       updated_by = $3, updated_date = CURRENT_TIMESTAMP
+     WHERE id = $1 RETURNING COALESCE(so_luong_vai_ve,0)::int AS so_luong`,
+    [dotVaiId, delta, actorId]
+  );
+  return rows[0].so_luong;
+}
+
+// Đợt vải về 0 sau khi gộp/trừ → ẩn khỏi hệ thống (trang_thai='DA_GOP').
+async function markDotVaiGop(client, dotVaiId, actorId) {
+  await client.query(
+    "UPDATE dot_vai_ve SET trang_thai='DA_GOP', updated_by=$2, updated_date=CURRENT_TIMESTAMP WHERE id=$1",
+    [dotVaiId, actorId]
+  );
+}
+
+async function insertGopHistory(client, h, actorId) {
+  await client.query(
+    `INSERT INTO lich_su_gop_dot_vai
+       (dot_dich_id, dot_nguon_id, phan_in_id, so_luong_gop, so_luong_dich_truoc, so_luong_dich_sau,
+        so_luong_nguon_truoc, so_luong_nguon_sau, nguon_het, nguoi_thuc_hien_id, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10)`,
+    [h.dotDichId, h.dotNguonId, h.phanInId || null, h.soLuongGop,
+     h.soLuongDichTruoc, h.soLuongDichSau, h.soLuongNguonTruoc, h.soLuongNguonSau, !!h.nguonHet, actorId]
+  );
+}
+
+// Lịch sử gộp theo ngày (giờ VN) — cho HistoryPanel.
+async function gopHistoryByDate(date) {
+  const sql = `
+    SELECT h.thoi_gian AS tg, nd.ho_ten AS nguoi,
+           dvd.ma_dot_vai AS dot_dich, dvn.ma_dot_vai AS dot_nguon,
+           pin.ma_phan, pin.mau_vai, mh.ma_hang, kh.ten_khach_hang,
+           h.so_luong_gop, h.so_luong_dich_truoc, h.so_luong_dich_sau, h.nguon_het
+    FROM lich_su_gop_dot_vai h
+    LEFT JOIN nguoi_dung nd ON nd.id = h.nguoi_thuc_hien_id
+    LEFT JOIN dot_vai_ve dvd ON dvd.id = h.dot_dich_id
+    LEFT JOIN dot_vai_ve dvn ON dvn.id = h.dot_nguon_id
+    LEFT JOIN phan_in pin ON pin.id = h.phan_in_id
+    LEFT JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+    LEFT JOIN don_hang dh ON dh.id = mh.don_hang_id
+    LEFT JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+    WHERE (h.thoi_gian AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
+    ORDER BY h.thoi_gian DESC`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [date]);
+  return rows;
+}
+
 const NEXT_MA_SQL =
   `SELECT 'LSX' || LPAD((COALESCE(MAX(NULLIF(regexp_replace(ma_lenh_san_xuat,'\\D','','g'),''))::int,0)+1)::text, 4, '0') AS ma
    FROM lenh_san_xuat`;
@@ -687,6 +787,7 @@ module.exports = {
   listRelease1Candidates, release1HistoryByDate, nextMaLenh, nextMaLenhTx, createLenh,
   release1DoneByDate, planDoneByDate, testDoneByDate,
   testedDotVaiIds, getDotVaiQty, getDotVaiRemaining, addLenhDotVai, dotVaiAlreadyReleased,
+  listGopCandidates, getDotVaiForMerge, adjustDotVaiQty, markDotVaiGop, insertGopHistory, gopHistoryByDate,
   listTestRunCandidates, listRelease2Candidates, getLenhBasic, getLenhDotVai, getTestRuns,
   getLenhTestStatus, insertTestRun, insertTestRunTx, upsertLenhResult, insertStatusLog, setLenhTrangThai,
   testRunHistoryByDate,

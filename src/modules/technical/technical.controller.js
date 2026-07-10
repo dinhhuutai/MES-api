@@ -23,6 +23,8 @@ const qcCandidates = asyncHandler(async (req, res) => {
   return ok(res, data);
 });
 
+const itemCounts = asyncHandler(async (req, res) => ok(res, await service.itemCounts()));
+
 const detail = asyncHandler(async (req, res) => ok(res, await service.getDetail(req.params.phanInId)));
 
 const history = asyncHandler(async (req, res) => {
@@ -103,7 +105,7 @@ const returnToTech = asyncHandler(async (req, res) =>
   ok(res, await service.returnToTech(req.params.phanInId, req.body, req.user.id), 'Đã trả về kỹ thuật'));
 
 module.exports = {
-  config, candidates, qcCandidates, detail, history, done,
+  config, candidates, qcCandidates, itemCounts, detail, history, done,
   confirmItem, confirmItemsBatch, confirmBulk, confirmQC, qcConfirmBatch, cancelItem, confirmHistory,
   returnToTech,
 };

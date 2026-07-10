@@ -88,10 +88,13 @@ const undoStartCandidates = asyncHandler(async (req, res) => ok(res, await servi
 const undoStartProduction = asyncHandler(async (req, res) =>
   ok(res, await service.undoStartProduction(req.params.phieuId, req.user.id), 'Đã hủy lệnh đang chạy — đưa về chờ chạy'));
 
+const vuotSanXuat = asyncHandler(async (req, res) =>
+  ok(res, await service.vuotSanXuat(req.params.phieuId, req.body?.soLuong, req.user.id), 'Đã ghi nhận vượt sản xuất'));
+
 module.exports = {
   candidates, getRun, start, printTem, reprintTem, temLabel, temLogs, finish, monitor,
   xePhoi, temChoPhoi, themTem, adjustPhoi, drying, confirmDry, redry,
-  stopLine, resumeLine, addVaiHuy,
+  stopLine, resumeLine, addVaiHuy, vuotSanXuat,
   cancelableTem, cancelPrintTem,
   closeCandidates, closeProduction,
   reopenCandidates, reopenProduction, pauseLenhChay,

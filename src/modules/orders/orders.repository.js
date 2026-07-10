@@ -30,7 +30,7 @@ async function list({ search = '', missingProfit = false, offset = 0, limit = 20
            MAX(dv.ngay_vai_ve) AS ngay_vai_ve,
            COUNT(dv.id)::int AS so_dot_vai
     ${BASE_JOINS}
-    LEFT JOIN dot_vai_ve dv ON dv.phan_in_id = pin.id
+    LEFT JOIN dot_vai_ve dv ON dv.phan_in_id = pin.id AND dv.trang_thai <> 'DA_GOP'
     WHERE ${where}
     GROUP BY pin.id, mh.ma_hang, mh.ten_ma_hang, dh.ma_don_hang, dh.so_po, kh.ma_khach_hang, kh.ten_khach_hang
     ORDER BY pin.created_date DESC
@@ -125,7 +125,7 @@ async function listVaiVe({ search = '', filters = {}, stage = '', offset = 0, li
                'dot_vai_id', dv.id, 'ma_dot_vai', dv.ma_dot_vai, 'so_luong_vai_ve', dv.so_luong_vai_ve,
                'ngay_vai_ve', dv.ngay_vai_ve, 'han_giao_hang', dv.han_giao_hang
              ) ORDER BY dv.ngay_vai_ve NULLS LAST, dv.ma_dot_vai), '[]') AS dot_vai
-      FROM dot_vai_ve dv WHERE dv.phan_in_id = pin.id
+      FROM dot_vai_ve dv WHERE dv.phan_in_id = pin.id AND dv.trang_thai <> 'DA_GOP'
     ) dvj ON true
     LEFT JOIN LATERAL (
       WITH tp AS (

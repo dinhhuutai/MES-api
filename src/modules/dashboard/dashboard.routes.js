@@ -13,6 +13,7 @@ router.use(auth);
 router.get('/summary', asyncHandler(async (req, res) => ok(res, await repo.summary())));
 router.get('/activity', asyncHandler(async (req, res) => ok(res, await repo.activity())));
 router.get('/stage-counts', asyncHandler(async (req, res) => ok(res, await repo.stageCounts())));
+router.get('/chart-detail', asyncHandler(async (req, res) => ok(res, await repo.chartDetail())));
 
 // ---- Dòng chảy + SLA (theo dõi chủ động — migration 029) ----
 // Tính nghẽn on-the-fly theo SLA trạm.

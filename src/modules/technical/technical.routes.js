@@ -10,6 +10,7 @@ router.use(auth);
 
 router.get('/config', rbac('READY_VIEW'), c.config);
 router.get('/candidates', rbac('READY_VIEW'), c.candidates);
+router.get('/item-counts', rbac('READY_VIEW'), c.itemCounts);
 // Các route tĩnh — đặt trước route động /:phanInId để không bị nuốt.
 router.get('/qc-candidates', rbac('READY_QC'), c.qcCandidates);
 router.get('/history', rbac('READY_VIEW', 'READY_QC'), c.history);

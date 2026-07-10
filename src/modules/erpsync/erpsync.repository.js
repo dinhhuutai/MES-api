@@ -141,19 +141,36 @@ async function getLoaiDotVaiId(maLoai) {
   } catch (e) { return null; }
 }
 
-// Trả về { id, inserted } — inserted=true nếu là đợt vải mới (xmax=0).
+// Trả về { id, inserted }. `soLuong` = received_qty (LŨY KẾ của code phần từ ERP).
+// QUY TẮC SL đợt vải mới = received_qty − Σ(so_luong_vai_ve các đợt TRƯỚC của cùng phần in):
+//  - phần in CHƯA có đợt nào (mới) → Σ = 0 → SL đợt = received_qty.
+//  - phần in ĐÃ có đợt → SL đợt lần này = phần chênh (received_qty lũy kế − đã nhận trước đó). Clamp ≥ 0.
+// Đợt đã tồn tại (re-sync idempotent theo ma_dot_vai) → GIỮ NGUYÊN so_luong_vai_ve đã tính lúc tạo,
+//  chỉ cập nhật ngày/hạn/loại (tránh cộng dồn sai khi ERP trả lại dòng cũ).
 async function upsertDotVai(client, { maDotVai, phanInId, loaiDotVaiId, ngayVaiVe, hanGiao, soLuong }) {
+  const existing = await client.query('SELECT id FROM dot_vai_ve WHERE ma_dot_vai = $1', [maDotVai]);
+  if (existing.rows.length) {
+    await client.query(
+      `UPDATE dot_vai_ve SET loai_dot_vai_id = COALESCE($2, loai_dot_vai_id),
+         ngay_vai_ve = $3, han_giao_hang = $4, updated_date = CURRENT_TIMESTAMP
+       WHERE ma_dot_vai = $1`,
+      [maDotVai, loaiDotVaiId || null, ngayVaiVe || null, hanGiao || null]
+    );
+    return { id: existing.rows[0].id, inserted: false };
+  }
+  let sl = soLuong == null ? null : Number(soLuong);
+  if (sl != null) {
+    const prev = await client.query(
+      'SELECT COALESCE(sum(so_luong_vai_ve),0)::int AS s FROM dot_vai_ve WHERE phan_in_id = $1', [phanInId]);
+    sl -= (prev.rows[0].s || 0);
+    if (sl < 0) sl = 0;
+  }
   const { rows } = await client.query(
     `INSERT INTO dot_vai_ve (phan_in_id, loai_dot_vai_id, ma_dot_vai, ngay_vai_ve, han_giao_hang, so_luong_vai_ve, trang_thai)
-     VALUES ($1,$2,$3,$4,$5,$6,'NHAN_VAI')
-     ON CONFLICT (ma_dot_vai) DO UPDATE SET
-       loai_dot_vai_id = COALESCE(EXCLUDED.loai_dot_vai_id, dot_vai_ve.loai_dot_vai_id),
-       ngay_vai_ve = EXCLUDED.ngay_vai_ve, han_giao_hang = EXCLUDED.han_giao_hang,
-       so_luong_vai_ve = EXCLUDED.so_luong_vai_ve, updated_date = CURRENT_TIMESTAMP
-     RETURNING id, (xmax = 0) AS inserted`,
-    [phanInId, loaiDotVaiId || null, maDotVai, ngayVaiVe || null, hanGiao || null, soLuong ?? null]
+     VALUES ($1,$2,$3,$4,$5,$6,'NHAN_VAI') RETURNING id`,
+    [phanInId, loaiDotVaiId || null, maDotVai, ngayVaiVe || null, hanGiao || null, sl]
   );
-  return { id: rows[0].id, inserted: rows[0].inserted };
+  return { id: rows[0].id, inserted: true };
 }
 
 module.exports = {

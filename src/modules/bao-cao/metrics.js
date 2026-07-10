@@ -10,6 +10,22 @@
 // =====================================================================
 
 const { query } = require('../../config/db');
+const dashboardRepo = require('../dashboard/dashboard.repository');
+
+// Cache ngắn kết quả stageCounts (đếm phần in theo giai đoạn — nguồn tin cậy như dashboard) để nhiều
+// metric "phần in đang ở trạm" dùng chung 1 lần chạy trong cùng lượt compute (tránh chạy lặp query nặng).
+let _scPromise = null; let _scAt = 0;
+async function stageCountsCached() {
+  if (_scPromise && Date.now() - _scAt < 2000) return _scPromise;
+  _scPromise = dashboardRepo.stageCounts();
+  _scAt = Date.now();
+  return _scPromise;
+}
+// Số PHẦN IN đang ở giai đoạn (gộp nhiều stage key).
+const pinAtStage = (keys) => async () => {
+  const sc = await stageCountsCached();
+  return keys.reduce((a, k) => a + ((sc.stages && sc.stages[k] && sc.stages[k].phan_in) || 0), 0);
+};
 
 // Helper: lấy 1 số vô hướng từ 1 câu SQL trả về cột `v`.
 async function scalar(sql) {
@@ -275,6 +291,26 @@ Object.entries(PRED).forEach(([st, pred]) => LEVELS.forEach((lv) => DEFS.push({
   mo_ta: `Số ${lv.ten} đã hoàn thành / đi qua trạm ${STAGE_LABEL[st]} (hiện tại, lũy kế). Chia cho tổng ${lv.ten} (nhóm "Đơn hàng (tổng)") để ra tỉ lệ.`,
   run: () => scalar(countBy(lv.k, pred)),
 })));
+
+// ---------- PHẦN IN ĐANG Ở TRẠM (hiện tại) — đếm theo PHẦN IN, nguồn tin cậy như dashboard ----------
+const PIN_STAGES = [
+  { ma: 'PIN_O_READY', ten: 'Phần in đang ở READY', keys: ['READY_KT', 'READY_QA'] },
+  { ma: 'PIN_O_RELEASE_1', ten: 'Phần in đang ở Release 1', keys: ['RELEASE_1'] },
+  { ma: 'PIN_O_TEST_RUN', ten: 'Phần in đang ở Test Run', keys: ['TESTRUN_CNSP', 'TESTRUN_QA'] },
+  { ma: 'PIN_O_RELEASE_2', ten: 'Phần in đang ở Release 2', keys: ['RELEASE_2'] },
+  { ma: 'PIN_O_CHO_SAN_XUAT', ten: 'Phần in chờ sản xuất', keys: ['CHO_SAN_XUAT'] },
+  { ma: 'PIN_O_SAN_XUAT', ten: 'Phần in đang sản xuất', keys: ['SAN_XUAT'] },
+  { ma: 'PIN_O_CHO_KHO', ten: 'Phần in đang chờ khô', keys: ['CHO_KHO'] },
+  { ma: 'PIN_O_KCS', ten: 'Phần in đang ở KCS (kiểm)', keys: ['KCS'] },
+  { ma: 'PIN_O_SUA', ten: 'Phần in đang ở Sửa', keys: ['SUA'] },
+  { ma: 'PIN_O_OQC', ten: 'Phần in đang ở OQC', keys: ['OQC'] },
+  { ma: 'PIN_O_DANG_GIAO', ten: 'Phần in đang chờ giao', keys: ['DANG_GIAO'] },
+];
+PIN_STAGES.forEach((s) => DEFS.push({
+  ma: s.ma, ten: s.ten, nhom: 'Phần in đang ở trạm (hiện tại)', don_vi: 'phần',
+  mo_ta: `${s.ten} hiện tại — đếm theo phần in (giai đoạn suy từ trạng thái runtime, khớp dashboard).`,
+  run: pinAtStage(s.keys),
+}));
 
 const BY_MA = Object.fromEntries(DEFS.map((d) => [d.ma, d]));
 

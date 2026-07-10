@@ -18,6 +18,7 @@ router.get('/phong-ban/:phongBanId/hien-hanh', rbac('BAOCAO_VIEW'), c.hienHanh);
 router.post('/phong-ban/:phongBanId/de-xuat', rbac('BAOCAO_ASSIGN'), c.deXuat);
 router.post('/phong-ban-ap-dung/:id/duyet', rbac('BAOCAO_APPROVE'), c.duyet);
 router.post('/phong-ban-ap-dung/:id/tu-choi', rbac('BAOCAO_APPROVE'), c.tuChoi);
+router.post('/phong-ban/:phongBanId/huy-ap-dung', rbac('BAOCAO_APPROVE'), c.huyApDung);
 
 // Báo cáo
 router.get('/', rbac('BAOCAO_VIEW'), c.list);

@@ -133,7 +133,15 @@ async function hienHanhPhongBan(phongBanId) {
   return renderContent(rep);
 }
 
+// Gỡ báo cáo hiện hành khỏi phòng ban.
+async function huyApDungPhongBan(phongBanId, actorId) {
+  const n = await repo.huyApDung(phongBanId, actorId);
+  if (n === 0) throw new AppError('Phòng ban chưa có báo cáo áp dụng', { status: 409, errorCode: 'NO_APPLIED' });
+  await repo.audit('bao_cao_phong_ban', phongBanId, 'HUY_AP_DUNG', null, { phong_ban_id: phongBanId }, actorId);
+  return { phong_ban_id: phongBanId };
+}
+
 module.exports = {
   listMetrics, listReports, getReport, createReport, updateReport, undoReport, deleteReport,
-  renderReport, history, listPhongBan, deXuat, duyetDeXuat, tuChoiDeXuat, hienHanhPhongBan,
+  renderReport, history, listPhongBan, deXuat, duyetDeXuat, tuChoiDeXuat, hienHanhPhongBan, huyApDungPhongBan,
 };

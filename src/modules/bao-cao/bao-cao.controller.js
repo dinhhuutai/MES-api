@@ -47,7 +47,10 @@ const tuChoi = asyncHandler(async (req, res) =>
 const hienHanh = asyncHandler(async (req, res) =>
   ok(res, await service.hienHanhPhongBan(req.params.phongBanId)));
 
+const huyApDung = asyncHandler(async (req, res) =>
+  ok(res, await service.huyApDungPhongBan(req.params.phongBanId, req.user.id), 'Đã gỡ báo cáo khỏi phòng ban'));
+
 module.exports = {
   listMetrics, list, listAll, getOne, create, update, undo, remove, render, history,
-  listPhongBan, deXuat, duyet, tuChoi, hienHanh,
+  listPhongBan, deXuat, duyet, tuChoi, hienHanh, huyApDung,
 };

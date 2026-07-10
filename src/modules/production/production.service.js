@@ -371,8 +371,49 @@ async function undoStartProduction(phieuId, actorId) {
   return { lenh_id: phieu.lenh_san_xuat_id, ma_lenh_san_xuat: lenh?.ma_lenh_san_xuat };
 }
 
+// ===== VƯỢT SẢN XUẤT =====
+// Cộng SL vượt vào so_luong_release của lệnh + TRỪ SL đó khỏi các đợt vải CHƯA release của
+// cùng phần in (đợt về 0 → ẩn). Ghi lịch sử. SL trừ là best-effort (thiếu đợt chưa release thì trừ được bao nhiêu hay bấy nhiêu).
+async function vuotSanXuat(phieuId, soLuong, actorId) {
+  const qty = Number(soLuong);
+  if (!(qty > 0)) throw new AppError('Số lượng vượt phải > 0', { status: 422, errorCode: 'INVALID_QTY' });
+  const ctx = await repo.getVuotContext(phieuId);
+  if (!ctx) throw new AppError('Phiếu sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  const phanInIds = (ctx.phan_in_ids || []).filter(Boolean);
+
+  const result = await withTransaction(async (client) => {
+    const releaseSau = await repo.incLenhRelease(client, ctx.lenh_id, qty, actorId);
+    // Trừ SL vượt khỏi các đợt vải chưa release (cùng phần in), theo thứ tự ngày vải về.
+    // adjustDotVaiQty/markDotVaiGop dùng chung từ planningRepo.
+    const dots = phanInIds.length ? await repo.listUnreleasedDotVaiForPhanIn(phanInIds) : [];
+    let remain = qty;
+    const chiTiet = [];
+    for (const d of dots) {
+      if (remain <= 0) break;
+      const take = Math.min(remain, d.so_luong_vai_ve);
+      if (take <= 0) continue;
+      const conLai = await planningRepo.adjustDotVaiQty(client, d.id, -take, actorId);
+      if (conLai <= 0) await planningRepo.markDotVaiGop(client, d.id, actorId);
+      remain -= take;
+      chiTiet.push({ dot_vai_ve_id: d.id, ma_dot_vai: d.ma_dot_vai, tru: take, con_lai: conLai });
+    }
+    const daTru = qty - remain;
+    await repo.insertVuotHistory(client, {
+      phieuId, lenhId: ctx.lenh_id, phanInId: phanInIds[0] || null,
+      soLuongVuot: qty, releaseTruoc: ctx.so_luong_release, releaseSau,
+      soLuongDaTru: daTru, chiTietTru: chiTiet,
+    }, actorId);
+    return { release_truoc: ctx.so_luong_release, release_sau: releaseSau, so_luong_da_tru: daTru, chi_tiet: chiTiet };
+  });
+
+  sockets.emit('production:updated', { lenhId: ctx.lenh_id, action: 'vuot-san-xuat' });
+  sockets.emit('order:updated', { source: 'vuot' });
+  sockets.emit('dashboard:refresh', {});
+  return result;
+}
+
 module.exports = {
-  listCandidates, getRun, startProduction, printTem, reprintTem, temLabel, temLogs, finishRun, monitor,
+  listCandidates, getRun, startProduction, printTem, reprintTem, temLabel, temLogs, finishRun, monitor, vuotSanXuat,
   getXePhoi, listTemChoPhoi, addToXe, adjustPhoi, listDrying, confirmDry, redry,
   stopLine, resumeLine, addVaiHuy,
   listCancelableTem, cancelPrintTem,

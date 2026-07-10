@@ -313,6 +313,78 @@ async function stageCounts() {
   return { totals: totals.rows[0], stages };
 }
 
+// Chi tiết biểu đồ: OQC (pcs sổ cái tem theo nguồn KCS/Sửa) + READY (phần in chưa release, đã xác nhận từng mục).
+async function chartDetail() {
+  // OQC: chờ = tem đã tới OQC chưa kiểm (con_oqc); đã xác nhận = đã qua OQC (sổ cái sl_oqc_dat) — tách nguồn KCS(15-)/Sửa(17-).
+  const oqcSql = `SELECT
+      COALESCE(SUM(GREATEST(COALESCE(t.sl_kcs_dat,0) - (COALESCE(t.sl_oqc_dat,0) - COALESCE(t.sl_oqc_dat_sua,0)),0)),0)::int AS kcs_cho,
+      COALESCE(SUM(GREATEST(COALESCE(t.sl_oqc_dat,0) - COALESCE(t.sl_oqc_dat_sua,0),0)),0)::int AS kcs_dat,
+      COALESCE(SUM(GREATEST(COALESCE(t.sl_sua_dat,0) - COALESCE(t.sl_oqc_dat_sua,0),0)),0)::int AS sua_cho,
+      COALESCE(SUM(COALESCE(t.sl_oqc_dat_sua,0)),0)::int AS sua_dat,
+      COALESCE(SUM(COALESCE(t.sl_oqc_dat,0)),0)::int AS tong_dat
+    FROM tem t JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+    JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id AND ls.trang_thai <> 'HUY'
+    WHERE t.trang_thai <> 'HUY'`;
+  let oqc;
+  try {
+    const { rows } = await query(oqcSql.replace(/\s+/g, ' '));
+    const r = rows[0] || {};
+    oqc = { kcs_cho: r.kcs_cho || 0, kcs_dat: r.kcs_dat || 0, sua_cho: r.sua_cho || 0, sua_dat: r.sua_dat || 0,
+            tong_cho: (r.kcs_cho || 0) + (r.sua_cho || 0), tong_dat: r.tong_dat || 0 };
+  } catch (e) {
+    // Chưa chạy mig 047 (thiếu sl_oqc_dat_sua) → gộp chung nguồn.
+    const fb = `SELECT
+        COALESCE(SUM(GREATEST((COALESCE(t.sl_kcs_dat,0)+COALESCE(t.sl_sua_dat,0)) - COALESCE(t.sl_oqc_dat,0),0)),0)::int AS tong_cho,
+        COALESCE(SUM(COALESCE(t.sl_oqc_dat,0)),0)::int AS tong_dat
+      FROM tem t JOIN phieu_san_xuat ps ON ps.id=t.phieu_san_xuat_id
+      JOIN lenh_san_xuat ls ON ls.id=ps.lenh_san_xuat_id AND ls.trang_thai<>'HUY' WHERE t.trang_thai<>'HUY'`;
+    const { rows } = await query(fb.replace(/\s+/g, ' '));
+    const r = rows[0] || {};
+    oqc = { kcs_cho: r.tong_cho || 0, kcs_dat: r.tong_dat || 0, sua_cho: 0, sua_dat: 0, tong_cho: r.tong_cho || 0, tong_dat: r.tong_dat || 0 };
+  }
+
+  // READY: pool = phần in CHƯA release (chưa vào lệnh ≠ HUY). tong = pool; *_dat = số đã xác nhận từng mục.
+  const done = (ma) => `EXISTS (SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id=k.checkpoint_id WHERE k.phan_in_id=pin.id AND c.ma_checkpoint='${ma}' AND k.trang_thai='DAT')`;
+  const readySql = `SELECT count(*)::int AS tong,
+      count(*) FILTER (WHERE khuon)::int AS khuon_dat,
+      count(*) FILTER (WHERE film)::int AS film_dat,
+      count(*) FILTER (WHERE muc)::int AS muc_dat,
+      count(*) FILTER (WHERE qc)::int AS qc_dat
+    FROM (
+      SELECT ${done('KHUON')} AS khuon, ${done('FILM')} AS film, ${done('MUC')} AS muc, ${done('QC_XAC_NHAN')} AS qc
+      FROM phan_in pin
+      WHERE NOT EXISTS (SELECT 1 FROM dot_vai_ve dvr JOIN lenh_sx_dot_vai lsr ON lsr.dot_vai_ve_id=dvr.id
+                        JOIN lenh_san_xuat lr ON lr.id=lsr.lenh_san_xuat_id
+                        WHERE dvr.phan_in_id=pin.id AND lr.trang_thai<>'HUY')
+    ) q`;
+  const { rows: rr } = await query(readySql.replace(/\s+/g, ' '));
+  const r = rr[0] || {};
+  const ready = { tong: r.tong || 0, KHUON: r.khuon_dat || 0, FILM: r.film_dat || 0, MUC: r.muc_dat || 0, QA: r.qc_dat || 0 };
+
+  // Đã xác nhận tại trạm & CHƯA GIAO: phần in đã qua/xác nhận từng trạm mà phần in đó chưa giao xong.
+  const chain = `dot_vai_ve dvv JOIN lenh_sx_dot_vai lsdd ON lsdd.dot_vai_ve_id=dvv.id JOIN phieu_san_xuat pss ON pss.lenh_san_xuat_id=lsdd.lenh_san_xuat_id JOIN tem tt ON tt.phieu_san_xuat_id=pss.id`;
+  // Chưa giao xong = phần in KHÔNG ở trạng thái "mọi tem đã giao" (chưa có tem hoặc còn tem chưa DA_GIAO).
+  const notDelivered = `NOT (EXISTS(SELECT 1 FROM ${chain} WHERE dvv.phan_in_id=pin.id AND tt.trang_thai<>'HUY') AND NOT EXISTS(SELECT 1 FROM ${chain} WHERE dvv.phan_in_id=pin.id AND tt.trang_thai NOT IN ('DA_GIAO','HUY')))`;
+  const pReady = `EXISTS(SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id=k.checkpoint_id WHERE k.phan_in_id=pin.id AND c.ma_checkpoint='QC_XAC_NHAN' AND k.trang_thai='DAT')`;
+  const pTest = `EXISTS(SELECT 1 FROM dot_vai_ve dv2 JOIN lenh_sx_dot_vai ls2 ON ls2.dot_vai_ve_id=dv2.id JOIN ket_qua_checkpoint k ON k.lenh_san_xuat_id=ls2.lenh_san_xuat_id JOIN checkpoint c ON c.id=k.checkpoint_id WHERE dv2.phan_in_id=pin.id AND c.ma_checkpoint='TEST_QA' AND k.trang_thai='DAT')`;
+  const pKcs = `EXISTS(SELECT 1 FROM ${chain} JOIN kcs kk ON kk.tem_id=tt.id WHERE dvv.phan_in_id=pin.id)`;
+  const pSua = `EXISTS(SELECT 1 FROM ${chain} JOIN sua ss ON ss.tem_id=tt.id WHERE dvv.phan_in_id=pin.id)`;
+  const pOqc = `EXISTS(SELECT 1 FROM ${chain} JOIN oqc oo ON oo.tem_id=tt.id WHERE dvv.phan_in_id=pin.id)`;
+  const pGiao = `EXISTS(SELECT 1 FROM ${chain} WHERE dvv.phan_in_id=pin.id AND tt.trang_thai IN ('OQC_DAT','DA_GIAO'))`;
+  const scSql = `SELECT
+      count(*) FILTER (WHERE ready)::int AS ready, count(*) FILTER (WHERE test)::int AS test,
+      count(*) FILTER (WHERE kcs)::int AS kcs, count(*) FILTER (WHERE sua)::int AS sua,
+      count(*) FILTER (WHERE oqc)::int AS oqc, count(*) FILTER (WHERE giao)::int AS giao
+    FROM (
+      SELECT ${pReady} AS ready, ${pTest} AS test, ${pKcs} AS kcs, ${pSua} AS sua, ${pOqc} AS oqc, ${pGiao} AS giao
+      FROM phan_in pin WHERE ${notDelivered}
+    ) q`;
+  const { rows: scr } = await query(scSql.replace(/\s+/g, ' '));
+  const station_confirmed = scr[0] || { ready: 0, test: 0, kcs: 0, sua: 0, oqc: 0, giao: 0 };
+
+  return { oqc, ready, station_confirmed };
+}
+
 // ============ KIOSK: TÌNH TRẠNG ĐƠN HÀNG THEO TRẠM ============
 
 // Các đợt vải đang trong dòng chảy (chưa CLOSED_FINANCE) — rows để tính tổng quan + danh sách nghẽn.
@@ -628,6 +700,6 @@ async function checkpointOwnersActive() {
 }
 
 module.exports = {
-  summary, activity, stageCounts, flowRows, flowTimeline, tramOwnersActive, checkpointOwnersActive,
+  summary, activity, stageCounts, chartDetail, flowRows, flowTimeline, tramOwnersActive, checkpointOwnersActive,
   tinhTrangActiveRows, tinhTrangPhanInList, tinhTrangDetail, confirmTodayGroups, confirmTodayDetail,
 };

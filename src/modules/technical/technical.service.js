@@ -88,6 +88,14 @@ async function listCandidates({ search, page, limit, offset, onlyQcReady = false
   return { items, meta: buildMeta(page, limit, total) };
 }
 
+// Đếm số phần in CHƯA xác nhận từng mục kỹ thuật (KHUON/FILM/MUC) trên toàn hệ thống.
+async function itemCounts() {
+  const { byMa } = await loadConfig();
+  return repo.countReadyItems({
+    khuonId: byMa.KHUON?.id, filmId: byMa.FILM?.id, mucId: byMa.MUC?.id, qcId: byMa[QC_CP]?.id,
+  });
+}
+
 // QC chuẩn bị kỹ thuật TRẢ VỀ Ready kỹ thuật: chọn các checklist rớt → hủy xác nhận các mục đó
 // (+ hủy QC nếu đã có) để bộ phận kỹ thuật làm lại. Lý do bắt buộc.
 async function returnToTech(phanInId, { checklists, lyDo }, actorId) {
@@ -363,6 +371,6 @@ async function done(date, scope) {
 }
 
 module.exports = {
-  getConfig, listCandidates, getDetail, confirmItem, confirmItemsBatch, confirmItemBulk,
+  getConfig, listCandidates, itemCounts, getDetail, confirmItem, confirmItemsBatch, confirmItemBulk,
   confirmQC, confirmQcBatch, cancelItem, history, done, confirmHistory, returnToTech,
 };
