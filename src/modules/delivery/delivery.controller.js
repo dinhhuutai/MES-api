@@ -4,7 +4,7 @@ const service = require('./delivery.service');
 const asyncHandler = require('../../utils/asyncHandler');
 const { ok, created } = require('../../utils/response');
 
-const temSanSang = asyncHandler(async (req, res) => ok(res, await service.listTemSanSang(req.query.search || '', req.query.ngay || '')));
+const temSanSang = asyncHandler(async (req, res) => ok(res, await service.listTemSanSang(req.query)));
 const list = asyncHandler(async (req, res) => ok(res, await service.listGiaoHang(req.query.search || '')));
 const detail = asyncHandler(async (req, res) => ok(res, await service.getDetail(req.params.id)));
 const create = asyncHandler(async (req, res) =>

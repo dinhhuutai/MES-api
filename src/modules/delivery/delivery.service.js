@@ -7,8 +7,13 @@ const AppError = require('../../utils/AppError');
 const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
 
-async function listTemSanSang(search, ngay) {
-  const rows = await repo.listTemSanSang({ search, ngay });
+async function listTemSanSang(q = {}) {
+  const { search, ngayTu, ngayDen, tem, khach, don, maHang, mauVai, kichVai, kichPhim } = q;
+  const rows = await repo.listTemSanSang({
+    search: search || '',
+    filters: { tem, khach, don, maHang, mauVai, kichVai, kichPhim },
+    ngayTu: ngayTu || '', ngayDen: ngayDen || '',
+  });
   // Gắn "người xác nhận trạm trước" (Giao ← OQC) — query nhẹ theo tem_id.
   const pc = await qualityRepo.prevConfirmerByTems(rows.map((r) => r.tem_id));
   const map = new Map(pc.map((x) => [x.tem_id, x]));

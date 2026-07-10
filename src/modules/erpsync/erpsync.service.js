@@ -12,6 +12,9 @@ const tracking = require('../workflow/tracking.service');
 
 const NGUON = 'phieu_nhan_vai_60';
 
+// CHỈ đồng bộ khách hàng này từ ERP (so khớp customer_name, không phân biệt hoa/thường). Đổi 1 chỗ ở đây.
+const KHACH_ERP = 'VN-CO';
+
 const md5 = (s) => crypto.createHash('md5').update(s).digest('hex');
 const clean = (v) => (v == null ? '' : String(v).trim());
 // DATE 'YYYY-MM-DD' từ chuỗi ISO (cắt phần ngày, không lệch timezone).
@@ -146,10 +149,10 @@ async function syncPhieuNhanVai({ fromDate, actorId = null, tuDong = false } = {
     catch (e) { console.error(`[erp-sync] ✗ Lưu chuỗi thô lỗi: ${e.message}`); }
 
     // Tính khóa định danh cho TỪNG dòng (mỗi bản ghi = 1 đợt; xem buildKeys).
-    // Bỏ qua khi: (1) không đúng khách 'SL', hoặc (2) không có code_part.
+    // Bỏ qua khi: (1) không đúng khách KHÁCH_ERP, hoặc (2) không có code_part.
     const seen = new Map();
     const prepared = rows.map((r) => {
-      const notSl = clean(r.customer_name).toUpperCase() !== 'SL';
+      const notSl = clean(r.customer_name).toUpperCase() !== KHACH_ERP.toUpperCase();
       const noCode = !clean(r.code_part);
       const { maPhan, maDotVai } = buildKeys(r, seen);
       return { r, maPhan, maDotVai, skip: notSl || noCode, notSl, noCode };
@@ -169,7 +172,7 @@ async function syncPhieuNhanVai({ fromDate, actorId = null, tuDong = false } = {
     const newDotVaiIds = [];
     const resolveLoai = makeLoaiResolver();
     for (const p of prepared) {
-      // Bỏ qua dòng không phải khách 'SL' hoặc không có code_part.
+      // Bỏ qua dòng không phải khách KHÁCH_ERP hoặc không có code_part.
       if (p.skip) {
         soBoQua += 1;
         if (p.notSl) soKhongSl += 1; else if (p.noCode) soKhongCode += 1;
@@ -191,7 +194,7 @@ async function syncPhieuNhanVai({ fromDate, actorId = null, tuDong = false } = {
     if (newDotVaiIds.length) await tracking.moveDotVaiTo(newDotVaiIds, 'READY', actorId);
     const trangThai = errors.length && soMoi + soCapNhat === 0 ? 'LOI' : 'THANH_CONG';
     const notes = [];
-    if (soKhongSl) notes.push(`bỏ qua ${soKhongSl} dòng không phải khách 'SL'`);
+    if (soKhongSl) notes.push(`bỏ qua ${soKhongSl} dòng không phải khách '${KHACH_ERP}'`);
     if (soKhongCode) notes.push(`bỏ qua ${soKhongCode} dòng không có code_part`);
     if (errors.length) notes.push(`lỗi ${errors.length}/${rows.length}: ${errors.slice(0, 3).join(' | ')}`);
     await repo.finishSyncLog(logId, {

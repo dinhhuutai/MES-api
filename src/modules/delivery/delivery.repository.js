@@ -12,14 +12,26 @@ const DON_SUB = (col, alias) => `(SELECT string_agg(DISTINCT ${col}, ', ')
     WHERE lsd.lenh_san_xuat_id = ls.id) AS ${alias}`;
 
 // Tem còn phần CHỜ GIAO (con_giao = sl_oqc_dat − sl_da_giao > 0) — cho giao TỪNG PHẦN nhiều lần.
-async function listTemSanSang({ search = '', ngay = '' } = {}) {
-  const params = [search];
-  let ngayCond = '';
-  if (ngay) {
-    params.push(ngay);
-    ngayCond = ` AND (t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $${params.length}::date`;
+// filters: { tem, khach, don, maHang, mauVai, kichVai, kichPhim }; ngayTu/ngayDen lọc KHOẢNG ngày in tem (VN).
+async function listTemSanSang({ search = '', filters = {}, ngayTu = '', ngayDen = '' } = {}) {
+  const f = filters || {};
+  const params = [];
+  const conds = ['(t.sl_oqc_dat - t.sl_da_giao) > 0'];
+  if (search) {
+    params.push(search); const i = params.length;
+    conds.push(`(t.ma_tem ILIKE '%'||$${i}||'%' OR ls.ma_lenh_san_xuat ILIKE '%'||$${i}||'%' OR ${lenhPhanInMatch('ls.id', `$${i}`)})`);
   }
-  const { rows } = await query(
+  const add = (val, col) => { if (!val) return; params.push(val); conds.push(`${col} ILIKE '%'||$${params.length}||'%'`); };
+  add(f.tem, 't.ma_tem');
+  add(f.khach, 'info.ten_khach_hang');
+  add(f.don, 'info.ma_don_hang');
+  add(f.maHang, 'info.ma_hang');
+  add(f.mauVai, 'info.mau_vai');
+  add(f.kichVai, 'info.kich_vai');
+  add(f.kichPhim, 'info.kich_phim');
+  if (ngayTu) { params.push(ngayTu); conds.push(`(t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date >= $${params.length}::date`); }
+  if (ngayDen) { params.push(ngayDen); conds.push(`(t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date <= $${params.length}::date`); }
+  const sql =
     `SELECT t.id AS tem_id, t.ma_tem, t.so_luong, t.created_date AS ngay_in_tem, (t.sl_oqc_dat - t.sl_da_giao) AS con_giao,
             t.sl_oqc_dat, t.sl_da_giao, ls.ma_lenh_san_xuat,
             (SELECT string_agg(DISTINCT pin.ma_phan, ', ')
@@ -33,9 +45,10 @@ async function listTemSanSang({ search = '', ngay = '' } = {}) {
      JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
      JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
      LEFT JOIN LATERAL (
-       SELECT mh.ma_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim
+       SELECT mh.ma_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim, kh.ten_khach_hang, dh.ma_don_hang
        FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
        JOIN phan_in pin ON pin.id = dv.phan_in_id JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+       JOIN don_hang dh ON dh.id = mh.don_hang_id JOIN khach_hang kh ON kh.id = dh.khach_hang_id
        WHERE lsd.lenh_san_xuat_id = ls.id ORDER BY pin.ma_phan, dv.ma_dot_vai LIMIT 1
      ) info ON true
      LEFT JOIN LATERAL (
@@ -44,12 +57,9 @@ async function listTemSanSang({ search = '', ngay = '' } = {}) {
        JOIN tram tr ON tr.id = tt.tram_id
        WHERE lsd.lenh_san_xuat_id = ls.id ORDER BY tt.tg_vao LIMIT 1
      ) sla ON true
-     WHERE (t.sl_oqc_dat - t.sl_da_giao) > 0
-       AND ($1 = '' OR t.ma_tem ILIKE '%'||$1||'%' OR ls.ma_lenh_san_xuat ILIKE '%'||$1||'%'
-            OR ${lenhPhanInMatch('ls.id', '$1')})${ngayCond}
-     ORDER BY t.created_date`,
-    params
-  );
+     WHERE ${conds.join(' AND ')}
+     ORDER BY t.created_date`;
+  const { rows } = await query(sql.replace(/\s+/g, ' '), params);
   return rows;
 }
 
