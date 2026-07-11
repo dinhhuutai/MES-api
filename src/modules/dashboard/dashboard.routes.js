@@ -94,6 +94,53 @@ router.get('/bang-2', asyncHandler(async (req, res) => {
 // GET /dashboard/hoan-thanh-hom-nay — chi tiết các lượt xác nhận hôm nay (đối tượng + người) cho drill-down.
 router.get('/hoan-thanh-hom-nay', asyncHandler(async (req, res) => ok(res, await repo.confirmTodayDetail())));
 
+// GET /dashboard/dieu-phoi — dữ liệu Bảng điều phối: TRỄ HẠN GIAO theo trạm (đang kẹt) + chờ duyệt/xử lý + chuyền.
+router.get('/dieu-phoi', asyncHandler(async (req, res) => {
+  const [rows, extra] = await Promise.all([repo.flowRows(''), repo.dieuPhoiExtra()]);
+  // Ngày VN hôm nay (YYYY-MM-DD).
+  const todayVN = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Ho_Chi_Minh' }));
+  todayVN.setHours(0, 0, 0, 0);
+  const dayMs = 86400000;
+  const groups = {}; // ma_tram -> { ..., qua_han, sap_han, phan_ins:{} }
+  let quaHanTong = 0; let sapHanTong = 0;
+  const seenQua = new Set(); const seenSap = new Set();
+  rows.forEach((r) => {
+    if (!r.han_giao_hang || r.ma_tram === 'DONE_DELIVERY') return; // đã giao xong → bỏ
+    const han = new Date(r.han_giao_hang); han.setHours(0, 0, 0, 0);
+    const diff = Math.round((han - todayVN) / dayMs);
+    let kind = null;
+    if (diff < 0) kind = 'qua'; else if (diff <= 1) kind = 'sap'; // đã trễ / hôm nay + mai
+    if (!kind) return;
+    const g = (groups[r.ma_tram] = groups[r.ma_tram]
+      || { ma_tram: r.ma_tram, ten_tram: r.ten_tram, thu_tu: r.thu_tu, phan_ins: {} });
+    const cur = g.phan_ins[r.phan_in_id];
+    if (!cur || (kind === 'qua' && cur.kind !== 'qua')) {
+      g.phan_ins[r.phan_in_id] = {
+        phan_in_id: r.phan_in_id, ma_phan: r.ma_phan, ma_hang: r.ma_hang, ma_don_hang: r.ma_don_hang,
+        ten_khach_hang: r.ten_khach_hang, mau_vai: r.mau_vai, kich_vai: r.kich_vai, kich_phim: r.kich_phim,
+        han_giao_hang: r.han_giao_hang, tre_ngay: diff < 0 ? -diff : 0, kind,
+      };
+    }
+    // Tổng toàn cục đếm DISTINCT phần in (ưu tiên "qua" nếu 1 phần in vừa qua vừa sắp ở đợt khác).
+    if (kind === 'qua') { if (!seenQua.has(r.phan_in_id)) { seenQua.add(r.phan_in_id); quaHanTong += 1; } }
+    else if (!seenSap.has(r.phan_in_id) && !seenQua.has(r.phan_in_id)) { seenSap.add(r.phan_in_id); sapHanTong += 1; }
+  });
+  const by_tram = Object.values(groups).map((g) => {
+    const list = Object.values(g.phan_ins);
+    return {
+      ma_tram: g.ma_tram, ten_tram: g.ten_tram, thu_tu: g.thu_tu,
+      qua_han: list.filter((p) => p.kind === 'qua').length,
+      sap_han: list.filter((p) => p.kind === 'sap').length,
+      phan_ins: list.sort((a, b) => (b.tre_ngay || 0) - (a.tre_ngay || 0)),
+    };
+  }).sort((a, b) => (a.thu_tu ?? 99) - (b.thu_tu ?? 99));
+  return ok(res, {
+    tre_han: { qua_han: quaHanTong, sap_han: sapHanTong, by_tram },
+    cho_duyet: { qc_tra_ve: extra.qc_tra_ve || 0, oqc_khong_dat: extra.oqc_khong_dat || 0 },
+    chuyen: { dang_chay: extra.chuyen_dang_chay || 0, tong: extra.chuyen_tong || 0, ranh: Math.max(0, (extra.chuyen_tong || 0) - (extra.chuyen_dang_chay || 0)) },
+  });
+}));
+
 // GET /dashboard/nghen-map — bản đồ nghẽn/sắp nghẽn theo đợt vải + phần in (dùng tô màu các trang xác nhận).
 router.get('/nghen-map', asyncHandler(async (req, res) => {
   const rows = await repo.flowRows('');

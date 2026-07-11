@@ -55,8 +55,12 @@ async function activity(limit = 20) {
       LEFT JOIN lenh_san_xuat l ON l.id = k.lenh_san_xuat_id
       WHERE k.trang_thai = 'DAT'
       UNION ALL
-      SELECT ls.created_date, ls.created_by, 'Release', ('Lệnh ' || ls.ma_lenh_san_xuat || ' · ' || ls.trang_thai)
+      SELECT ls.created_date, ls.created_by, 'Release', ('Release 1 · lệnh ' || ls.ma_lenh_san_xuat)
       FROM lenh_san_xuat ls WHERE ls.trang_thai <> 'HUY'
+      UNION ALL
+      SELECT a.thoi_gian, a.nguoi_thuc_hien_id, 'Release', ('Release 2 · lệnh ' || l.ma_lenh_san_xuat)
+      FROM audit_log a JOIN lenh_san_xuat l ON l.id = a.id_ban_ghi::uuid
+      WHERE a.ten_bang = 'lenh_san_xuat' AND a.hanh_dong = 'RELEASE_2'
       UNION ALL
       SELECT ps.created_date, ps.created_by, 'Bắt đầu SX', ('Phiếu ' || ps.ma_phieu_san_xuat)
       FROM phieu_san_xuat ps
@@ -154,6 +158,22 @@ async function confirmTodayDetail() {
         JOIN phan_in pi ON pi.id = dv.phan_in_id JOIN ma_hang mh ON mh.id = pi.ma_hang_id
         WHERE ght.giao_hang_id = gh.id LIMIT 1) ghp ON true
       WHERE gh.trang_thai = 'DA_GIAO'
+      UNION ALL
+      SELECT 'Release 1', ls.ma_lenh_san_xuat, lp.phan_in_id, lp.ma_phan, lp.mau_vai, lp.ma_hang, ls.created_date, ls.created_by
+      FROM lenh_san_xuat ls
+      LEFT JOIN LATERAL (SELECT dv.phan_in_id, pi.ma_phan, pi.mau_vai, mh.ma_hang
+        FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+        JOIN phan_in pi ON pi.id = dv.phan_in_id JOIN ma_hang mh ON mh.id = pi.ma_hang_id
+        WHERE lsd.lenh_san_xuat_id = ls.id LIMIT 1) lp ON true
+      WHERE ls.trang_thai <> 'HUY'
+      UNION ALL
+      SELECT 'Release 2', l.ma_lenh_san_xuat, lp.phan_in_id, lp.ma_phan, lp.mau_vai, lp.ma_hang, a.thoi_gian, a.nguoi_thuc_hien_id
+      FROM audit_log a JOIN lenh_san_xuat l ON l.id = a.id_ban_ghi::uuid
+      LEFT JOIN LATERAL (SELECT dv.phan_in_id, pi.ma_phan, pi.mau_vai, mh.ma_hang
+        FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+        JOIN phan_in pi ON pi.id = dv.phan_in_id JOIN ma_hang mh ON mh.id = pi.ma_hang_id
+        WHERE lsd.lenh_san_xuat_id = l.id LIMIT 1) lp ON true
+      WHERE a.ten_bang = 'lenh_san_xuat' AND a.hanh_dong = 'RELEASE_2'
     )
     SELECT ev.nhom, ev.doi_tuong, ev.phan_in_id, ev.ma_phan, ev.mau_vai, ev.ma_hang, ev.tg, u.ho_ten AS nguoi
     FROM ev LEFT JOIN nguoi_dung u ON u.id = ev.nguoi_id
@@ -365,24 +385,47 @@ async function chartDetail() {
   const chain = `dot_vai_ve dvv JOIN lenh_sx_dot_vai lsdd ON lsdd.dot_vai_ve_id=dvv.id JOIN phieu_san_xuat pss ON pss.lenh_san_xuat_id=lsdd.lenh_san_xuat_id JOIN tem tt ON tt.phieu_san_xuat_id=pss.id`;
   // Chưa giao xong = phần in KHÔNG ở trạng thái "mọi tem đã giao" (chưa có tem hoặc còn tem chưa DA_GIAO).
   const notDelivered = `NOT (EXISTS(SELECT 1 FROM ${chain} WHERE dvv.phan_in_id=pin.id AND tt.trang_thai<>'HUY') AND NOT EXISTS(SELECT 1 FROM ${chain} WHERE dvv.phan_in_id=pin.id AND tt.trang_thai NOT IN ('DA_GIAO','HUY')))`;
+  const hasLenh = `EXISTS(SELECT 1 FROM dot_vai_ve dv2 JOIN lenh_sx_dot_vai ls2 ON ls2.dot_vai_ve_id=dv2.id JOIN lenh_san_xuat l2 ON l2.id=ls2.lenh_san_xuat_id WHERE dv2.phan_in_id=pin.id`;
   const pReady = `EXISTS(SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id=k.checkpoint_id WHERE k.phan_in_id=pin.id AND c.ma_checkpoint='QC_XAC_NHAN' AND k.trang_thai='DAT')`;
+  const pRel1 = `${hasLenh} AND l2.trang_thai<>'HUY')`;
   const pTest = `EXISTS(SELECT 1 FROM dot_vai_ve dv2 JOIN lenh_sx_dot_vai ls2 ON ls2.dot_vai_ve_id=dv2.id JOIN ket_qua_checkpoint k ON k.lenh_san_xuat_id=ls2.lenh_san_xuat_id JOIN checkpoint c ON c.id=k.checkpoint_id WHERE dv2.phan_in_id=pin.id AND c.ma_checkpoint='TEST_QA' AND k.trang_thai='DAT')`;
-  const pKcs = `EXISTS(SELECT 1 FROM ${chain} JOIN kcs kk ON kk.tem_id=tt.id WHERE dvv.phan_in_id=pin.id)`;
-  const pSua = `EXISTS(SELECT 1 FROM ${chain} JOIN sua ss ON ss.tem_id=tt.id WHERE dvv.phan_in_id=pin.id)`;
+  const pSanXuat = `EXISTS(SELECT 1 FROM ${chain} WHERE dvv.phan_in_id=pin.id AND tt.trang_thai<>'HUY')`;
+  const pRel2 = `(${hasLenh} AND l2.trang_thai IN ('RELEASE_2','SAN_XUAT')) OR ${pSanXuat})`;
   const pOqc = `EXISTS(SELECT 1 FROM ${chain} JOIN oqc oo ON oo.tem_id=tt.id WHERE dvv.phan_in_id=pin.id)`;
   const pGiao = `EXISTS(SELECT 1 FROM ${chain} WHERE dvv.phan_in_id=pin.id AND tt.trang_thai IN ('OQC_DAT','DA_GIAO'))`;
   const scSql = `SELECT
-      count(*) FILTER (WHERE ready)::int AS ready, count(*) FILTER (WHERE test)::int AS test,
-      count(*) FILTER (WHERE kcs)::int AS kcs, count(*) FILTER (WHERE sua)::int AS sua,
+      count(*) FILTER (WHERE ready)::int AS ready, count(*) FILTER (WHERE release_1)::int AS release_1,
+      count(*) FILTER (WHERE test)::int AS test, count(*) FILTER (WHERE release_2)::int AS release_2,
+      count(*) FILTER (WHERE san_xuat)::int AS san_xuat,
       count(*) FILTER (WHERE oqc)::int AS oqc, count(*) FILTER (WHERE giao)::int AS giao
     FROM (
-      SELECT ${pReady} AS ready, ${pTest} AS test, ${pKcs} AS kcs, ${pSua} AS sua, ${pOqc} AS oqc, ${pGiao} AS giao
+      SELECT ${pReady} AS ready, ${pRel1} AS release_1, ${pTest} AS test, ${pRel2} AS release_2,
+             ${pSanXuat} AS san_xuat, ${pOqc} AS oqc, ${pGiao} AS giao
       FROM phan_in pin WHERE ${notDelivered}
     ) q`;
-  const { rows: scr } = await query(scSql.replace(/\s+/g, ' '));
-  const station_confirmed = scr[0] || { ready: 0, test: 0, kcs: 0, sua: 0, oqc: 0, giao: 0 };
+  let station_confirmed = { ready: 0, release_1: 0, test: 0, release_2: 0, san_xuat: 0, oqc: 0, giao: 0 };
+  try {
+    const { rows: scr } = await query(scSql.replace(/\s+/g, ' '));
+    if (scr[0]) station_confirmed = scr[0];
+  } catch (e) { /* query nặng bị reset → giữ 0, không phá OQC/READY */ }
 
   return { oqc, ready, station_confirmed };
+}
+
+// Đếm cho Bảng điều phối: QC trả về chưa xử lý, giao đặc biệt chờ (OQC không đạt chưa cho giao), chuyền đang chạy/tổng.
+async function dieuPhoiExtra() {
+  const sql = `SELECT
+      (SELECT count(*) FROM qc_tra_ve WHERE da_xu_ly = false)::int AS qc_tra_ve,
+      (SELECT count(*) FROM tem t WHERE t.trang_thai = 'CHO_OQC'
+         AND EXISTS (SELECT 1 FROM oqc o WHERE o.tem_id = t.id AND o.ket_qua = 'KHONG_DAT' AND COALESCE(o.cho_giao,false) = false))::int AS oqc_khong_dat,
+      (SELECT count(DISTINCT ps.chuyen_id) FROM phieu_san_xuat ps WHERE ps.trang_thai = 'DANG_CHAY' AND ps.chuyen_id IS NOT NULL)::int AS chuyen_dang_chay,
+      (SELECT count(*) FROM chuyen_san_xuat WHERE COALESCE(dang_hoat_dong,true) = true)::int AS chuyen_tong`;
+  try {
+    const { rows } = await query(sql.replace(/\s+/g, ' '));
+    return rows[0] || { qc_tra_ve: 0, oqc_khong_dat: 0, chuyen_dang_chay: 0, chuyen_tong: 0 };
+  } catch (e) {
+    return { qc_tra_ve: 0, oqc_khong_dat: 0, chuyen_dang_chay: 0, chuyen_tong: 0 };
+  }
 }
 
 // ============ KIOSK: TÌNH TRẠNG ĐƠN HÀNG THEO TRẠM ============
@@ -700,6 +743,6 @@ async function checkpointOwnersActive() {
 }
 
 module.exports = {
-  summary, activity, stageCounts, chartDetail, flowRows, flowTimeline, tramOwnersActive, checkpointOwnersActive,
+  summary, activity, stageCounts, chartDetail, dieuPhoiExtra, flowRows, flowTimeline, tramOwnersActive, checkpointOwnersActive,
   tinhTrangActiveRows, tinhTrangPhanInList, tinhTrangDetail, confirmTodayGroups, confirmTodayDetail,
 };
