@@ -556,6 +556,25 @@ async function approveRelease2(lenhId, actorId) {
   return getLenhDetail(lenhId);
 }
 
+// "Không test run": bỏ Test Run cho 1 đợt SX (lệnh RELEASE_1) → duyệt thẳng RELEASE_2 (vào chờ sản xuất).
+async function skipTestRun(lenhId, actorId) {
+  const lenh = await repo.getLenhBasic(lenhId);
+  if (!lenh) throw new AppError('Đợt sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  if (lenh.trang_thai === 'RELEASE_2') throw new AppError('Đợt đã ở Release 2 (chờ sản xuất)', { status: 409, errorCode: 'ALREADY' });
+  if (lenh.trang_thai !== 'RELEASE_1') throw new AppError('Chỉ bỏ Test Run khi đợt đang ở Test Run', { status: 409, errorCode: 'WRONG_STAGE' });
+  await withTransaction(async (client) => {
+    await repo.setLenhTrangThai(client, lenhId, 'RELEASE_2', actorId);
+    await repo.logPlanChange(client, lenhId, 'RELEASE_2',
+      { trang_thai: 'RELEASE_1' },
+      { trang_thai: 'RELEASE_2', bo_test_run: true },
+      actorId);
+  });
+  await tracking.moveByLenh(lenhId, 'RELEASE_2', actorId);
+  sockets.emit('workflow:updated', { lenhId, stage: 'RELEASE_2', skipTest: true });
+  sockets.emit('dashboard:refresh', {});
+  return getLenhDetail(lenhId);
+}
+
 async function approveRelease2Batch(lenhIds, actorId) {
   if (!Array.isArray(lenhIds) || lenhIds.length === 0) {
     throw new AppError('Chọn ít nhất một lệnh', { status: 422, errorCode: 'NO_LENH' });
@@ -743,7 +762,7 @@ module.exports = {
   listRelease1Candidates, autoPlanCandidates, createRelease1, createDotSanXuat, release1History, listReleaseSets, releaseSet,
   listGopCandidates, gopDotVai, gopHistory,
   listTestRunCandidates, getLenhDetail, recordTestRun, confirmTest, confirmTestBatch, cancelTest,
-  listRelease2Candidates, approveRelease2, approveRelease2Batch, testRunHistory,
+  listRelease2Candidates, approveRelease2, approveRelease2Batch, skipTestRun, testRunHistory,
   listReplanCandidates, replan, replanBatch, planHistory,
   listCancelableLenh, rollbackLenh, returnTestRunToRelease1,
   release1Done, release2Done, replanDone, testCnspDone, testQaDone,

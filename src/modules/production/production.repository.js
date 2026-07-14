@@ -86,8 +86,9 @@ async function getDefaultXePhoi() {
 }
 
 async function nextMaPhieu() {
+  // Chỉ tính mã chuẩn '^PSX<digits>$', ép số TRƯỚC khi MAX (cùng lý do như nextMaTem).
   const { rows } = await query(
-    `SELECT 'PSX' || LPAD((COALESCE(MAX(NULLIF(regexp_replace(ma_phieu_san_xuat,'\\D','','g'),''))::int,0)+1)::text, 4, '0') AS ma
+    `SELECT 'PSX' || LPAD((COALESCE(MAX(substring(ma_phieu_san_xuat from 4)::int) FILTER (WHERE ma_phieu_san_xuat ~ '^PSX[0-9]+$'),0)+1)::text, 4, '0') AS ma
      FROM phieu_san_xuat`
   );
   return rows[0].ma;
@@ -448,8 +449,10 @@ async function logReprint(temId, maTem, lyDo, soLan, actorId) {
 }
 
 async function nextMaTem() {
+  // CHỈ tính mã chuẩn '^TEM<digits>$' và ép KIỂU SỐ TRƯỚC khi MAX (tránh so sánh chuỗi '2' > '00003'
+  // → sinh mã trùng). Mã tem seed/khác định dạng bị bỏ qua để không làm lệch số.
   const { rows } = await query(
-    `SELECT 'TEM' || LPAD((COALESCE(MAX(NULLIF(regexp_replace(ma_tem,'\\D','','g'),''))::int,0)+1)::text, 5, '0') AS ma
+    `SELECT 'TEM' || LPAD((COALESCE(MAX(substring(ma_tem from 4)::int) FILTER (WHERE ma_tem ~ '^TEM[0-9]+$'),0)+1)::text, 5, '0') AS ma
      FROM tem`
   );
   return rows[0].ma;

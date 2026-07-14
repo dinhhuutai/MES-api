@@ -412,6 +412,32 @@ async function flagUnreleasedDotLamLai(client, phanInId, actorId) {
   return rowCount;
 }
 
+// Phần in có ĐANG SẢN XUẤT TRÊN CHUYỀN không (phiếu DANG_CHAY của lệnh ≠ HUY)?
+async function isPhanInProducing(phanInId) {
+  const { rows } = await query(
+    `SELECT EXISTS (
+       SELECT 1 FROM phieu_san_xuat ps
+       JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id AND ls.trang_thai <> 'HUY'
+       JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
+       JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+       WHERE dv.phan_in_id = $1 AND ps.trang_thai = 'DANG_CHAY') AS producing`,
+    [phanInId]
+  );
+  return rows[0]?.producing === true;
+}
+
+// Mở lại READY (dùng chung cho auto khi có đợt mới + tab thủ công): hủy xác nhận READY + gắn cờ đợt chưa release.
+async function reopenReadyFull(phanInId, actorId, extraLog = {}) {
+  const { withTransaction } = require('../../config/db');
+  let huy = 0; let flagged = 0;
+  await withTransaction(async (client) => {
+    huy = await reopenReadyResults(client, phanInId, actorId);
+    flagged = await flagUnreleasedDotLamLai(client, phanInId, actorId);
+  });
+  if (huy > 0 || flagged > 0) await logReopenReady(phanInId, { huy_xac_nhan: huy, dot_lam_lai: flagged, ...extraLog }, actorId);
+  return { huy, flagged };
+}
+
 async function logReopenReady(phanInId, payload, actorId) {
   await query(
     `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
@@ -424,4 +450,5 @@ module.exports = {
   loadReadyConfig, listCandidates, countReadyItems, historyByDate, doneByDate, listConfirmHistory, isPhanInReleased, getPhanInBasic, getResults, getBulkStates,
   getReadyEntryTime, findResultId, upsertResult, cancelResult, logCancel, insertStatusLog,
   listReopenCandidates, reopenReadyResults, flagUnreleasedDotLamLai, logReopenReady,
+  isPhanInProducing, reopenReadyFull,
 };

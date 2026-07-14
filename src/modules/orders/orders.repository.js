@@ -264,6 +264,19 @@ async function getPhanInTimeline(phanInId) {
     WHERE kq.trang_thai='DAT' AND kq.phan_in_id = $1 AND t.ma_tram = 'READY'
     ORDER BY cp.thu_tu, kq.tg_xac_nhan`;
 
+  // LỊCH SỬ xác nhận READY (mọi lần DAT, kể cả các CHU KỲ đã bị mở lại) — để dựng READY RIÊNG cho từng đợt SX.
+  const readyEventsSql = `
+    SELECT cp.ma_checkpoint, cp.ten_checkpoint, cp.thu_tu AS cp_thu_tu, lst.tg_thuc_hien AS tg, nd.ho_ten AS nguoi
+    FROM lich_su_trang_thai lst
+    JOIN trang_thai tt ON tt.id = lst.trang_thai_moi_id AND tt.ma_trang_thai = 'DAT'
+    JOIN ket_qua_checkpoint kq ON kq.id = lst.ket_qua_checkpoint_id AND kq.phan_in_id = $1
+    JOIN checkpoint cp ON cp.id = kq.checkpoint_id
+    JOIN tram t ON t.id = cp.tram_id
+    JOIN workflow_version wv ON wv.id = t.workflow_version_id AND wv.la_hien_hanh = true
+    LEFT JOIN nguoi_dung nd ON nd.id = lst.nguoi_thuc_hien_id
+    WHERE t.ma_tram = 'READY'
+    ORDER BY lst.tg_thuc_hien`;
+
   // Danh sách đợt SX (lệnh ≠ HUY) + đợt vải của mỗi lệnh
   const lenhSql = `
     SELECT ls.id, ls.ma_lenh_san_xuat, ls.giai_doan, ls.created_date,
@@ -333,13 +346,52 @@ async function getPhanInTimeline(phanInId) {
     WHERE tg IS NOT NULL
     GROUP BY lenh_id, ma_tram`;
 
-  const [tramR, readyR, lenhR, lenhCklR, mocR] = await Promise.all([
+  // SỐ LƯỢNG per LỆNH per trạm (để hiện ở node hành trình: SL release/in, KCS đạt/sửa/hủy, sửa đạt, OQC đạt, giao).
+  const qtySql = `
+    WITH l AS (
+      SELECT DISTINCT ls.id AS lenh_id, ls.so_luong_release
+      FROM lenh_san_xuat ls JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
+      JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+      WHERE dv.phan_in_id = $1 AND ls.trang_thai <> 'HUY'
+    ),
+    tp AS (
+      SELECT l.lenh_id, tm.id AS tem_id, tm.so_luong, tm.trang_thai
+      FROM l JOIN phieu_san_xuat ps ON ps.lenh_san_xuat_id = l.lenh_id
+      JOIN tem tm ON tm.phieu_san_xuat_id = ps.id
+    )
+    SELECT l.lenh_id, l.so_luong_release,
+      COALESCE((SELECT SUM(so_luong) FROM tp WHERE tp.lenh_id=l.lenh_id AND tp.trang_thai<>'HUY'),0)::int AS pcs_in,
+      COALESCE((SELECT SUM(k.so_luong_dat) FROM kcs k WHERE k.tem_id IN (SELECT tem_id FROM tp WHERE tp.lenh_id=l.lenh_id)),0)::int AS kcs_dat,
+      COALESCE((SELECT SUM(GREATEST(k.so_luong_loi-COALESCE(k.so_luong_huy,0),0)) FROM kcs k WHERE k.tem_id IN (SELECT tem_id FROM tp WHERE tp.lenh_id=l.lenh_id)),0)::int AS kcs_sua,
+      COALESCE((SELECT SUM(COALESCE(k.so_luong_huy,0)) FROM kcs k WHERE k.tem_id IN (SELECT tem_id FROM tp WHERE tp.lenh_id=l.lenh_id)),0)::int AS kcs_huy,
+      COALESCE((SELECT SUM(s.so_luong_sua_dat) FROM sua s WHERE s.tem_id IN (SELECT tem_id FROM tp WHERE tp.lenh_id=l.lenh_id)),0)::int AS sua_dat,
+      COALESCE((SELECT SUM(o.so_luong_dat) FROM oqc o WHERE o.tem_id IN (SELECT tem_id FROM tp WHERE tp.lenh_id=l.lenh_id)),0)::int AS oqc_dat,
+      COALESCE((SELECT SUM(ght.so_luong_giao) FROM giao_hang_tem ght WHERE ght.tem_id IN (SELECT tem_id FROM tp WHERE tp.lenh_id=l.lenh_id)),0)::int AS giao
+    FROM l`;
+
+  const [tramR, readyR, readyEvR, lenhR, lenhCklR, mocR, qtyR] = await Promise.all([
     query(tramSql.replace(/\s+/g, ' ')),
     query(readyCklSql.replace(/\s+/g, ' '), [phanInId]),
+    query(readyEventsSql.replace(/\s+/g, ' '), [phanInId]),
     query(lenhSql.replace(/\s+/g, ' '), [phanInId]),
     query(lenhCklSql.replace(/\s+/g, ' '), [phanInId]),
     query(mocSql.replace(/\s+/g, ' '), [phanInId]),
+    query(qtySql.replace(/\s+/g, ' '), [phanInId]),
   ]);
+  const qtyByLenh = new Map(qtyR.rows.map((r) => [r.lenh_id, r]));
+  // Số lượng hiển thị ở từng node theo trạm (mảng {label, value}).
+  const nodeQty = (ma, q) => {
+    if (!q) return [];
+    switch (ma) {
+      case 'RELEASE_1': case 'RELEASE_2': return [{ label: 'SL release', value: q.so_luong_release || 0 }];
+      case 'SAN_XUAT': case 'CHO_KHO': return [{ label: 'SL in', value: q.pcs_in || 0 }];
+      case 'KIEM': return [{ label: 'Đạt', value: q.kcs_dat || 0 }, { label: 'Sửa', value: q.kcs_sua || 0 }, { label: 'Hủy', value: q.kcs_huy || 0 }];
+      case 'SUA': return [{ label: 'Sửa đạt', value: q.sua_dat || 0 }];
+      case 'OQC': return [{ label: 'Đạt', value: q.oqc_dat || 0 }];
+      case 'DONE_DELIVERY': return [{ label: 'SL giao', value: q.giao || 0 }];
+      default: return [];
+    }
+  };
 
   const tramInfo = new Map(tramR.rows.map((t) => [t.ma_tram, t]));
   const tenTram = (ma) => tramInfo.get(ma)?.ten_tram || ma;
@@ -369,17 +421,35 @@ async function getPhanInTimeline(phanInId) {
     mocByLenh.get(r.lenh_id).set(r.ma_tram, { tg: r.tg, nguoi: r.nguoi || null, so_luong: r.so_luong });
   });
 
+  // READY RIÊNG cho từng đợt SX = xác nhận READY (DAT) mới nhất TRƯỚC thời điểm tạo lệnh, theo từng checklist
+  // (đúng CHU KỲ READY của lệnh đó — 1 phần in có nhiều READY khi được mở lại giữa các đợt SX).
+  const readyEvents = readyEvR.rows;
+  const readyForLenh = (createdDate) => {
+    const T = new Date(createdDate).getTime();
+    const byCp = new Map();
+    for (const e of readyEvents) {
+      if (new Date(e.tg).getTime() <= T) byCp.set(e.ma_checkpoint, e); // events đã ORDER BY tg → giữ cái mới nhất ≤ T
+    }
+    const checklists = [...byCp.values()].sort((a, b) => a.cp_thu_tu - b.cp_thu_tu)
+      .map((e) => ({ ma_checkpoint: e.ma_checkpoint, ten_checkpoint: e.ten_checkpoint, gia_tri_text: null, tg: e.tg, nguoi: e.nguoi || null }));
+    if (!checklists.length) return null;
+    return { ma_tram: 'READY', ten_tram: tenTram('READY'), thu_tu: thuTu('READY'), checklists, moc: null };
+  };
+
   const journeys = lenhR.rows.map((l) => {
     const ckl = cklByLenh.get(l.id) || new Map();
     const moc = mocByLenh.get(l.id) || new Map();
+    const q = qtyByLenh.get(l.id);
     const maTrams = new Set([...ckl.keys(), ...moc.keys()]);
     const trams = [...maTrams].map((ma) => ({
       ma_tram: ma, ten_tram: tenTram(ma), thu_tu: thuTu(ma),
-      checklists: ckl.get(ma) || [], moc: moc.get(ma) || null,
+      checklists: ckl.get(ma) || [], moc: moc.get(ma) || null, qty: nodeQty(ma, q),
     })).sort((a, b) => a.thu_tu - b.thu_tu);
+    // READY của chu kỳ ứng với lệnh (từ lịch sử); thiếu lịch sử (dữ liệu cũ/seed) → dùng READY hiện tại.
+    const readyNode = readyForLenh(l.created_date) || ready;
     return {
       lenh_id: l.id, ma_lenh_san_xuat: l.ma_lenh_san_xuat, giai_doan: l.giai_doan,
-      dot_vai: l.dot_vai || [], trams,
+      dot_vai: l.dot_vai || [], trams: readyNode ? [readyNode, ...trams] : trams,
     };
   });
 

@@ -86,6 +86,9 @@ const release2Candidates = asyncHandler(async (req, res) => {
 const approveRelease2 = asyncHandler(async (req, res) =>
   ok(res, await service.approveRelease2(req.params.lenhId, req.user.id), 'Đã Release 2 — sẵn sàng sản xuất'));
 
+const skipTestRun = asyncHandler(async (req, res) =>
+  ok(res, await service.skipTestRun(req.params.lenhId, req.user.id), 'Đã bỏ Test Run — đợt sản xuất vào chờ sản xuất'));
+
 const testRunHistory = asyncHandler(async (req, res) => {
   const date = req.query.date || new Date().toISOString().slice(0, 10);
   return ok(res, await service.testRunHistory(date));
@@ -139,7 +142,7 @@ module.exports = {
   gopCandidates, gopDotVai, gopHistory,
   testRunCandidates, lenhDetail, recordTestRun,
   confirmCNSP, confirmQA, cancelCNSP, cancelQA, confirmCNSPBatch, confirmQABatch,
-  release2Candidates, approveRelease2, approveRelease2Batch, testRunHistory,
+  release2Candidates, approveRelease2, approveRelease2Batch, skipTestRun, testRunHistory,
   replanCandidates, replan, replanBatch, planHistory,
   cancelableLenh, cancelLenh, returnTestRun,
   release1Done, release2Done, replanDone, testCnspDone, testQaDone,

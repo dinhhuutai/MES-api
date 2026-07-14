@@ -182,6 +182,8 @@ async function syncPhieuNhanVai({ fromDate, actorId = null, tuDong = false } = {
       try {
         const loaiDotVaiId = await resolveLoai(p.r.loaikd);            // ngoài transaction, best-effort
         const { inserted, dotVaiId, pinId } = await processRow(p.r, p.maPhan, p.maDotVai, loaiDotVaiId);
+        // Đợt vải MỚI: DB trigger (mig 054) tự quyết định READY vs Kế hoạch (mở lại READY nếu phần in
+        // đã từng release & không đang sản xuất). Không cần xử lý ở đây — áp cho cả insert tay lẫn ERP.
         if (inserted) { soMoi += 1; newDotVaiIds.push(dotVaiId); } else soCapNhat += 1;
         // tgphoi (phút) → thời gian chờ khô của phần in (best-effort, không phá sync nếu thiếu cột).
         const tgPhoi = Number(p.r.tgphoi);

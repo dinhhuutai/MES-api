@@ -44,6 +44,8 @@ router.post('/test-run/qa-confirm-batch', rbac('TESTRUN_QA'), c.confirmQABatch);
 router.post('/test-run/:lenhId/run', rbac('TESTRUN_CNSP', 'TESTRUN_QA'), c.recordTestRun);
 router.post('/test-run/:lenhId/confirm-cnsp', rbac('TESTRUN_CNSP'), c.confirmCNSP);
 router.post('/test-run/:lenhId/confirm-qa', rbac('TESTRUN_QA'), c.confirmQA);
+// "Không test run": bỏ Test Run → duyệt thẳng Release 2 (đợt SX vào chờ sản xuất).
+router.post('/test-run/:lenhId/skip', rbac('TESTRUN_QA', 'RELEASE2'), c.skipTestRun);
 router.post('/test-run/:lenhId/cancel-cnsp', rbac('TESTRUN_CNSP'), c.cancelCNSP);
 router.post('/test-run/:lenhId/cancel-qa', rbac('TESTRUN_QA'), c.cancelQA);
 // Test Run QC trả về Release 1 (hủy lệnh, đợt vải về pool) — kèm lý do.

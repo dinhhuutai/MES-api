@@ -9,6 +9,7 @@ const { pool } = require('./config/db');
 // [ERP TẮT TẠM] vô hiệu hóa job tự kết nối ERP để kiểm tra. Bỏ comment 2 dòng (đây + startErpSyncJob bên dưới) để bật lại.
  const { startErpSyncJob } = require('./jobs/erpSync.job');
 const { startCleanupJob } = require('./jobs/cleanup.job');
+const { startDryingJob } = require('./jobs/drying.job');
 
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -36,6 +37,7 @@ async function start() {
     // [ERP TẮT TẠM] không tự đồng bộ ERP. Bỏ comment để bật lại.
      startErpSyncJob();
     startCleanupJob();
+    startDryingJob();
   });
 }
 
