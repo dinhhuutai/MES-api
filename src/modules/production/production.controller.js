@@ -1,6 +1,7 @@
 'use strict';
 
 const service = require('./production.service');
+const planningService = require('../planning/planning.service'); // dùng chung candidate Test Run
 const asyncHandler = require('../../utils/asyncHandler');
 const { ok } = require('../../utils/response');
 const { getPaging } = require('../../utils/pagination');
@@ -14,6 +15,15 @@ const getRun = asyncHandler(async (req, res) => ok(res, await service.getRun(req
 
 const start = asyncHandler(async (req, res) =>
   ok(res, await service.startProduction(req.params.lenhId, req.user.id, req.body.chuyenId || null), 'Đã xác nhận chạy'));
+
+// Chạy đặc biệt (bỏ Test Run): danh sách = CÙNG candidate Test Run; hành động = khởi chạy thẳng.
+const chayDacBietCandidates = asyncHandler(async (req, res) => {
+  const { page, limit, offset } = getPaging(req.query);
+  return ok(res, await planningService.listTestRunCandidates({ search: req.query.search || '', page, limit, offset }));
+});
+const chayDacBiet = asyncHandler(async (req, res) =>
+  ok(res, await service.startProductionSpecial(req.params.lenhId, req.user.id, req.body.chuyenId || null, req.body.lyDo || null),
+    'Đã chạy đặc biệt (bỏ Test Run)'));
 
 const printTem = asyncHandler(async (req, res) =>
   ok(res, await service.printTem(req.params.phieuId, req.body.soLuong, req.user.id), 'Đã in tem'));
@@ -92,7 +102,7 @@ const vuotSanXuat = asyncHandler(async (req, res) =>
   ok(res, await service.vuotSanXuat(req.params.phieuId, req.body?.soLuong, req.user.id), 'Đã ghi nhận vượt sản xuất'));
 
 module.exports = {
-  candidates, getRun, start, printTem, reprintTem, temLabel, temLogs, finish, monitor,
+  candidates, getRun, start, chayDacBietCandidates, chayDacBiet, printTem, reprintTem, temLabel, temLogs, finish, monitor,
   xePhoi, temChoPhoi, themTem, adjustPhoi, drying, confirmDry, redry,
   stopLine, resumeLine, addVaiHuy, vuotSanXuat,
   cancelableTem, cancelPrintTem,

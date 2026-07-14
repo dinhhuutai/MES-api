@@ -14,6 +14,10 @@ const INPUT_CPS = ['KHUON', 'FILM', 'MUC']; // 3 mục kỹ thuật, xác nhận
 const OPTION_CPS = ['KHUON', 'FILM', 'MUC']; // cần chọn option khi xác nhận
 const QC_CP = 'QC_XAC_NHAN';
 const TECH_TOTAL = INPUT_CPS.length; // số mục kỹ thuật cần đủ để hoàn tất READY
+// Ràng buộc thứ tự xác nhận: mục KEY chỉ được xác nhận khi mục phụ thuộc (VALUE) đã DAT.
+// Hiện tại: KHUON yêu cầu FILM đã xác nhận (chưa xác nhận Film thì không xác nhận Khuôn).
+const CP_REQUIRES = { KHUON: 'FILM' };
+const depKey = (ma) => `${(CP_REQUIRES[ma] || '').toLowerCase()}_done`;
 // Option mặc định (dùng khi cấu hình checkpoint chưa khai báo trong DB).
 const DEFAULT_OPTIONS = {};
 
@@ -161,6 +165,11 @@ async function confirmItem(phanInId, ma, value, actorId) {
   if (state.qc_done) throw new AppError('Đã QC xác nhận — dữ liệu đã khóa', { status: 409, errorCode: 'LOCKED' });
   const cur = results.find((r) => r.ma_checkpoint === ma);
   if (cur?.trang_thai === 'DAT') throw new AppError(`Mục ${cp.ten_checkpoint} đã được xác nhận`, { status: 409, errorCode: 'ALREADY' });
+  // Ràng buộc phụ thuộc: vd chưa xác nhận Film thì không xác nhận Khuôn.
+  const dep = CP_REQUIRES[ma];
+  if (dep && !state[depKey(ma)]) {
+    throw new AppError(`Phải xác nhận ${byMa[dep]?.ten_checkpoint || dep} trước khi xác nhận ${cp.ten_checkpoint}`, { status: 409, errorCode: 'DEP_NOT_MET' });
+  }
 
   const datId = await wf.getTrangThaiId('DAT');
   await withTransaction(async (client) => {
@@ -209,6 +218,13 @@ async function confirmItemsBatch(phanInId, items, actorId) {
     todo.push({ ma, value: OPTION_CPS.includes(ma) ? it.value : null });
   }
   if (todo.length === 0) throw new AppError('Không có mục nào đủ điều kiện xác nhận', { status: 422, errorCode: 'NOTHING' });
+  // Ràng buộc phụ thuộc: mục phụ thuộc phải đã DAT HOẶC được xác nhận cùng lô này (vd Khuôn cần Film).
+  for (const t of todo) {
+    const dep = CP_REQUIRES[t.ma];
+    if (dep && !state[depKey(t.ma)] && !todo.some((x) => x.ma === dep)) {
+      throw new AppError(`Phải xác nhận ${byMa[dep]?.ten_checkpoint || dep} trước (hoặc cùng lúc) khi xác nhận ${byMa[t.ma].ten_checkpoint}`, { status: 409, errorCode: 'DEP_NOT_MET' });
+    }
+  }
 
   const datId = await wf.getTrangThaiId('DAT');
   await withTransaction(async (client) => {
@@ -243,12 +259,15 @@ async function confirmItemBulk(phanInIds, ma, value, actorId) {
   const cp = byMa[ma];
   if (!cp) throw new AppError(`Checkpoint ${ma} không còn hiệu lực`, { status: 404, errorCode: 'NO_CHECKPOINT' });
   const qcId = byMa[QC_CP]?.id;
+  const depMa = CP_REQUIRES[ma];
+  const depId = depMa ? byMa[depMa]?.id : null;
 
-  // Bỏ qua phần in đã xác nhận mục này, hoặc đã QC (khóa).
-  const states = await repo.getBulkStates(phanInIds, [cp.id, qcId].filter(Boolean));
+  // Bỏ qua phần in đã xác nhận mục này, đã QC (khóa), hoặc CHƯA xác nhận mục phụ thuộc (vd Khuôn cần Film).
+  const states = await repo.getBulkStates(phanInIds, [cp.id, qcId, depId].filter(Boolean));
   const itemDone = new Set(states.filter((s) => s.checkpoint_id === cp.id).map((s) => s.phan_in_id));
   const qcDone = new Set(qcId ? states.filter((s) => s.checkpoint_id === qcId).map((s) => s.phan_in_id) : []);
-  const eligible = phanInIds.filter((id) => !qcDone.has(id) && !itemDone.has(id));
+  const depDone = new Set(depId ? states.filter((s) => s.checkpoint_id === depId).map((s) => s.phan_in_id) : []);
+  const eligible = phanInIds.filter((id) => !qcDone.has(id) && !itemDone.has(id) && (!depId || depDone.has(id)));
 
   const datId = await wf.getTrangThaiId('DAT');
   await withTransaction(async (client) => {
@@ -370,7 +389,32 @@ async function done(date, scope) {
   return repo.doneByDate(date, scope === 'qc' ? 'qc' : 'tech');
 }
 
+// ─── "Mở READY" (admin) — phần in đi tắt READY (đợt mới tự vào Release 1) ─────
+async function reopenCandidates(search) {
+  return repo.listReopenCandidates({ search: search || '' });
+}
+
+// Mở lại READY cho 1 phần in: hủy xác nhận READY (Khuôn/Film/Mực/QC) + gắn cờ đợt mới làm lại READY/Test Run.
+// Phần in quay lại danh sách Chuẩn bị kỹ thuật (đợt đã sản xuất trước không bị ảnh hưởng).
+async function reopenReady(phanInId, actorId) {
+  const pin = await repo.getPhanInBasic(phanInId);
+  if (!pin) throw new AppError('Phần in không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  let huy = 0; let flagged = 0;
+  await withTransaction(async (client) => {
+    huy = await repo.reopenReadyResults(client, phanInId, actorId);
+    flagged = await repo.flagUnreleasedDotLamLai(client, phanInId, actorId);
+  });
+  if (huy === 0 && flagged === 0) {
+    throw new AppError('Phần in không ở trạng thái đi tắt READY (không có gì để mở lại)', { status: 409, errorCode: 'NOTHING_TO_REOPEN' });
+  }
+  await repo.logReopenReady(phanInId, { huy_xac_nhan: huy, dot_lam_lai: flagged }, actorId);
+  sockets.emit('ready:confirmed', { phanInId, mo_lai_ready: true });
+  sockets.emit('dashboard:refresh', {});
+  return { phanInId, huy, flagged };
+}
+
 module.exports = {
   getConfig, listCandidates, itemCounts, getDetail, confirmItem, confirmItemsBatch, confirmItemBulk,
   confirmQC, confirmQcBatch, cancelItem, history, done, confirmHistory, returnToTech,
+  reopenCandidates, reopenReady,
 };

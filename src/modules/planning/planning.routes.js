@@ -30,6 +30,9 @@ router.get('/release1/sets', rbac('RELEASE1'), c.releaseSets);
 router.post('/release1/set/:setId', rbac('RELEASE1'), c.releaseSet);
 router.post('/release1', rbac('RELEASE1'), c.createRelease1);
 
+// Tạo Đợt sản xuất (màn "Tạo đợt sản xuất" — gộp/tách nhiều đợt vải + SL từng đợt)
+router.post('/dot-san-xuat', rbac('RELEASE1'), c.createDotSanXuat);
+
 // Test Run (CNSP + QA)
 router.get('/test-run/candidates', rbac(...TEST_VIEW), c.testRunCandidates);
 router.get('/test-run/history', rbac(...TEST_VIEW), c.testRunHistory);

@@ -28,6 +28,8 @@ const listVaiVe = asyncHandler(async (req, res) => {
     filters,
     stage: req.query.stage || '',
     page, limit, offset,
+    sortKey: req.query.sortKey || '',
+    sortDir: req.query.sortDir || '',
   });
   return ok(res, data);
 });
@@ -47,4 +49,13 @@ const profitHistory = asyncHandler(async (req, res) => {
   return ok(res, await service.profitHistory(date));
 });
 
-module.exports = { list, listVaiVe, getOne, setChoKho, setLoiNhuan, profitHistory };
+// Hủy phần in (xóa mềm): tìm kiếm để chọn + hủy nhiều phần in.
+const searchCancel = asyncHandler(async (req, res) =>
+  ok(res, await service.searchForCancel(req.query.q || '')));
+const huyPhanIn = asyncHandler(async (req, res) => {
+  const ids = Array.isArray(req.body.phanInIds) ? req.body.phanInIds : [];
+  const data = await service.softDeletePhanIn(ids, req.body.lyDo || null, req.user.id);
+  return ok(res, data, `Đã hủy (xóa mềm) ${data.count} phần in`);
+});
+
+module.exports = { list, listVaiVe, getOne, setChoKho, setLoiNhuan, profitHistory, searchCancel, huyPhanIn };

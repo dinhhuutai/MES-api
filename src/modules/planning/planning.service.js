@@ -13,6 +13,7 @@ const tracking = require('../workflow/tracking.service');
 const TEST_TRAM = 'TEST_RUN';
 const CNSP_CP = 'TEST_CNSP';
 const QA_CP = 'TEST_QA';
+const SL_NHO_BO_TEST = 100; // đợt SX tổng SL < ngưỡng này → bỏ Test Run (điểm 5). Ngưỡng cấu hình được sau.
 
 async function loadTestConfig() {
   const version = await wf.getActiveVersion();
@@ -169,28 +170,35 @@ async function autoPlanCandidates({ search }) {
         ...tinhNangSuat(hskt, c.so_pass, qtyPlan),
       }))
       .sort((a, b) => b.nang_suat_gio - a.nang_suat_gio);
-    return { ...r, tra_ve_ly_do: rm[r.dot_vai_id] || null, hskt, chuyen_options: chuyenOptions, best_chuyen: chuyenOptions[0] || null };
+    return { ...r, tra_ve_ly_do: rm[r.dot_vai_id] || null, hskt, qty_plan: qtyPlan, chuyen_options: chuyenOptions, best_chuyen: null };
   });
 
-  // Xếp lịch THEO NGÀY trên từng chuyền: gán đợt vào chuyền năng suất tốt nhất, đóng gói tuần tự
-  // theo giờ SX (ưu tiên hạn giao sớm) → mỗi đợt có ngay_ke_hoach + so_gio_sx.
+  // CÂN BẰNG TẢI MỌI CHUYỀN (điểm 12) — LPT list-scheduling để makespan nhỏ nhất + mọi chuyền có việc:
+  //  1) sắp đợt theo SL giảm dần (ưu tiên hạn giao sớm khi bằng);
+  //  2) gán mỗi đợt vào chuyền HOÀN THÀNH SỚM NHẤT = min(tải hiện tại + giờ SX đợt trên chuyền đó);
+  //  3) ngày kế hoạch = đóng gói tuần tự theo tải (8h/ngày) trên chuyền được gán.
   const today = new Date(); today.setHours(0, 0, 0, 0);
-  const byChuyen = {};
-  items.forEach((it) => { const cid = it.best_chuyen && it.best_chuyen.chuyen_id; if (cid) (byChuyen[cid] = byChuyen[cid] || []).push(it); });
-  Object.values(byChuyen).forEach((list) => {
-    list.sort((a, b) => {
-      const ha = a.han_giao_hang ? new Date(a.han_giao_hang).getTime() : Infinity;
-      const hb = b.han_giao_hang ? new Date(b.han_giao_hang).getTime() : Infinity;
-      return ha - hb;
-    });
-    let cumHours = 0;
-    list.forEach((it) => {
-      const ns = (it.best_chuyen && it.best_chuyen.nang_suat_gio) || 0;
-      const hours = ns > 0 ? (Number(it.con_release ?? it.so_luong_vai_ve) || 0) / ns : DAILY_HOURS;
-      it.so_gio_sx = Math.round(hours * 10) / 10;
-      it.ngay_ke_hoach = addDaysIso(today, Math.floor(cumHours / DAILY_HOURS));
-      cumHours += hours;
-    });
+  const loadHours = {}; chuyens.forEach((c) => { loadHours[c.id] = 0; });
+  const order = [...items].sort((a, b) => {
+    if (b.qty_plan !== a.qty_plan) return b.qty_plan - a.qty_plan;
+    const ha = a.han_giao_hang ? new Date(a.han_giao_hang).getTime() : Infinity;
+    const hb = b.han_giao_hang ? new Date(b.han_giao_hang).getTime() : Infinity;
+    return ha - hb;
+  });
+  order.forEach((it) => {
+    const optByChuyen = Object.fromEntries(it.chuyen_options.map((o) => [o.chuyen_id, o]));
+    let bestId = null; let bestFinish = Infinity; let bestHours = DAILY_HOURS; let bestOpt = null;
+    for (const c of chuyens) {
+      const opt = optByChuyen[c.id];
+      const ns = (opt && opt.nang_suat_gio) || 0;
+      const hours = ns > 0 ? it.qty_plan / ns : DAILY_HOURS;
+      const finish = (loadHours[c.id] || 0) + hours;
+      if (finish < bestFinish) { bestFinish = finish; bestId = c.id; bestHours = hours; bestOpt = opt; }
+    }
+    it.best_chuyen = bestOpt || it.chuyen_options[0] || null;
+    it.so_gio_sx = Math.round(bestHours * 10) / 10;
+    it.ngay_ke_hoach = bestId ? addDaysIso(today, Math.floor((loadHours[bestId] || 0) / DAILY_HOURS)) : isoDate(today);
+    if (bestId) loadHours[bestId] += bestHours;
   });
   items.forEach((it) => { if (!it.ngay_ke_hoach) it.ngay_ke_hoach = isoDate(today); });
 
@@ -243,7 +251,7 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
       const id = await repo.createLenh(client, {
         versionId: version.id, maLenh, chuyenId, soLuongRelease: qty, ngayKeHoach, trangThai,
       }, actorId);
-      await repo.addLenhDotVai(client, id, dvId, actorId);
+      await repo.addLenhDotVai(client, id, dvId, actorId, qty);
       out.push({ id, ma_lenh_san_xuat: maLenh, trang_thai: trangThai, so_dot_vai: 1, dot_vai_id: dvId });
     }
     return out;
@@ -264,6 +272,74 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
     created_count: created.length,
     skipped_test_count: created.filter((c) => c.trang_thai === 'RELEASE_2').length,
   };
+}
+
+// ----- TẠO ĐỢT SẢN XUẤT (mig 052) — gộp/tách nhiều đợt vải vào 1 đợt SX với SL TỪNG đợt -----
+// items: [{ dotVaiId, soLuong }]. Tạo 1 lenh_san_xuat + N junction (so_luong). Chỉ gộp CÙNG MÀU.
+async function createDotSanXuat({ items, chuyenId, ngayKeHoach }, actorId) {
+  if (!chuyenId) throw new AppError('Chọn chuyền sản xuất', { status: 422, errorCode: 'NO_CHUYEN' });
+  const plan = (Array.isArray(items) ? items : [])
+    .map((i) => ({ dotVaiId: i.dotVaiId, soLuong: Number(i.soLuong) }))
+    .filter((i) => i.dotVaiId && i.soLuong > 0);
+  if (plan.length === 0) throw new AppError('Chọn ít nhất một đợt vải và nhập số lượng > 0', { status: 422, errorCode: 'NO_ITEM' });
+
+  const ids = plan.map((p) => p.dotVaiId);
+  const info = await repo.getDotVaiForCompose(ids);
+  const byId = Object.fromEntries(info.map((r) => [r.id, r]));
+
+  const mau = new Set();
+  for (const p of plan) {
+    const d = byId[p.dotVaiId];
+    if (!d) throw new AppError('Đợt vải không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+    if (!d.qc_done) throw new AppError(`Đợt ${d.ma_dot_vai} chưa hoàn tất kỹ thuật (QC/READY)`, { status: 409, errorCode: 'NOT_READY' });
+    if (p.soLuong > d.con_dua) {
+      throw new AppError(`SL đưa vào của đợt ${d.ma_dot_vai} (${p.soLuong}) vượt SL còn lại (${d.con_dua})`,
+        { status: 422, errorCode: 'OVER' });
+    }
+    mau.add((d.mau_vai || '').trim().toLowerCase());
+  }
+  if (mau.size > 1) throw new AppError('Chỉ gộp các đợt vải CÙNG MÀU vào một đợt sản xuất', { status: 422, errorCode: 'MIXED_COLOR' });
+
+  const tongSL = plan.reduce((s, p) => s + p.soLuong, 0);
+
+  // ĐI TẮT TEST RUN (điểm 5): bỏ Test Run khi (phần in ĐANG IN TEM) HOẶC (tổng SL < 100),
+  // TRỪ khi có đợt bật cờ LÀM LẠI (đổi HSKT → ép full flow).
+  const phanInIds = [...new Set(info.map((r) => r.phan_in_id))];
+  const dangChaySet = new Set(await repo.phanInDangChay(phanInIds));
+  const dangChay = phanInIds.some((pid) => dangChaySet.has(pid));
+  const slNho = tongSL < SL_NHO_BO_TEST;
+  const lamLai = plan.some((p) => byId[p.dotVaiId]?.can_lam_lai_ready);
+  const diTat = (dangChay || slNho) && !lamLai;
+  const trangThai = diTat ? 'RELEASE_2' : 'RELEASE_1';
+
+  // IN KIẾNG (điểm 16): phần in in kiếng → tạo THÊM đợt SX ép ủi (giai_doan EP_UI) ở holding CHO_IN_XONG,
+  // liên kết về đợt IN; kích hoạt sang "chờ chạy" khi đợt IN "Chạy hoàn tất" (production.finishRun).
+  const inKieng = plan.some((p) => byId[p.dotVaiId]?.la_in_kieng);
+  const version = await wf.getActiveVersion();
+  const { lenhId, epUiId } = await withTransaction(async (client) => {
+    const maLenh = await repo.nextMaLenhTx(client);
+    const id = await repo.createLenh(client, {
+      versionId: version.id, maLenh, chuyenId, soLuongRelease: tongSL, ngayKeHoach, trangThai, giaiDoan: 'IN',
+    }, actorId);
+    for (const p of plan) await repo.addLenhDotVai(client, id, p.dotVaiId, actorId, p.soLuong);
+    let ep = null;
+    if (inKieng) {
+      const maEp = await repo.nextMaLenhTx(client);
+      ep = await repo.createLenh(client, {
+        versionId: version.id, maLenh: maEp, chuyenId, soLuongRelease: tongSL, ngayKeHoach,
+        trangThai: 'CHO_IN_XONG', giaiDoan: 'EP_UI', lenhLienKetId: id,
+      }, actorId);
+      // Ép ủi = pass thứ 2 trên CÙNG vải, chỉ liên kết qua lenh_lien_ket_id — KHÔNG gắn junction đợt vải
+      // (tránh đợt có 2 lệnh non-HUY làm lệch con_dua / suy giai đoạn). Đợt tra qua lệnh IN liên kết.
+    }
+    return { lenhId: id, epUiId: ep };
+  });
+
+  await tracking.moveDotVaiTo(ids, trangThai === 'RELEASE_2' ? 'RELEASE_2' : 'RELEASE_1', actorId);
+  await qaRepo.resolveReturnsMany('TEST_RUN', ids); // release lại → tắt cờ "bị Test Run trả về"
+  sockets.emit('workflow:updated', { lenhId, stage: trangThai });
+  sockets.emit('dashboard:refresh', {});
+  return { ...(await getLenhDetail(lenhId)), skipped_test: diTat, so_luong_release: tongSL, in_kieng: inKieng, ep_ui_id: epUiId };
 }
 
 async function release1History(date) {
@@ -320,7 +396,8 @@ async function releaseSet(setId, { chuyenId, soLuongRelease, ngayKeHoach }, acto
     const id = await repo.createLenh(client, {
       versionId: version.id, maLenh, chuyenId, soLuongRelease: soLuong, ngayKeHoach, trangThai: 'RELEASE_1',
     }, actorId);
-    for (const dvId of dotVaiIds) await repo.addLenhDotVai(client, id, dvId, actorId);
+    // Gom set = mỗi đợt vào trọn SL vải về (all-or-nothing) → so_luong junction = SL đợt.
+    for (const m of members) await repo.addLenhDotVai(client, id, m.dot_vai_id, actorId, m.so_luong);
     await repo.markSetReleased(client, setId, id, actorId);
     await repo.logGomSetReleased(client, setId, `Release set ${set.ma_set} → lệnh ${maLenh} (${dotVaiIds.length} đợt vải)`, actorId);
     return id;
@@ -361,28 +438,44 @@ async function recordTestRun(lenhId, body, actorId) {
 
 async function confirmTest(lenhId, which, actorId, extra = {}) {
   const { byMa } = await loadTestConfig();
-  const cpMa = which === 'cnsp' ? CNSP_CP : QA_CP;
   const lenh = await repo.getLenhBasic(lenhId);
-  if (!lenh) throw new AppError('Lệnh sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  if (!lenh) throw new AppError('Đợt sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   if (lenh.trang_thai !== 'RELEASE_1') {
-    throw new AppError('Lệnh không ở trạng thái Test Run', { status: 409, errorCode: 'WRONG_STAGE' });
+    throw new AppError('Đợt không ở trạng thái Test Run', { status: 409, errorCode: 'WRONG_STAGE' });
   }
   const datId = await wf.getTrangThaiId('DAT');
-  // QA xác nhận đạt = ghi 1 LẦN TEST (đạt). Chỉ ghi khi QA đang từ chưa-đạt → đạt (tránh trùng khi xác nhận lại).
-  let recordPass = false;
+
   if (which === 'qa') {
+    // GỘP TEST RUN VỀ QA (điểm 11): 1 thao tác QA ghi CẢ TEST_CNSP (người test) + TEST_QA (loại + ghi chú).
     const st = await repo.getLenhTestStatus(lenhId, byMa[CNSP_CP].id, byMa[QA_CP].id);
-    recordPass = !st.qa_done;
-  }
-  await withTransaction(async (client) => {
-    const kqId = await repo.upsertLenhResult(client, {
-      lenhId, checkpointId: byMa[cpMa].id, trangThai: 'DAT', nguoiXacNhanId: actorId, actorId,
+    const recordPass = !st.qa_done;
+    const nguoiTest = (extra.nguoiTest || '').toString().trim() || null;
+    // Bắt buộc nhập người test khi QA xác nhận đạt (không cho xác nhận "trống tên").
+    if (!nguoiTest) throw new AppError('Bắt buộc nhập người test khi QA xác nhận đạt', { status: 422, errorCode: 'NGUOI_TEST_REQUIRED' });
+    const loaiTest = extra.loaiTest === 'DAP_PHAN' ? 'DAP_PHAN' : 'TEST_RUN';
+    const ghiChu = (extra.ghiChu || '').toString().trim() || null;
+    await withTransaction(async (client) => {
+      const kqCnsp = await repo.upsertLenhResult(client, {
+        lenhId, checkpointId: byMa[CNSP_CP].id, trangThai: 'DAT', giaTriText: nguoiTest, nguoiXacNhanId: actorId, actorId,
+      });
+      await repo.insertStatusLog(client, { ketQuaId: kqCnsp, trangThaiMoiId: datId, nguoiId: actorId, lyDo: `CNSP (người test: ${nguoiTest || '—'})` });
+      const kqQa = await repo.upsertLenhResult(client, {
+        lenhId, checkpointId: byMa[QA_CP].id, trangThai: 'DAT', giaTriText: loaiTest, ghiChu, nguoiXacNhanId: actorId, actorId,
+      });
+      await repo.insertStatusLog(client, { ketQuaId: kqQa, trangThaiMoiId: datId, nguoiId: actorId, lyDo: `QA xác nhận test (${loaiTest})` });
+      if (recordPass) {
+        await repo.insertTestRunTx(client, lenhId, { soLuong: extra.soLuong ?? null, ketQua: 'DAT', ghiChu }, actorId);
+      }
     });
-    await repo.insertStatusLog(client, { ketQuaId: kqId, trangThaiMoiId: datId, nguoiId: actorId, lyDo: `${cpMa} xác nhận test` });
-    if (recordPass) {
-      await repo.insertTestRunTx(client, lenhId, { soLuong: extra.soLuong ?? null, ketQua: 'DAT', ghiChu: null }, actorId);
-    }
-  });
+  } else {
+    // CNSP (giữ tương thích — màn UI CNSP đã gỡ; QA đã ghi thay CNSP).
+    await withTransaction(async (client) => {
+      const kqId = await repo.upsertLenhResult(client, {
+        lenhId, checkpointId: byMa[CNSP_CP].id, trangThai: 'DAT', nguoiXacNhanId: actorId, actorId,
+      });
+      await repo.insertStatusLog(client, { ketQuaId: kqId, trangThaiMoiId: datId, nguoiId: actorId, lyDo: `${CNSP_CP} xác nhận test` });
+    });
+  }
   await tracking.moveByLenh(lenhId, TEST_TRAM, actorId); // theo dõi dòng chảy: vào trạm TEST_RUN
   sockets.emit('workflow:updated', { lenhId, stage: 'TEST_RUN', confirm: which });
   return getLenhDetail(lenhId);
@@ -411,16 +504,20 @@ async function cancelTest(lenhId, which, actorId) {
   return getLenhDetail(lenhId);
 }
 
-// Xác nhận test hàng loạt (CNSP hoặc QA) cho nhiều lệnh.
-async function confirmTestBatch(lenhIds, which, actorId) {
+// Xác nhận test hàng loạt (CNSP hoặc QA) cho nhiều lệnh. `extra` (người test/loại/ghi chú) áp cho cả lô khi QA.
+async function confirmTestBatch(lenhIds, which, actorId, extra = {}) {
   if (!Array.isArray(lenhIds) || lenhIds.length === 0) {
     throw new AppError('Chọn ít nhất một lệnh', { status: 422, errorCode: 'NO_LENH' });
+  }
+  // QA đạt bắt buộc có người test (áp chung cho cả lô).
+  if (which === 'qa' && !(extra.nguoiTest || '').toString().trim()) {
+    throw new AppError('Bắt buộc nhập người test khi QA xác nhận đạt', { status: 422, errorCode: 'NGUOI_TEST_REQUIRED' });
   }
   let okCount = 0;
   const errors = [];
   for (const id of lenhIds) {
     try {
-      await confirmTest(id, which, actorId);
+      await confirmTest(id, which, actorId, extra);
       okCount += 1;
     } catch (e) {
       errors.push({ lenhId: id, message: e.message });
@@ -643,7 +740,7 @@ async function testCnspDone(date) { return repo.testDoneByDate(date, CNSP_CP); }
 async function testQaDone(date) { return repo.testDoneByDate(date, QA_CP); }
 
 module.exports = {
-  listRelease1Candidates, autoPlanCandidates, createRelease1, release1History, listReleaseSets, releaseSet,
+  listRelease1Candidates, autoPlanCandidates, createRelease1, createDotSanXuat, release1History, listReleaseSets, releaseSet,
   listGopCandidates, gopDotVai, gopHistory,
   listTestRunCandidates, getLenhDetail, recordTestRun, confirmTest, confirmTestBatch, cancelTest,
   listRelease2Candidates, approveRelease2, approveRelease2Batch, testRunHistory,

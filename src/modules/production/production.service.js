@@ -100,6 +100,28 @@ async function startProduction(lenhId, actorId, chuyenId = null) {
   return getRun(lenhId);
 }
 
+// Chạy ĐẶC BIỆT (bỏ Test Run — chỉ thị đặc biệt): khởi chạy đợt SX còn ở RELEASE_1 (chưa Test Run).
+// Giống startProduction nhưng nới gate cho RELEASE_1 + ghi audit CHAY_DAC_BIET_BO_TEST.
+async function startProductionSpecial(lenhId, actorId, chuyenId = null, lyDo = null) {
+  const lenh = await repo.getLenhBasic(lenhId);
+  if (!lenh) throw new AppError('Đợt sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  if (lenh.trang_thai !== 'RELEASE_1') {
+    throw new AppError('Chạy đặc biệt chỉ áp dụng cho đợt đã Release 1 & CHƯA Test Run', { status: 409, errorCode: 'WRONG_STAGE' });
+  }
+  const chuyenThucTe = chuyenId || lenh.chuyen_id;
+  const maPhieu = await repo.nextMaPhieu();
+  await withTransaction(async (client) => {
+    if (chuyenId && chuyenId !== lenh.chuyen_id) await repo.setLenhChuyen(client, lenhId, chuyenId, actorId);
+    await repo.createPhieu(client, { lenhId, chuyenId: chuyenThucTe, maPhieu }, actorId);
+    await repo.setLenhTrangThai(client, lenhId, 'SAN_XUAT', actorId); // bỏ qua Test Run + Release 2
+  });
+  await repo.logChayDacBiet(lenhId, lenh.ma_lenh_san_xuat, lyDo, actorId);
+  await tracking.moveByLenh(lenhId, 'SAN_XUAT', actorId);
+  sockets.emit('production:updated', { lenhId, stage: 'SAN_XUAT', dacBiet: true });
+  sockets.emit('dashboard:refresh', {});
+  return getRun(lenhId);
+}
+
 const DEFAULT_DRY_MIN = 60; // thời gian phơi mặc định (phút) — chỉnh được ở màn Xe phơi
 
 async function printTem(phieuId, soLuong, actorId) {
@@ -179,8 +201,15 @@ async function finishRun(phieuId, actorId) {
   const phieu = await repo.getPhieuById(phieuId);
   if (!phieu) throw new AppError('Phiếu sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   await repo.finishPhieu(phieuId, actorId);
-  sockets.emit('production:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'finish' });
-  return getRun(phieu.lenh_san_xuat_id);
+  // IN KIẾNG (điểm 16): nếu đợt vừa hoàn tất là giai đoạn IN → kích hoạt đợt ÉP ỦI liên kết sang "chờ chạy".
+  let epUi = null;
+  const gd = await planningRepo.getLenhGiaiDoan(phieu.lenh_san_xuat_id);
+  if (gd && gd.giai_doan === 'IN') {
+    epUi = await planningRepo.activateEpUi(phieu.lenh_san_xuat_id, actorId);
+    if (epUi) sockets.emit('workflow:updated', { lenhId: epUi.id, stage: 'RELEASE_2', epUi: true });
+  }
+  sockets.emit('production:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'finish', epUiActivated: !!epUi });
+  return { ...(await getRun(phieu.lenh_san_xuat_id)), ep_ui_activated: epUi ? epUi.ma_lenh_san_xuat : null };
 }
 
 async function monitor() {
@@ -413,7 +442,7 @@ async function vuotSanXuat(phieuId, soLuong, actorId) {
 }
 
 module.exports = {
-  listCandidates, getRun, startProduction, printTem, reprintTem, temLabel, temLogs, finishRun, monitor, vuotSanXuat,
+  listCandidates, getRun, startProduction, startProductionSpecial, printTem, reprintTem, temLabel, temLogs, finishRun, monitor, vuotSanXuat,
   getXePhoi, listTemChoPhoi, addToXe, adjustPhoi, listDrying, confirmDry, redry,
   stopLine, resumeLine, addVaiHuy,
   listCancelableTem, cancelPrintTem,

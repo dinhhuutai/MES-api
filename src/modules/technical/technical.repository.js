@@ -44,6 +44,9 @@ async function listCandidates({
               FROM dot_vai_ve dv JOIN gom_set_dot_vai gsd ON gsd.dot_vai_ve_id = dv.id
               JOIN gom_set gs ON gs.id = gsd.gom_set_id AND gs.trang_thai = 'MO'
               WHERE dv.phan_in_id = pin.id) AS gom_set_list,
+           (SELECT string_agg(DISTINCT ldv.ten_loai, ', ')
+              FROM dot_vai_ve dv3 JOIN loai_dot_vai ldv ON ldv.id = dv3.loai_dot_vai_id
+              WHERE dv3.phan_in_id = pin.id) AS loai_dot_vai,
            (SELECT count(*) FROM ket_qua_checkpoint k
               WHERE k.phan_in_id = pin.id AND k.checkpoint_id = ANY($2::uuid[]) AND k.trang_thai = 'DAT')::int AS n_tech_done,
            ${doneExpr('$3')} AS qc_done${withItems ? `,
@@ -67,12 +70,14 @@ async function listCandidates({
              ) AS tg_vao,
              $9::int AS sla_phut, $10::int AS canh_bao_truoc_phut
     ) sla ON true
-    -- Loại phần in ĐÃ RELEASE (có đợt vải nằm trong 1 lệnh ≠ HUY): nó đã rời trạm READY, không hiển thị ở màn READY
-    -- (kể cả sau khi xóa mềm xác nhận READY — tránh phần in vừa ở READY vừa ở Test Run/Sản xuất).
-    -- Lệnh đã hủy chuyển trạm ('HUY') coi như chưa release → phần in được xét lại bình thường.
-    WHERE NOT EXISTS (SELECT 1 FROM dot_vai_ve dvr JOIN lenh_sx_dot_vai lsr ON lsr.dot_vai_ve_id = dvr.id
-                      JOIN lenh_san_xuat lr ON lr.id = lsr.lenh_san_xuat_id
-                      WHERE dvr.phan_in_id = pin.id AND lr.trang_thai <> 'HUY')
+    -- Ở READY khi phần in CÒN đợt vải CHƯA release (đợt không nằm trong lệnh ≠ HUY), HOẶC chưa có đợt vải nào.
+    -- ⇒ phần in đã release hết đợt thì rời READY; nhưng nếu "Mở lại READY" (hủy QC) mà còn đợt mới chưa release
+    -- thì quay lại danh sách READY để làm lại kỹ thuật/QC (kể cả khi phần in đã có đợt sản xuất trước).
+    WHERE (EXISTS (SELECT 1 FROM dot_vai_ve dvu WHERE dvu.phan_in_id = pin.id AND dvu.trang_thai <> 'DA_GOP'
+                     AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsu JOIN lenh_san_xuat lu ON lu.id = lsu.lenh_san_xuat_id
+                                     WHERE lsu.dot_vai_ve_id = dvu.id AND lu.trang_thai <> 'HUY'))
+             OR NOT EXISTS (SELECT 1 FROM dot_vai_ve dvz WHERE dvz.phan_in_id = pin.id AND dvz.trang_thai <> 'DA_GOP'))
+      AND pin.dang_hoat_dong
       AND ${SEARCH}`;
 
   // Mặc định (màn kỹ thuật): mọi phần in chưa QC xong.
@@ -109,9 +114,11 @@ async function countReadyItems({ khuonId, filmId, mucId, qcId }) {
     FROM (
       SELECT ${doneExpr('$1')} AS khuon_done, ${doneExpr('$2')} AS film_done, ${doneExpr('$3')} AS muc_done
       FROM phan_in pin
-      WHERE NOT EXISTS (SELECT 1 FROM dot_vai_ve dvr JOIN lenh_sx_dot_vai lsr ON lsr.dot_vai_ve_id = dvr.id
-                        JOIN lenh_san_xuat lr ON lr.id = lsr.lenh_san_xuat_id
-                        WHERE dvr.phan_in_id = pin.id AND lr.trang_thai <> 'HUY')
+      WHERE (EXISTS (SELECT 1 FROM dot_vai_ve dvu WHERE dvu.phan_in_id = pin.id AND dvu.trang_thai <> 'DA_GOP'
+                       AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsu JOIN lenh_san_xuat lu ON lu.id = lsu.lenh_san_xuat_id
+                                       WHERE lsu.dot_vai_ve_id = dvu.id AND lu.trang_thai <> 'HUY'))
+             OR NOT EXISTS (SELECT 1 FROM dot_vai_ve dvz WHERE dvz.phan_in_id = pin.id AND dvz.trang_thai <> 'DA_GOP'))
+        AND pin.dang_hoat_dong
         AND NOT (${doneExpr('$4')})
     ) q`;
   const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [khuonId, filmId, mucId, qcId]);
@@ -346,7 +353,75 @@ async function insertStatusLog(client, { ketQuaId, trangThaiMoiId, nguoiId, lyDo
   );
 }
 
+// ─── "Mở READY" (admin) ─────────────────────────────────────────────────────
+// Danh sách phần in "đi tắt READY": ĐÃ qua READY (QC_XAC_NHAN=DAT) & đã có đợt sản xuất (lệnh ≠ HUY),
+// NHƯNG còn ≥1 đợt vải MỚI chưa release → đợt mới tự vào Release 1 không qua READY. Admin có thể ép về READY.
+async function listReopenCandidates({ search = '' }) {
+  const sql = `
+    SELECT pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim,
+           mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
+           (SELECT count(*) FROM dot_vai_ve d WHERE d.phan_in_id = pin.id AND d.trang_thai <> 'DA_GOP'
+              AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai l JOIN lenh_san_xuat ls ON ls.id = l.lenh_san_xuat_id
+                              WHERE l.dot_vai_ve_id = d.id AND ls.trang_thai <> 'HUY'))::int AS so_dot_moi,
+           (SELECT string_agg(d.ma_dot_vai, ', ' ORDER BY d.ma_dot_vai) FROM dot_vai_ve d WHERE d.phan_in_id = pin.id AND d.trang_thai <> 'DA_GOP'
+              AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai l JOIN lenh_san_xuat ls ON ls.id = l.lenh_san_xuat_id
+                              WHERE l.dot_vai_ve_id = d.id AND ls.trang_thai <> 'HUY')) AS dot_moi,
+           (SELECT string_agg(DISTINCT ls.ma_lenh_san_xuat, ', ') FROM dot_vai_ve d
+              JOIN lenh_sx_dot_vai l ON l.dot_vai_ve_id = d.id JOIN lenh_san_xuat ls ON ls.id = l.lenh_san_xuat_id
+              WHERE d.phan_in_id = pin.id AND ls.trang_thai <> 'HUY') AS lenh_da_co
+    FROM phan_in pin
+    JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+    JOIN don_hang dh ON dh.id = mh.don_hang_id
+    JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+    WHERE pin.dang_hoat_dong
+      AND EXISTS (SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint cp ON cp.id = k.checkpoint_id
+                    JOIN tram t ON t.id = cp.tram_id JOIN workflow_version wv ON wv.id = t.workflow_version_id AND wv.la_hien_hanh
+                    WHERE k.phan_in_id = pin.id AND t.ma_tram = 'READY' AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND k.trang_thai = 'DAT')
+      AND EXISTS (SELECT 1 FROM dot_vai_ve d JOIN lenh_sx_dot_vai l ON l.dot_vai_ve_id = d.id
+                    JOIN lenh_san_xuat ls ON ls.id = l.lenh_san_xuat_id WHERE d.phan_in_id = pin.id AND ls.trang_thai <> 'HUY')
+      AND EXISTS (SELECT 1 FROM dot_vai_ve d WHERE d.phan_in_id = pin.id AND d.trang_thai <> 'DA_GOP'
+                    AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai l JOIN lenh_san_xuat ls ON ls.id = l.lenh_san_xuat_id
+                                    WHERE l.dot_vai_ve_id = d.id AND ls.trang_thai <> 'HUY'))
+      AND ($1 = '' OR pin.ma_phan ILIKE '%'||$1||'%' OR kh.ten_khach_hang ILIKE '%'||$1||'%'
+           OR mh.ma_hang ILIKE '%'||$1||'%' OR pin.mau_vai ILIKE '%'||$1||'%')
+    ORDER BY kh.ten_khach_hang, pin.ma_phan`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [search]);
+  return rows;
+}
+
+// Mở lại READY: hủy mọi xác nhận READY (Khuôn/Film/Mực/QC) của phần in + gắn cờ đợt mới phải làm lại READY/Test Run.
+async function reopenReadyResults(client, phanInId, actorId) {
+  const { rowCount } = await client.query(
+    `UPDATE ket_qua_checkpoint SET trang_thai='HUY', nguoi_xac_nhan_id=NULL, tg_xac_nhan=NULL, updated_by=$2, updated_date=CURRENT_TIMESTAMP
+     WHERE phan_in_id=$1 AND trang_thai='DAT' AND checkpoint_id IN (
+       SELECT cp.id FROM checkpoint cp JOIN tram t ON t.id=cp.tram_id
+       JOIN workflow_version wv ON wv.id=t.workflow_version_id AND wv.la_hien_hanh WHERE t.ma_tram='READY')`.replace(/\s+/g, ' '),
+    [phanInId, actorId]
+  );
+  return rowCount;
+}
+
+async function flagUnreleasedDotLamLai(client, phanInId, actorId) {
+  const { rowCount } = await client.query(
+    `UPDATE dot_vai_ve dv SET can_lam_lai_ready=true, updated_by=$2, updated_date=CURRENT_TIMESTAMP
+     WHERE dv.phan_in_id=$1 AND dv.trang_thai<>'DA_GOP'
+       AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai l JOIN lenh_san_xuat ls ON ls.id=l.lenh_san_xuat_id
+                       WHERE l.dot_vai_ve_id=dv.id AND ls.trang_thai<>'HUY')`.replace(/\s+/g, ' '),
+    [phanInId, actorId]
+  );
+  return rowCount;
+}
+
+async function logReopenReady(phanInId, payload, actorId) {
+  await query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('phan_in', $1, 'MO_LAI_READY', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`,
+    [String(phanInId), JSON.stringify(payload || {}), actorId]
+  );
+}
+
 module.exports = {
   loadReadyConfig, listCandidates, countReadyItems, historyByDate, doneByDate, listConfirmHistory, isPhanInReleased, getPhanInBasic, getResults, getBulkStates,
   getReadyEntryTime, findResultId, upsertResult, cancelResult, logCancel, insertStatusLog,
+  listReopenCandidates, reopenReadyResults, flagUnreleasedDotLamLai, logReopenReady,
 };

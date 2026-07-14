@@ -16,6 +16,10 @@ const autoPlanCandidates = asyncHandler(async (req, res) =>
 const createRelease1 = asyncHandler(async (req, res) =>
   created(res, await service.createRelease1(req.body, req.user.id), 'Đã Release 1 — tạo lệnh sản xuất'));
 
+// Tạo Đợt sản xuất (gộp/tách nhiều đợt vải + SL từng đợt vào 1 đợt SX)
+const createDotSanXuat = asyncHandler(async (req, res) =>
+  created(res, await service.createDotSanXuat(req.body, req.user.id), 'Đã tạo đợt sản xuất'));
+
 const release1History = asyncHandler(async (req, res) => {
   const date = req.query.date || new Date().toISOString().slice(0, 10);
   return ok(res, await service.release1History(date));
@@ -51,7 +55,12 @@ const confirmCNSP = asyncHandler(async (req, res) =>
   ok(res, await service.confirmTest(req.params.lenhId, 'cnsp', req.user.id), 'CNSP đã xác nhận'));
 
 const confirmQA = asyncHandler(async (req, res) =>
-  ok(res, await service.confirmTest(req.params.lenhId, 'qa', req.user.id, { soLuong: req.body?.soLuong ?? null }), 'QA đã xác nhận'));
+  ok(res, await service.confirmTest(req.params.lenhId, 'qa', req.user.id, {
+    soLuong: req.body?.soLuong ?? null,
+    nguoiTest: req.body?.nguoiTest ?? null,
+    ghiChu: req.body?.ghiChu ?? null,
+    loaiTest: req.body?.loaiTest ?? null,
+  }), 'QA đã xác nhận test'));
 
 const cancelCNSP = asyncHandler(async (req, res) =>
   ok(res, await service.cancelTest(req.params.lenhId, 'cnsp', req.user.id), 'Đã hủy xác nhận CNSP'));
@@ -63,7 +72,11 @@ const confirmCNSPBatch = asyncHandler(async (req, res) =>
   ok(res, await service.confirmTestBatch(req.body.lenhIds, 'cnsp', req.user.id), 'CNSP xác nhận hàng loạt'));
 
 const confirmQABatch = asyncHandler(async (req, res) =>
-  ok(res, await service.confirmTestBatch(req.body.lenhIds, 'qa', req.user.id), 'QA xác nhận hàng loạt'));
+  ok(res, await service.confirmTestBatch(req.body.lenhIds, 'qa', req.user.id, {
+    nguoiTest: req.body?.nguoiTest ?? null,
+    loaiTest: req.body?.loaiTest ?? null,
+    ghiChu: req.body?.ghiChu ?? null,
+  }), 'QA xác nhận hàng loạt'));
 
 const release2Candidates = asyncHandler(async (req, res) => {
   const { page, limit, offset } = getPaging(req.query);
@@ -122,7 +135,7 @@ const upsertCaTuan = asyncHandler(async (req, res) =>
 
 module.exports = {
   listCaTuan, upsertCaTuan,
-  release1Candidates, autoPlanCandidates, createRelease1, release1History, releaseSets, releaseSet,
+  release1Candidates, autoPlanCandidates, createRelease1, createDotSanXuat, release1History, releaseSets, releaseSet,
   gopCandidates, gopDotVai, gopHistory,
   testRunCandidates, lenhDetail, recordTestRun,
   confirmCNSP, confirmQA, cancelCNSP, cancelQA, confirmCNSPBatch, confirmQABatch,

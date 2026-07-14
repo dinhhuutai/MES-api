@@ -12,6 +12,10 @@ router.use(auth);
 router.get('/candidates', rbac('PROD_RUN'), c.candidates);
 router.get('/run/:lenhId', rbac('PROD_RUN', 'PROD_MONITOR'), c.getRun);
 router.post('/:lenhId/start', rbac('PROD_RUN'), c.start);
+
+// Chạy đặc biệt (bỏ Test Run) — cùng danh sách Test Run, chạy thẳng đợt còn RELEASE_1
+router.get('/chay-dac-biet/candidates', rbac('PROD_RUN'), c.chayDacBietCandidates);
+router.post('/chay-dac-biet/:lenhId', rbac('PROD_RUN'), c.chayDacBiet);
 router.post('/phieu/:phieuId/tem', rbac('PROD_RUN'), c.printTem);
 router.post('/phieu/:phieuId/finish', rbac('PROD_RUN'), c.finish);
 router.post('/tem/:temId/in-lai', rbac('PROD_RUN'), c.reprintTem);

@@ -3,14 +3,21 @@
 const repo = require('./orders.repository');
 const AppError = require('../../utils/AppError');
 const { buildMeta } = require('../../utils/pagination');
+const { withTransaction } = require('../../config/db');
+const sockets = require('../../sockets');
 
 async function listPhanIn({ search, missingProfit, page, limit, offset }) {
   const { rows, total } = await repo.list({ search, missingProfit, offset, limit });
   return { items: rows, meta: buildMeta(page, limit, total) };
 }
 
-async function listVaiVe({ search, filters, stage, page, limit, offset }) {
-  const { rows, total } = await repo.listVaiVe({ search, filters, stage, offset, limit });
+async function listVaiVe({ search, filters, stage, page, limit, offset, sortKey, sortDir }) {
+  const { rows, total } = await repo.listVaiVe({ search, filters, stage, offset, limit, sortKey, sortDir });
+  // Chế độ "Tất cả": gắn ledger theo TỪNG ĐỢT SẢN XUẤT (query riêng, IPS-safe).
+  if ((!stage || stage === 'ALL') && rows.length) {
+    const byPin = await repo.dotSanXuatLedger(rows.map((r) => r.phan_in_id));
+    rows.forEach((r) => { r.dot_san_xuat = byPin[r.phan_in_id] || []; });
+  }
   return { items: rows, meta: buildMeta(page, limit, total) };
 }
 
@@ -54,4 +61,25 @@ async function profitHistory(date) {
   }));
 }
 
-module.exports = { listPhanIn, listVaiVe, getPhanIn, setChoKho, setLoiNhuan, profitHistory };
+// Hủy phần in (xóa mềm): tìm kiếm + xóa nhiều phần in cùng lúc.
+async function searchForCancel(q) {
+  return repo.searchPhanInForCancel(q || '');
+}
+
+async function softDeletePhanIn(phanInIds, lyDo, actorId) {
+  if (!Array.isArray(phanInIds) || phanInIds.length === 0) {
+    throw new AppError('Chưa chọn phần in nào để hủy', { status: 422, errorCode: 'EMPTY' });
+  }
+  const done = [];
+  await withTransaction(async (client) => {
+    for (const id of phanInIds) {
+      const ma = await repo.softDeletePhanInTx(client, id, actorId);
+      if (ma) done.push({ id, ma });
+    }
+  });
+  for (const d of done) await repo.logSoftDeletePhanIn(d.id, d.ma, lyDo, actorId);
+  if (done.length) sockets.emit('dashboard:refresh', {});
+  return { count: done.length, items: done };
+}
+
+module.exports = { listPhanIn, listVaiVe, getPhanIn, setChoKho, setLoiNhuan, profitHistory, searchForCancel, softDeletePhanIn };

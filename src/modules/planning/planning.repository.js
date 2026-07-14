@@ -3,8 +3,9 @@
 const { query } = require('../../config/db');
 const { lenhPhanInMatch } = require('../../utils/search');
 
-// SL đã release của 1 đợt vải = Σ so_luong_release các lệnh non-HUY gắn đợt đó (cho Release 1 THEO SỐ LƯỢNG).
-const DA_REL = `COALESCE((SELECT SUM(ls.so_luong_release) FROM lenh_sx_dot_vai lsd
+// SL vải đã ĐƯA VÀO đợt SX của 1 đợt vải = Σ lenh_sx_dot_vai.so_luong các lệnh non-HUY gắn đợt đó
+// (mig 052: SL đưa vào theo TỪNG đợt nằm ở junction — đúng cả khi 1 lệnh gồm nhiều đợt).
+const DA_REL = `COALESCE((SELECT SUM(COALESCE(lsd.so_luong,0)) FROM lenh_sx_dot_vai lsd
     JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
     WHERE lsd.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY'),0)`;
 
@@ -14,7 +15,7 @@ async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
   const SEARCH = `($1 = '' OR pin.ma_phan ILIKE '%'||$1||'%' OR kh.ten_khach_hang ILIKE '%'||$1||'%'
                   OR mh.ma_hang ILIKE '%'||$1||'%' OR pin.mau_vai ILIKE '%'||$1||'%'
                   OR pin.kich_vai ILIKE '%'||$1||'%' OR pin.kich_phim ILIKE '%'||$1||'%'
-                  OR dv.ma_dot_vai ILIKE '%'||$1||'%')`;
+                  OR dv.ma_dot_vai ILIKE '%'||$1||'%' OR dv.id::text ILIKE '%'||$1||'%')`;
   const FROM = `
     FROM dot_vai_ve dv
     JOIN phan_in pin ON pin.id = dv.phan_in_id
@@ -22,7 +23,8 @@ async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
     JOIN don_hang dh ON dh.id = mh.don_hang_id
     JOIN khach_hang kh ON kh.id = dh.khach_hang_id
     LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id
-    WHERE EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
+    WHERE pin.dang_hoat_dong AND dv.trang_thai <> 'DA_HUY'
+      AND EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
                   WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT')
       AND (COALESCE(dv.so_luong_vai_ve,0) - ${DA_REL}) > 0
       AND NOT EXISTS (SELECT 1 FROM gom_set_dot_vai gsd JOIN gom_set gs ON gs.id = gsd.gom_set_id
@@ -48,17 +50,48 @@ async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
   return { rows: data.rows, total: count.rows[0].total };
 }
 
-// SL đã release / còn lại của từng đợt vải (cho createRelease1 validate + prefill).
+// SL đã đưa vào / còn lại của từng đợt vải (cho createRelease1 validate + prefill).
 async function getDotVaiRemaining(dotVaiIds) {
   const { rows } = await query(
     `SELECT dv.id::text AS id, COALESCE(dv.so_luong_vai_ve,0)::int AS so_luong,
-            COALESCE((SELECT SUM(ls.so_luong_release) FROM lenh_sx_dot_vai lsd
+            COALESCE((SELECT SUM(COALESCE(lsd.so_luong,0)) FROM lenh_sx_dot_vai lsd
                       JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
                       WHERE lsd.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY'),0)::int AS da_release
      FROM dot_vai_ve dv WHERE dv.id = ANY($1::uuid[])`,
     [dotVaiIds]
   );
   return rows.map((r) => ({ id: r.id, so_luong: r.so_luong, da_release: r.da_release, con_release: Math.max(0, r.so_luong - r.da_release) }));
+}
+
+// Thông tin đợt vải để SOẠN đợt sản xuất (mig 052): con_dua theo junction so_luong + màu + READY (QC).
+async function getDotVaiForCompose(dotVaiIds) {
+  const { rows } = await query(
+    `SELECT dv.id::text AS id, dv.phan_in_id::text AS phan_in_id, dv.ma_dot_vai,
+            pin.mau_vai, dv.can_lam_lai_ready, pin.la_in_kieng,
+            COALESCE(dv.so_luong_vai_ve,0)::int AS so_luong,
+            COALESCE((SELECT SUM(COALESCE(lsd.so_luong,0)) FROM lenh_sx_dot_vai lsd
+                      JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
+                      WHERE lsd.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY'),0)::int AS da_dua,
+            EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
+                    WHERE kq.phan_in_id = dv.phan_in_id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT') AS qc_done
+     FROM dot_vai_ve dv JOIN phan_in pin ON pin.id = dv.phan_in_id
+     WHERE dv.id = ANY($1::uuid[])`,
+    [dotVaiIds]
+  );
+  return rows.map((r) => ({ ...r, con_dua: Math.max(0, r.so_luong - r.da_dua) }));
+}
+
+// Phần in ĐANG IN TEM (có phiếu DANG_CHAY) — dùng quyết định đi tắt Test Run (điểm 5/6). IPS-safe 1 dòng.
+async function phanInDangChay(phanInIds) {
+  if (!phanInIds || phanInIds.length === 0) return [];
+  const sql = `SELECT DISTINCT dv.phan_in_id::text AS phan_in_id
+    FROM phieu_san_xuat ps
+    JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id AND ls.trang_thai <> 'HUY'
+    JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
+    JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+    WHERE ps.trang_thai = 'DANG_CHAY' AND dv.phan_in_id = ANY($1::uuid[])`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [phanInIds]);
+  return rows.map((r) => r.phan_in_id);
 }
 
 // ===== GỘP SỐ LƯỢNG ĐỢT VẢI (migration 050) =====
@@ -81,7 +114,7 @@ async function listGopCandidates({ search = '' }) {
     JOIN don_hang dh ON dh.id = mh.don_hang_id
     JOIN khach_hang kh ON kh.id = dh.khach_hang_id
     LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id
-    WHERE COALESCE(dv.trang_thai,'') <> 'DA_GOP'
+    WHERE COALESCE(dv.trang_thai,'') NOT IN ('DA_GOP','DA_HUY') AND pin.dang_hoat_dong
       AND COALESCE(dv.so_luong_vai_ve,0) > 0
       AND EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
                   WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT')
@@ -179,12 +212,30 @@ async function nextMaLenhTx(client) {
 async function createLenh(client, data, actorId) {
   const { rows } = await client.query(
     `INSERT INTO lenh_san_xuat
-       (workflow_version_id, ma_lenh_san_xuat, chuyen_id, so_luong_release, ngay_ke_hoach, trang_thai, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+       (workflow_version_id, ma_lenh_san_xuat, chuyen_id, so_luong_release, ngay_ke_hoach, trang_thai,
+        giai_doan, lenh_lien_ket_id, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
     [data.versionId, data.maLenh, data.chuyenId, data.soLuongRelease, data.ngayKeHoach || null,
-     data.trangThai || 'RELEASE_1', actorId]
+     data.trangThai || 'RELEASE_1', data.giaiDoan || 'IN', data.lenhLienKetId || null, actorId]
   );
   return rows[0].id;
+}
+
+// In kiếng: kích hoạt đợt EP_UI (holding CHO_IN_XONG) của 1 đợt IN vừa chạy hoàn tất → chờ chạy (RELEASE_2).
+async function activateEpUi(inLenhId, actorId) {
+  const { rows } = await query(
+    `UPDATE lenh_san_xuat SET trang_thai='RELEASE_2', updated_by=$2, updated_date=CURRENT_TIMESTAMP
+     WHERE lenh_lien_ket_id=$1 AND giai_doan='EP_UI' AND trang_thai='CHO_IN_XONG'
+     RETURNING id, ma_lenh_san_xuat`,
+    [inLenhId, actorId]
+  );
+  return rows[0] || null;
+}
+
+// Giai đoạn + liên kết của 1 lệnh (cho vòng ép ủi).
+async function getLenhGiaiDoan(lenhId) {
+  const { rows } = await query('SELECT id, giai_doan, lenh_lien_ket_id FROM lenh_san_xuat WHERE id=$1', [lenhId]);
+  return rows[0] || null;
 }
 
 // Đợt vải có code phần (phan_in) ĐÃ test run xong (CNSP+QA DAT ở 1 lệnh trước đó) → không cần test lại.
@@ -213,11 +264,12 @@ async function getDotVaiQty(dotVaiIds) {
   return rows;
 }
 
-async function addLenhDotVai(client, lenhId, dotVaiId, actorId) {
+async function addLenhDotVai(client, lenhId, dotVaiId, actorId, soLuong = null) {
   await client.query(
-    `INSERT INTO lenh_sx_dot_vai (lenh_san_xuat_id, dot_vai_ve_id, created_by)
-     VALUES ($1,$2,$3) ON CONFLICT (lenh_san_xuat_id, dot_vai_ve_id) DO NOTHING`,
-    [lenhId, dotVaiId, actorId]
+    `INSERT INTO lenh_sx_dot_vai (lenh_san_xuat_id, dot_vai_ve_id, so_luong, created_by)
+     VALUES ($1,$2,$3,$4)
+     ON CONFLICT (lenh_san_xuat_id, dot_vai_ve_id) DO UPDATE SET so_luong = EXCLUDED.so_luong`,
+    [lenhId, dotVaiId, soLuong, actorId]
   );
 }
 
@@ -370,7 +422,8 @@ function lenhListSql(extraWhere) {
            EXISTS (SELECT 1 FROM ket_qua_checkpoint k WHERE k.lenh_san_xuat_id = ls.id AND k.checkpoint_id = $1 AND k.trang_thai='DAT') AS cnsp_done,
            EXISTS (SELECT 1 FROM ket_qua_checkpoint k WHERE k.lenh_san_xuat_id = ls.id AND k.checkpoint_id = $2 AND k.trang_thai='DAT') AS qa_done,
            (SELECT count(*) FROM test_run tr WHERE tr.lenh_san_xuat_id = ls.id)::int AS so_lan_test,
-           (SELECT count(*) FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id)::int AS so_dot_vai
+           (SELECT count(*) FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id)::int AS so_dot_vai,
+           (SELECT count(DISTINCT dv.phan_in_id) FROM lenh_sx_dot_vai lsd2 JOIN dot_vai_ve dv ON dv.id = lsd2.dot_vai_ve_id WHERE lsd2.lenh_san_xuat_id = ls.id)::int AS so_phan_in
     FROM lenh_san_xuat ls
     LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
     ${PHAN_INFO_LATERAL}
@@ -623,7 +676,7 @@ async function insertTestRunTx(client, lenhId, { soLuong, ketQua, ghiChu }, acto
   return rows[0];
 }
 
-async function upsertLenhResult(client, { lenhId, checkpointId, trangThai, nguoiXacNhanId, actorId }) {
+async function upsertLenhResult(client, { lenhId, checkpointId, trangThai, nguoiXacNhanId, actorId, giaTriText = null, ghiChu = null }) {
   const ex = await client.query(
     'SELECT id FROM ket_qua_checkpoint WHERE lenh_san_xuat_id=$1 AND checkpoint_id=$2',
     [lenhId, checkpointId]
@@ -631,15 +684,16 @@ async function upsertLenhResult(client, { lenhId, checkpointId, trangThai, nguoi
   if (ex.rows[0]) {
     await client.query(
       `UPDATE ket_qua_checkpoint SET trang_thai=$2, nguoi_xac_nhan_id=$3, tg_xac_nhan=CURRENT_TIMESTAMP,
+         gia_tri_text=COALESCE($5, gia_tri_text), ghi_chu=COALESCE($6, ghi_chu),
          updated_by=$4, updated_date=CURRENT_TIMESTAMP WHERE id=$1`,
-      [ex.rows[0].id, trangThai, nguoiXacNhanId, actorId]
+      [ex.rows[0].id, trangThai, nguoiXacNhanId, actorId, giaTriText, ghiChu]
     );
     return ex.rows[0].id;
   }
   const { rows } = await client.query(
-    `INSERT INTO ket_qua_checkpoint (checkpoint_id, lenh_san_xuat_id, trang_thai, nguoi_xac_nhan_id, tg_xac_nhan, created_by)
-     VALUES ($1,$2,$3,$4,CURRENT_TIMESTAMP,$5) RETURNING id`,
-    [checkpointId, lenhId, trangThai, nguoiXacNhanId, actorId]
+    `INSERT INTO ket_qua_checkpoint (checkpoint_id, lenh_san_xuat_id, trang_thai, nguoi_xac_nhan_id, tg_xac_nhan, gia_tri_text, ghi_chu, created_by)
+     VALUES ($1,$2,$3,$4,CURRENT_TIMESTAMP,$6,$7,$5) RETURNING id`,
+    [checkpointId, lenhId, trangThai, nguoiXacNhanId, actorId, giaTriText, ghiChu]
   );
   return rows[0].id;
 }
@@ -786,7 +840,8 @@ module.exports = {
   listCaTuan, caModeMap, upsertCaTuan,
   listRelease1Candidates, release1HistoryByDate, nextMaLenh, nextMaLenhTx, createLenh,
   release1DoneByDate, planDoneByDate, testDoneByDate,
-  testedDotVaiIds, getDotVaiQty, getDotVaiRemaining, addLenhDotVai, dotVaiAlreadyReleased,
+  testedDotVaiIds, getDotVaiQty, getDotVaiRemaining, getDotVaiForCompose, phanInDangChay, addLenhDotVai, dotVaiAlreadyReleased,
+  activateEpUi, getLenhGiaiDoan,
   listGopCandidates, getDotVaiForMerge, adjustDotVaiQty, markDotVaiGop, insertGopHistory, gopHistoryByDate,
   listTestRunCandidates, listRelease2Candidates, getLenhBasic, getLenhDotVai, getTestRuns,
   getLenhTestStatus, insertTestRun, insertTestRunTx, upsertLenhResult, insertStatusLog, setLenhTrangThai,

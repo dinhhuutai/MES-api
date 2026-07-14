@@ -5,7 +5,8 @@ const { lenhPhanInMatch } = require('../../utils/search');
 
 const PHAN_AGG = `(SELECT string_agg(DISTINCT pin.ma_phan, ', ')
     FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
-    JOIN phan_in pin ON pin.id = dv.phan_in_id WHERE lsd.lenh_san_xuat_id = ls.id)`;
+    JOIN phan_in pin ON pin.id = dv.phan_in_id
+    WHERE lsd.lenh_san_xuat_id = COALESCE(ls.lenh_lien_ket_id, ls.id))`;
 
 // Thông tin phần in đại diện của 1 lệnh (mỗi đợt vải = 1 LSX → ánh xạ 1-1).
 const PHAN_INFO_LATERAL = `
@@ -19,7 +20,7 @@ const PHAN_INFO_LATERAL = `
     JOIN ma_hang mh ON mh.id = pin.ma_hang_id
     JOIN don_hang dh ON dh.id = mh.don_hang_id
     JOIN khach_hang kh ON kh.id = dh.khach_hang_id
-    WHERE lsd.lenh_san_xuat_id = ls.id
+    WHERE lsd.lenh_san_xuat_id = COALESCE(ls.lenh_lien_ket_id, ls.id)
     ORDER BY pin.ma_phan, dv.ma_dot_vai
     LIMIT 1
   ) info ON true`;
@@ -43,12 +44,13 @@ async function listProductionCandidates({ search = '', offset = 0, limit = 20 })
     WHERE ls.trang_thai = 'RELEASE_2'
       AND ($1 = '' OR ls.ma_lenh_san_xuat ILIKE '%'||$1||'%' OR ${lenhPhanInMatch('ls.id', '$1')})`;
   const dataSql = `
-    SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.chuyen_id, ls.ngay_ke_hoach,
+    SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.chuyen_id, ls.ngay_ke_hoach, ls.giai_doan,
            cs.ma_chuyen, cs.ten_chuyen,
            info.ten_khach_hang, info.ma_don_hang, info.ma_hang,
            info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan,
            info.han_giao_hang, info.so_luong_vai_ve,
            (SELECT count(*) FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id)::int AS so_dot_vai,
+           (SELECT count(DISTINCT dv.phan_in_id) FROM lenh_sx_dot_vai lsd2 JOIN dot_vai_ve dv ON dv.id = lsd2.dot_vai_ve_id WHERE lsd2.lenh_san_xuat_id = ls.id)::int AS so_phan_in,
            (SELECT COALESCE(SUM(t.so_luong),0)::int FROM tem t JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
               WHERE ps.lenh_san_xuat_id = ls.id AND t.trang_thai <> 'HUY') AS da_in_truoc,
            (SELECT a.thoi_gian FROM audit_log a WHERE a.ten_bang = 'lenh_san_xuat'
@@ -290,6 +292,15 @@ async function logUndoStart(phieuId, maLenh, actorId) {
     `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
      VALUES ('phieu_san_xuat', $1, 'HUY_XAC_NHAN_CHAY', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`,
     [String(phieuId), JSON.stringify({ ma_lenh: maLenh || null }), actorId]
+  );
+}
+
+// Ghi audit_log chạy đặc biệt (bỏ Test Run — chỉ thị đặc biệt, khởi chạy từ RELEASE_1).
+async function logChayDacBiet(lenhId, maLenh, lyDo, actorId) {
+  await query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('lenh_san_xuat', $1, 'CHAY_DAC_BIET_BO_TEST', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`,
+    [String(lenhId), JSON.stringify({ ma_lenh: maLenh || null, ly_do: lyDo || null }), actorId]
   );
 }
 
@@ -789,7 +800,7 @@ module.exports = {
   getActivePhieu, getPhieuById, getTemsByPhieu, getTemContext, cancelTem, getTemLabelData, caPartsForTem,
   listCancelableTem, getTemForCancel, logTemCancel, logCloseProduction,
   listReopenCandidates, getPhieuFull, reopenPhieuTx, logReopenProduction, logPauseLenhChay,
-  cancelPhieuStart, logUndoStart,
+  cancelPhieuStart, logUndoStart, logChayDacBiet,
   listTemLogByPhieu, nextReprint, logReprint,
   nextMaTem, createTem, logTemPrint, finishPhieu,
   monitorRunning, monitorQueue, downstreamSlaAfterProduction, listXePhoi, listCurrentPhoi, listTemChoPhoi, addTemToXe, adjustPhoi,

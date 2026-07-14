@@ -10,7 +10,7 @@ async function listCandidates({ search = '', offset = 0, limit = 50 }) {
                   OR dv.ma_dot_vai ILIKE '%'||$1||'%')`;
   const FROM = `
     FROM dot_vai_ve dv
-    JOIN phan_in pin ON pin.id = dv.phan_in_id
+    JOIN phan_in pin ON pin.id = dv.phan_in_id AND pin.dang_hoat_dong AND dv.trang_thai <> 'DA_HUY'
     JOIN ma_hang mh ON mh.id = pin.ma_hang_id
     JOIN don_hang dh ON dh.id = mh.don_hang_id
     JOIN khach_hang kh ON kh.id = dh.khach_hang_id

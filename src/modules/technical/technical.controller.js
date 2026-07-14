@@ -104,8 +104,14 @@ const confirmHistory = asyncHandler(async (req, res) => {
 const returnToTech = asyncHandler(async (req, res) =>
   ok(res, await service.returnToTech(req.params.phanInId, req.body, req.user.id), 'Đã trả về kỹ thuật'));
 
+// "Mở READY" (admin): danh sách phần in đi tắt READY + hành động mở lại về READY.
+const reopenCandidates = asyncHandler(async (req, res) =>
+  ok(res, await service.reopenCandidates(req.query.search || '')));
+const reopenReady = asyncHandler(async (req, res) =>
+  ok(res, await service.reopenReady(req.params.phanInId, req.user.id), 'Đã mở lại READY cho phần in'));
+
 module.exports = {
   config, candidates, qcCandidates, itemCounts, detail, history, done,
   confirmItem, confirmItemsBatch, confirmBulk, confirmQC, qcConfirmBatch, cancelItem, confirmHistory,
-  returnToTech,
+  returnToTech, reopenCandidates, reopenReady,
 };

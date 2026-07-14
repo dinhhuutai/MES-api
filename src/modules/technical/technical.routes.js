@@ -17,6 +17,9 @@ router.get('/history', rbac('READY_VIEW', 'READY_QC'), c.history);
 router.get('/done', rbac('READY_VIEW', 'READY_QC'), c.done);
 // Lịch sử trạng thái (xác nhận READY) cho module Hệ thống — chỉ quản trị (READY_CANCEL) mới xóa mềm.
 router.get('/lich-su-xac-nhan', rbac('READY_CANCEL'), c.confirmHistory);
+// "Mở READY" (admin): phần in đi tắt READY (đợt mới tự vào Release 1) → ép về READY.
+router.get('/reopen/candidates', rbac('READY_CANCEL'), c.reopenCandidates);
+router.post('/reopen/:phanInId', rbac('READY_CANCEL'), c.reopenReady);
 router.post('/qc-confirm-batch', rbac('READY_QC'), c.qcConfirmBatch);
 // Bulk 1 mục cho nhiều phần in (theo mã hàng/chọn nhiều). Controller kiểm tra quyền theo mục.
 router.post('/confirm-bulk', rbac('READY_KHUON', 'READY_FILM', 'READY_MUC', 'READY_HSKT'), c.confirmBulk);
