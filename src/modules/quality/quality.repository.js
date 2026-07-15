@@ -592,19 +592,23 @@ async function insertQcTraVe({ loai, phanInId, dotVaiId, lenhId, temId, checklis
   }
 }
 
-// Map { objId: ly_do } các bản ghi trả về CHƯA xử lý — để gắn badge lên list. Best-effort (bảng chưa có → {}).
+// Map { objId: {ly_do, checklist_list, tg, nguoi, so_lan} } các bản ghi trả về CHƯA xử lý — gắn badge + modal lý do.
+// Best-effort (bảng chưa có → {}).
 async function activeReturnsMap(loai, ids) {
   const col = RETURN_COL[loai];
   if (!col || !Array.isArray(ids) || ids.length === 0) return {};
   try {
     const { rows } = await query(
-      `SELECT DISTINCT ON (${col}) ${col} AS obj_id, ly_do
-       FROM qc_tra_ve WHERE loai = $1 AND da_xu_ly = false AND ${col} = ANY($2::uuid[])
-       ORDER BY ${col}, created_date DESC`,
+      `SELECT DISTINCT ON (q.${col}) q.${col} AS obj_id, q.ly_do, q.checklist_list,
+              q.created_date AS tg, nd.ho_ten AS nguoi,
+              (SELECT count(*) FROM qc_tra_ve q2 WHERE q2.loai = $1 AND q2.${col} = q.${col} AND q2.da_xu_ly = false)::int AS so_lan
+       FROM qc_tra_ve q LEFT JOIN nguoi_dung nd ON nd.id = q.created_by
+       WHERE q.loai = $1 AND q.da_xu_ly = false AND q.${col} = ANY($2::uuid[])
+       ORDER BY q.${col}, q.created_date DESC`,
       [loai, ids]
     );
     const m = {};
-    rows.forEach((r) => { m[r.obj_id] = r.ly_do; });
+    rows.forEach((r) => { m[r.obj_id] = { ly_do: r.ly_do, checklist_list: r.checklist_list, tg: r.tg, nguoi: r.nguoi, so_lan: r.so_lan }; });
     return m;
   } catch (e) { return {}; }
 }

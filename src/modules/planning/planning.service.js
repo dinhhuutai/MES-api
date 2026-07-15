@@ -34,7 +34,7 @@ async function listRelease1Candidates({ search, page, limit, offset }) {
   const { rows, total } = await repo.listRelease1Candidates({ search, offset, limit });
   // Đánh dấu đợt vải bị Test Run trả về (badge + lọc).
   const rm = await qaRepo.activeReturnsMap('TEST_RUN', rows.map((r) => r.dot_vai_id));
-  rows.forEach((r) => { r.tra_ve_ly_do = rm[r.dot_vai_id] || null; });
+  rows.forEach((r) => { r.tra_ve = rm[r.dot_vai_id] || null; r.tra_ve_ly_do = rm[r.dot_vai_id]?.ly_do || null; });
   return { items: rows, meta: buildMeta(page, limit, total) };
 }
 
@@ -170,7 +170,7 @@ async function autoPlanCandidates({ search }) {
         ...tinhNangSuat(hskt, c.so_pass, qtyPlan),
       }))
       .sort((a, b) => b.nang_suat_gio - a.nang_suat_gio);
-    return { ...r, tra_ve_ly_do: rm[r.dot_vai_id] || null, hskt, qty_plan: qtyPlan, chuyen_options: chuyenOptions, best_chuyen: null };
+    return { ...r, tra_ve: rm[r.dot_vai_id] || null, tra_ve_ly_do: rm[r.dot_vai_id]?.ly_do || null, hskt, qty_plan: qtyPlan, chuyen_options: chuyenOptions, best_chuyen: null };
   });
 
   // CÂN BẰNG TẢI MỌI CHUYỀN (điểm 12) — LPT list-scheduling để makespan nhỏ nhất + mọi chuyền có việc:

@@ -16,6 +16,9 @@ router.get('/profit-history', rbac('PROFIT_MANAGE'), c.profitHistory);
 // Hủy phần in (xóa mềm) — quyền READY_CANCEL (admin). Đặt TRƯỚC /:id để không bị nuốt.
 router.get('/huy/search', rbac('READY_CANCEL'), c.searchCancel);
 router.post('/huy', rbac('READY_CANCEL'), c.huyPhanIn);
+// Mở phần in (khôi phục xóa mềm).
+router.get('/mo/deleted', rbac('READY_CANCEL'), c.listDeleted);
+router.post('/mo', rbac('READY_CANCEL'), c.moPhanIn);
 router.get('/:id', rbac('ORDER_VIEW'), c.getOne);
 router.patch(
   '/:id/loi-nhuan',

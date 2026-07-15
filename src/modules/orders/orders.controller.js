@@ -51,11 +51,20 @@ const profitHistory = asyncHandler(async (req, res) => {
 
 // Hủy phần in (xóa mềm): tìm kiếm để chọn + hủy nhiều phần in.
 const searchCancel = asyncHandler(async (req, res) =>
-  ok(res, await service.searchForCancel(req.query.q || '')));
+  ok(res, await service.searchForCancel(req.query.q || '', req.query.stage || '')));
 const huyPhanIn = asyncHandler(async (req, res) => {
   const ids = Array.isArray(req.body.phanInIds) ? req.body.phanInIds : [];
   const data = await service.softDeletePhanIn(ids, req.body.lyDo || null, req.user.id);
   return ok(res, data, `Đã hủy (xóa mềm) ${data.count} phần in`);
 });
 
-module.exports = { list, listVaiVe, getOne, setChoKho, setLoiNhuan, profitHistory, searchCancel, huyPhanIn };
+// Mở phần in (khôi phục xóa mềm): danh sách phần in đã hủy + mở lại nhiều phần in.
+const listDeleted = asyncHandler(async (req, res) =>
+  ok(res, await service.listDeleted(req.query.q || '')));
+const moPhanIn = asyncHandler(async (req, res) => {
+  const ids = Array.isArray(req.body.phanInIds) ? req.body.phanInIds : [];
+  const data = await service.reopenPhanIn(ids, req.user.id);
+  return ok(res, data, `Đã mở lại ${data.count} phần in`);
+});
+
+module.exports = { list, listVaiVe, getOne, setChoKho, setLoiNhuan, profitHistory, searchCancel, huyPhanIn, listDeleted, moPhanIn };

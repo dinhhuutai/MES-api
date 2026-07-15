@@ -13,8 +13,10 @@ async function listPhanIn({ search, missingProfit, page, limit, offset }) {
 
 async function listVaiVe({ search, filters, stage, page, limit, offset, sortKey, sortDir }) {
   const { rows, total } = await repo.listVaiVe({ search, filters, stage, offset, limit, sortKey, sortDir });
-  // Chế độ "Tất cả": gắn ledger theo TỪNG ĐỢT SẢN XUẤT (query riêng, IPS-safe).
-  if ((!stage || stage === 'ALL') && rows.length) {
+  // Chế độ TỔNG HỢP (Tất cả + các chip tiền sản xuất): gắn ledger theo TỪNG ĐỢT SẢN XUẤT (query riêng, IPS-safe)
+  // để FE gộp 1 dòng/phần in + mở modal "Chi tiết" theo từng đợt.
+  const AGG_STAGES = ['', 'ALL', 'READY', 'RELEASE_1', 'TEST_RUN', 'RELEASE_2'];
+  if (AGG_STAGES.includes(stage || '') && rows.length) {
     const byPin = await repo.dotSanXuatLedger(rows.map((r) => r.phan_in_id));
     rows.forEach((r) => { r.dot_san_xuat = byPin[r.phan_in_id] || []; });
   }
@@ -61,9 +63,9 @@ async function profitHistory(date) {
   }));
 }
 
-// Hủy phần in (xóa mềm): tìm kiếm + xóa nhiều phần in cùng lúc.
-async function searchForCancel(q) {
-  return repo.searchPhanInForCancel(q || '');
+// Hủy phần in (xóa mềm): tìm kiếm + xóa nhiều phần in cùng lúc. stage = lọc theo trạm hiện tại.
+async function searchForCancel(q, stage) {
+  return repo.searchPhanInForCancel(q || '', stage || '');
 }
 
 async function softDeletePhanIn(phanInIds, lyDo, actorId) {
@@ -73,13 +75,36 @@ async function softDeletePhanIn(phanInIds, lyDo, actorId) {
   const done = [];
   await withTransaction(async (client) => {
     for (const id of phanInIds) {
-      const ma = await repo.softDeletePhanInTx(client, id, actorId);
+      const res = await repo.softDeletePhanInTx(client, id, actorId);
+      if (res) done.push({ id, ma: res.ma_phan, snapshot: res.snapshot });
+    }
+  });
+  for (const d of done) await repo.logSoftDeletePhanIn(d.id, d.ma, lyDo, actorId, d.snapshot);
+  if (done.length) sockets.emit('dashboard:refresh', {});
+  return { count: done.length, items: done.map(({ snapshot, ...r }) => r) };
+}
+
+// Danh sách phần in đã xóa mềm (để "Mở phần in").
+async function listDeleted(q) {
+  return repo.listDeletedPhanIn(q || '');
+}
+
+// Mở lại (khôi phục) nhiều phần in đã xóa mềm — trọn vẹn theo snapshot lúc xóa.
+async function reopenPhanIn(phanInIds, actorId) {
+  if (!Array.isArray(phanInIds) || phanInIds.length === 0) {
+    throw new AppError('Chưa chọn phần in nào để mở lại', { status: 422, errorCode: 'EMPTY' });
+  }
+  const done = [];
+  await withTransaction(async (client) => {
+    for (const id of phanInIds) {
+      const snap = await repo.getDeleteSnapshot(id);
+      const ma = await repo.restorePhanInTx(client, id, snap, actorId);
       if (ma) done.push({ id, ma });
     }
   });
-  for (const d of done) await repo.logSoftDeletePhanIn(d.id, d.ma, lyDo, actorId);
+  for (const d of done) await repo.logRestorePhanIn(d.id, d.ma, actorId);
   if (done.length) sockets.emit('dashboard:refresh', {});
   return { count: done.length, items: done };
 }
 
-module.exports = { listPhanIn, listVaiVe, getPhanIn, setChoKho, setLoiNhuan, profitHistory, searchForCancel, softDeletePhanIn };
+module.exports = { listPhanIn, listVaiVe, getPhanIn, setChoKho, setLoiNhuan, profitHistory, searchForCancel, softDeletePhanIn, listDeleted, reopenPhanIn };

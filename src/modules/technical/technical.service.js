@@ -45,6 +45,7 @@ async function loadConfig() {
   const checkpoints = rows.filter((r) => r.cp_id).map((r) => ({
     id: r.cp_id, ma_checkpoint: r.ma_checkpoint, ten_checkpoint: r.ten_checkpoint,
     bat_buoc: r.bat_buoc, thu_tu: r.cp_thu_tu, cau_hinh_json: r.cau_hinh_json, loai_checkpoint: r.loai_checkpoint,
+    thoi_gian_quy_dinh_phut: r.cp_sla, canh_bao_truoc_phut: r.cp_cb,
   }));
   const byMa = {};
   checkpoints.forEach((c) => { byMa[c.ma_checkpoint] = c; });
@@ -74,20 +75,26 @@ async function getConfig() {
 async function listCandidates({ search, page, limit, offset, onlyQcReady = false }) {
   const { tram, byMa } = await loadConfig();
   const inputIds = INPUT_CPS.map((ma) => byMa[ma]?.id).filter(Boolean);
-  // SLA hàng READY = SLA trạm READY (đếm từ lúc đợt vải về/ vào READY). Mặc định 480' nếu chưa cấu hình.
+  // SLA hàng READY theo GIAI ĐOẠN (task 3):
+  //  - Màn Kỹ thuật (KT chưa đủ 3 mục): dùng SLA trạm READY, đếm từ lúc vào READY. KT xong 3 mục ⇒ ngừng đếm (không đỏ).
+  //  - Màn QC (đủ 3 mục, chờ QC): dùng SLA checkpoint QC_XAC_NHAN, đếm từ lúc KT hoàn tất (mục KT cuối được xác nhận).
   const readySla = tram.thoi_gian_quy_dinh_phut != null ? tram.thoi_gian_quy_dinh_phut : 480;
   const readyCanhBao = tram.canh_bao_truoc_phut != null ? tram.canh_bao_truoc_phut : 60;
+  const qcCp = byMa[QC_CP] || {};
+  const qcSla = qcCp.thoi_gian_quy_dinh_phut != null ? qcCp.thoi_gian_quy_dinh_phut : 60;
+  const qcCanhBao = qcCp.canh_bao_truoc_phut != null ? qcCp.canh_bao_truoc_phut : 15;
   const { rows, total } = await repo.listCandidates({
     search, inputIds, qcId: byMa[QC_CP]?.id,
     khuonId: byMa.KHUON?.id, filmId: byMa.FILM?.id, mucId: byMa.MUC?.id,
-    onlyQcReady, offset, limit, readySla, readyCanhBao, techTotal: TECH_TOTAL,
+    onlyQcReady, offset, limit, readySla, readyCanhBao, qcSla, qcCanhBao, techTotal: TECH_TOTAL,
   });
   // Đánh dấu phần in bị QC (READY) trả về (badge + lọc "chỉ hiện phần bị trả về").
   const rm = await qaRepo.activeReturnsMap('READY', rows.map((r) => r.id));
   const items = rows.map((r) => ({
     ...r,
     trang_thai_ready: r.qc_done ? 'DONE' : r.n_tech_done >= TECH_TOTAL ? 'CHO_QC' : r.n_tech_done > 0 ? 'DANG' : 'CHUA',
-    tra_ve_ly_do: rm[r.id] || null,
+    tra_ve: rm[r.id] || null,
+    tra_ve_ly_do: rm[r.id]?.ly_do || null, // giữ tương thích cũ
   }));
   return { items, meta: buildMeta(page, limit, total) };
 }

@@ -12,7 +12,8 @@ async function loadReadyConfig() {
     SELECT v.id AS version_id, v.ma_version, v.ten_version,
            t.id AS tram_id, t.ma_tram, t.ten_tram, t.thu_tu AS tram_thu_tu, t.thoi_gian_quy_dinh_phut, t.canh_bao_truoc_phut,
            cp.id AS cp_id, cp.ma_checkpoint, cp.ten_checkpoint, cp.bat_buoc, cp.thu_tu AS cp_thu_tu,
-           cp.cau_hinh_json, lc.ma_loai AS loai_checkpoint
+           cp.cau_hinh_json, cp.thoi_gian_quy_dinh_phut AS cp_sla, cp.canh_bao_truoc_phut AS cp_cb,
+           lc.ma_loai AS loai_checkpoint
     FROM v
     LEFT JOIN tram t ON t.workflow_version_id = v.id AND t.ma_tram = 'READY'
     LEFT JOIN checkpoint cp ON cp.tram_id = t.id AND cp.dang_hoat_dong = true
@@ -28,7 +29,8 @@ async function loadReadyConfig() {
 //  - mặc định: phần in chưa QC xong (màn Chuẩn bị kỹ thuật).
 async function listCandidates({
   search = '', inputIds = [], qcId, khuonId, filmId, mucId,
-  onlyQcReady = false, offset = 0, limit = 20, readySla = null, readyCanhBao = null, techTotal = 3,
+  onlyQcReady = false, offset = 0, limit = 20, readySla = null, readyCanhBao = null,
+  qcSla = null, qcCanhBao = null, techTotal = 3,
 }) {
   const SEARCH = `($1 = '' OR pin.ma_phan ILIKE '%'||$1||'%' OR kh.ten_khach_hang ILIKE '%'||$1||'%'
                   OR dh.ma_don_hang ILIKE '%'||$1||'%' OR mh.ma_hang ILIKE '%'||$1||'%'
@@ -53,13 +55,14 @@ async function listCandidates({
            ${doneExpr('$6')} AS khuon_done,
            ${doneExpr('$7')} AS film_done,
            ${doneExpr('$8')} AS muc_done` : ''},
-           sla.tg_vao, sla.sla_phut, sla.canh_bao_truoc_phut
+           sla.ready_tg_vao, sla.kt_done_tg
     FROM phan_in pin
     JOIN ma_hang mh ON mh.id = pin.ma_hang_id
     JOIN don_hang dh ON dh.id = mh.don_hang_id
     JOIN khach_hang kh ON kh.id = dh.khach_hang_id
     LEFT JOIN LATERAL (
-      -- Mốc "vào READY": ưu tiên ton_tram (029), fallback thời điểm đợt vải về (ERP sync) — đợt chưa release.
+      -- ready_tg_vao = mốc "vào READY" (ton_tram 029, fallback đợt vải về — đợt chưa release).
+      -- kt_done_tg   = mốc KT hoàn tất = lần xác nhận MUỘN NHẤT trong 3 mục KHUON/FILM/MUC (bắt đầu đếm SLA QC).
       SELECT COALESCE(
                (SELECT min(tt.tg_vao) FROM ton_tram tt JOIN dot_vai_ve d2 ON d2.id = tt.dot_vai_ve_id
                   JOIN tram tr ON tr.id = tt.tram_id
@@ -67,8 +70,9 @@ async function listCandidates({
                (SELECT min(COALESCE(dv.created_date, dv.ngay_vai_ve::timestamptz)) FROM dot_vai_ve dv
                   WHERE dv.phan_in_id = pin.id
                     AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd WHERE lsd.dot_vai_ve_id = dv.id))
-             ) AS tg_vao,
-             $9::int AS sla_phut, $10::int AS canh_bao_truoc_phut
+             ) AS ready_tg_vao,
+             (SELECT max(COALESCE(k.tg_xac_nhan, k.created_date)) FROM ket_qua_checkpoint k
+                WHERE k.phan_in_id = pin.id AND k.checkpoint_id = ANY($2::uuid[]) AND k.trang_thai = 'DAT') AS kt_done_tg
     ) sla ON true
     -- Ở READY khi phần in CÒN đợt vải CHƯA release (đợt không nằm trong lệnh ≠ HUY), HOẶC chưa có đợt vải nào.
     -- ⇒ phần in đã release hết đợt thì rời READY; nhưng nếu "Mở lại READY" (hủy QC) mà còn đợt mới chưa release
@@ -87,15 +91,21 @@ async function listCandidates({
     ? `WHERE q.qc_done = false AND q.n_tech_done >= ${tt}`
     : 'WHERE q.qc_done = false';
 
+  // SLA theo GIAI ĐOẠN (task 3): $11=onlyQcReady. Màn QC → SLA QC_XAC_NHAN ($12) đếm từ kt_done_tg;
+  // màn Kỹ thuật → SLA trạm READY ($9) từ ready_tg_vao, và KHI ĐỦ 3 mục KT → sla NULL (ngừng đếm, không đỏ ở KT).
   // Gộp data + total vào 1 query bằng COUNT(*) OVER() (1 round-trip thay vì 2).
   const dataSql = `
-    SELECT q.*, count(*) OVER()::int AS total_count
+    SELECT q.*,
+           CASE WHEN $11 THEN q.kt_done_tg ELSE q.ready_tg_vao END AS tg_vao,
+           CASE WHEN $11 THEN $12::int WHEN q.n_tech_done >= ${tt} THEN NULL ELSE $9::int END AS sla_phut,
+           CASE WHEN $11 THEN $13::int ELSE $10::int END AS canh_bao_truoc_phut,
+           count(*) OVER()::int AS total_count
     FROM (${selectBase(true)}) q
     ${OUTER_WHERE}
     ORDER BY q.n_tech_done DESC, q.ma_phan
     LIMIT $4 OFFSET $5`;
 
-  const { rows } = await query(dataSql, [search, inputIds, qcId, limit, offset, khuonId, filmId, mucId, readySla, readyCanhBao]);
+  const { rows } = await query(dataSql, [search, inputIds, qcId, limit, offset, khuonId, filmId, mucId, readySla, readyCanhBao, onlyQcReady, qcSla, qcCanhBao]);
   const total = rows.length ? rows[0].total_count : 0;
   // Bỏ cột phụ total_count khỏi từng dòng trả về.
   const items = rows.map(({ total_count, ...r }) => r);

@@ -2,6 +2,7 @@
 
 const { query } = require('../../config/db');
 const ordersRepo = require('../orders/orders.repository');
+const { dotStageCase, readyFallback, ORDER_SQL_ARRAY } = require('../../utils/stage');
 
 const groupMap = (rows, keyCol, valCol = 'n') =>
   rows.reduce((acc, r) => { acc[r[keyCol]] = Number(r[valCol]); return acc; }, {});
@@ -188,55 +189,36 @@ async function confirmTodayDetail() {
 // KHÔNG phụ thuộc ton_tram (029) để tránh lệch khi ton_tram chưa đồng bộ. Nhất quán với màn Đơn hàng.
 // Một phần in có thể ở nhiều giai đoạn (nhiều đợt vải rải rác) → đếm distinct phần in / mã hàng theo từng giai đoạn.
 async function stageCounts() {
-  // tem cùng lệnh của đợt vải: EXISTS (phiếu → tem) theo trạng thái.
-  const temEx = (cond) => `EXISTS (SELECT 1 FROM phieu_san_xuat ps JOIN tem t ON t.phieu_san_xuat_id = ps.id
-    WHERE ps.lenh_san_xuat_id = lk.lenh_id AND t.trang_thai <> 'HUY' AND ${cond})`;
-  const STAGED_WITH = `
-    WITH dv AS (
-      SELECT d.id AS dot_vai_id, d.phan_in_id, pi.ma_hang_id
-      FROM dot_vai_ve d
-      JOIN phan_in pi ON pi.id = d.phan_in_id
-      JOIN ma_hang mh ON mh.id = pi.ma_hang_id
+  // GIAI ĐOẠN DOMINANT mỗi phần in ("mỗi phần in 1 trạm" — utils/stage.js), dùng CHUNG logic với
+  // orders.stageCondition ⇒ Σ(phần in mỗi stage) = tổng phần in, khớp mọi danh sách + đường vàng.
+  const lenh = (col) => `(SELECT ls.${col} FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id WHERE lsd.dot_vai_ve_id=d.id AND ls.trang_thai<>'HUY' ORDER BY ls.created_date DESC LIMIT 1)`;
+  const DOM_CTE = `
+    WITH pin_active AS (
+      SELECT pi.id AS phan_in_id, pi.ma_hang_id
+      FROM phan_in pi JOIN ma_hang mh ON mh.id = pi.ma_hang_id
       JOIN don_hang dh ON dh.id = mh.don_hang_id AND dh.trang_thai IS DISTINCT FROM 'CLOSED_FINANCE'
+      WHERE pi.dang_hoat_dong
     ),
-    lk AS (
-      SELECT DISTINCT ON (lsd.dot_vai_ve_id) lsd.dot_vai_ve_id, ls.id AS lenh_id, ls.trang_thai AS lenh_tt
-      FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
-      WHERE ls.trang_thai <> 'HUY'
-      ORDER BY lsd.dot_vai_ve_id, ls.created_date DESC
+    dvs AS (
+      SELECT d.phan_in_id, ${lenh('id')} AS lenh_id, ${lenh('trang_thai')} AS lenh_tt
+      FROM dot_vai_ve d JOIN pin_active p ON p.phan_in_id = d.phan_in_id
+      WHERE d.trang_thai NOT IN ('DA_GOP','DA_HUY')
     ),
-    staged AS (
-      SELECT dv.phan_in_id, dv.ma_hang_id,
-        CASE
-          WHEN lk.lenh_id IS NULL THEN
-            CASE
-              WHEN EXISTS (SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id = k.checkpoint_id
-                           WHERE k.phan_in_id = dv.phan_in_id AND c.ma_checkpoint = 'QC_XAC_NHAN' AND k.trang_thai = 'DAT') THEN 'RELEASE_1'
-              WHEN (SELECT count(*) FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id = k.checkpoint_id
-                    WHERE k.phan_in_id = dv.phan_in_id AND c.ma_checkpoint IN ('KHUON','FILM','MUC') AND k.trang_thai = 'DAT') >= 3 THEN 'READY_QA'
-              ELSE 'READY_KT'
-            END
-          WHEN EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = lk.lenh_id AND ps.trang_thai = 'DANG_CHAY') THEN 'SAN_XUAT'
-          WHEN ${temEx("t.trang_thai IN ('IN','DANG_PHOI')")} THEN 'CHO_KHO'
-          WHEN ${temEx("t.trang_thai = 'DA_KHO'")} THEN 'KCS'
-          WHEN ${temEx("t.trang_thai = 'CHO_SUA'")} THEN 'SUA'
-          WHEN ${temEx("t.trang_thai = 'CHO_OQC'")} THEN 'OQC'
-          WHEN ${temEx("t.trang_thai = 'OQC_DAT'")} THEN 'DANG_GIAO'
-          WHEN ${temEx("t.trang_thai = 'DA_GIAO'")} THEN 'DA_GIAO'
-          WHEN lk.lenh_tt = 'RELEASE_2' THEN 'CHO_SAN_XUAT'
-          WHEN EXISTS (SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id = k.checkpoint_id
-                       WHERE k.lenh_san_xuat_id = lk.lenh_id AND c.ma_checkpoint = 'TEST_CNSP' AND k.trang_thai = 'DAT')
-               AND EXISTS (SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id = k.checkpoint_id
-                       WHERE k.lenh_san_xuat_id = lk.lenh_id AND c.ma_checkpoint = 'TEST_QA' AND k.trang_thai = 'DAT') THEN 'RELEASE_2'
-          WHEN EXISTS (SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id = k.checkpoint_id
-                       WHERE k.lenh_san_xuat_id = lk.lenh_id AND c.ma_checkpoint = 'TEST_CNSP' AND k.trang_thai = 'DAT') THEN 'TESTRUN_QA'
-          ELSE 'TESTRUN_CNSP'
-        END AS stage
-      FROM dv LEFT JOIN lk ON lk.dot_vai_ve_id = dv.dot_vai_id
+    st AS (SELECT phan_in_id, (${dotStageCase('dvs')}) AS stage FROM dvs),
+    rk AS (SELECT phan_in_id, stage, array_position(${ORDER_SQL_ARRAY}, stage) AS rnk FROM st),
+    dom AS (
+      SELECT DISTINCT ON (p.phan_in_id) p.phan_in_id, p.ma_hang_id,
+             COALESCE(r.stage, ${readyFallback('p.phan_in_id')}) AS stage
+      FROM pin_active p LEFT JOIN rk r ON r.phan_in_id = p.phan_in_id
+      ORDER BY p.phan_in_id, r.rnk ASC NULLS LAST
     )`;
-  const stageSql = `${STAGED_WITH}
-    SELECT stage, count(DISTINCT phan_in_id)::int AS n_phan_in, count(DISTINCT ma_hang_id)::int AS n_ma
-    FROM staged GROUP BY stage`;
+  const stageSql = `${DOM_CTE}
+    SELECT stage, count(*)::int AS n_phan_in, count(DISTINCT ma_hang_id)::int AS n_ma
+    FROM dom GROUP BY stage`;
+  const totalSql = `${DOM_CTE}
+    SELECT (SELECT count(*) FROM don_hang WHERE trang_thai IS DISTINCT FROM 'CLOSED_FINANCE')::int AS so_don,
+           (SELECT count(DISTINCT ma_hang_id) FROM dom)::int AS so_ma,
+           (SELECT count(*) FROM dom)::int AS so_phan_in`;
 
   // Tổng pcs đã in theo giai đoạn — tính ở MỨC LỆNH (tránh nhân đôi khi gom set nhiều đợt vải chung 1 lệnh).
   const temEx2 = (cond) => `EXISTS (SELECT 1 FROM phieu_san_xuat ps JOIN tem t ON t.phieu_san_xuat_id=ps.id WHERE ps.lenh_san_xuat_id=ls.id AND t.trang_thai<>'HUY' AND ${cond})`;
@@ -277,36 +259,11 @@ async function stageCounts() {
     JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id AND ls.trang_thai <> 'HUY'
     WHERE t.trang_thai <> 'HUY'`;
 
-  // GIAO tính theo PHẦN IN — chỉ tính khi TẤT CẢ ĐỢT VẢI của phần in đã tới giai đoạn giao
-  // (dùng chính phân loại `staged` theo đợt → tránh sót đợt CHƯA CÓ TEM: chờ SX / release / đóng lệnh).
-  //   Đang chờ giao = mọi đợt ∈ {DANG_GIAO, DA_GIAO} nhưng chưa giao hết.
-  //   Đã giao       = mọi đợt = DA_GIAO.
-  //   tem/pcs lấy từ sổ cái tem (chờ giao dùng con_giao, đã giao dùng sl_da_giao).
-  // Số PHẦN IN / MÃ ở Giao: strict theo ĐỢT (mọi đợt phải tới giai đoạn giao) — khớp tổng, không
-  // double-count với Sản xuất. (tem/pcs lấy từ temCountSql theo sổ cái — hiện cả khi phần in chưa đủ đợt.)
-  const deliverPinSql = `${STAGED_WITH},
-    sa AS (
-      SELECT phan_in_id, ma_hang_id,
-             bool_and(stage IN ('DANG_GIAO','DA_GIAO')) AS all_deliv,
-             bool_and(stage = 'DA_GIAO') AS all_giao
-      FROM staged GROUP BY phan_in_id, ma_hang_id
-    )
-    SELECT
-      count(*) FILTER (WHERE all_deliv AND NOT all_giao)::int AS dg_phan_in,
-      count(DISTINCT ma_hang_id) FILTER (WHERE all_deliv AND NOT all_giao)::int AS dg_ma,
-      count(*) FILTER (WHERE all_giao)::int AS gd_phan_in,
-      count(DISTINCT ma_hang_id) FILTER (WHERE all_giao)::int AS gd_ma
-    FROM sa`;
-
-  const [stageRows, totals, pcsRows, temRows, deliveryRows] = await Promise.all([
+  const [stageRows, totals, pcsRows, temRows] = await Promise.all([
     query(stageSql.replace(/\s+/g, ' ')),
-    query(`SELECT
-              (SELECT count(*) FROM don_hang WHERE trang_thai IS DISTINCT FROM 'CLOSED_FINANCE')::int AS so_don,
-              (SELECT count(*) FROM ma_hang)::int AS so_ma,
-              (SELECT count(*) FROM phan_in)::int AS so_phan_in`.replace(/\s+/g, ' ')),
+    query(totalSql.replace(/\s+/g, ' ')),
     query(pcsSql.replace(/\s+/g, ' ')),
     query(temCountSql.replace(/\s+/g, ' ')),
-    query(deliverPinSql.replace(/\s+/g, ' ')),
   ]);
   const stages = {};
   stageRows.rows.forEach((r) => { stages[r.stage] = { phan_in: r.n_phan_in, ma: r.n_ma, pcs: 0 }; });
@@ -314,7 +271,7 @@ async function stageCounts() {
     stages[r.stage] = stages[r.stage] || { phan_in: 0, ma: 0, pcs: 0 };
     stages[r.stage].pcs = r.pcs;
   });
-  // Gắn số tem cho các giai đoạn tem (Chờ khô / KCS / Sửa).
+  // Gắn số TEM/pcs (sổ cái tem) cho các giai đoạn tem — số PHẦN IN/MÃ giữ nguyên theo DOMINANT (dom).
   const tc = temRows.rows[0] || {};
   const setTem = (stage, n) => {
     stages[stage] = stages[stage] || { phan_in: 0, ma: 0, pcs: 0 };
@@ -323,13 +280,13 @@ async function stageCounts() {
   setTem('CHO_KHO', tc.cho_kho || 0);
   setTem('KCS', tc.kcs || 0);
   setTem('SUA', tc.sua || 0);
-  // OQC: thêm số TEM + pcs chờ OQC (theo sổ cái con_oqc); giữ nguyên số phần in từ `staged`.
   setTem('OQC', tc.oqc || 0);
   if (stages.OQC) stages.OQC.pcs = tc.oqc_pcs || 0;
-  // GIAO: số PHẦN IN/MÃ strict theo đợt (khớp tổng); số TEM/PCS theo sổ cái tem (SL thực chờ giao/đã giao).
-  const dp = deliveryRows.rows[0] || {};
-  stages.DANG_GIAO = { phan_in: dp.dg_phan_in || 0, ma: dp.dg_ma || 0, so_tem: tc.dg_tem || 0, pcs: tc.dg_pcs || 0 };
-  stages.DA_GIAO = { phan_in: dp.gd_phan_in || 0, ma: dp.gd_ma || 0, so_tem: tc.gd_tem || 0, pcs: tc.gd_pcs || 0 };
+  // GIAO: số PHẦN IN/MÃ theo DOMINANT (đã có trong stages.DANG_GIAO/DA_GIAO); chỉ overlay TEM/PCS theo sổ cái tem.
+  stages.DANG_GIAO = stages.DANG_GIAO || { phan_in: 0, ma: 0, pcs: 0 };
+  stages.DA_GIAO = stages.DA_GIAO || { phan_in: 0, ma: 0, pcs: 0 };
+  stages.DANG_GIAO.so_tem = tc.dg_tem || 0; stages.DANG_GIAO.pcs = tc.dg_pcs || 0;
+  stages.DA_GIAO.so_tem = tc.gd_tem || 0; stages.DA_GIAO.pcs = tc.gd_pcs || 0;
   return { totals: totals.rows[0], stages };
 }
 
@@ -632,13 +589,28 @@ async function flowRows(tramMa = '') {
       FROM ket_qua_checkpoint kq JOIN checkpoint c ON c.id = kq.checkpoint_id
       WHERE c.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT'
       GROUP BY kq.phan_in_id
+    ),
+    kt AS (
+      SELECT kq.phan_in_id,
+             count(DISTINCT c.ma_checkpoint) FILTER (WHERE kq.trang_thai = 'DAT') AS n_kt,
+             max(COALESCE(kq.tg_xac_nhan, kq.created_date)) FILTER (WHERE kq.trang_thai = 'DAT') AS kt_tg
+      FROM ket_qua_checkpoint kq JOIN checkpoint c ON c.id = kq.checkpoint_id
+      WHERE c.ma_checkpoint IN ('KHUON','FILM','MUC')
+      GROUP BY kq.phan_in_id
+    ),
+    qcp AS (
+      SELECT c.thoi_gian_quy_dinh_phut AS sla, c.canh_bao_truoc_phut AS cb
+      FROM checkpoint c JOIN tram t ON t.id = c.tram_id
+      JOIN workflow_version wv ON wv.id = t.workflow_version_id AND wv.la_hien_hanh = true
+      WHERE c.ma_checkpoint = 'QC_XAC_NHAN' LIMIT 1
     )
     SELECT b.dot_vai_ve_id AS id, b.dot_vai_ve_id, b.phan_in_id, lk.lenh_id,
            b.ma_dot_vai, b.han_giao_hang, b.ma_phan, b.mau_vai, b.kich_vai, b.kich_phim,
            b.ma_hang, b.ma_don_hang, b.ten_khach_hang,
            COALESCE(ta.pcs,0) AS pcs,
            cur.ma_tram, tr.ten_tram, tr.thu_tu,
-           tr.thoi_gian_quy_dinh_phut AS sla_phut, tr.canh_bao_truoc_phut,
+           CASE WHEN cur.ma_tram='READY' AND COALESCE(kt.n_kt,0)>=3 THEN qcp.sla ELSE tr.thoi_gian_quy_dinh_phut END AS sla_phut,
+           CASE WHEN cur.ma_tram='READY' AND COALESCE(kt.n_kt,0)>=3 THEN qcp.cb ELSE tr.canh_bao_truoc_phut END AS canh_bao_truoc_phut,
            tv.tg_vao,
            floor(EXTRACT(EPOCH FROM (now() - tv.tg_vao)) / 60)::int AS phut_da_o,
            NULL::text AS owner_ho_ten
@@ -648,6 +620,8 @@ async function flowRows(tramMa = '') {
     LEFT JOIN ta ON ta.dot_vai_ve_id = b.dot_vai_ve_id
     LEFT JOIN ev ON ev.dot_vai_ve_id = b.dot_vai_ve_id
     LEFT JOIN qc ON qc.phan_in_id = b.phan_in_id
+    LEFT JOIN kt ON kt.phan_in_id = b.phan_in_id
+    CROSS JOIN qcp
     CROSS JOIN LATERAL (SELECT (CASE
         WHEN lk.lenh_id IS NULL THEN (CASE WHEN EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint c ON c.id=kq.checkpoint_id WHERE kq.phan_in_id=b.phan_in_id AND c.ma_checkpoint='QC_XAC_NHAN' AND kq.trang_thai='DAT') THEN 'RELEASE_1' ELSE 'READY' END)
         WHEN ph.co_chay THEN 'SAN_XUAT'
@@ -661,6 +635,7 @@ async function flowRows(tramMa = '') {
         ELSE 'TEST_RUN'
       END) AS ma_tram) cur
     CROSS JOIN LATERAL (SELECT (CASE cur.ma_tram
+        WHEN 'READY' THEN (CASE WHEN COALESCE(kt.n_kt,0)>=3 THEN kt.kt_tg ELSE b.dv_tg END)
         WHEN 'RELEASE_1' THEN COALESCE(qc.qc_tg, b.dv_tg)
         WHEN 'TEST_RUN' THEN lk.lenh_tg
         WHEN 'RELEASE_2' THEN lk.lenh_tg

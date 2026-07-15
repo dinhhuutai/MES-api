@@ -27,7 +27,7 @@ async function listKcsCandidates({ search, filters }) {
   const rows = await repo.listKcsCand({ search, filters }); // còn phần chưa kiểm (con_kcs > 0)
   // Đánh dấu tem bị OQC trả về (badge + lọc).
   const rm = await repo.activeReturnsMap('OQC', rows.map((r) => r.tem_id));
-  rows.forEach((r) => { r.tra_ve_ly_do = rm[r.tem_id] || null; });
+  rows.forEach((r) => { r.tra_ve = rm[r.tem_id] || null; r.tra_ve_ly_do = rm[r.tem_id]?.ly_do || null; });
   await attachPrevConfirmer(rows, 'nguoi_in'); // trạm trước của KCS = in tem
   return rows;
 }

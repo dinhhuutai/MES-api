@@ -1,6 +1,7 @@
 'use strict';
 
 const { query } = require('../../config/db');
+const { chipCondition, dominantStageScalar } = require('../../utils/stage');
 
 const BASE_JOINS = `
   FROM phan_in pin
@@ -44,37 +45,11 @@ async function list({ search = '', missingProfit = false, offset = 0, limit = 20
   return { rows: data.rows, total: count.rows[0].total };
 }
 
-// Điều kiện lọc theo GIAI ĐOẠN của phần in (derive từ trạng thái runtime — không phụ thuộc ton_tram/029).
-// GIAI ĐOẠN khớp với MÀN HÌNH: phần in ĐÃ RELEASE (có lệnh ≠ HUY, trạng thái RELEASE_1) → Test Run;
-// QC xong nhưng CHƯA release → Release 1; chưa QC → READY. Lệnh 'HUY' (đã hủy chuyển trạm) coi như chưa release.
-// Một phần in có thể ở nhiều giai đoạn (nhiều đợt vải/tem rải rác).
+// Điều kiện lọc theo GIAI ĐOẠN (chip) của phần in — DÙNG CHUNG với dashboard.stageCounts.
+// "Mỗi phần in chỉ ở 1 trạm" = giai đoạn KÉM TIẾN ĐỘ NHẤT (dominant) trong các đợt vải của nó
+// (utils/stage.js). Nhờ vậy: Σ(phần in mỗi chip) = tổng phần in, khớp dashboard + mọi danh sách.
 function stageCondition(stage) {
-  const LJ = "SELECT 1 FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve d ON d.id=lsd.dot_vai_ve_id AND d.phan_in_id=pin.id JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id";
-  const anyLenh = `EXISTS (${LJ} WHERE ls.trang_thai <> 'HUY')`;
-  const tem = (list) => `EXISTS (${LJ} JOIN phieu_san_xuat ps ON ps.lenh_san_xuat_id=ls.id JOIN tem t ON t.phieu_san_xuat_id=ps.id WHERE ls.trang_thai <> 'HUY' AND t.trang_thai <> 'HUY' AND t.trang_thai IN (${list.map((s) => `'${s}'`).join(',')}))`;
-  const phieuChay = `EXISTS (${LJ} JOIN phieu_san_xuat ps ON ps.lenh_san_xuat_id=ls.id WHERE ls.trang_thai <> 'HUY' AND ps.trang_thai='DANG_CHAY')`;
-  const qcDone = "EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint c ON c.id=kq.checkpoint_id WHERE kq.phan_in_id=pin.id AND c.ma_checkpoint='QC_XAC_NHAN' AND kq.trang_thai='DAT')";
-  // Test Run của 1 lệnh đã đủ CNSP + QA → lệnh sẵn sàng "duyệt cuối" (giai đoạn Release 2), không còn ở Test Run.
-  const testDat = (ma) => `EXISTS (SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id=k.checkpoint_id WHERE k.lenh_san_xuat_id=ls.id AND c.ma_checkpoint='${ma}' AND k.trang_thai='DAT')`;
-  const bothTest = `${testDat('TEST_CNSP')} AND ${testDat('TEST_QA')}`;
-  switch (stage) {
-    // READY = chưa release & chưa QC (khớp màn Chuẩn bị kỹ thuật + dashboard). Bao gồm phần in mới lấy từ ERP (chưa xác nhận mục kỹ thuật nào).
-    case 'READY': return `NOT ${anyLenh} AND NOT ${qcDone}`;
-    case 'RELEASE_1': return `NOT ${anyLenh} AND ${qcDone}`;
-    // TEST_RUN = lệnh RELEASE_1 CHƯA đủ CNSP+QA. Đủ rồi thì nằm ở RELEASE_2 (chờ duyệt cuối).
-    case 'TEST_RUN': return `EXISTS (${LJ} WHERE ls.trang_thai='RELEASE_1' AND NOT (${bothTest}))`;
-    // RELEASE_2 = chờ DUYỆT cuối (lệnh RELEASE_1 đã đủ CNSP+QA). CHO_SAN_XUAT = đã DUYỆT Release 2, chờ vào sản xuất.
-    case 'RELEASE_2': return `EXISTS (${LJ} WHERE ls.trang_thai='RELEASE_1' AND ${bothTest})`;
-    case 'CHO_SAN_XUAT': return `EXISTS (${LJ} WHERE ls.trang_thai='RELEASE_2')`;
-    case 'SAN_XUAT': return phieuChay;
-    case 'CHO_KHO': return tem(['IN', 'DANG_PHOI']);
-    case 'KCS': return tem(['DA_KHO']);
-    case 'SUA': return tem(['CHO_SUA']);
-    case 'OQC': return tem(['CHO_OQC']);
-    case 'GIAO': return tem(['OQC_DAT']);
-    case 'DA_GIAO': return tem(['DA_GIAO']);
-    default: return null;
-  }
+  return chipCondition(stage, 'pin.id'); // null nếu stage rỗng/'ALL' → không lọc giai đoạn
 }
 
 // Danh sách "phần in vải về": GỘP theo phần in (mỗi dòng = 1 phần in), kèm mảng đợt vải về.
@@ -197,6 +172,8 @@ async function dotSanXuatLedger(phanInIds) {
            COALESCE((SELECT SUM(tm.sl_kcs_dat) FROM tem tm JOIN phieu_san_xuat ps ON ps.id=tm.phieu_san_xuat_id WHERE ps.lenh_san_xuat_id=sub.lenh_id AND tm.trang_thai<>'HUY'),0)::int AS sl_kcs_dat,
            COALESCE((SELECT SUM(tm.sl_kcs_sua) FROM tem tm JOIN phieu_san_xuat ps ON ps.id=tm.phieu_san_xuat_id WHERE ps.lenh_san_xuat_id=sub.lenh_id AND tm.trang_thai<>'HUY'),0)::int AS sl_sua,
            COALESCE((SELECT SUM(tm.sl_sua_dat) FROM tem tm JOIN phieu_san_xuat ps ON ps.id=tm.phieu_san_xuat_id WHERE ps.lenh_san_xuat_id=sub.lenh_id AND tm.trang_thai<>'HUY'),0)::int AS sl_sua_dat,
+           COALESCE((SELECT SUM(tm.sl_kcs_huy) FROM tem tm JOIN phieu_san_xuat ps ON ps.id=tm.phieu_san_xuat_id WHERE ps.lenh_san_xuat_id=sub.lenh_id AND tm.trang_thai<>'HUY'),0)::int AS sl_kcs_huy,
+           COALESCE((SELECT SUM(tm.sl_sua_huy) FROM tem tm JOIN phieu_san_xuat ps ON ps.id=tm.phieu_san_xuat_id WHERE ps.lenh_san_xuat_id=sub.lenh_id AND tm.trang_thai<>'HUY'),0)::int AS sl_sua_huy,
            (SELECT max(o.created_date) FROM oqc o JOIN tem tm ON tm.id=o.tem_id JOIN phieu_san_xuat ps ON ps.id=tm.phieu_san_xuat_id WHERE ps.lenh_san_xuat_id=sub.lenh_id) AS tg_oqc,
            (SELECT o.ket_qua FROM oqc o JOIN tem tm ON tm.id=o.tem_id JOIN phieu_san_xuat ps ON ps.id=tm.phieu_san_xuat_id WHERE ps.lenh_san_xuat_id=sub.lenh_id ORDER BY o.created_date DESC LIMIT 1) AS tt_oqc,
            COALESCE((SELECT SUM(tm.sl_da_giao) FROM tem tm JOIN phieu_san_xuat ps ON ps.id=tm.phieu_san_xuat_id WHERE ps.lenh_san_xuat_id=sub.lenh_id AND tm.trang_thai<>'HUY'),0)::int AS sl_giao
@@ -608,10 +585,13 @@ async function profitHistoryByDate(date) {
 
 // ─── Hủy phần in (xóa mềm) ───────────────────────────────────────────────────
 // Tìm phần in CÒN HOẠT ĐỘNG theo code phần / mã hàng / màu / khách (cho chọn nhiều rồi hủy).
-async function searchPhanInForCancel(q) {
+// Kèm `giai_doan` = trạm hiện tại (dominant stage); `stage` (chip) để LỌC theo trạm đang ở.
+async function searchPhanInForCancel(q, stage = '') {
+  const stageCond = chipCondition(stage, 'pin.id'); // null nếu stage rỗng/'ALL'
   const sql = `
     SELECT pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim,
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
+           (${dominantStageScalar('pin.id')}) AS giai_doan,
            (SELECT count(*) FROM dot_vai_ve d WHERE d.phan_in_id=pin.id AND d.trang_thai <> 'DA_HUY')::int AS so_dot_vai,
            EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve d ON d.id=lsd.dot_vai_ve_id
                    JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id
@@ -623,15 +603,35 @@ async function searchPhanInForCancel(q) {
     WHERE pin.dang_hoat_dong
       AND ($1='' OR pin.ma_phan ILIKE '%'||$1||'%' OR mh.ma_hang ILIKE '%'||$1||'%'
            OR pin.mau_vai ILIKE '%'||$1||'%' OR kh.ten_khach_hang ILIKE '%'||$1||'%')
+      ${stageCond ? `AND (${stageCond})` : ''}
     ORDER BY pin.ma_phan LIMIT 50`;
   const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [q || '']);
   return rows;
 }
 
 // Xóa mềm 1 phần in + toàn bộ liên quan: tem/phiếu/lệnh → HUY, đợt vải → DA_HUY, phần in → dang_hoat_dong=false.
+// SNAPSHOT trạng thái TRƯỚC khi xóa (id + trạng thái cũ) → cho phép "Mở phần in" khôi phục CHÍNH XÁC (task 4).
 async function softDeletePhanInTx(client, phanInId, actorId) {
   const pin = await client.query('SELECT ma_phan FROM phan_in WHERE id=$1 AND dang_hoat_dong', [phanInId]);
   if (!pin.rows.length) return null;
+  const temSel = `SELECT t.id, t.trang_thai FROM tem t WHERE t.trang_thai <> 'HUY' AND t.phieu_san_xuat_id IN (
+       SELECT ps.id FROM phieu_san_xuat ps JOIN lenh_san_xuat ls ON ls.id=ps.lenh_san_xuat_id
+       JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id=ls.id JOIN dot_vai_ve dv ON dv.id=lsd.dot_vai_ve_id
+       WHERE dv.phan_in_id=$1)`.replace(/\s+/g, ' ');
+  const phieuSel = `SELECT ps.id, ps.trang_thai FROM phieu_san_xuat ps WHERE ps.trang_thai <> 'HUY' AND ps.lenh_san_xuat_id IN (
+       SELECT ls.id FROM lenh_san_xuat ls JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id=ls.id
+       JOIN dot_vai_ve dv ON dv.id=lsd.dot_vai_ve_id WHERE dv.phan_in_id=$1)`.replace(/\s+/g, ' ');
+  const lenhSel = `SELECT ls.id, ls.trang_thai FROM lenh_san_xuat ls WHERE ls.trang_thai <> 'HUY' AND ls.id IN (
+       SELECT lsd.lenh_san_xuat_id FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id=lsd.dot_vai_ve_id
+       WHERE dv.phan_in_id=$1)`.replace(/\s+/g, ' ');
+  const dvSel = "SELECT id, trang_thai FROM dot_vai_ve WHERE phan_in_id=$1 AND trang_thai <> 'DA_HUY'";
+  // Chạy TUẦN TỰ (cùng 1 client transaction — không dùng Promise.all trên cùng client).
+  const tems = await client.query(temSel, [phanInId]);
+  const phieus = await client.query(phieuSel, [phanInId]);
+  const lenhs = await client.query(lenhSel, [phanInId]);
+  const dvs = await client.query(dvSel, [phanInId]);
+  const snapshot = { tem: tems.rows, phieu: phieus.rows, lenh: lenhs.rows, dot_vai: dvs.rows };
+
   await client.query(`UPDATE tem SET trang_thai='HUY', updated_by=$2, updated_date=CURRENT_TIMESTAMP
      WHERE trang_thai <> 'HUY' AND phieu_san_xuat_id IN (
        SELECT ps.id FROM phieu_san_xuat ps JOIN lenh_san_xuat ls ON ls.id=ps.lenh_san_xuat_id
@@ -647,14 +647,76 @@ async function softDeletePhanInTx(client, phanInId, actorId) {
        WHERE dv.phan_in_id=$1)`.replace(/\s+/g, ' '), [phanInId, actorId]);
   await client.query("UPDATE dot_vai_ve SET trang_thai='DA_HUY', updated_by=$2, updated_date=CURRENT_TIMESTAMP WHERE phan_in_id=$1 AND trang_thai <> 'DA_HUY'", [phanInId, actorId]);
   await client.query('UPDATE phan_in SET dang_hoat_dong=false, updated_by=$2, updated_date=CURRENT_TIMESTAMP WHERE id=$1', [phanInId, actorId]);
+  return { ma_phan: pin.rows[0].ma_phan, snapshot };
+}
+
+async function logSoftDeletePhanIn(phanInId, maPhan, lyDo, actorId, snapshot = null) {
+  await query(`INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('phan_in', $1, 'HUY_PHAN_IN', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`,
+  [String(phanInId), JSON.stringify({ ma_phan: maPhan, ly_do: lyDo || null, snapshot }), actorId]);
+}
+
+// ─── Mở lại phần in (khôi phục xóa mềm) ──────────────────────────────────────
+// Danh sách phần in ĐÃ XÓA MỀM (dang_hoat_dong=false) có bản ghi HUY_PHAN_IN — mới nhất mỗi phần in.
+async function listDeletedPhanIn(q) {
+  const sql = `
+    SELECT DISTINCT ON (pin.id) pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim,
+           mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
+           a.thoi_gian AS tg_huy, nd.ho_ten AS nguoi_huy, a.gia_tri_moi->>'ly_do' AS ly_do,
+           (a.gia_tri_moi->'snapshot' IS NOT NULL) AS co_snapshot,
+           (SELECT count(*) FROM dot_vai_ve d WHERE d.phan_in_id=pin.id)::int AS so_dot_vai
+    FROM phan_in pin
+    JOIN ma_hang mh ON mh.id=pin.ma_hang_id
+    JOIN don_hang dh ON dh.id=mh.don_hang_id
+    JOIN khach_hang kh ON kh.id=dh.khach_hang_id
+    JOIN audit_log a ON a.ten_bang='phan_in' AND a.hanh_dong='HUY_PHAN_IN' AND a.id_ban_ghi=pin.id::text
+    LEFT JOIN nguoi_dung nd ON nd.id=a.nguoi_thuc_hien_id
+    WHERE pin.dang_hoat_dong=false
+      AND ($1='' OR pin.ma_phan ILIKE '%'||$1||'%' OR mh.ma_hang ILIKE '%'||$1||'%'
+           OR pin.mau_vai ILIKE '%'||$1||'%' OR kh.ten_khach_hang ILIKE '%'||$1||'%')
+    ORDER BY pin.id, a.thoi_gian DESC`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [q || '']);
+  return rows.sort((a, b) => new Date(b.tg_huy) - new Date(a.tg_huy)).slice(0, 100);
+}
+
+// Đọc snapshot xóa mềm mới nhất của phần in (từ audit HUY_PHAN_IN).
+async function getDeleteSnapshot(phanInId) {
+  const { rows } = await query(
+    `SELECT gia_tri_moi->'snapshot' AS snapshot FROM audit_log
+     WHERE ten_bang='phan_in' AND hanh_dong='HUY_PHAN_IN' AND id_ban_ghi=$1
+     ORDER BY thoi_gian DESC LIMIT 1`, [String(phanInId)]);
+  return rows[0]?.snapshot || null;
+}
+
+// Khôi phục phần in: đảo snapshot chính xác (nếu có), else best-effort (đợt vải DA_HUY→NHAN_VAI, phần in active).
+async function restorePhanInTx(client, phanInId, snapshot, actorId) {
+  const pin = await client.query('SELECT ma_phan FROM phan_in WHERE id=$1 AND dang_hoat_dong=false', [phanInId]);
+  if (!pin.rows.length) return null;
+  if (snapshot && (snapshot.tem || snapshot.lenh || snapshot.phieu || snapshot.dot_vai)) {
+    const restore = async (table, rows) => {
+      for (const r of (rows || [])) {
+        await client.query(`UPDATE ${table} SET trang_thai=$2, updated_by=$3, updated_date=CURRENT_TIMESTAMP WHERE id=$1`,
+          [r.id, r.trang_thai, actorId]);
+      }
+    };
+    await restore('lenh_san_xuat', snapshot.lenh);
+    await restore('phieu_san_xuat', snapshot.phieu);
+    await restore('tem', snapshot.tem);
+    await restore('dot_vai_ve', snapshot.dot_vai);
+  } else {
+    // Dữ liệu cũ (không snapshot): chỉ khôi phục đợt vải + phần in (lệnh/tem giữ HUY).
+    await client.query("UPDATE dot_vai_ve SET trang_thai='NHAN_VAI', updated_by=$2, updated_date=CURRENT_TIMESTAMP WHERE phan_in_id=$1 AND trang_thai='DA_HUY'", [phanInId, actorId]);
+  }
+  await client.query('UPDATE phan_in SET dang_hoat_dong=true, updated_by=$2, updated_date=CURRENT_TIMESTAMP WHERE id=$1', [phanInId, actorId]);
   return pin.rows[0].ma_phan;
 }
 
-async function logSoftDeletePhanIn(phanInId, maPhan, lyDo, actorId) {
+async function logRestorePhanIn(phanInId, maPhan, actorId) {
   await query(`INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
-     VALUES ('phan_in', $1, 'HUY_PHAN_IN', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`,
-  [String(phanInId), JSON.stringify({ ma_phan: maPhan, ly_do: lyDo || null }), actorId]);
+     VALUES ('phan_in', $1, 'MO_PHAN_IN', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`,
+  [String(phanInId), JSON.stringify({ ma_phan: maPhan }), actorId]);
 }
 
 module.exports = { list, listVaiVe, dotSanXuatLedger, findById, listDotVai, getPhanInTimeline, getPhanInTemSummary, getPhanInKcsByDot, getPhanInStagePcs, getDryMin, setDryMin, setLoiNhuan, logProfitChange, profitHistoryByDate,
-  searchPhanInForCancel, softDeletePhanInTx, logSoftDeletePhanIn };
+  searchPhanInForCancel, softDeletePhanInTx, logSoftDeletePhanIn,
+  listDeletedPhanIn, getDeleteSnapshot, restorePhanInTx, logRestorePhanIn };
