@@ -287,7 +287,8 @@ async function createDotSanXuat({ items, chuyenId, ngayKeHoach }, actorId) {
   const info = await repo.getDotVaiForCompose(ids);
   const byId = Object.fromEntries(info.map((r) => [r.id, r]));
 
-  const mau = new Set();
+  // CHỈ gộp các đợt vải CÙNG PHẦN IN (code phần) vào 1 đợt SX. Muốn gom nhiều phần in cùng màu → dùng Gom set (READY).
+  const pins = new Set();
   for (const p of plan) {
     const d = byId[p.dotVaiId];
     if (!d) throw new AppError('Đợt vải không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
@@ -296,9 +297,9 @@ async function createDotSanXuat({ items, chuyenId, ngayKeHoach }, actorId) {
       throw new AppError(`SL đưa vào của đợt ${d.ma_dot_vai} (${p.soLuong}) vượt SL còn lại (${d.con_dua})`,
         { status: 422, errorCode: 'OVER' });
     }
-    mau.add((d.mau_vai || '').trim().toLowerCase());
+    pins.add(d.phan_in_id);
   }
-  if (mau.size > 1) throw new AppError('Chỉ gộp các đợt vải CÙNG MÀU vào một đợt sản xuất', { status: 422, errorCode: 'MIXED_COLOR' });
+  if (pins.size > 1) throw new AppError('Chỉ gộp các đợt vải CÙNG PHẦN IN (code phần) vào một đợt sản xuất. Muốn gom nhiều phần in cùng màu → dùng Gom set ở READY.', { status: 422, errorCode: 'MIXED_PHAN_IN' });
 
   const tongSL = plan.reduce((s, p) => s + p.soLuong, 0);
 
