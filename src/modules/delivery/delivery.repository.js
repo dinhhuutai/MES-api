@@ -33,6 +33,8 @@ async function listTemSanSang({ search = '', filters = {}, ngayTu = '', ngayDen 
   if (ngayDen) { params.push(ngayDen); conds.push(`(t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date <= $${params.length}::date`); }
   const sql =
     `SELECT t.id AS tem_id, t.ma_tem, t.so_luong, t.created_date AS ngay_in_tem, (t.sl_oqc_dat - t.sl_da_giao) AS con_giao,
+            GREATEST(0, COALESCE(t.sl_oqc_dat_sua,0) - COALESCE(t.sl_da_giao_sua,0)) AS con_giao_sua,
+            GREATEST(0, (COALESCE(t.sl_oqc_dat,0)-COALESCE(t.sl_oqc_dat_sua,0)) - (COALESCE(t.sl_da_giao,0)-COALESCE(t.sl_da_giao_sua,0))) AS con_giao_kcs,
             t.sl_oqc_dat, t.sl_da_giao, ls.ma_lenh_san_xuat,
             (SELECT string_agg(DISTINCT pin.ma_phan, ', ')
                FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
@@ -97,14 +99,22 @@ async function createGiaoHang(client, { maPhieu, donHangId, ngayGiao, ghiChu }, 
   return rows[0].id;
 }
 
-// Thêm tem vào phiếu giao với SL giao TỪNG PHẦN. soLuong không nhập → mặc định = con_giao còn lại.
-async function addTem(client, giaoHangId, temId, soLuong, actorId) {
+// Thêm tem vào phiếu giao TỪNG PHẦN, TÁCH THEO NGUỒN (KCS 15- / SỬA 17- — như OQC).
+// so_luong bị chặn theo SL CÒN GIAO của ĐÚNG nguồn: KCS = (sl_oqc_dat−sl_oqc_dat_sua)−(sl_da_giao−sl_da_giao_sua);
+// SỬA = sl_oqc_dat_sua−sl_da_giao_sua. 1 tem có thể vào phiếu 2 dòng (KCS + SỬA) — khớp unique
+// constraint `uq_giao_hang_tem_nguon (giao_hang_id, tem_id, nguon)`.
+async function addTem(client, giaoHangId, temId, soLuong, nguon, actorId) {
+  const src = nguon === 'SUA' ? 'SUA' : 'KCS';
   await client.query(
-    `INSERT INTO giao_hang_tem (giao_hang_id, tem_id, so_luong_giao, created_by)
-     SELECT $1, $2, LEAST(COALESCE($4, (t.sl_oqc_dat - t.sl_da_giao)), (t.sl_oqc_dat - t.sl_da_giao)), $3
-     FROM tem t WHERE t.id = $2
-     ON CONFLICT (giao_hang_id, tem_id) DO UPDATE SET so_luong_giao = EXCLUDED.so_luong_giao`,
-    [giaoHangId, temId, actorId, soLuong ?? null]
+    `INSERT INTO giao_hang_tem (giao_hang_id, tem_id, nguon, so_luong_giao, created_by)
+     SELECT $1, $2, $5, LEAST(COALESCE($4, sc.src_con), sc.src_con), $3
+     FROM (SELECT CASE WHEN $5='SUA'
+                    THEN GREATEST(0, COALESCE(t.sl_oqc_dat_sua,0)-COALESCE(t.sl_da_giao_sua,0))
+                    ELSE GREATEST(0, (COALESCE(t.sl_oqc_dat,0)-COALESCE(t.sl_oqc_dat_sua,0))-(COALESCE(t.sl_da_giao,0)-COALESCE(t.sl_da_giao_sua,0)))
+                  END AS src_con
+           FROM tem t WHERE t.id = $2) sc
+     ON CONFLICT (giao_hang_id, tem_id, nguon) DO UPDATE SET so_luong_giao = EXCLUDED.so_luong_giao`,
+    [giaoHangId, temId, actorId, soLuong ?? null, src]
   );
 }
 
@@ -145,7 +155,7 @@ async function listGiaoHang({ search = '' }) {
 
 async function getGiaoHangTems(giaoHangId) {
   const { rows } = await query(
-    `SELECT gt.id, gt.tem_id, gt.so_luong_giao, t.ma_tem, t.trang_thai, ls.ma_lenh_san_xuat
+    `SELECT gt.id, gt.tem_id, gt.so_luong_giao, gt.nguon, t.ma_tem, t.trang_thai, ls.ma_lenh_san_xuat
      FROM giao_hang_tem gt
      JOIN tem t ON t.id = gt.tem_id
      LEFT JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
@@ -182,11 +192,13 @@ async function insertGiaoAudit(giaoHangId, maPhieu, tems, actorId) {
 
 // Cộng dồn đã giao cho tem + cập nhật trạng thái dominant (chỉ DA_GIAO khi đã giao đủ).
 async function applyGiaoLedger(client, giaoHangId, actorId) {
-  const { rows } = await client.query('SELECT tem_id, so_luong_giao FROM giao_hang_tem WHERE giao_hang_id=$1', [giaoHangId]);
+  const { rows } = await client.query('SELECT tem_id, so_luong_giao, nguon FROM giao_hang_tem WHERE giao_hang_id=$1', [giaoHangId]);
   for (const r of rows) {
     await client.query(
-      `UPDATE tem SET sl_da_giao = sl_da_giao + COALESCE($2,0), updated_by=$3, updated_date=CURRENT_TIMESTAMP WHERE id=$1`,
-      [r.tem_id, r.so_luong_giao, actorId]
+      `UPDATE tem SET sl_da_giao = sl_da_giao + COALESCE($2,0),
+          sl_da_giao_sua = COALESCE(sl_da_giao_sua,0) + CASE WHEN $4='SUA' THEN COALESCE($2,0) ELSE 0 END,
+          updated_by=$3, updated_date=CURRENT_TIMESTAMP WHERE id=$1`,
+      [r.tem_id, r.so_luong_giao, actorId, r.nguon]
     );
     await client.query(
       `UPDATE tem SET trang_thai = CASE

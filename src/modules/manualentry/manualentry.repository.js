@@ -36,6 +36,18 @@ async function searchMaHang(donId, q, limit = 30) {
   return rows;
 }
 
+async function searchPhanIn(maHangId, q, limit = 30) {
+  const { rows } = await query(
+    `SELECT id, ma_phan, mau_vai, kich_vai, kich_phim FROM phan_in
+     WHERE dang_hoat_dong AND ($1::uuid IS NULL OR ma_hang_id = $1)
+       AND ($2='' OR ma_phan ILIKE '%'||$2||'%' OR COALESCE(mau_vai,'') ILIKE '%'||$2||'%'
+            OR COALESCE(kich_vai,'') ILIKE '%'||$2||'%' OR COALESCE(kich_phim,'') ILIKE '%'||$2||'%')
+     ORDER BY created_date DESC LIMIT $3`,
+    [maHangId || null, q || '', limit]
+  );
+  return rows;
+}
+
 async function listLoaiDotVai() {
   const { rows } = await query(
     "SELECT id, ma_loai, ten_loai FROM loai_dot_vai WHERE dang_hoat_dong ORDER BY ten_loai"
@@ -119,4 +131,4 @@ async function createChainTx(client, p, actorId) {
   return { phan_in_id: phanInId, ma_phan: maPhan, dot_vai: dots };
 }
 
-module.exports = { searchKhach, searchDon, searchMaHang, listLoaiDotVai, createChainTx };
+module.exports = { searchKhach, searchDon, searchMaHang, searchPhanIn, listLoaiDotVai, createChainTx };

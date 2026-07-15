@@ -239,15 +239,23 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
   }
   if (plan.length === 0) throw new AppError('Các đợt vải đã release đủ số lượng', { status: 409, errorCode: 'ALL_RELEASED' });
 
-  // Test Run theo code phần: đợt vải của phần in đã test xong (CNSP+QA) → vào thẳng RELEASE_2, bỏ qua test run.
-  const { version, byMa } = await loadTestConfig();
-  const testedSet = new Set(await repo.testedDotVaiIds(plan.map((p) => p.dvId), byMa[CNSP_CP].id, byMa[QA_CP].id));
+  // ĐI TẮT TEST RUN (nhất quán createDotSanXuat / CLAUDE.md §5): bỏ Test Run khi
+  //   (phần in ĐANG IN TEM trên chuyền — phiếu DANG_CHAY) HOẶC (SL release của lệnh < 100),
+  //   TRỪ đợt bật cờ LÀM LẠI (can_lam_lai_ready → ép full flow).
+  // KHÔNG còn bỏ Test Run chỉ vì "cùng phần in đã test xong ở đợt trước" — đợt MỚI vẫn phải Test Run.
+  const { version } = await loadTestConfig();
+  const compose = await repo.getDotVaiForCompose(plan.map((p) => p.dvId));
+  const cById = Object.fromEntries(compose.map((r) => [r.id, r]));
+  const dangChaySet = new Set(await repo.phanInDangChay([...new Set(compose.map((r) => r.phan_in_id))]));
 
   const created = await withTransaction(async (client) => {
     const out = [];
     for (const { dvId, qty } of plan) {
+      const dv = cById[dvId];
+      const dangChay = dv ? dangChaySet.has(dv.phan_in_id) : false;
+      const diTat = (dangChay || qty < SL_NHO_BO_TEST) && !dv?.can_lam_lai_ready;
+      const trangThai = diTat ? 'RELEASE_2' : 'RELEASE_1';
       const maLenh = await repo.nextMaLenhTx(client);
-      const trangThai = testedSet.has(dvId) ? 'RELEASE_2' : 'RELEASE_1';
       const id = await repo.createLenh(client, {
         versionId: version.id, maLenh, chuyenId, soLuongRelease: qty, ngayKeHoach, trangThai,
       }, actorId);

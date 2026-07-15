@@ -505,7 +505,7 @@ async function kcsHistoryByDate(date) {
 async function suaHistoryByDate(date) {
   const { rows } = await query(
     `SELECT x.created_date AS tg, nd.ho_ten AS nguoi,
-            x.so_luong_sua, x.so_luong_sua_dat, t.ma_tem
+            x.so_luong_sua, x.so_luong_sua_dat, x.so_luong_sua_huy, t.ma_tem
      FROM sua x JOIN tem t ON t.id = x.tem_id
      LEFT JOIN nguoi_dung nd ON nd.id = x.created_by
      WHERE ${HIST_DATE} AND ${notCancelledQc('x', 'sua')} ORDER BY x.created_date DESC`,
@@ -517,7 +517,7 @@ async function suaHistoryByDate(date) {
 async function oqcHistoryByDate(date) {
   const { rows } = await query(
     `SELECT x.created_date AS tg, nd.ho_ten AS nguoi, x.ket_qua,
-            x.so_luong_dat, x.so_luong_loi, t.ma_tem
+            x.so_luong_dat, x.so_luong_loi, x.so_luong_kiem, x.nguon, x.sl_qua_giao, t.ma_tem
      FROM oqc x JOIN tem t ON t.id = x.tem_id
      LEFT JOIN nguoi_dung nd ON nd.id = x.created_by
      WHERE ${HIST_DATE} AND ${notCancelledQc('x', 'oqc')} ORDER BY x.created_date DESC`,
@@ -545,9 +545,12 @@ const TEM_INFO_LATERAL = `
 async function temDoneByDate(table, date) {
   const qtyCol = table === 'sua' ? 'so_luong_sua_dat' : 'so_luong_dat';
   const kiemCol = table === 'sua' ? 'so_luong_sua' : 'so_luong_kiem'; // SL đã kiểm (cho in tem KCS)
+  // OQC: thêm nguồn (KCS/Sửa) + SL chuyền qua giao từ nguồn đó (sl_qua_giao). Sửa: thêm SL sửa hủy.
+  const oqcCols = table === 'oqc' ? ', x.nguon, x.sl_qua_giao' : '';
+  const suaCols = table === 'sua' ? ', x.so_luong_sua_huy' : '';
   const sql = `
     SELECT x.created_date AS tg, nd.ho_ten AS nguoi, t.ma_tem AS ma, t.id AS tem_id,
-           x.${qtyCol} AS so_luong, x.${kiemCol} AS so_luong_kiem,
+           x.${qtyCol} AS so_luong, x.${kiemCol} AS so_luong_kiem${oqcCols}${suaCols},
            info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.mau_vai, info.kich_vai, info.kich_phim
     FROM ${table} x JOIN tem t ON t.id = x.tem_id
     LEFT JOIN nguoi_dung nd ON nd.id = x.created_by

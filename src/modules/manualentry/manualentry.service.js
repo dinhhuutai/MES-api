@@ -8,6 +8,7 @@ const sockets = require('../../sockets');
 const searchKhach = (q) => repo.searchKhach(q || '');
 const searchDon = (khachId, q) => repo.searchDon(khachId || null, q || '');
 const searchMaHang = (donId, q) => repo.searchMaHang(donId || null, q || '');
+const searchPhanIn = (maHangId, q) => repo.searchPhanIn(maHangId || null, q || '');
 const listLoaiDotVai = () => repo.listLoaiDotVai();
 
 // Tạo chuỗi khách → đơn → mã hàng → phần in → đợt vải.
@@ -37,4 +38,4 @@ async function createChain(payload, actorId) {
   return result;
 }
 
-module.exports = { searchKhach, searchDon, searchMaHang, listLoaiDotVai, createChain };
+module.exports = { searchKhach, searchDon, searchMaHang, searchPhanIn, listLoaiDotVai, createChain };

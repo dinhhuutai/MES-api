@@ -32,17 +32,17 @@ async function getDetail(giaoHangId) {
 // Vẫn nhận temIds (mảng id) để tương thích: giao hết phần còn lại của mỗi tem.
 async function createGiaoHang({ items, temIds, ngayGiao, ghiChu }, actorId) {
   const list = Array.isArray(items) && items.length
-    ? items.map((it) => ({ temId: it.temId, soLuong: it.soLuong != null ? Number(it.soLuong) : null }))
-    : (Array.isArray(temIds) ? temIds.map((t) => ({ temId: t, soLuong: null })) : []);
+    ? items.map((it) => ({ temId: it.temId, nguon: it.nguon === 'SUA' ? 'SUA' : 'KCS', soLuong: it.soLuong != null ? Number(it.soLuong) : null }))
+    : (Array.isArray(temIds) ? temIds.map((t) => ({ temId: t, nguon: 'KCS', soLuong: null })) : []);
   if (list.length === 0) throw new AppError('Chọn ít nhất một tem để giao', { status: 422, errorCode: 'NO_TEM' });
-  const temIdList = list.map((x) => x.temId);
+  const temIdList = [...new Set(list.map((x) => x.temId))];
   const donIds = await repo.donHangIdsForTems(temIdList);
   const donHangId = donIds.length === 1 ? donIds[0] : null;
   const maPhieu = await repo.nextMaPhieuGiao();
 
   const id = await withTransaction(async (client) => {
     const ghId = await repo.createGiaoHang(client, { maPhieu, donHangId, ngayGiao, ghiChu }, actorId);
-    for (const it of list) await repo.addTem(client, ghId, it.temId, it.soLuong, actorId);
+    for (const it of list) await repo.addTem(client, ghId, it.temId, it.soLuong, it.nguon, actorId);
     return ghId;
   });
   sockets.emit('delivery:updated', { giaoHangId: id, stage: 'TAO' });

@@ -7,6 +7,7 @@ const { ok } = require('../../utils/response');
 const khach = asyncHandler(async (req, res) => ok(res, await service.searchKhach(req.query.q)));
 const don = asyncHandler(async (req, res) => ok(res, await service.searchDon(req.query.khachId, req.query.q)));
 const maHang = asyncHandler(async (req, res) => ok(res, await service.searchMaHang(req.query.donId, req.query.q)));
+const phanIn = asyncHandler(async (req, res) => ok(res, await service.searchPhanIn(req.query.maHangId, req.query.q)));
 const loaiDotVai = asyncHandler(async (req, res) => ok(res, await service.listLoaiDotVai()));
 
 const create = asyncHandler(async (req, res) => {
@@ -14,4 +15,4 @@ const create = asyncHandler(async (req, res) => {
   return ok(res, data, `Đã tạo phần in ${data.ma_phan} với ${data.dot_vai.length} đợt vải`);
 });
 
-module.exports = { khach, don, maHang, loaiDotVai, create };
+module.exports = { khach, don, maHang, phanIn, loaiDotVai, create };

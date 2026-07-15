@@ -221,7 +221,7 @@ async function stageCounts() {
     SELECT stage, count(*)::int AS n_phan_in, count(DISTINCT ma_hang_id)::int AS n_ma
     FROM dom GROUP BY stage`;
   const totalSql = `${DOM_CTE}
-    SELECT (SELECT count(*) FROM don_hang WHERE trang_thai IS DISTINCT FROM 'CLOSED_FINANCE')::int AS so_don,
+    SELECT (SELECT count(DISTINCT mh.don_hang_id) FROM dom d JOIN ma_hang mh ON mh.id = d.ma_hang_id)::int AS so_don,
            (SELECT count(DISTINCT ma_hang_id) FROM dom)::int AS so_ma,
            (SELECT count(*) FROM dom)::int AS so_phan_in`;
 

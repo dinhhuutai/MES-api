@@ -12,6 +12,7 @@ router.use(auth);
 router.get('/khach-hang', rbac('ERP_SYNC'), c.khach);
 router.get('/don-hang', rbac('ERP_SYNC'), c.don);
 router.get('/ma-hang', rbac('ERP_SYNC'), c.maHang);
+router.get('/phan-in', rbac('ERP_SYNC'), c.phanIn);
 router.get('/loai-dot-vai', rbac('ERP_SYNC'), c.loaiDotVai);
 router.post('/', rbac('ERP_SYNC'), c.create);
 

@@ -167,7 +167,7 @@ async function dotSanXuatLedger(phanInIds) {
   if (!phanInIds || phanInIds.length === 0) return {};
   const sql = `
     SELECT sub.phan_in_id::text AS phan_in_id, sub.lenh_id::text AS lenh_id, sub.ma_lenh_san_xuat, sub.giai_doan,
-           sub.ma_dot_vai, sub.ngay_vai_ve, sub.han_giao_hang,
+           sub.ma_dot_vai, sub.so_dot_vai, sub.dot_vai_list, sub.ngay_vai_ve, sub.han_giao_hang,
            COALESCE((SELECT SUM(tm.so_luong) FROM tem tm JOIN phieu_san_xuat ps ON ps.id=tm.phieu_san_xuat_id WHERE ps.lenh_san_xuat_id=sub.lenh_id AND tm.trang_thai<>'HUY'),0)::int AS sl_in,
            COALESCE((SELECT SUM(tm.sl_kcs_dat) FROM tem tm JOIN phieu_san_xuat ps ON ps.id=tm.phieu_san_xuat_id WHERE ps.lenh_san_xuat_id=sub.lenh_id AND tm.trang_thai<>'HUY'),0)::int AS sl_kcs_dat,
            COALESCE((SELECT SUM(tm.sl_kcs_sua) FROM tem tm JOIN phieu_san_xuat ps ON ps.id=tm.phieu_san_xuat_id WHERE ps.lenh_san_xuat_id=sub.lenh_id AND tm.trang_thai<>'HUY'),0)::int AS sl_sua,
@@ -180,6 +180,10 @@ async function dotSanXuatLedger(phanInIds) {
     FROM (
       SELECT dvx.phan_in_id, ls.id AS lenh_id, ls.ma_lenh_san_xuat, ls.giai_doan, ls.created_date,
              string_agg(DISTINCT dvx.ma_dot_vai, ', ') AS ma_dot_vai,
+             count(DISTINCT dvx.id)::int AS so_dot_vai,
+             json_agg(json_build_object('ma_dot_vai', dvx.ma_dot_vai, 'so_luong', lx.so_luong,
+                      'so_luong_vai_ve', dvx.so_luong_vai_ve, 'ngay_vai_ve', dvx.ngay_vai_ve,
+                      'han_giao_hang', dvx.han_giao_hang) ORDER BY dvx.ma_dot_vai) AS dot_vai_list,
              min(dvx.ngay_vai_ve) AS ngay_vai_ve, min(dvx.han_giao_hang) AS han_giao_hang
       FROM lenh_san_xuat ls
       JOIN lenh_sx_dot_vai lx ON lx.lenh_san_xuat_id = ls.id
@@ -257,7 +261,7 @@ async function getPhanInTimeline(phanInId) {
   // Danh sách đợt SX (lệnh ≠ HUY) + đợt vải của mỗi lệnh
   const lenhSql = `
     SELECT ls.id, ls.ma_lenh_san_xuat, ls.giai_doan, ls.created_date,
-           COALESCE(json_agg(json_build_object('ma_dot_vai', dv.ma_dot_vai, 'so_luong', lsd.so_luong)
+           COALESCE(json_agg(json_build_object('ma_dot_vai', dv.ma_dot_vai, 'so_luong', lsd.so_luong, 'so_luong_vai_ve', dv.so_luong_vai_ve)
                     ORDER BY dv.ma_dot_vai), '[]') AS dot_vai
     FROM lenh_san_xuat ls
     JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
@@ -342,11 +346,21 @@ async function getPhanInTimeline(phanInId) {
       COALESCE((SELECT SUM(GREATEST(k.so_luong_loi-COALESCE(k.so_luong_huy,0),0)) FROM kcs k WHERE k.tem_id IN (SELECT tem_id FROM tp WHERE tp.lenh_id=l.lenh_id)),0)::int AS kcs_sua,
       COALESCE((SELECT SUM(COALESCE(k.so_luong_huy,0)) FROM kcs k WHERE k.tem_id IN (SELECT tem_id FROM tp WHERE tp.lenh_id=l.lenh_id)),0)::int AS kcs_huy,
       COALESCE((SELECT SUM(s.so_luong_sua_dat) FROM sua s WHERE s.tem_id IN (SELECT tem_id FROM tp WHERE tp.lenh_id=l.lenh_id)),0)::int AS sua_dat,
+      COALESCE((SELECT SUM(s.so_luong_sua_huy) FROM sua s WHERE s.tem_id IN (SELECT tem_id FROM tp WHERE tp.lenh_id=l.lenh_id)),0)::int AS sua_huy,
       COALESCE((SELECT SUM(o.so_luong_dat) FROM oqc o WHERE o.tem_id IN (SELECT tem_id FROM tp WHERE tp.lenh_id=l.lenh_id)),0)::int AS oqc_dat,
       COALESCE((SELECT SUM(ght.so_luong_giao) FROM giao_hang_tem ght WHERE ght.tem_id IN (SELECT tem_id FROM tp WHERE tp.lenh_id=l.lenh_id)),0)::int AS giao
     FROM l`;
 
-  const [tramR, readyR, readyEvR, lenhR, lenhCklR, mocR, qtyR] = await Promise.all([
+  // Đợt vải CHƯA release (chưa có lệnh ≠ HUY nào) — để hiện hành trình READY NGAY, không chờ tạo lệnh.
+  const pendingSql = `
+    SELECT dv.ma_dot_vai, COALESCE(dv.so_luong_vai_ve,0)::int AS so_luong
+    FROM dot_vai_ve dv
+    WHERE dv.phan_in_id = $1 AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY')
+      AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
+                      WHERE lsd.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY')
+    ORDER BY dv.created_date, dv.ma_dot_vai`;
+
+  const [tramR, readyR, readyEvR, lenhR, lenhCklR, mocR, qtyR, pendingR] = await Promise.all([
     query(tramSql.replace(/\s+/g, ' ')),
     query(readyCklSql.replace(/\s+/g, ' '), [phanInId]),
     query(readyEventsSql.replace(/\s+/g, ' '), [phanInId]),
@@ -354,6 +368,7 @@ async function getPhanInTimeline(phanInId) {
     query(lenhCklSql.replace(/\s+/g, ' '), [phanInId]),
     query(mocSql.replace(/\s+/g, ' '), [phanInId]),
     query(qtySql.replace(/\s+/g, ' '), [phanInId]),
+    query(pendingSql.replace(/\s+/g, ' '), [phanInId]),
   ]);
   const qtyByLenh = new Map(qtyR.rows.map((r) => [r.lenh_id, r]));
   // Số lượng hiển thị ở từng node theo trạm (mảng {label, value}).
@@ -363,7 +378,7 @@ async function getPhanInTimeline(phanInId) {
       case 'RELEASE_1': case 'RELEASE_2': return [{ label: 'SL release', value: q.so_luong_release || 0 }];
       case 'SAN_XUAT': case 'CHO_KHO': return [{ label: 'SL in', value: q.pcs_in || 0 }];
       case 'KIEM': return [{ label: 'Đạt', value: q.kcs_dat || 0 }, { label: 'Sửa', value: q.kcs_sua || 0 }, { label: 'Hủy', value: q.kcs_huy || 0 }];
-      case 'SUA': return [{ label: 'Sửa đạt', value: q.sua_dat || 0 }];
+      case 'SUA': return [{ label: 'Sửa đạt', value: q.sua_dat || 0 }, { label: 'Sửa hủy', value: q.sua_huy || 0 }];
       case 'OQC': return [{ label: 'Đạt', value: q.oqc_dat || 0 }];
       case 'DONE_DELIVERY': return [{ label: 'SL giao', value: q.giao || 0 }];
       default: return [];
@@ -430,7 +445,13 @@ async function getPhanInTimeline(phanInId) {
     };
   });
 
-  return { ready, journeys };
+  // Khối "chờ release": các đợt vải chưa có lệnh → hiện node READY hiện tại (mức phần in), KHÔNG có LSX.
+  const pending = pendingR.rows.length ? {
+    dot_vai: pendingR.rows.map((r) => ({ ma_dot_vai: r.ma_dot_vai, so_luong: r.so_luong })),
+    trams: ready ? [ready] : [],
+  } : null;
+
+  return { ready, journeys, pending };
 }
 
 // Tổng hợp SỐ LƯỢNG theo tem của 1 phần in (hợp nhất mọi tem của phần in) — từ chờ khô trở đi.

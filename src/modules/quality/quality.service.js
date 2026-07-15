@@ -240,17 +240,20 @@ async function suaHistory(date) {
   return rows.map((r) => ({
     tg: r.tg, nguoi: r.nguoi || '—', hanh_dong: 'Sửa',
     doi_tuong: r.ma_tem || '',
-    chi_tiet: `Sửa ${q0(r.so_luong_sua)} · Đạt ${q0(r.so_luong_sua_dat)}`,
+    chi_tiet: `Sửa ${q0(r.so_luong_sua)} · Đạt ${q0(r.so_luong_sua_dat)} · Hủy ${q0(r.so_luong_sua_huy)}`,
   }));
 }
 
 async function oqcHistory(date) {
   const rows = await repo.oqcHistoryByDate(date);
+  const src = (n) => (n === 'SUA' ? 'Sửa' : 'KCS');
+  const pre = (n) => (n === 'SUA' ? '17-' : '15-');
   return rows.map((r) => ({
     tg: r.tg, nguoi: r.nguoi || '—',
     hanh_dong: `OQC${r.ket_qua ? ' · ' + r.ket_qua : ''}`,
-    doi_tuong: r.ma_tem || '',
-    chi_tiet: `Đạt ${q0(r.so_luong_dat)} · Lỗi ${q0(r.so_luong_loi)}`,
+    doi_tuong: `${pre(r.nguon)}${r.ma_tem || ''}`,
+    // Thêm NGUỒN (KCS/Sửa) + SL từ nguồn đó chuyền qua giao (sl_qua_giao).
+    chi_tiet: `Nguồn ${src(r.nguon)} · Bốc mẫu ${q0(r.so_luong_kiem)} · Đạt ${q0(r.so_luong_dat)} · Qua giao ${q0(r.sl_qua_giao)}`,
   }));
 }
 
