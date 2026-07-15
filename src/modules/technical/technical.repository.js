@@ -84,20 +84,20 @@ async function listCandidates({
       AND pin.dang_hoat_dong
       AND ${SEARCH}`;
 
-  // Mặc định (màn kỹ thuật): mọi phần in chưa QC xong.
-  // onlyQcReady (màn QC): chỉ phần in ĐÃ ĐỦ đủ mục kỹ thuật & chưa QC.
+  // CẢ 2 màn (Kỹ thuật & QC) hiển thị CÙNG danh sách READY chưa QC xong — khác nhau ở SLA nghẽn:
+  //  - Màn Kỹ thuật: SLA trạm READY (KT chưa đủ → đếm; đủ 3 mục → NULL, ngừng đỏ).
+  //  - Màn QC (onlyQcReady): SLA QC_XAC_NHAN, chỉ đếm khi ĐỦ 3 mục KT (kt_done_tg); KT chưa đủ → NULL (không đỏ ở QC).
+  // QC chỉ XÁC NHẬN được phần in đủ 3 mục (guard ở service + FE), nhưng vẫn THẤY toàn bộ danh sách READY.
   const tt = Number.isInteger(techTotal) ? techTotal : 3; // số nguyên do code kiểm soát (an toàn khi nội suy)
-  const OUTER_WHERE = onlyQcReady
-    ? `WHERE q.qc_done = false AND q.n_tech_done >= ${tt}`
-    : 'WHERE q.qc_done = false';
+  const OUTER_WHERE = 'WHERE q.qc_done = false';
 
   // SLA theo GIAI ĐOẠN (task 3): $11=onlyQcReady. Màn QC → SLA QC_XAC_NHAN ($12) đếm từ kt_done_tg;
   // màn Kỹ thuật → SLA trạm READY ($9) từ ready_tg_vao, và KHI ĐỦ 3 mục KT → sla NULL (ngừng đếm, không đỏ ở KT).
   // Gộp data + total vào 1 query bằng COUNT(*) OVER() (1 round-trip thay vì 2).
   const dataSql = `
     SELECT q.*,
-           CASE WHEN $11 THEN q.kt_done_tg ELSE q.ready_tg_vao END AS tg_vao,
-           CASE WHEN $11 THEN $12::int WHEN q.n_tech_done >= ${tt} THEN NULL ELSE $9::int END AS sla_phut,
+           CASE WHEN $11 THEN (CASE WHEN q.n_tech_done >= ${tt} THEN q.kt_done_tg ELSE NULL END) ELSE q.ready_tg_vao END AS tg_vao,
+           CASE WHEN $11 THEN (CASE WHEN q.n_tech_done >= ${tt} THEN $12::int ELSE NULL END) WHEN q.n_tech_done >= ${tt} THEN NULL ELSE $9::int END AS sla_phut,
            CASE WHEN $11 THEN $13::int ELSE $10::int END AS canh_bao_truoc_phut,
            count(*) OVER()::int AS total_count
     FROM (${selectBase(true)}) q
