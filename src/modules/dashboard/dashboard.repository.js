@@ -18,7 +18,7 @@ async function summary() {
              count(*) FILTER (WHERE EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id=kq.checkpoint_id
                 WHERE kq.phan_in_id=pin.id AND cp.ma_checkpoint='QC_XAC_NHAN' AND kq.trang_thai='DAT'))::int AS ready,
              count(*) FILTER (WHERE pin.loi_nhuan IS NOT NULL)::int AS co_loi_nhuan
-           FROM phan_in pin`),
+           FROM phan_in pin WHERE pin.dang_hoat_dong`),
     query("SELECT trang_thai, count(*)::int AS n FROM lenh_san_xuat GROUP BY trang_thai"),
     query('SELECT trang_thai, count(*)::int AS n FROM tem GROUP BY trang_thai'),
     query("SELECT count(*)::int AS n FROM tem_xe_phoi WHERE trang_thai='DANG_PHOI'"),
@@ -55,28 +55,30 @@ async function activity(limit = 20) {
       LEFT JOIN phan_in pi ON pi.id = k.phan_in_id
       LEFT JOIN lenh_san_xuat l ON l.id = k.lenh_san_xuat_id
       WHERE k.trang_thai = 'DAT'
+        AND (k.phan_in_id IS NULL OR pi.dang_hoat_dong)
+        AND (k.lenh_san_xuat_id IS NULL OR l.trang_thai <> 'HUY')
       UNION ALL
       SELECT ls.created_date, ls.created_by, 'Release', ('Release 1 · lệnh ' || ls.ma_lenh_san_xuat)
       FROM lenh_san_xuat ls WHERE ls.trang_thai <> 'HUY'
       UNION ALL
       SELECT a.thoi_gian, a.nguoi_thuc_hien_id, 'Release', ('Release 2 · lệnh ' || l.ma_lenh_san_xuat)
       FROM audit_log a JOIN lenh_san_xuat l ON l.id = a.id_ban_ghi::uuid
-      WHERE a.ten_bang = 'lenh_san_xuat' AND a.hanh_dong = 'RELEASE_2'
+      WHERE a.ten_bang = 'lenh_san_xuat' AND a.hanh_dong = 'RELEASE_2' AND l.trang_thai <> 'HUY'
       UNION ALL
       SELECT ps.created_date, ps.created_by, 'Bắt đầu SX', ('Phiếu ' || ps.ma_phieu_san_xuat)
-      FROM phieu_san_xuat ps
+      FROM phieu_san_xuat ps WHERE ps.trang_thai <> 'HUY'
       UNION ALL
       SELECT k.created_date, k.created_by, 'KCS', ('Tem ' || t.ma_tem || ' · đạt ' || COALESCE(k.so_luong_dat,0))
-      FROM kcs k JOIN tem t ON t.id = k.tem_id
+      FROM kcs k JOIN tem t ON t.id = k.tem_id AND t.trang_thai <> 'HUY'
       UNION ALL
       SELECT s.created_date, s.created_by, 'Sửa', ('Tem ' || t.ma_tem || ' · đạt ' || COALESCE(s.so_luong_sua_dat,0))
-      FROM sua s JOIN tem t ON t.id = s.tem_id
+      FROM sua s JOIN tem t ON t.id = s.tem_id AND t.trang_thai <> 'HUY'
       UNION ALL
       SELECT o.created_date, o.created_by, 'OQC', ('Tem ' || t.ma_tem || ' · ' || o.ket_qua)
-      FROM oqc o JOIN tem t ON t.id = o.tem_id
+      FROM oqc o JOIN tem t ON t.id = o.tem_id AND t.trang_thai <> 'HUY'
       UNION ALL
       SELECT q.created_date, q.created_by, 'QC in-line', ('Phiếu ' || ps.ma_phieu_san_xuat || ' · ' || q.ket_qua)
-      FROM qc_in_line q JOIN phieu_san_xuat ps ON ps.id = q.phieu_san_xuat_id
+      FROM qc_in_line q JOIN phieu_san_xuat ps ON ps.id = q.phieu_san_xuat_id AND ps.trang_thai <> 'HUY'
       UNION ALL
       SELECT COALESCE(gh.ngay_giao::timestamptz, gh.created_date), gh.created_by, 'Giao', ('Phiếu giao ' || gh.ma_phieu_giao)
       FROM giao_hang gh WHERE gh.trang_thai = 'DA_GIAO'
@@ -95,9 +97,11 @@ async function confirmTodayGroups() {
     WITH ev AS (
       SELECT cp.ten_checkpoint AS nhom, COALESCE(k.tg_xac_nhan, k.created_date) AS tg, COALESCE(k.nguoi_xac_nhan_id, k.created_by) AS nguoi_id
       FROM ket_qua_checkpoint k JOIN checkpoint cp ON cp.id = k.checkpoint_id WHERE k.trang_thai = 'DAT'
-      UNION ALL SELECT 'KCS', k.created_date, k.created_by FROM kcs k
-      UNION ALL SELECT 'Sửa', s.created_date, s.created_by FROM sua s
-      UNION ALL SELECT 'OQC', o.created_date, o.created_by FROM oqc o
+        AND (k.phan_in_id IS NULL OR EXISTS (SELECT 1 FROM phan_in p WHERE p.id=k.phan_in_id AND p.dang_hoat_dong))
+        AND (k.lenh_san_xuat_id IS NULL OR EXISTS (SELECT 1 FROM lenh_san_xuat l WHERE l.id=k.lenh_san_xuat_id AND l.trang_thai<>'HUY'))
+      UNION ALL SELECT 'KCS', k.created_date, k.created_by FROM kcs k WHERE EXISTS (SELECT 1 FROM tem t WHERE t.id=k.tem_id AND t.trang_thai<>'HUY')
+      UNION ALL SELECT 'Sửa', s.created_date, s.created_by FROM sua s WHERE EXISTS (SELECT 1 FROM tem t WHERE t.id=s.tem_id AND t.trang_thai<>'HUY')
+      UNION ALL SELECT 'OQC', o.created_date, o.created_by FROM oqc o WHERE EXISTS (SELECT 1 FROM tem t WHERE t.id=o.tem_id AND t.trang_thai<>'HUY')
       UNION ALL SELECT 'QC in-line', q.created_date, q.created_by FROM qc_in_line q
       UNION ALL SELECT 'Giao', COALESCE(gh.ngay_giao::timestamptz, gh.created_date), gh.created_by FROM giao_hang gh WHERE gh.trang_thai = 'DA_GIAO'
     )
@@ -179,6 +183,7 @@ async function confirmTodayDetail() {
     SELECT ev.nhom, ev.doi_tuong, ev.phan_in_id, ev.ma_phan, ev.mau_vai, ev.ma_hang, ev.tg, u.ho_ten AS nguoi
     FROM ev LEFT JOIN nguoi_dung u ON u.id = ev.nguoi_id
     WHERE (ev.tg AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = (now() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date
+      AND (ev.phan_in_id IS NULL OR EXISTS (SELECT 1 FROM phan_in p WHERE p.id=ev.phan_in_id AND p.dang_hoat_dong))
     ORDER BY ev.tg DESC`;
   const { rows } = await query(sql.replace(/\s+/g, ' ').trim());
   return rows;
@@ -330,7 +335,8 @@ async function chartDetail() {
     FROM (
       SELECT ${done('KHUON')} AS khuon, ${done('FILM')} AS film, ${done('MUC')} AS muc, ${done('QC_XAC_NHAN')} AS qc
       FROM phan_in pin
-      WHERE NOT EXISTS (SELECT 1 FROM dot_vai_ve dvr JOIN lenh_sx_dot_vai lsr ON lsr.dot_vai_ve_id=dvr.id
+      WHERE pin.dang_hoat_dong
+        AND NOT EXISTS (SELECT 1 FROM dot_vai_ve dvr JOIN lenh_sx_dot_vai lsr ON lsr.dot_vai_ve_id=dvr.id
                         JOIN lenh_san_xuat lr ON lr.id=lsr.lenh_san_xuat_id
                         WHERE dvr.phan_in_id=pin.id AND lr.trang_thai<>'HUY')
     ) q`;
@@ -358,7 +364,7 @@ async function chartDetail() {
     FROM (
       SELECT ${pReady} AS ready, ${pRel1} AS release_1, ${pTest} AS test, ${pRel2} AS release_2,
              ${pSanXuat} AS san_xuat, ${pOqc} AS oqc, ${pGiao} AS giao
-      FROM phan_in pin WHERE ${notDelivered}
+      FROM phan_in pin WHERE pin.dang_hoat_dong AND ${notDelivered}
     ) q`;
   let station_confirmed = { ready: 0, release_1: 0, test: 0, release_2: 0, san_xuat: 0, oqc: 0, giao: 0 };
   try {
@@ -372,7 +378,10 @@ async function chartDetail() {
 // Đếm cho Bảng điều phối: QC trả về chưa xử lý, giao đặc biệt chờ (OQC không đạt chưa cho giao), chuyền đang chạy/tổng.
 async function dieuPhoiExtra() {
   const sql = `SELECT
-      (SELECT count(*) FROM qc_tra_ve WHERE da_xu_ly = false)::int AS qc_tra_ve,
+      (SELECT count(*) FROM qc_tra_ve q WHERE q.da_xu_ly = false
+         AND (q.phan_in_id IS NULL OR EXISTS (SELECT 1 FROM phan_in p WHERE p.id=q.phan_in_id AND p.dang_hoat_dong))
+         AND (q.dot_vai_ve_id IS NULL OR EXISTS (SELECT 1 FROM dot_vai_ve d WHERE d.id=q.dot_vai_ve_id AND d.trang_thai<>'DA_HUY'))
+         AND (q.tem_id IS NULL OR EXISTS (SELECT 1 FROM tem t WHERE t.id=q.tem_id AND t.trang_thai<>'HUY')))::int AS qc_tra_ve,
       (SELECT count(*) FROM tem t WHERE t.trang_thai = 'CHO_OQC'
          AND EXISTS (SELECT 1 FROM oqc o WHERE o.tem_id = t.id AND o.ket_qua = 'KHONG_DAT' AND COALESCE(o.cho_giao,false) = false))::int AS oqc_khong_dat,
       (SELECT count(DISTINCT ps.chuyen_id) FROM phieu_san_xuat ps WHERE ps.trang_thai = 'DANG_CHAY' AND ps.chuyen_id IS NOT NULL)::int AS chuyen_dang_chay,
@@ -396,8 +405,8 @@ async function tinhTrangActiveRows() {
             pi.ma_phan, pi.mau_vai, pi.kich_vai, pi.kich_phim,
             mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang
      FROM ton_tram tt JOIN tram tr ON tr.id = tt.tram_id
-     JOIN dot_vai_ve dv ON dv.id = tt.dot_vai_ve_id
-     JOIN phan_in pi ON pi.id = dv.phan_in_id
+     JOIN dot_vai_ve dv ON dv.id = tt.dot_vai_ve_id AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY')
+     JOIN phan_in pi ON pi.id = dv.phan_in_id AND pi.dang_hoat_dong
      JOIN ma_hang mh ON mh.id = pi.ma_hang_id
      JOIN don_hang dh ON dh.id = mh.don_hang_id
      JOIN khach_hang kh ON kh.id = dh.khach_hang_id
@@ -411,9 +420,9 @@ async function tinhTrangPhanInList(search = '') {
   const { rows } = await query(
     `SELECT DISTINCT pi.id, pi.ma_phan, pi.mau_vai, pi.kich_vai, pi.kich_phim,
             mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang
-     FROM ton_tram tt JOIN dot_vai_ve dv ON dv.id = tt.dot_vai_ve_id
+     FROM ton_tram tt JOIN dot_vai_ve dv ON dv.id = tt.dot_vai_ve_id AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY')
      JOIN tram tr ON tr.id = tt.tram_id
-     JOIN phan_in pi ON pi.id = dv.phan_in_id
+     JOIN phan_in pi ON pi.id = dv.phan_in_id AND pi.dang_hoat_dong
      JOIN ma_hang mh ON mh.id = pi.ma_hang_id
      JOIN don_hang dh ON dh.id = mh.don_hang_id
      JOIN khach_hang kh ON kh.id = dh.khach_hang_id
@@ -542,10 +551,11 @@ async function flowRows(tramMa = '') {
              pi.ma_phan, pi.mau_vai, pi.kich_vai, pi.kich_phim,
              mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang
       FROM dot_vai_ve dv
-      JOIN phan_in pi ON pi.id = dv.phan_in_id
+      JOIN phan_in pi ON pi.id = dv.phan_in_id AND pi.dang_hoat_dong
       JOIN ma_hang mh ON mh.id = pi.ma_hang_id
       JOIN don_hang dh ON dh.id = mh.don_hang_id AND dh.trang_thai IS DISTINCT FROM 'CLOSED_FINANCE'
       JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+      WHERE dv.trang_thai NOT IN ('DA_GOP','DA_HUY')
     ),
     lk AS (
       SELECT DISTINCT ON (lsd.dot_vai_ve_id) lsd.dot_vai_ve_id, ls.id AS lenh_id, ls.trang_thai AS lenh_tt, ls.created_date AS lenh_tg

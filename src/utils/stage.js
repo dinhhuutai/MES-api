@@ -63,10 +63,11 @@ function dotStageCase(a) {
       ELSE 'TESTRUN_CNSP' END`;
 }
 
-// Giai đoạn "dự phòng" cho phần in KHÔNG có đợt vải nào (chưa nhận vải): suy từ checkpoint READY.
+// Giai đoạn "dự phòng" cho phần in KHÔNG có đợt vải nào (chưa nhận vải) — LUÔN thuộc READY (chuẩn bị),
+// KHÔNG bao giờ RELEASE_1: không có đợt vải nào để release nên màn Release 1 (theo đợt) không hiện chúng
+// ⇒ nếu xếp RELEASE_1 sẽ đếm dư so với màn. (RELEASE_1 chỉ dành cho phần in CÓ đợt vải chưa release.)
 function readyFallback(pinId) {
-  return `CASE WHEN EXISTS(SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id=k.checkpoint_id WHERE k.phan_in_id=${pinId} AND c.ma_checkpoint='QC_XAC_NHAN' AND k.trang_thai='DAT') THEN 'RELEASE_1'
-      WHEN (SELECT count(*) FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id=k.checkpoint_id WHERE k.phan_in_id=${pinId} AND c.ma_checkpoint IN ('KHUON','FILM','MUC') AND k.trang_thai='DAT')>=3 THEN 'READY_QA'
+  return `CASE WHEN (SELECT count(*) FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id=k.checkpoint_id WHERE k.phan_in_id=${pinId} AND c.ma_checkpoint IN ('KHUON','FILM','MUC') AND k.trang_thai='DAT')>=3 THEN 'READY_QA'
       ELSE 'READY_KT' END`;
 }
 
