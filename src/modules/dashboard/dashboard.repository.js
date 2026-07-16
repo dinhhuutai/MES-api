@@ -748,7 +748,7 @@ async function tinhTrangGraph(phanInId) {
   )).rows[0];
   if (!info) return null;
 
-  const [dotVai, links, tems, readyCp, testCp, readyEv] = await Promise.all([
+  const [dotVai, links, tems, readyCp, testCp, readyEv, giaoRec, kcsRec] = await Promise.all([
     query(
       `SELECT dv.id, dv.ma_dot_vai, dv.so_luong_vai_ve, dv.han_giao_hang, dv.trang_thai,
               EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id
@@ -788,9 +788,7 @@ async function tinhTrangGraph(phanInId) {
               k.nguoi AS kcs_nguoi, k.tg AS kcs_tg,
               s.nguoi AS sua_nguoi, s.tg AS sua_tg,
               ok.nguoi AS oqc_kcs_nguoi, ok.tg AS oqc_kcs_tg, ok.boc_mau AS oqc_kcs_boc_mau, ok.boc_mau_dat AS oqc_kcs_boc_mau_dat,
-              os.nguoi AS oqc_sua_nguoi, os.tg AS oqc_sua_tg, os.boc_mau AS oqc_sua_boc_mau, os.boc_mau_dat AS oqc_sua_boc_mau_dat,
-              gk.nguoi AS giao_kcs_nguoi, gk.tg AS giao_kcs_tg,
-              gs.nguoi AS giao_sua_nguoi, gs.tg AS giao_sua_tg
+              os.nguoi AS oqc_sua_nguoi, os.tg AS oqc_sua_tg, os.boc_mau AS oqc_sua_boc_mau, os.boc_mau_dat AS oqc_sua_boc_mau_dat
        FROM lenh_san_xuat ls
        JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
        JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id AND dv.phan_in_id = $1
@@ -802,8 +800,6 @@ async function tinhTrangGraph(phanInId) {
        LEFT JOIN LATERAL (SELECT su.ho_ten AS nguoi, ss.created_date AS tg FROM sua ss LEFT JOIN nguoi_dung su ON su.id=ss.created_by WHERE ss.tem_id=t.id ORDER BY ss.created_date DESC LIMIT 1) s ON true
        LEFT JOIN LATERAL (SELECT ou.ho_ten AS nguoi, oo.created_date AS tg, oo.so_luong_kiem AS boc_mau, oo.so_luong_dat AS boc_mau_dat FROM oqc oo LEFT JOIN nguoi_dung ou ON ou.id=oo.created_by WHERE oo.tem_id=t.id AND COALESCE(oo.nguon,'KCS')<>'SUA' ORDER BY oo.created_date DESC LIMIT 1) ok ON true
        LEFT JOIN LATERAL (SELECT ou.ho_ten AS nguoi, oo.created_date AS tg, oo.so_luong_kiem AS boc_mau, oo.so_luong_dat AS boc_mau_dat FROM oqc oo LEFT JOIN nguoi_dung ou ON ou.id=oo.created_by WHERE oo.tem_id=t.id AND oo.nguon='SUA' ORDER BY oo.created_date DESC LIMIT 1) os ON true
-       LEFT JOIN LATERAL (SELECT gu.ho_ten AS nguoi, gh.created_date AS tg FROM giao_hang_tem ght JOIN giao_hang gh ON gh.id=ght.giao_hang_id LEFT JOIN nguoi_dung gu ON gu.id=gh.created_by WHERE ght.tem_id=t.id AND COALESCE(ght.nguon,'KCS')<>'SUA' ORDER BY gh.created_date DESC LIMIT 1) gk ON true
-       LEFT JOIN LATERAL (SELECT gu.ho_ten AS nguoi, gh.created_date AS tg FROM giao_hang_tem ght JOIN giao_hang gh ON gh.id=ght.giao_hang_id LEFT JOIN nguoi_dung gu ON gu.id=gh.created_by WHERE ght.tem_id=t.id AND ght.nguon='SUA' ORDER BY gh.created_date DESC LIMIT 1) gs ON true
        WHERE ls.trang_thai <> 'HUY'
        ORDER BY t.id, t.ma_tem`.replace(/\s+/g, ' '),
       [phanInId]
@@ -841,6 +837,35 @@ async function tinhTrangGraph(phanInId) {
        ORDER BY lst.tg_thuc_hien`.replace(/\s+/g, ' '),
       [phanInId]
     ),
+    // Từng LẦN GIAO của tem (giao trước / giao sau) — để rẽ nhánh Giao theo từng phiếu.
+    query(
+      `SELECT ght.tem_id, ght.so_luong_giao, COALESCE(ght.nguon,'KCS') AS nguon,
+              gh.created_date AS tg, gh.ma_phieu_giao, gu.ho_ten AS nguoi
+       FROM giao_hang_tem ght
+       JOIN giao_hang gh ON gh.id = ght.giao_hang_id
+       LEFT JOIN nguoi_dung gu ON gu.id = gh.created_by
+       WHERE ght.tem_id IN (
+         SELECT t.id FROM tem t JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+         JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id AND ls.trang_thai <> 'HUY'
+         JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
+         JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id AND dv.phan_in_id = $1)
+       ORDER BY gh.created_date`.replace(/\s+/g, ' '),
+      [phanInId]
+    ),
+    // Từng LẦN KIỂM KCS của tem (kiểm trước để giao trước) — để rẽ nhánh KCS con. Loại bản ghi đã hủy xác nhận.
+    query(
+      `SELECT k.tem_id, k.so_luong_kiem, k.so_luong_dat, k.so_luong_loi, k.so_luong_huy,
+              k.created_date AS tg, ku.ho_ten AS nguoi
+       FROM kcs k LEFT JOIN nguoi_dung ku ON ku.id = k.created_by
+       WHERE k.tem_id IN (
+         SELECT t.id FROM tem t JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+         JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id AND ls.trang_thai <> 'HUY'
+         JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
+         JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id AND dv.phan_in_id = $1)
+         AND NOT EXISTS (SELECT 1 FROM audit_log a WHERE a.ten_bang='kcs' AND a.hanh_dong='HUY_XAC_NHAN' AND a.id_ban_ghi = k.id::text)
+       ORDER BY k.created_date`.replace(/\s+/g, ' '),
+      [phanInId]
+    ),
   ]);
 
   // Gom link theo lệnh → feeds[]; gom tem theo lệnh.
@@ -861,7 +886,16 @@ async function tinhTrangGraph(phanInId) {
     }
     g.feeds.push({ dot_vai_ve_id: r.dot_vai_ve_id, ma_dot_vai: r.ma_dot_vai, so_luong: r.sl_vao, so_luong_vai_ve: r.so_luong_vai_ve });
   });
-  tems.rows.forEach((t) => { const g = lenhMap.get(t.lenh_san_xuat_id); if (g) g.tems.push(t); });
+  // Gom các lần giao + các lần kiểm KCS theo tem.
+  const giaoByTem = new Map();
+  giaoRec.rows.forEach((r) => { if (!giaoByTem.has(r.tem_id)) giaoByTem.set(r.tem_id, []); giaoByTem.get(r.tem_id).push(r); });
+  const kcsByTem = new Map();
+  kcsRec.rows.forEach((r) => { if (!kcsByTem.has(r.tem_id)) kcsByTem.set(r.tem_id, []); kcsByTem.get(r.tem_id).push(r); });
+  tems.rows.forEach((t) => {
+    t.giao_records = giaoByTem.get(t.tem_id) || [];
+    t.kcs_records = kcsByTem.get(t.tem_id) || [];
+    const g = lenhMap.get(t.lenh_san_xuat_id); if (g) g.tems.push(t);
+  });
 
   // Test Run người/giờ theo lệnh (CNSP/QA).
   testCp.rows.forEach((r) => {
