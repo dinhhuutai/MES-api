@@ -742,8 +742,49 @@ async function logCancelQc(table, id, temId, maTem, lyDo, actorId) {
   );
 }
 
+// ============ GỘP TEM (KCS) — chuyển SL các tem về tem đầu tiên, hủy các tem nguồn ============
+// Lấy tem + phần in + cờ "chưa kiểm" (sổ cái = 0) để kiểm tra điều kiện gộp.
+async function getTemsForMerge(temIds) {
+  const { rows } = await query(
+    `SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.da_qua_phoi,
+            (COALESCE(t.sl_kcs_dat,0)+COALESCE(t.sl_kcs_sua,0)+COALESCE(t.sl_kcs_huy,0)
+             +COALESCE(t.sl_sua_dat,0)+COALESCE(t.sl_sua_huy,0)+COALESCE(t.sl_oqc_dat,0)+COALESCE(t.sl_da_giao,0)) AS da_xu_ly,
+            pin.id AS phan_in_id, pin.ma_phan
+     FROM tem t
+     JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+     JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+     LEFT JOIN LATERAL (
+       SELECT dv.phan_in_id FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+       WHERE lsd.lenh_san_xuat_id = ls.id LIMIT 1
+     ) dvp ON true
+     LEFT JOIN phan_in pin ON pin.id = dvp.phan_in_id
+     WHERE t.id = ANY($1::uuid[])`.replace(/\s+/g, ' '),
+    [temIds]
+  );
+  return rows;
+}
+
+// Cộng SL gộp vào tem đích + cập nhật cờ đã-qua-phơi.
+async function addTemSoLuong(client, temId, addQty, daQuaPhoi, actorId) {
+  await client.query(
+    `UPDATE tem SET so_luong = so_luong + $2, da_qua_phoi = da_qua_phoi OR $3,
+       updated_by=$4, updated_date=CURRENT_TIMESTAMP WHERE id=$1`,
+    [temId, addQty, !!daQuaPhoi, actorId]
+  );
+}
+
+// Ghi audit gộp tem.
+async function logGopTem(client, targetTemId, maTem, nguon, actorId) {
+  await client.query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('tem', $1, 'GOP_TEM', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`,
+    [String(targetTemId), JSON.stringify({ ma_tem: maTem, nguon }), actorId]
+  );
+}
+
 module.exports = {
   insertQcTraVe, activeReturnsMap, resolveReturns, resolveReturnsMany, listQcTraVe,
+  getTemsForMerge, addTemSoLuong, logGopTem,
   listCancelKcs, listCancelSua, listCancelOqc, getCancelKcsRow, getCancelSuaRow, getCancelOqcRow, logCancelQc,
   listKcsCand, listSuaCand, listOqcCand, caPartsForTems, prevConfirmerByTems, getTemBasic, setTemTrangThai, setTemStatusQty,
   getTemLedger, addKcsLedger, addSuaLedger, addOqcLedger, addGiaoLedger, reduceKcsDat, recomputeTemStage,

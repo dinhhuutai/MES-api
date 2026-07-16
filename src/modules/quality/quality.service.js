@@ -111,6 +111,50 @@ async function recordKcs(temId, body, actorId) {
   return { tem_id: temId, next: 'KCS', so_luong_dat: dat, so_luong_sua: quyetDinhSua, so_luong_huy: huyTaiKcs, con_kcs: conLai };
 }
 
+// ----- GỘP TEM (KCS) — do in dư tem vì nhập thiếu SL: dồn SL các tem về tem ĐẦU TIÊN, hủy các tem còn lại -----
+// Điều kiện: tất cả tem CÙNG PHẦN IN, CHƯA kiểm/giao (sổ cái = 0), chưa HỦY. Tem đích nhận thêm Σ SL các tem nguồn.
+async function gopTem({ targetTemId, sourceTemIds }, actorId) {
+  const sources = [...new Set((sourceTemIds || []).filter((id) => id && id !== targetTemId))];
+  if (!targetTemId) throw new AppError('Thiếu tem đích', { status: 422, errorCode: 'NO_TARGET' });
+  if (sources.length === 0) throw new AppError('Chọn ít nhất 2 tem để gộp', { status: 422, errorCode: 'NEED_2' });
+
+  const rows = await repo.getTemsForMerge([targetTemId, ...sources]);
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const target = byId.get(targetTemId);
+  if (!target) throw new AppError('Tem đích không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  if (sources.some((id) => !byId.get(id))) throw new AppError('Có tem nguồn không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+
+  const all = [target, ...sources.map((id) => byId.get(id))];
+  // Cùng phần in.
+  const pin = target.phan_in_id;
+  if (all.some((t) => t.phan_in_id !== pin || !pin)) {
+    throw new AppError('Chỉ gộp các tem CÙNG PHẦN IN', { status: 409, errorCode: 'DIFF_PHAN_IN' });
+  }
+  // Chưa hủy + chưa kiểm/giao (giữ đúng sổ cái, không mất dữ liệu đã ghi).
+  for (const t of all) {
+    if (t.trang_thai === 'HUY') throw new AppError(`Tem ${t.ma_tem} đã hủy`, { status: 409, errorCode: 'CANCELLED' });
+    if (Number(t.da_xu_ly) > 0) throw new AppError(`Tem ${t.ma_tem} đã có KCS/OQC/giao — không thể gộp`, { status: 409, errorCode: 'ALREADY_PROCESSED' });
+  }
+
+  const addQty = sources.reduce((s, id) => s + (Number(byId.get(id).so_luong) || 0), 0);
+  const anyPhoi = sources.some((id) => byId.get(id).da_qua_phoi);
+
+  await withTransaction(async (client) => {
+    await repo.addTemSoLuong(client, targetTemId, addQty, anyPhoi, actorId);
+    for (const id of sources) await prodRepo.cancelTem(client, id, actorId); // hủy tem nguồn + gỡ xe phơi
+    await repo.recomputeTemStage(client, targetTemId, actorId);
+    await repo.logGopTem(client, targetTemId, target.ma_tem,
+      sources.map((id) => ({ ma_tem: byId.get(id).ma_tem, so_luong: byId.get(id).so_luong })), actorId);
+  });
+  sockets.emit('quality:updated', { temId: targetTemId, stage: 'KCS', action: 'GOP_TEM' });
+  sockets.emit('production:updated', {});
+  sockets.emit('dashboard:refresh', {});
+  return {
+    target_tem_id: targetTemId, ma_tem: target.ma_tem,
+    so_tem_gop: sources.length, sl_gop_them: addQty, so_luong_moi: (Number(target.so_luong) || 0) + addQty,
+  };
+}
+
 // ----- SỬA (còn phần chờ sửa: con_sua > 0) -----
 async function listSuaCandidates({ search, filters }) {
   const rows = await repo.listSuaCand({ search, filters });
@@ -477,7 +521,7 @@ async function toggleGiaoDacBiet(id, active, actorId) {
 }
 
 module.exports = {
-  listKcsCandidates, recordKcs, listSuaCandidates, recordSua, listOqcCandidates, recordOqc,
+  listKcsCandidates, recordKcs, gopTem, listSuaCandidates, recordSua, listOqcCandidates, recordOqc,
   listCancelKcs, listCancelSua, listCancelOqc, cancelKcs, cancelSua, cancelOqc,
   kcsHistory, suaHistory, oqcHistory, temHanhTrinh,
   kcsDone, suaDone, oqcDone, inlineDone,

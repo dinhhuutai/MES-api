@@ -14,6 +14,7 @@ router.get('/tem/:temId/hanh-trinh', rbac('KCS', 'SUA', 'OQC', 'DELIVERY_VIEW', 
 router.get('/kcs/candidates', rbac('KCS'), c.kcsCandidates);
 router.get('/kcs/history', rbac('KCS'), c.kcsHistory);
 router.get('/kcs/done', rbac('KCS'), c.kcsDone);
+router.post('/kcs/gop-tem', rbac('KCS'), c.gopTem);
 router.post('/kcs/:temId', rbac('KCS'), c.recordKcs);
 
 router.get('/sua/candidates', rbac('SUA'), c.suaCandidates);

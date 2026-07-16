@@ -13,6 +13,8 @@ const candFilters = (q) => {
 const kcsCandidates = asyncHandler(async (req, res) => ok(res, await service.listKcsCandidates(candFilters(req.query))));
 const recordKcs = asyncHandler(async (req, res) =>
   ok(res, await service.recordKcs(req.params.temId, req.body, req.user.id), 'Đã ghi nhận KCS'));
+const gopTem = asyncHandler(async (req, res) =>
+  ok(res, await service.gopTem(req.body, req.user.id), 'Đã gộp tem'));
 
 const suaCandidates = asyncHandler(async (req, res) => ok(res, await service.listSuaCandidates(candFilters(req.query))));
 const recordSua = asyncHandler(async (req, res) =>
@@ -72,7 +74,7 @@ const giaoDacBietUpdate = asyncHandler(async (req, res) => ok(res, await service
 const giaoDacBietToggle = asyncHandler(async (req, res) => ok(res, await service.toggleGiaoDacBiet(req.params.id, req.body.active, req.user.id), 'Đã đổi trạng thái'));
 
 module.exports = {
-  kcsCandidates, recordKcs, suaCandidates, recordSua, oqcCandidates, recordOqc,
+  kcsCandidates, recordKcs, gopTem, suaCandidates, recordSua, oqcCandidates, recordOqc,
   kcsHistory, suaHistory, oqcHistory,
   kcsDone, suaDone, oqcDone, inlineDone,
   inlineCandidates, inlineLoaiLoi, inlineHistory, recordInline,

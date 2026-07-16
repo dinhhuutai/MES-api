@@ -49,6 +49,8 @@ async function listCandidates({
            (SELECT string_agg(DISTINCT ldv.ten_loai, ', ')
               FROM dot_vai_ve dv3 JOIN loai_dot_vai ldv ON ldv.id = dv3.loai_dot_vai_id
               WHERE dv3.phan_in_id = pin.id) AS loai_dot_vai,
+           (SELECT min(dv4.han_giao_hang) FROM dot_vai_ve dv4
+              WHERE dv4.phan_in_id = pin.id AND dv4.trang_thai NOT IN ('DA_GOP','DA_HUY')) AS han_giao_hang,
            (SELECT count(*) FROM ket_qua_checkpoint k
               WHERE k.phan_in_id = pin.id AND k.checkpoint_id = ANY($2::uuid[]) AND k.trang_thai = 'DAT')::int AS n_tech_done,
            ${doneExpr('$3')} AS qc_done${withItems ? `,

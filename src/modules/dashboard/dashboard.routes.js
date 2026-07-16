@@ -189,7 +189,7 @@ router.get('/tinh-trang/summary', asyncHandler(async (req, res) => {
 
 // GET /dashboard/tinh-trang/phan-in?search= — danh sách phần in để xoay vòng.
 router.get('/tinh-trang/phan-in', asyncHandler(async (req, res) => {
-  const rows = await repo.tinhTrangPhanInList(req.query.search || '');
+  const rows = await repo.tinhTrangPhanInList(req.query.search || '', req.query.limit);
   return ok(res, { items: rows, total: rows.length });
 }));
 
@@ -205,6 +205,9 @@ router.get('/tinh-trang/phan-in/:id', asyncHandler(async (req, res) => {
   });
   return ok(res, data);
 }));
+
+// GET /dashboard/tinh-trang/phan-in/:id/graph — sơ đồ rẽ nhánh (đợt vải → gộp đợt SX → tem → KCS/Sửa/OQC/Giao).
+router.get('/tinh-trang/phan-in/:id/graph', asyncHandler(async (req, res) => ok(res, await repo.tinhTrangGraph(req.params.id))));
 
 // GET /dashboard/flow?tram=&filter=  (filter: all|NGHEN|SAP_NGHEN)
 router.get('/flow', asyncHandler(async (req, res) => {
@@ -249,6 +252,117 @@ router.get('/sla-tong-quan', asyncHandler(async (req, res) => {
   });
   const trams = Object.values(byTram).sort((a, b) => (a.thu_tu ?? 99) - (b.thu_tu ?? 99));
   return ok(res, { tong: { dang_chay: dangChay, nghen, sap_nghen: sapNghen }, trams });
+}));
+
+// GET /dashboard/lich-su-nghen?from=&to=&tram=&level=  (level: all|TRAM|CHECKLIST)
+// Lịch sử nghẽn suy từ dwell mỗi trạm (lich_su_luan_chuyen) + dwell mỗi checklist (ket_qua_checkpoint).
+// "Nghẽn" = thời gian dừng > SLA; "thời gian vượt SLA" (overrun) = max(0, dwell - SLA).
+function vnDateStr(d) {
+  const x = new Date(d.toLocaleString('en-US', { timeZone: 'Asia/Ho_Chi_Minh' }));
+  return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
+}
+router.get('/lich-su-nghen', asyncHandler(async (req, res) => {
+  // Mặc định: 7 ngày gần nhất (VN).
+  const to = req.query.to || vnDateStr(new Date());
+  const from = req.query.from || vnDateStr(new Date(Date.now() - 6 * 86400000));
+  const tram = req.query.tram || '';
+  const level = req.query.level || 'all';
+
+  const [tramEps, cpEpsRaw, tramOwners, cpOwners] = await Promise.all([
+    (level === 'CHECKLIST') ? [] : repo.nghenTramEpisodes({ from, to, tram }),
+    (level === 'TRAM') ? [] : repo.nghenChecklistEpisodes({ from, to }),
+    repo.tramOwnersActive(), repo.checkpointOwnersActive(),
+  ]);
+  // Lọc checklist theo trạm (repo checklist không lọc trong SQL) để 'tram' áp nhất quán cả 2 cấp.
+  const cpEps = tram ? cpEpsRaw.filter((r) => r.ma_tram === tram) : cpEpsRaw;
+  const ownerByTram = groupOwners(tramOwners, 'ma_tram');
+  const ownerByCp = groupOwners(cpOwners, 'ma_checkpoint');
+
+  // Chuẩn hóa 1 lượt nghẽn thành episode + tính overrun + trạng thái.
+  const mkEp = (r, epLevel, maKey, owners) => {
+    const sla = Number(r.sla_phut) || 0;
+    const dwell = Number(r.dwell_phut) || 0;
+    const vuot = Math.max(0, dwell - sla);
+    const o = owners[r[maKey]] || {};
+    return {
+      level: epLevel,
+      ma: r[maKey], ten: epLevel === 'TRAM' ? r.ten_tram : r.ten_checkpoint,
+      ma_tram: r.ma_tram, ten_tram: r.ten_tram, thu_tu: r.thu_tu,
+      phan_in_id: r.phan_in_id, ma_phan: r.ma_phan, ma_hang: r.ma_hang, ma_don_hang: r.ma_don_hang,
+      ten_khach_hang: r.ten_khach_hang, mau_vai: r.mau_vai, kich_vai: r.kich_vai, kich_phim: r.kich_phim,
+      tg_vao: r.tg_vao, tg_ra: r.tg_ra, dwell_phut: dwell, sla_phut: sla, vuot_phut: vuot,
+      sla_status: dwell > sla ? 'NGHEN' : 'OK',
+      owner_trach_nhiem: (o.chiu_trach_nhiem || []).join(', ') || null,
+      owner_xu_ly: (o.xu_ly || []).join(', ') || null,
+    };
+  };
+  const eps = [
+    ...tramEps.map((r) => mkEp(r, 'TRAM', 'ma_tram', ownerByTram)),
+    ...cpEps.map((r) => mkEp(r, 'CHECKLIST', 'ma_checkpoint', ownerByCp)),
+  ];
+
+  // Gộp theo khóa (trạm / checklist) → thống kê.
+  const aggBy = (list) => {
+    const m = {};
+    list.forEach((e) => {
+      const g = (m[e.ma] = m[e.ma] || {
+        ma: e.ma, ten: e.ten, ma_tram: e.ma_tram, ten_tram: e.ten_tram, thu_tu: e.thu_tu, sla_phut: e.sla_phut,
+        so_vu: 0, so_vu_nghen: 0, tong_dwell_phut: 0, tong_vuot_phut: 0, max_vuot_phut: 0,
+        owner_trach_nhiem: e.owner_trach_nhiem, owner_xu_ly: e.owner_xu_ly,
+      });
+      g.so_vu += 1;
+      g.tong_dwell_phut += e.dwell_phut;
+      g.tong_vuot_phut += e.vuot_phut;
+      if (e.vuot_phut > 0) g.so_vu_nghen += 1;
+      if (e.vuot_phut > g.max_vuot_phut) g.max_vuot_phut = e.vuot_phut;
+    });
+    return Object.values(m).map((g) => ({
+      ...g,
+      avg_dwell_phut: g.so_vu ? Math.round(g.tong_dwell_phut / g.so_vu) : 0,
+      ty_le_nghen: g.so_vu ? Math.round((g.so_vu_nghen / g.so_vu) * 100) : 0,
+    })).sort((a, b) => (b.tong_vuot_phut - a.tong_vuot_phut));
+  };
+  const by_tram = aggBy(eps.filter((e) => e.level === 'TRAM'));
+  const by_checklist = aggBy(eps.filter((e) => e.level === 'CHECKLIST'));
+
+  // Xu hướng theo ngày VN + phân bố theo giờ VN (dựa trên tg_ra = thời điểm rời trạm/bước).
+  const vnParts = (ts) => {
+    const d = new Date(new Date(ts).toLocaleString('en-US', { timeZone: 'Asia/Ho_Chi_Minh' }));
+    return { ngay: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`, gio: d.getHours() };
+  };
+  const dayMap = {}; const gioMap = {};
+  eps.forEach((e) => {
+    if (!e.tg_ra) return;
+    const { ngay, gio } = vnParts(e.tg_ra);
+    const d = (dayMap[ngay] = dayMap[ngay] || { ngay, tong_vuot_phut: 0, so_vu_nghen: 0 });
+    d.tong_vuot_phut += e.vuot_phut; if (e.vuot_phut > 0) d.so_vu_nghen += 1;
+    const h = (gioMap[gio] = gioMap[gio] || { gio, tong_vuot_phut: 0, so_vu_nghen: 0 });
+    h.tong_vuot_phut += e.vuot_phut; if (e.vuot_phut > 0) h.so_vu_nghen += 1;
+  });
+  const by_day = Object.values(dayMap).sort((a, b) => a.ngay.localeCompare(b.ngay));
+  const by_gio = [];
+  for (let g = 0; g < 24; g += 1) by_gio.push(gioMap[g] || { gio: g, tong_vuot_phut: 0, so_vu_nghen: 0 });
+
+  // KPI tổng.
+  const soVuTong = eps.length;
+  const soVuNghen = eps.filter((e) => e.vuot_phut > 0).length;
+  const tongVuot = eps.reduce((s, e) => s + e.vuot_phut, 0);
+  const viDaiNhat = eps.reduce((mx, e) => (e.vuot_phut > (mx?.vuot_phut || 0) ? e : mx), null);
+  const rank = [...by_tram, ...by_checklist].sort((a, b) => b.tong_vuot_phut - a.tong_vuot_phut)[0] || null;
+
+  return ok(res, {
+    from, to, level,
+    kpi: {
+      tong_vuot_phut: tongVuot,
+      so_vu_nghen: soVuNghen,
+      so_vu_tong: soVuTong,
+      ty_le_tuan_thu: soVuTong ? Math.round(((soVuTong - soVuNghen) / soVuTong) * 100) : 100,
+      vu_dai_nhat: viDaiNhat ? { phut: viDaiNhat.vuot_phut, ten: viDaiNhat.ten, ma_phan: viDaiNhat.ma_phan } : null,
+      nghen_nhat: rank ? { ten: rank.ten, ten_tram: rank.ten_tram, tong_vuot_phut: rank.tong_vuot_phut } : null,
+    },
+    by_tram, by_checklist, by_day, by_gio,
+    episodes: eps.sort((a, b) => b.vuot_phut - a.vuot_phut).slice(0, 300),
+  });
 }));
 
 // Báo cáo (gắn dưới /dashboard cho gọn; module BAO_CAO)

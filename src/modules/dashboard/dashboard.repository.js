@@ -400,7 +400,8 @@ async function dieuPhoiExtra() {
 async function tinhTrangActiveRows() {
   const { rows } = await query(
     `SELECT dv.phan_in_id, tr.ma_tram, tr.ten_tram,
-            tr.thoi_gian_quy_dinh_phut AS sla_phut, tr.canh_bao_truoc_phut,
+            CASE WHEN tr.ma_tram='CHO_KHO' THEN tr.thoi_gian_quy_dinh_phut + COALESCE(pi.thoi_gian_cho_kho_phut, 60)
+                 ELSE tr.thoi_gian_quy_dinh_phut END AS sla_phut, tr.canh_bao_truoc_phut,
             floor(EXTRACT(EPOCH FROM (now() - tt.tg_vao)) / 60)::int AS phut_da_o,
             pi.ma_phan, pi.mau_vai, pi.kich_vai, pi.kich_phim,
             mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang
@@ -415,22 +416,25 @@ async function tinhTrangActiveRows() {
   return rows;
 }
 
-// Danh sách phần in đang trong dòng chảy (để xoay vòng trên kiosk), lọc theo tìm kiếm.
-async function tinhTrangPhanInList(search = '') {
+// Tìm phần in (cho màn Sơ đồ phần in). Tìm rỗng → phần in MỚI NHẤT; có tìm → khớp, giới hạn số dòng.
+// KHÔNG tải hết (có thể vài ngàn phần in) — người dùng nhập/quét QR để ra phần in.
+async function tinhTrangPhanInList(search = '', limit = 30) {
+  const lim = Math.max(1, Math.min(Number(limit) || 30, 100));
   const { rows } = await query(
-    `SELECT DISTINCT pi.id, pi.ma_phan, pi.mau_vai, pi.kich_vai, pi.kich_phim,
-            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang
-     FROM ton_tram tt JOIN dot_vai_ve dv ON dv.id = tt.dot_vai_ve_id AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY')
-     JOIN tram tr ON tr.id = tt.tram_id
-     JOIN phan_in pi ON pi.id = dv.phan_in_id AND pi.dang_hoat_dong
+    `SELECT pi.id, pi.ma_phan, pi.mau_vai, pi.kich_vai, pi.kich_phim,
+            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
+            (SELECT max(dv2.created_date) FROM dot_vai_ve dv2 WHERE dv2.phan_in_id = pi.id) AS recency
+     FROM phan_in pi
      JOIN ma_hang mh ON mh.id = pi.ma_hang_id
      JOIN don_hang dh ON dh.id = mh.don_hang_id
      JOIN khach_hang kh ON kh.id = dh.khach_hang_id
-     WHERE tr.ma_tram <> 'CLOSED_FINANCE'
+     WHERE pi.dang_hoat_dong
+       AND EXISTS (SELECT 1 FROM dot_vai_ve dv WHERE dv.phan_in_id = pi.id AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY'))
        AND ($1 = '' OR pi.ma_phan ILIKE '%'||$1||'%' OR dh.ma_don_hang ILIKE '%'||$1||'%'
             OR mh.ma_hang ILIKE '%'||$1||'%' OR pi.mau_vai ILIKE '%'||$1||'%'
             OR pi.kich_vai ILIKE '%'||$1||'%' OR pi.kich_phim ILIKE '%'||$1||'%')
-     ORDER BY pi.ma_phan`.replace(/\s+/g, ' '),
+     ORDER BY recency DESC NULLS LAST, pi.ma_phan
+     LIMIT ${lim}`.replace(/\s+/g, ' '),
     [search]
   );
   return rows;
@@ -548,7 +552,7 @@ async function flowRows(tramMa = '') {
     WITH dvbase AS (
       SELECT dv.id AS dot_vai_ve_id, dv.phan_in_id, dv.ma_dot_vai, dv.han_giao_hang,
              COALESCE(dv.created_date, dv.ngay_vai_ve::timestamptz) AS dv_tg,
-             pi.ma_phan, pi.mau_vai, pi.kich_vai, pi.kich_phim,
+             pi.ma_phan, pi.mau_vai, pi.kich_vai, pi.kich_phim, pi.thoi_gian_cho_kho_phut AS cho_kho_phut,
              mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang
       FROM dot_vai_ve dv
       JOIN phan_in pi ON pi.id = dv.phan_in_id AND pi.dang_hoat_dong
@@ -619,7 +623,9 @@ async function flowRows(tramMa = '') {
            b.ma_hang, b.ma_don_hang, b.ten_khach_hang,
            COALESCE(ta.pcs,0) AS pcs,
            cur.ma_tram, tr.ten_tram, tr.thu_tu,
-           CASE WHEN cur.ma_tram='READY' AND COALESCE(kt.n_kt,0)>=3 THEN qcp.sla ELSE tr.thoi_gian_quy_dinh_phut END AS sla_phut,
+           CASE WHEN cur.ma_tram='READY' AND COALESCE(kt.n_kt,0)>=3 THEN qcp.sla
+                WHEN cur.ma_tram='CHO_KHO' THEN tr.thoi_gian_quy_dinh_phut + COALESCE(b.cho_kho_phut, 60)
+                ELSE tr.thoi_gian_quy_dinh_phut END AS sla_phut,
            CASE WHEN cur.ma_tram='READY' AND COALESCE(kt.n_kt,0)>=3 THEN qcp.cb ELSE tr.canh_bao_truoc_phut END AS canh_bao_truoc_phut,
            tv.tg_vao,
            floor(EXTRACT(EPOCH FROM (now() - tv.tg_vao)) / 60)::int AS phut_da_o,
@@ -727,7 +733,269 @@ async function checkpointOwnersActive() {
   return rows;
 }
 
+// ============ SƠ ĐỒ RẼ NHÁNH: phần in → đợt vải → (gộp) đợt SX → tem → KCS/Sửa/OQC/Giao ============
+// Trả cấu trúc đồ thị (không double-count): mỗi lệnh SX 1 lane, feeds = đợt vải nuôi lệnh (≥2 = gộp),
+// tems = tem của lệnh + sổ cái số lượng để rẽ nhánh KCS→(Sửa)→OQC→Giao.
+async function tinhTrangGraph(phanInId) {
+  const info = (await query(
+    `SELECT pi.id, pi.ma_phan, pi.mau_vai, pi.kich_vai, pi.kich_phim, pi.la_in_kieng,
+            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang
+     FROM phan_in pi JOIN ma_hang mh ON mh.id = pi.ma_hang_id
+     JOIN don_hang dh ON dh.id = mh.don_hang_id
+     JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+     WHERE pi.id = $1`.replace(/\s+/g, ' '),
+    [phanInId]
+  )).rows[0];
+  if (!info) return null;
+
+  const [dotVai, links, tems, readyCp, testCp, readyEv] = await Promise.all([
+    query(
+      `SELECT dv.id, dv.ma_dot_vai, dv.so_luong_vai_ve, dv.han_giao_hang, dv.trang_thai,
+              EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id
+                      WHERE lsd.dot_vai_ve_id=dv.id AND ls.trang_thai<>'HUY') AS released
+       FROM dot_vai_ve dv
+       WHERE dv.phan_in_id = $1 AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY')
+       ORDER BY dv.ma_dot_vai`.replace(/\s+/g, ' '),
+      [phanInId]
+    ),
+    query(
+      `SELECT ls.id AS lenh_id, ls.ma_lenh_san_xuat, ls.trang_thai, ls.so_luong_release,
+              ls.giai_doan, ls.ngay_ke_hoach, ls.created_date,
+              r1u.ho_ten AS r1_nguoi,
+              r2.nguoi AS r2_nguoi, r2.tg AS r2_tg,
+              EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint c ON c.id=kq.checkpoint_id
+                      WHERE kq.lenh_san_xuat_id=ls.id AND c.ma_checkpoint='TEST_QA' AND kq.trang_thai='DAT') AS test_qa,
+              EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint c ON c.id=kq.checkpoint_id
+                      WHERE kq.lenh_san_xuat_id=ls.id AND c.ma_checkpoint='TEST_CNSP' AND kq.trang_thai='DAT') AS test_cnsp,
+              EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id=ls.id) AS co_phieu,
+              lsd.dot_vai_ve_id, lsd.so_luong AS sl_vao, dv.ma_dot_vai, dv.so_luong_vai_ve
+       FROM lenh_sx_dot_vai lsd
+       JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
+       JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+       LEFT JOIN nguoi_dung r1u ON r1u.id = ls.created_by
+       LEFT JOIN LATERAL (SELECT ru.ho_ten AS nguoi, al.thoi_gian AS tg FROM audit_log al LEFT JOIN nguoi_dung ru ON ru.id = al.nguoi_thuc_hien_id
+                          WHERE al.ten_bang='lenh_san_xuat' AND al.hanh_dong='RELEASE_2' AND al.id_ban_ghi = ls.id::text ORDER BY al.thoi_gian DESC LIMIT 1) r2 ON true
+       WHERE dv.phan_in_id = $1 AND ls.trang_thai <> 'HUY'
+       ORDER BY ls.created_date, ls.ma_lenh_san_xuat`.replace(/\s+/g, ' '),
+      [phanInId]
+    ),
+    query(
+      `SELECT DISTINCT ON (t.id) ps.lenh_san_xuat_id, t.id AS tem_id, t.ma_tem, t.so_luong, t.trang_thai,
+              t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy, t.sl_sua_dat, t.sl_sua_huy,
+              t.sl_oqc_dat, t.sl_oqc_dat_sua, t.sl_da_giao, t.sl_da_giao_sua,
+              cs.ten_chuyen,
+              phoi.tg_bd_phoi, phoi.tg_kt_phoi,
+              k.nguoi AS kcs_nguoi, k.tg AS kcs_tg,
+              s.nguoi AS sua_nguoi, s.tg AS sua_tg,
+              ok.nguoi AS oqc_kcs_nguoi, ok.tg AS oqc_kcs_tg, ok.boc_mau AS oqc_kcs_boc_mau, ok.boc_mau_dat AS oqc_kcs_boc_mau_dat,
+              os.nguoi AS oqc_sua_nguoi, os.tg AS oqc_sua_tg, os.boc_mau AS oqc_sua_boc_mau, os.boc_mau_dat AS oqc_sua_boc_mau_dat,
+              gk.nguoi AS giao_kcs_nguoi, gk.tg AS giao_kcs_tg,
+              gs.nguoi AS giao_sua_nguoi, gs.tg AS giao_sua_tg
+       FROM lenh_san_xuat ls
+       JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
+       JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id AND dv.phan_in_id = $1
+       JOIN phieu_san_xuat ps ON ps.lenh_san_xuat_id = ls.id
+       JOIN tem t ON t.phieu_san_xuat_id = ps.id AND t.trang_thai <> 'HUY'
+       LEFT JOIN chuyen_san_xuat cs ON cs.id = ps.chuyen_id
+       LEFT JOIN LATERAL (SELECT txp.tg_bd_phoi, txp.tg_kt_phoi FROM tem_xe_phoi txp WHERE txp.tem_id=t.id ORDER BY txp.tg_bd_phoi DESC NULLS LAST LIMIT 1) phoi ON true
+       LEFT JOIN LATERAL (SELECT ku.ho_ten AS nguoi, kk.created_date AS tg FROM kcs kk LEFT JOIN nguoi_dung ku ON ku.id=kk.created_by WHERE kk.tem_id=t.id ORDER BY kk.created_date DESC LIMIT 1) k ON true
+       LEFT JOIN LATERAL (SELECT su.ho_ten AS nguoi, ss.created_date AS tg FROM sua ss LEFT JOIN nguoi_dung su ON su.id=ss.created_by WHERE ss.tem_id=t.id ORDER BY ss.created_date DESC LIMIT 1) s ON true
+       LEFT JOIN LATERAL (SELECT ou.ho_ten AS nguoi, oo.created_date AS tg, oo.so_luong_kiem AS boc_mau, oo.so_luong_dat AS boc_mau_dat FROM oqc oo LEFT JOIN nguoi_dung ou ON ou.id=oo.created_by WHERE oo.tem_id=t.id AND COALESCE(oo.nguon,'KCS')<>'SUA' ORDER BY oo.created_date DESC LIMIT 1) ok ON true
+       LEFT JOIN LATERAL (SELECT ou.ho_ten AS nguoi, oo.created_date AS tg, oo.so_luong_kiem AS boc_mau, oo.so_luong_dat AS boc_mau_dat FROM oqc oo LEFT JOIN nguoi_dung ou ON ou.id=oo.created_by WHERE oo.tem_id=t.id AND oo.nguon='SUA' ORDER BY oo.created_date DESC LIMIT 1) os ON true
+       LEFT JOIN LATERAL (SELECT gu.ho_ten AS nguoi, gh.created_date AS tg FROM giao_hang_tem ght JOIN giao_hang gh ON gh.id=ght.giao_hang_id LEFT JOIN nguoi_dung gu ON gu.id=gh.created_by WHERE ght.tem_id=t.id AND COALESCE(ght.nguon,'KCS')<>'SUA' ORDER BY gh.created_date DESC LIMIT 1) gk ON true
+       LEFT JOIN LATERAL (SELECT gu.ho_ten AS nguoi, gh.created_date AS tg FROM giao_hang_tem ght JOIN giao_hang gh ON gh.id=ght.giao_hang_id LEFT JOIN nguoi_dung gu ON gu.id=gh.created_by WHERE ght.tem_id=t.id AND ght.nguon='SUA' ORDER BY gh.created_date DESC LIMIT 1) gs ON true
+       WHERE ls.trang_thai <> 'HUY'
+       ORDER BY t.id, t.ma_tem`.replace(/\s+/g, ' '),
+      [phanInId]
+    ),
+    query(
+      `SELECT c.ma_checkpoint, c.ten_checkpoint, c.thu_tu, kq.trang_thai, u.ho_ten AS nguoi,
+              COALESCE(kq.tg_xac_nhan, kq.created_date) AS tg
+       FROM ket_qua_checkpoint kq JOIN checkpoint c ON c.id = kq.checkpoint_id
+       LEFT JOIN nguoi_dung u ON u.id = kq.nguoi_xac_nhan_id
+       WHERE kq.phan_in_id = $1 AND c.ma_checkpoint IN ('KHUON','FILM','MUC','QC_XAC_NHAN') AND kq.trang_thai = 'DAT'
+       ORDER BY c.thu_tu`.replace(/\s+/g, ' '),
+      [phanInId]
+    ),
+    query(
+      `SELECT ls.id AS lenh_id, c.ma_checkpoint, u.ho_ten AS nguoi, COALESCE(kq.tg_xac_nhan, kq.created_date) AS tg
+       FROM ket_qua_checkpoint kq JOIN checkpoint c ON c.id = kq.checkpoint_id
+       JOIN lenh_san_xuat ls ON ls.id = kq.lenh_san_xuat_id
+       JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
+       JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id AND dv.phan_in_id = $1
+       LEFT JOIN nguoi_dung u ON u.id = kq.nguoi_xac_nhan_id
+       WHERE c.ma_checkpoint IN ('TEST_CNSP','TEST_QA') AND kq.trang_thai = 'DAT'`.replace(/\s+/g, ' '),
+      [phanInId]
+    ),
+    // Mọi lần xác nhận READY (DAT) trong lịch sử — dựng READY RIÊNG cho từng CHU KỲ (phần in mở lại READY nhiều lần).
+    query(
+      `SELECT cp.ma_checkpoint, cp.thu_tu AS cp_thu_tu, lst.tg_thuc_hien AS tg, nd.ho_ten AS nguoi
+       FROM lich_su_trang_thai lst
+       JOIN trang_thai tt ON tt.id = lst.trang_thai_moi_id AND tt.ma_trang_thai = 'DAT'
+       JOIN ket_qua_checkpoint kq ON kq.id = lst.ket_qua_checkpoint_id AND kq.phan_in_id = $1
+       JOIN checkpoint cp ON cp.id = kq.checkpoint_id
+       JOIN tram t ON t.id = cp.tram_id
+       JOIN workflow_version wv ON wv.id = t.workflow_version_id AND wv.la_hien_hanh = true
+       LEFT JOIN nguoi_dung nd ON nd.id = lst.nguoi_thuc_hien_id
+       WHERE t.ma_tram = 'READY'
+       ORDER BY lst.tg_thuc_hien`.replace(/\s+/g, ' '),
+      [phanInId]
+    ),
+  ]);
+
+  // Gom link theo lệnh → feeds[]; gom tem theo lệnh.
+  const lenhMap = new Map();
+  links.rows.forEach((r) => {
+    let g = lenhMap.get(r.lenh_id);
+    if (!g) {
+      g = {
+        id: r.lenh_id, ma_lenh_san_xuat: r.ma_lenh_san_xuat, trang_thai: r.trang_thai,
+        so_luong_release: r.so_luong_release, giai_doan: r.giai_doan, ngay_ke_hoach: r.ngay_ke_hoach,
+        created_date: r.created_date,
+        test_qa: r.test_qa, test_cnsp: r.test_cnsp, co_phieu: r.co_phieu,
+        r1: { nguoi: r.r1_nguoi, tg: r.created_date }, // Release 1 = tạo lệnh
+        r2: (r.r2_nguoi || r.r2_tg) ? { nguoi: r.r2_nguoi, tg: r.r2_tg } : null, // Release 2 = audit RELEASE_2
+        feeds: [], tems: [],
+      };
+      lenhMap.set(r.lenh_id, g);
+    }
+    g.feeds.push({ dot_vai_ve_id: r.dot_vai_ve_id, ma_dot_vai: r.ma_dot_vai, so_luong: r.sl_vao, so_luong_vai_ve: r.so_luong_vai_ve });
+  });
+  tems.rows.forEach((t) => { const g = lenhMap.get(t.lenh_san_xuat_id); if (g) g.tems.push(t); });
+
+  // Test Run người/giờ theo lệnh (CNSP/QA).
+  testCp.rows.forEach((r) => {
+    const g = lenhMap.get(r.lenh_id); if (!g) return;
+    g.test = g.test || {};
+    if (r.ma_checkpoint === 'TEST_CNSP') g.test.cnsp = { nguoi: r.nguoi, tg: r.tg };
+    if (r.ma_checkpoint === 'TEST_QA') g.test.qa = { nguoi: r.nguoi, tg: r.tg };
+  });
+
+  const lenh = [...lenhMap.values()];
+  const pending = dotVai.rows.filter((d) => !d.released);
+
+  // ---- Nhóm đợt SX theo CHU KỲ READY (mỗi lần mở lại READY = 1 chu kỳ riêng, đợt SX bám chu kỳ của nó) ----
+  const readyEvents = readyEv.rows; // đã ORDER BY tg
+  const curChecklists = readyCp.rows.map((c) => ({ ma_checkpoint: c.ma_checkpoint, nguoi: c.nguoi, tg: c.tg }));
+  // READY của 1 lệnh = xác nhận DAT MỚI NHẤT ≤ thời điểm tạo lệnh, theo từng checklist.
+  const readyForLenh = (createdDate) => {
+    const T = new Date(createdDate).getTime();
+    const byCp = new Map();
+    for (const e of readyEvents) if (new Date(e.tg).getTime() <= T) byCp.set(e.ma_checkpoint, e);
+    return [...byCp.values()].sort((a, b) => a.cp_thu_tu - b.cp_thu_tu)
+      .map((e) => ({ ma_checkpoint: e.ma_checkpoint, nguoi: e.nguoi, tg: e.tg }));
+  };
+  const cycleKey = (cl) => {
+    const qc = cl.find((c) => c.ma_checkpoint === 'QC_XAC_NHAN');
+    if (qc) return `qc:${qc.tg}`;
+    if (cl.length) return `cl:${cl.map((c) => `${c.ma_checkpoint}@${c.tg}`).join('|')}`;
+    return 'cur';
+  };
+  const cyMap = new Map();
+  lenh.forEach((l) => {
+    let cl = readyForLenh(l.created_date);
+    if (!cl.length) cl = curChecklists; // dữ liệu cũ thiếu lịch sử → READY hiện tại
+    const key = cycleKey(cl);
+    let g = cyMap.get(key);
+    if (!g) { g = { checklists: cl, lenh: [], pending: [], first: l.created_date }; cyMap.set(key, g); }
+    g.lenh.push(l);
+  });
+  let ready_cycles = [...cyMap.values()].sort((a, b) => new Date(a.first) - new Date(b.first));
+  if (ready_cycles.length === 0) ready_cycles = [{ checklists: curChecklists, lenh: [], pending: [] }];
+  // Đợt vải CHƯA release thuộc chu kỳ READY HIỆN TẠI (mới nhất).
+  ready_cycles[ready_cycles.length - 1].pending = pending;
+
+  return { phan_in: info, ready_cycles, dot_vai: dotVai.rows };
+}
+
+// ============ LỊCH SỬ NGHẼN (suy từ lịch sử — không lưu bảng nghen) ============
+
+// Lượt nghẽn CẤP CHECKPOINT (trạm): thời gian dừng mỗi lần rời trạm = tg_kt - tg_bd trong lich_su_luan_chuyen.
+// Chỉ lấy lượt ĐÃ HOÀN TẤT (có tg_bd + tg_kt). SLA lấy từ tram (tu_tram_id). Lọc phần in active + đợt vải hợp lệ.
+// Cửa sổ ngày VN áp trên tg_kt (thời điểm RA trạm). tram='' → mọi trạm.
+async function nghenTramEpisodes({ from, to, tram = '' }) {
+  const { rows } = await query(
+    `SELECT dv.phan_in_id, dv.id AS dot_vai_ve_id, dv.ma_dot_vai,
+            tr.ma_tram, tr.ten_tram, tr.thu_tu,
+            CASE WHEN tr.ma_tram='CHO_KHO' THEN tr.thoi_gian_quy_dinh_phut + COALESCE(pi.thoi_gian_cho_kho_phut, 60)
+                 ELSE tr.thoi_gian_quy_dinh_phut END AS sla_phut, tr.canh_bao_truoc_phut,
+            ls.tg_bd AS tg_vao, ls.tg_kt AS tg_ra,
+            GREATEST(0, floor(EXTRACT(EPOCH FROM (ls.tg_kt - ls.tg_bd)) / 60))::int AS dwell_phut,
+            pi.ma_phan, pi.mau_vai, pi.kich_vai, pi.kich_phim,
+            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang
+     FROM lich_su_luan_chuyen ls
+     JOIN tram tr ON tr.id = ls.tu_tram_id
+     JOIN dot_vai_ve dv ON dv.id = ls.dot_vai_ve_id AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY')
+     JOIN phan_in pi ON pi.id = dv.phan_in_id AND pi.dang_hoat_dong
+     JOIN ma_hang mh ON mh.id = pi.ma_hang_id
+     JOIN don_hang dh ON dh.id = mh.don_hang_id
+     JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+     WHERE ls.tg_bd IS NOT NULL AND ls.tg_kt IS NOT NULL AND tr.thoi_gian_quy_dinh_phut > 0
+       AND (ls.tg_kt AT TIME ZONE 'Asia/Ho_Chi_Minh')::date BETWEEN $1::date AND $2::date
+       AND ($3 = '' OR tr.ma_tram = $3)
+     ORDER BY ls.tg_kt DESC`.replace(/\s+/g, ' '),
+    [from, to, tram]
+  );
+  return rows;
+}
+
+// Lượt nghẽn CẤP CHECKLIST (bước con): chỉ có tg_xac_nhan (không có tg_bat_dau) → suy start theo pha (khớp flowRows):
+//  KHUON/FILM/MUC → start = lần vào READY (den_tram=READY, min tg_kt; fallback phan_in.created_date)
+//  QC_XAC_NHAN    → start = max(tg_xac_nhan KHUON/FILM/MUC) của cùng phần in (kt_done)
+//  TEST_CNSP/QA   → start = lần vào TEST_RUN của lệnh (den_tram=TEST_RUN, min tg_kt; fallback lenh.created_date)
+// dwell clamp ≥ 0. SLA lấy từ checkpoint. Cửa sổ ngày VN áp trên tg_xac_nhan (thời điểm xác nhận = RA bước).
+async function nghenChecklistEpisodes({ from, to }) {
+  const { rows } = await query(
+    `WITH re AS (
+       SELECT ls.phan_in_id, min(ls.tg_kt) AS ready_tg FROM lich_su_luan_chuyen ls
+       JOIN tram t ON t.id = ls.den_tram_id AND t.ma_tram = 'READY' GROUP BY ls.phan_in_id
+     ),
+     kt AS (
+       SELECT kq.phan_in_id, max(kq.tg_xac_nhan) AS kt_tg FROM ket_qua_checkpoint kq
+       JOIN checkpoint c ON c.id = kq.checkpoint_id
+       WHERE c.ma_checkpoint IN ('KHUON','FILM','MUC') AND kq.trang_thai = 'DAT' GROUP BY kq.phan_in_id
+     ),
+     te AS (
+       SELECT ls.lenh_san_xuat_id, min(ls.tg_kt) AS test_tg FROM lich_su_luan_chuyen ls
+       JOIN tram t ON t.id = ls.den_tram_id AND t.ma_tram = 'TEST_RUN'
+       WHERE ls.lenh_san_xuat_id IS NOT NULL GROUP BY ls.lenh_san_xuat_id
+     )
+     SELECT c.ma_checkpoint, c.ten_checkpoint, tr.ma_tram, tr.ten_tram, tr.thu_tu,
+            c.thoi_gian_quy_dinh_phut AS sla_phut, c.canh_bao_truoc_phut,
+            kq.tg_xac_nhan AS tg_ra, kq.phan_in_id, kq.dot_vai_ve_id, kq.lenh_san_xuat_id,
+            CASE WHEN c.ma_checkpoint IN ('KHUON','FILM','MUC') THEN COALESCE(re.ready_tg, pi.created_date)
+                 WHEN c.ma_checkpoint = 'QC_XAC_NHAN' THEN COALESCE(kt.kt_tg, re.ready_tg, pi.created_date)
+                 ELSE COALESCE(te.test_tg, lsx.created_date) END AS tg_vao,
+            GREATEST(0, floor(EXTRACT(EPOCH FROM (kq.tg_xac_nhan - CASE
+              WHEN c.ma_checkpoint IN ('KHUON','FILM','MUC') THEN COALESCE(re.ready_tg, pi.created_date)
+              WHEN c.ma_checkpoint = 'QC_XAC_NHAN' THEN COALESCE(kt.kt_tg, re.ready_tg, pi.created_date)
+              ELSE COALESCE(te.test_tg, lsx.created_date) END)) / 60))::int AS dwell_phut,
+            pi.ma_phan, pi.mau_vai, pi.kich_vai, pi.kich_phim,
+            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang
+     FROM ket_qua_checkpoint kq
+     JOIN checkpoint c ON c.id = kq.checkpoint_id
+     JOIN tram tr ON tr.id = c.tram_id
+     JOIN workflow_version wv ON wv.id = tr.workflow_version_id AND wv.la_hien_hanh = true
+     JOIN phan_in pi ON pi.id = kq.phan_in_id AND pi.dang_hoat_dong
+     JOIN ma_hang mh ON mh.id = pi.ma_hang_id
+     JOIN don_hang dh ON dh.id = mh.don_hang_id
+     JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+     LEFT JOIN re ON re.phan_in_id = kq.phan_in_id
+     LEFT JOIN kt ON kt.phan_in_id = kq.phan_in_id
+     LEFT JOIN te ON te.lenh_san_xuat_id = kq.lenh_san_xuat_id
+     LEFT JOIN lenh_san_xuat lsx ON lsx.id = kq.lenh_san_xuat_id
+     WHERE kq.trang_thai = 'DAT' AND kq.tg_xac_nhan IS NOT NULL
+       AND c.ma_checkpoint IN ('KHUON','FILM','MUC','QC_XAC_NHAN','TEST_CNSP','TEST_QA')
+       AND c.thoi_gian_quy_dinh_phut > 0
+       AND (kq.tg_xac_nhan AT TIME ZONE 'Asia/Ho_Chi_Minh')::date BETWEEN $1::date AND $2::date
+     ORDER BY kq.tg_xac_nhan DESC`.replace(/\s+/g, ' '),
+    [from, to]
+  );
+  return rows;
+}
+
 module.exports = {
   summary, activity, stageCounts, chartDetail, dieuPhoiExtra, flowRows, flowTimeline, tramOwnersActive, checkpointOwnersActive,
-  tinhTrangActiveRows, tinhTrangPhanInList, tinhTrangDetail, confirmTodayGroups, confirmTodayDetail,
+  tinhTrangActiveRows, tinhTrangPhanInList, tinhTrangDetail, tinhTrangGraph, confirmTodayGroups, confirmTodayDetail,
+  nghenTramEpisodes, nghenChecklistEpisodes,
 };
