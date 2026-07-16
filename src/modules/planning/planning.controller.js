@@ -25,6 +25,11 @@ const release1History = asyncHandler(async (req, res) => {
   return ok(res, await service.release1History(date));
 });
 
+const releaseList = asyncHandler(async (req, res) => {
+  const date = req.query.date || new Date().toISOString().slice(0, 10);
+  return ok(res, await service.releaseList(date));
+});
+
 const releaseSets = asyncHandler(async (req, res) =>
   ok(res, await service.listReleaseSets(req.query.search || '')));
 
@@ -138,7 +143,7 @@ const upsertCaTuan = asyncHandler(async (req, res) =>
 
 module.exports = {
   listCaTuan, upsertCaTuan,
-  release1Candidates, autoPlanCandidates, createRelease1, createDotSanXuat, release1History, releaseSets, releaseSet,
+  release1Candidates, autoPlanCandidates, createRelease1, createDotSanXuat, release1History, releaseList, releaseSets, releaseSet,
   gopCandidates, gopDotVai, gopHistory,
   testRunCandidates, lenhDetail, recordTestRun,
   confirmCNSP, confirmQA, cancelCNSP, cancelQA, confirmCNSPBatch, confirmQABatch,

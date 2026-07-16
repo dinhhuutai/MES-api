@@ -14,6 +14,8 @@ const NGUON = 'phieu_nhan_vai_60';
 
 // CHỈ đồng bộ khách hàng này từ ERP (so khớp customer_name, không phân biệt hoa/thường). Đổi 1 chỗ ở đây.
 const KHACH_ERP = 'SL';
+// Loại kinh doanh (`loaikd`) BỎ QUA khi đồng bộ tự động (theo yêu cầu). Thêm/bớt mã ở đây.
+const BO_LOAIKD = new Set(['8I', '2I']);
 
 const md5 = (s) => crypto.createHash('md5').update(s).digest('hex');
 const clean = (v) => (v == null ? '' : String(v).trim());
@@ -154,9 +156,9 @@ async function syncPhieuNhanVai({ fromDate, actorId = null, tuDong = false } = {
     const prepared = rows.map((r) => {
       const notSl = clean(r.customer_name).toUpperCase() !== KHACH_ERP.toUpperCase();
       const noCode = !clean(r.code_part);
-      const is8I = clean(r.loaikd).toUpperCase() === '8I'; // bỏ qua loại kinh doanh 8I theo yêu cầu
+      const isBoLoai = BO_LOAIKD.has(clean(r.loaikd).toUpperCase()); // bỏ qua loại kinh doanh 8I/2I
       const { maPhan, maDotVai } = buildKeys(r, seen);
-      return { r, maPhan, maDotVai, skip: notSl || noCode || is8I, notSl, noCode, is8I };
+      return { r, maPhan, maDotVai, skip: notSl || noCode || isBoLoai, notSl, noCode, isBoLoai };
     });
 
     // Task 1: LƯU DỮ LIỆU THÔ trước khi xử lý (gồm cả dòng bị bỏ qua).
@@ -168,15 +170,15 @@ async function syncPhieuNhanVai({ fromDate, actorId = null, tuDong = false } = {
       console.error(`[erp-sync] ✗ Lưu dữ liệu thô lỗi: ${e.message}`);
     }
 
-    let soMoi = 0; let soCapNhat = 0; let soBoQua = 0; let soKhongSl = 0; let soKhongCode = 0; let so8I = 0;
+    let soMoi = 0; let soCapNhat = 0; let soBoQua = 0; let soKhongSl = 0; let soKhongCode = 0; let soBoLoai = 0;
     const errors = [];
     const newDotVaiIds = [];
     const resolveLoai = makeLoaiResolver();
     for (const p of prepared) {
-      // Bỏ qua dòng: không đúng khách, thiếu code_part, hoặc loaikd = 8I.
+      // Bỏ qua dòng: không đúng khách, thiếu code_part, hoặc loaikd bị loại (8I/2I).
       if (p.skip) {
         soBoQua += 1;
-        if (p.notSl) soKhongSl += 1; else if (p.noCode) soKhongCode += 1; else if (p.is8I) so8I += 1;
+        if (p.notSl) soKhongSl += 1; else if (p.noCode) soKhongCode += 1; else if (p.isBoLoai) soBoLoai += 1;
         continue;
       }
       try {
@@ -199,7 +201,7 @@ async function syncPhieuNhanVai({ fromDate, actorId = null, tuDong = false } = {
     const notes = [];
     if (soKhongSl) notes.push(`bỏ qua ${soKhongSl} dòng không phải khách '${KHACH_ERP}'`);
     if (soKhongCode) notes.push(`bỏ qua ${soKhongCode} dòng không có code_part`);
-    if (so8I) notes.push(`bỏ qua ${so8I} dòng loaikd 8I`);
+    if (soBoLoai) notes.push(`bỏ qua ${soBoLoai} dòng loaikd ${[...BO_LOAIKD].join('/')}`);
     if (errors.length) notes.push(`lỗi ${errors.length}/${rows.length}: ${errors.slice(0, 3).join(' | ')}`);
     await repo.finishSyncLog(logId, {
       tong: rows.length, soMoi, soCapNhat, soLoi: errors.length, trangThai,

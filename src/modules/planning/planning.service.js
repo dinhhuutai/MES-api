@@ -284,7 +284,7 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
 
 // ----- TẠO ĐỢT SẢN XUẤT (mig 052) — gộp/tách nhiều đợt vải vào 1 đợt SX với SL TỪNG đợt -----
 // items: [{ dotVaiId, soLuong }]. Tạo 1 lenh_san_xuat + N junction (so_luong). Chỉ gộp CÙNG MÀU.
-async function createDotSanXuat({ items, chuyenId, ngayKeHoach }, actorId) {
+async function createDotSanXuat({ items, chuyenId, ngayKeHoach, tgBdKh, tgKtKh }, actorId) {
   if (!chuyenId) throw new AppError('Chọn chuyền sản xuất', { status: 422, errorCode: 'NO_CHUYEN' });
   const plan = (Array.isArray(items) ? items : [])
     .map((i) => ({ dotVaiId: i.dotVaiId, soLuong: Number(i.soLuong) }))
@@ -329,6 +329,7 @@ async function createDotSanXuat({ items, chuyenId, ngayKeHoach }, actorId) {
     const maLenh = await repo.nextMaLenhTx(client);
     const id = await repo.createLenh(client, {
       versionId: version.id, maLenh, chuyenId, soLuongRelease: tongSL, ngayKeHoach, trangThai, giaiDoan: 'IN',
+      tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null,
     }, actorId);
     for (const p of plan) await repo.addLenhDotVai(client, id, p.dotVaiId, actorId, p.soLuong);
     let ep = null;
@@ -760,6 +761,23 @@ async function upsertCaTuan({ nam, tuan, loaiCa, ghiChu }, actorId) {
   return repo.upsertCaTuan({ nam: y, tuan: w, loaiCa, ghiChu }, actorId);
 }
 
+// ----- DANH SÁCH RELEASE theo ngày kế hoạch (modal/report + Excel/In) -----
+async function releaseList(date) {
+  if (!date) throw new AppError('Thiếu ngày', { status: 422, errorCode: 'NO_DATE' });
+  const items = await repo.releaseListByDate(date);
+  const uniq = (key) => new Set(items.map((r) => r[key]).filter(Boolean)).size;
+  return {
+    items,
+    meta: {
+      ngay: date,
+      tong_don: uniq('ma_don_hang'),
+      tong_ma: uniq('ma_hang'),
+      tong_phan: uniq('ma_phan'),
+      sl_release: items.reduce((s, r) => s + (Number(r.so_luong_release) || 0), 0),
+    },
+  };
+}
+
 // ----- Danh sách "đã hoàn thành" theo ngày (cho DonePanel bên trái) -----
 async function release1Done(date) { return repo.release1DoneByDate(date); }
 async function release2Done(date) { return repo.planDoneByDate(date, 'RELEASE_2'); }
@@ -775,5 +793,6 @@ module.exports = {
   listReplanCandidates, replan, replanBatch, planHistory,
   listCancelableLenh, rollbackLenh, returnTestRunToRelease1,
   release1Done, release2Done, replanDone, testCnspDone, testQaDone,
+  releaseList,
   listCaTuan, upsertCaTuan,
 };

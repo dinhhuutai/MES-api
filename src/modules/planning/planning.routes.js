@@ -25,6 +25,7 @@ router.post('/gop', rbac('RELEASE1'), c.gopDotVai);
 // Release 1 (Kế hoạch)
 router.get('/release1/candidates', rbac('RELEASE1'), c.release1Candidates);
 router.get('/release1/history', rbac('RELEASE1'), c.release1History);
+router.get('/release-list', rbac('RELEASE1'), c.releaseList);
 router.get('/release1/done', rbac('RELEASE1'), c.release1Done);
 router.get('/release1/sets', rbac('RELEASE1'), c.releaseSets);
 router.post('/release1/set/:setId', rbac('RELEASE1'), c.releaseSet);

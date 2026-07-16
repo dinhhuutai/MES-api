@@ -213,10 +213,11 @@ async function createLenh(client, data, actorId) {
   const { rows } = await client.query(
     `INSERT INTO lenh_san_xuat
        (workflow_version_id, ma_lenh_san_xuat, chuyen_id, so_luong_release, ngay_ke_hoach, trang_thai,
-        giai_doan, lenh_lien_ket_id, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+        giai_doan, lenh_lien_ket_id, tg_bd_kh, tg_kt_kh, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
     [data.versionId, data.maLenh, data.chuyenId, data.soLuongRelease, data.ngayKeHoach || null,
-     data.trangThai || 'RELEASE_1', data.giaiDoan || 'IN', data.lenhLienKetId || null, actorId]
+     data.trangThai || 'RELEASE_1', data.giaiDoan || 'IN', data.lenhLienKetId || null,
+     data.tgBdKh || null, data.tgKtKh || null, actorId]
   );
   return rows[0].id;
 }
@@ -836,7 +837,35 @@ async function upsertCaTuan({ nam, tuan, loaiCa, ghiChu }, actorId) {
   return rows[0];
 }
 
+// DANH SÁCH RELEASE theo NGÀY KẾ HOẠCH (mỗi đợt SX ≠HUY = 1 dòng) — cho modal/report + Excel/In.
+// SLNV = Σ SL vải về của các đợt trong lệnh; SL đã in/giao suy từ tem của lệnh. IPS-safe (SQL 1 dòng).
+async function releaseListByDate(date) {
+  const sql = `
+    SELECT ls.id AS lenh_id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.ngay_ke_hoach,
+           ls.tg_bd_kh, ls.tg_kt_kh, ls.giai_doan,
+           cs.ma_chuyen, cs.ten_chuyen,
+           pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.so_luong_don_hang,
+           mh.ma_hang, mh.ten_ma_hang, dh.ma_don_hang, dh.so_po, kh.ten_khach_hang,
+           u.ho_ten AS owner,
+           COALESCE((SELECT SUM(dv.so_luong_vai_ve) FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id=lsd.dot_vai_ve_id WHERE lsd.lenh_san_xuat_id=ls.id),0)::int AS slnv,
+           COALESCE((SELECT SUM(t.so_luong) FROM phieu_san_xuat ps JOIN tem t ON t.phieu_san_xuat_id=ps.id WHERE ps.lenh_san_xuat_id=ls.id AND t.trang_thai<>'HUY'),0)::int AS sl_da_in,
+           COALESCE((SELECT SUM(t.sl_da_giao) FROM phieu_san_xuat ps JOIN tem t ON t.phieu_san_xuat_id=ps.id WHERE ps.lenh_san_xuat_id=ls.id AND t.trang_thai<>'HUY'),0)::int AS sl_da_giao
+    FROM lenh_san_xuat ls
+    LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+    JOIN LATERAL (SELECT dv.phan_in_id FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id=lsd.dot_vai_ve_id WHERE lsd.lenh_san_xuat_id=ls.id LIMIT 1) pv ON true
+    JOIN phan_in pin ON pin.id = pv.phan_in_id
+    JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+    JOIN don_hang dh ON dh.id = mh.don_hang_id
+    JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+    LEFT JOIN nguoi_dung u ON u.id = ls.created_by
+    WHERE ls.trang_thai <> 'HUY' AND ls.ngay_ke_hoach = $1::date
+    ORDER BY cs.ten_chuyen NULLS LAST, kh.ten_khach_hang, dh.ma_don_hang, pin.mau_vai, ls.created_date`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [date]);
+  return rows;
+}
+
 module.exports = {
+  releaseListByDate,
   listCaTuan, caModeMap, upsertCaTuan,
   listRelease1Candidates, release1HistoryByDate, nextMaLenh, nextMaLenhTx, createLenh,
   release1DoneByDate, planDoneByDate, testDoneByDate,
