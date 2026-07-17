@@ -12,6 +12,10 @@ const list = asyncHandler(async (req, res) => {
   return ok(res, data);
 });
 
+// Chọn người cho combobox (owner...) — chỉ cần đăng nhập, xem users.routes.
+const options = asyncHandler(async (req, res) =>
+  ok(res, await service.listUserOptions({ search: req.query.search || '', limit: Number(req.query.limit) || 500 })));
+
 const getOne = asyncHandler(async (req, res) => ok(res, await service.getUser(req.params.id)));
 
 const create = asyncHandler(async (req, res) =>
@@ -35,4 +39,4 @@ const setRoles = asyncHandler(async (req, res) =>
   ok(res, await service.setRoles(req.params.id, req.body.roleIds || [], req.user.id), 'Đã cập nhật vai trò')
 );
 
-module.exports = { list, getOne, create, update, setActive, resetPassword, setRoles };
+module.exports = { list, options, getOne, create, update, setActive, resetPassword, setRoles };

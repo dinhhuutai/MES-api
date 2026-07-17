@@ -40,29 +40,60 @@ async function attachPrevConfirmer(rows, key) {
   rows.forEach((r) => { r.nguoi_truoc = (map.get(r.tem_id) || {})[key] || null; });
 }
 
-// OQC trả tem về KCS (kèm lý do bắt buộc). Đưa phần đang CHỜ OQC (con_oqc) quay lại chưa kiểm (con_kcs).
+// OQC trả tem về trạm trước THEO NGUỒN của phần chờ OQC (kèm lý do bắt buộc) — mig 047:
+//   nguồn KCS (tem 15-) → phần chờ OQC quay lại CHƯA KIỂM (con_kcs) → tem về màn KCS.
+//   nguồn SỬA (tem 17-) → phần chờ OQC quay lại CHỜ SỬA  (con_sua) → tem về màn Sửa.
+// (Trả nguồn Sửa mà giảm sl_kcs_dat thì sổ cái không đổi ⇒ tem nằm lại OQC — lỗi cũ.)
 async function returnOqcToKcs(temId, body, actorId) {
+  const nguon = body.nguon === 'SUA' ? 'SUA' : 'KCS';
+  const tram = nguon === 'SUA' ? 'Sửa' : 'KCS';
   const lyDo = (body.lyDo || '').trim();
-  if (!lyDo) throw new AppError('Nhập lý do trả về KCS', { status: 422, errorCode: 'NO_LY_DO' });
+  if (!lyDo) throw new AppError(`Nhập lý do trả về ${tram}`, { status: 422, errorCode: 'NO_LY_DO' });
   const tem = await repo.getTemLedger(temId);
   if (!tem) throw new AppError('Tem không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
-  const con = Number(tem.con_oqc) || 0;
-  if (con <= 0) throw new AppError('Tem không còn phần chờ OQC để trả về', { status: 409, errorCode: 'NO_OQC' });
+
+  // Phần chờ OQC tách theo nguồn (mig 047 bắt buộc ⇒ 2 sub-counter luôn có giá trị).
+  const con = Number(nguon === 'SUA' ? tem.con_oqc_sua : tem.con_oqc_kcs) || 0;
+  if (con <= 0) {
+    const nhan = nguon === 'SUA' ? 'đã sửa (tem 17-)' : 'đạt từ KCS (tem 15-)';
+    throw new AppError(`Tem không còn phần chờ OQC nguồn ${nhan} để trả về`, { status: 409, errorCode: 'NO_OQC' });
+  }
+
+  // Trả về KCS ⇒ tem kiểm lại từ đầu ⇒ TỰ HỦY tem sửa 16- đang chờ của tem đó (nếu có): nhãn cũ hết hiệu lực,
+  // bộ phận Sửa không làm nữa, KCS kiểm lại sẽ quyết định lại phần hư. Trả về nguồn SỬA thì KHÔNG hủy —
+  // chính phần sửa đó mới là thứ cần làm lại. Chạy CÙNG transaction để sổ cái không áp dụng nửa vời.
+  let temSuaHuy = null;
   await withTransaction(async (client) => {
-    await repo.reduceKcsDat(client, temId, con, actorId); // phần chờ OQC → về chưa kiểm (KCS)
-    await repo.recomputeTemStage(client, temId, actorId);
+    if (nguon === 'SUA') await repo.reduceSuaDat(client, temId, con, actorId); // chờ OQC → về chờ sửa
+    else await repo.reduceKcsDat(client, temId, con, actorId);                 // chờ OQC → về chưa kiểm
+
+    if (nguon === 'KCS') {
+      // Đọc SAU khi đã trừ sl_kcs_dat: trả hết phần đạt về ⇒ sl_kcs_dat=0 ⇒ SL sửa quay lại chờ kiểm
+      // (thay vì bị dồn sang hủy) — đúng nghĩa "kiểm lại toàn bộ tem".
+      const t = (await repo.getTemSuaRows([temId], client))[0];
+      if (t && (Number(t.con_sua) || 0) > 0) {
+        const plans = [planHuy(t)];
+        await applyHuyTemSua(client, plans, `Tự động: OQC trả tem về KCS — ${lyDo}`, actorId, true);
+        temSuaHuy = temSuaResult(plans).items[0];
+      }
+    }
+    await repo.recomputeTemStageMany(client, [temId], actorId);
   });
-  await repo.insertQcTraVe({ loai: 'OQC', temId, lyDo }, actorId);
-  await tracking.moveByTem(temId, 'KIEM', actorId);
-  sockets.emit('quality:updated', { temId, stage: 'OQC', next: 'TRA_VE_KCS' });
+  // loai 'OQC_SUA' → badge/lý do hiện ở màn Sửa; 'OQC' → màn KCS (như cũ).
+  await repo.insertQcTraVe({ loai: nguon === 'SUA' ? 'OQC_SUA' : 'OQC', temId, lyDo }, actorId);
+  await tracking.moveByTem(temId, nguon === 'SUA' ? 'SUA' : 'KIEM', actorId);
+
+  const next = nguon === 'SUA' ? 'TRA_VE_SUA' : 'TRA_VE_KCS';
+  sockets.emit('quality:updated', { temId, stage: 'OQC', next });
   sockets.emit('dashboard:refresh', {});
-  return { tem_id: temId, next: 'TRA_VE_KCS' };
+  return { tem_id: temId, nguon, so_luong: con, next, tem_sua_huy: temSuaHuy };
 }
 
 // Lịch sử QC trả về theo loại + ngày (cho trang toggle 3 loại).
+// Tab OQC gộp cả 2 đích trả về: 'OQC' (→ KCS) và 'OQC_SUA' (→ Sửa).
 async function qcTraVeHistory(loai, date) {
   const L = ['READY', 'TEST_RUN', 'OQC'].includes(loai) ? loai : 'READY';
-  return repo.listQcTraVe(L, date);
+  return repo.listQcTraVe(L === 'OQC' ? ['OQC', 'OQC_SUA'] : [L], date);
 }
 
 async function recordKcs(temId, body, actorId) {
@@ -169,6 +200,9 @@ async function listSuaCandidates({ search, filters }) {
     const p = partMap.get(r.tem_id) || {};
     return { ...r, ca: caFromParts(p.ca_gio, p.ca_nam, p.ca_tuan, map) };
   });
+  // Đánh dấu tem bị OQC trả về SỬA (badge + lý do) — giống badge "Bị OQC trả về" ở KCS.
+  const rm = await repo.activeReturnsMap('OQC_SUA', out.map((r) => r.tem_id));
+  out.forEach((r) => { r.tra_ve = rm[r.tem_id] || null; r.tra_ve_ly_do = rm[r.tem_id]?.ly_do || null; });
   await attachPrevConfirmer(out, 'nguoi_kcs'); // trạm trước của Sửa = KCS
   return out;
 }
@@ -195,8 +229,102 @@ async function recordSua(temId, body, actorId) {
     await repo.recomputeTemStage(client, temId, actorId);
   });
   await tracking.moveByTem(temId, 'SUA', actorId);
+  await repo.resolveReturns('OQC_SUA', temId); // Sửa làm lại xong → tắt cờ "bị OQC trả về"
   sockets.emit('quality:updated', { temId, stage: 'SUA' });
+  sockets.emit('dashboard:refresh', {});
   return { tem_id: temId, next: 'SUA', so_luong_sua_dat: suaDat, con_sua: conSua - total };
+}
+
+// ----- HỦY TEM SỬA — trang "Hủy lệnh xác nhận" -----
+// "Tem sửa" (nhãn 16-) = PHẦN CHỜ SỬA của tem (`con_sua`), không phải dòng tem riêng. Hủy = XÓA SL sửa:
+//   · KCS đã có SL đạt (`sl_kcs_dat > 0`) → SL sửa dồn sang **hủy** (`sl_kcs_huy`), tem KHÔNG về màn KCS.
+//   · Chưa có SL đạt (`sl_kcs_dat = 0`)   → **chỉ xóa** SL sửa ⇒ SL quay lại `con_kcs` (KCS kiểm lại).
+// Cả 2 nhánh đều giữ `so_luong` tem không đổi; `con_sua`→0 nên tem tự rời màn Sửa (không cần cờ ẩn).
+const listTemSuaCancelable = ({ search } = {}) => repo.listTemSua({ search });
+const listTemSuaDeleted = ({ search } = {}) => repo.listTemSuaDaHuy({ search });
+
+// Hủy: dồn con_sua sang hủy khi đã có SL đạt KCS, ngược lại chỉ trừ SL sửa.
+const planHuy = (t) => {
+  const x = Number(t.con_sua) || 0;
+  const daCongHuy = (Number(t.sl_kcs_dat) || 0) > 0;
+  return { temId: t.tem_id, ma_tem: t.ma_tem, sl: x, da_cong_huy: daCongHuy, dSua: -x, dHuy: daCongHuy ? x : 0 };
+};
+
+// Đọc + validate cả lô TRƯỚC khi ghi (không áp dụng một phần khi 1 tem trong lô hỏng); 1 query đọc cho cả lô.
+async function loadTemSuaBatch(temIds, verb) {
+  const ids = [...new Set((temIds || []).filter(Boolean))];
+  if (ids.length === 0) throw new AppError(`Chọn tem sửa cần ${verb}`, { status: 422, errorCode: 'EMPTY' });
+  const rows = await repo.getTemSuaRows(ids);
+  if (rows.length !== ids.length) throw new AppError('Tem không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  return rows;
+}
+
+async function huyTemSua(temIds, lyDo, actorId, tuDong = false) {
+  const reason = (lyDo || '').trim();
+  if (!reason) throw new AppError('Nhập lý do hủy tem sửa', { status: 422, errorCode: 'NO_LY_DO' });
+  const rows = await loadTemSuaBatch(temIds, 'hủy');
+  for (const t of rows) {
+    if ((Number(t.con_sua) || 0) <= 0) {
+      throw new AppError(`Tem ${t.ma_tem} không còn phần chờ sửa để hủy`, { status: 409, errorCode: 'NO_SUA' });
+    }
+  }
+  const plans = rows.map(planHuy);
+  await withTransaction(async (client) => { await applyHuyTemSua(client, plans, reason, actorId, tuDong); });
+  sockets.emit('quality:updated', { stage: 'SUA', action: 'HUY_TEM_SUA' });
+  sockets.emit('dashboard:refresh', {});
+  return temSuaResult(plans);
+}
+
+// Áp dụng hủy trong 1 transaction ĐANG MỞ (dùng chung cho tab Hủy tem sửa + OQC trả về KCS tự hủy).
+async function applyHuyTemSua(client, plans, reason, actorId, tuDong) {
+  await repo.applyTemSuaLedgerMany(client, plans, actorId);
+  await repo.recomputeTemStageMany(client, plans.map((p) => p.temId), actorId);
+  // Snapshot delta để "Mở lại tem sửa" đảo ngược chính xác.
+  await repo.logTemSuaMany(client, 'HUY_TEM_SUA', plans.map((p) => ({
+    temId: p.temId,
+    payload: { ma_tem: p.ma_tem, ly_do: reason, tu_dong: !!tuDong, sl: p.sl, da_cong_huy: p.da_cong_huy },
+  })), actorId);
+}
+
+const temSuaResult = (plans) => ({
+  so_tem: plans.length,
+  items: plans.map((p) => ({ tem_id: p.temId, ma_tem: p.ma_tem, sl: p.sl, da_cong_huy: p.da_cong_huy })),
+});
+
+// Mở lại tem sửa đã hủy — đảo đúng 2 delta của lần hủy gần nhất (đọc snapshot từ audit_log).
+async function moTemSua(temIds, lyDo, actorId) {
+  const ids = [...new Set((temIds || []).filter(Boolean))];
+  if (ids.length === 0) throw new AppError('Chọn tem sửa cần mở lại', { status: 422, errorCode: 'EMPTY' });
+  const all = await repo.listTemSuaDaHuy({});
+  const byId = new Map(all.map((r) => [r.tem_id, r]));
+
+  const plans = [];
+  for (const id of ids) {
+    const r = byId.get(id);
+    if (!r) throw new AppError('Tem sửa không ở trạng thái đã hủy', { status: 409, errorCode: 'NOT_CANCELLED' });
+    const x = Number(r.sl_huy) || 0;
+    if (x <= 0) throw new AppError(`Tem ${r.ma_tem}: lần hủy không có số lượng để mở lại`, { status: 409, errorCode: 'NO_QTY' });
+    // Guard đảo sổ cái: SL phải còn nguyên ở nơi lần hủy đã đẩy nó tới.
+    if (r.da_cong_huy && (Number(r.sl_kcs_huy) || 0) < x) {
+      throw new AppError(`Tem ${r.ma_tem}: SL hủy đã đổi — không mở lại được`, { status: 409, errorCode: 'LEDGER' });
+    }
+    if (!r.da_cong_huy && (Number(r.con_kcs) || 0) < x) {
+      throw new AppError(`Tem ${r.ma_tem}: ${x} pcs đã được KCS kiểm lại — không mở lại được`, { status: 409, errorCode: 'LEDGER' });
+    }
+    plans.push({ temId: id, ma_tem: r.ma_tem, sl: x, da_cong_huy: r.da_cong_huy, dSua: x, dHuy: r.da_cong_huy ? -x : 0 });
+  }
+
+  await withTransaction(async (client) => {
+    await repo.applyTemSuaLedgerMany(client, plans, actorId);
+    await repo.recomputeTemStageMany(client, plans.map((p) => p.temId), actorId);
+    await repo.logTemSuaMany(client, 'MO_TEM_SUA', plans.map((p) => ({
+      temId: p.temId,
+      payload: { ma_tem: p.ma_tem, ly_do: (lyDo || '').trim() || null, sl: p.sl, da_cong_huy: p.da_cong_huy },
+    })), actorId);
+  });
+  sockets.emit('quality:updated', { stage: 'SUA', action: 'MO_TEM_SUA' });
+  sockets.emit('dashboard:refresh', {});
+  return temSuaResult(plans);
 }
 
 // ----- OQC (còn phần chờ kiểm cuối: con_oqc > 0) -----
@@ -236,8 +364,8 @@ async function recordOqc(temId, body, actorId) {
   if (ketQua === 'DAT') {
     next = 'OQC_DAT'; // đạt → sẵn sàng giao (cả lô nguồn)
   } else if (ownerChoGiaoId) {
-    // Không đạt nhưng CHO GIAO NGOẠI LỆ — bắt buộc có TRƯỜNG HỢP giao đặc biệt + lý do + owner.
-    if (!truongHopGiaoId) throw new AppError('Cho giao ngoại lệ cần chọn trường hợp giao đặc biệt', { status: 422, errorCode: 'NO_TRUONG_HOP' });
+    // Không đạt nhưng CHO GIAO NGOẠI LỆ — chỉ cần OWNER chịu trách nhiệm + LÝ DO.
+    // (Bỏ yêu cầu chọn "trường hợp giao đặc biệt"; cột truong_hop_giao_id giữ lại cho dữ liệu cũ.)
     if (!lyDoChoGiao) throw new AppError('Cho giao ngoại lệ cần nhập lý do', { status: 422, errorCode: 'NO_LY_DO' });
     choGiao = true;
     next = 'CHO_GIAO_NGOAI_LE';
@@ -523,6 +651,7 @@ async function toggleGiaoDacBiet(id, active, actorId) {
 module.exports = {
   listKcsCandidates, recordKcs, gopTem, listSuaCandidates, recordSua, listOqcCandidates, recordOqc,
   listCancelKcs, listCancelSua, listCancelOqc, cancelKcs, cancelSua, cancelOqc,
+  listTemSuaCancelable, listTemSuaDeleted, huyTemSua, moTemSua,
   kcsHistory, suaHistory, oqcHistory, temHanhTrinh,
   kcsDone, suaDone, oqcDone, inlineDone,
   listInlineCandidates, listLoaiLoi, recordQcInline, inlineHistory,

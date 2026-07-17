@@ -2,11 +2,17 @@
 
 const repo = require('./bao-cao.repository');
 const metrics = require('./metrics');
+const datasets = require('./datasets');
 const { evaluateGrid } = require('./formula');
 const AppError = require('../../utils/AppError');
 
 function listMetrics() {
   return metrics.catalog();
+}
+
+// Danh mục NGUỒN DANH SÁCH (khối bảng nhiều dòng) cho trình thiết kế.
+function listDatasets() {
+  return datasets.catalog();
 }
 
 async function listReports({ search, userId, all }) {
@@ -60,20 +66,32 @@ async function deleteReport(id, user) {
   return { id };
 }
 
-// Tính giá trị báo cáo (metric + công thức). Mỗi metric tự mang mốc thời gian → giá trị realtime.
+// Tính giá trị báo cáo (metric + công thức + khối danh sách). Mỗi metric tự mang mốc thời gian → realtime.
 async function renderContent(rep) {
   const noiDung = rep.noi_dung_json || {};
   const cells = noiDung.o || {};
   const usedMetrics = Object.values(cells)
     .filter((c) => c && c.loai === 'metric' && c.metric)
     .map((c) => c.metric);
-  const metricValues = await metrics.compute(usedMetrics);
+  // Khối danh sách: ô `loai='danh_sach'` là Ô NEO — dữ liệu đổ xuống/ sang phải từ ô đó.
+  const dsBlocks = Object.fromEntries(
+    Object.entries(cells).filter(([, c]) => c && c.loai === 'danh_sach' && c.ds && c.ds.nguon)
+      .map(([k, c]) => [k, c.ds])
+  );
+  const [metricValues, danhSach] = await Promise.all([
+    metrics.compute(usedMetrics),
+    datasets.computeBlocks(dsBlocks),
+  ]);
   const ketQua = evaluateGrid(cells, metricValues);
   return {
     id: rep.id, ma_bao_cao: rep.ma_bao_cao, ten_bao_cao: rep.ten_bao_cao,
     so_cot: noiDung.so_cot || 8, so_hang: noiDung.so_hang || 20,
     o: cells, merges: noiDung.merges || [], dinh_dang: noiDung.dinh_dang || {},
-    ket_qua: ketQua, metric_values: metricValues,
+    // Bố cục kiểu bảng tính (mig-free, thuần JSON): bề rộng cột / chiều cao hàng / cố định hàng-cột.
+    cot_w: noiDung.cot_w || {}, hang_h: noiDung.hang_h || {}, dong_bang: noiDung.dong_bang || null,
+    // Biểu đồ: render DƯỚI lưới (không chiếm ô) — dữ liệu lấy từ khối danh sách hoặc metric, tính ở FE.
+    bieu_do: noiDung.bieu_do || [],
+    ket_qua: ketQua, metric_values: metricValues, danh_sach: danhSach,
     tinh_luc: new Date().toISOString(),
   };
 }
@@ -142,6 +160,6 @@ async function huyApDungPhongBan(phongBanId, actorId) {
 }
 
 module.exports = {
-  listMetrics, listReports, getReport, createReport, updateReport, undoReport, deleteReport,
+  listMetrics, listDatasets, listReports, getReport, createReport, updateReport, undoReport, deleteReport,
   renderReport, history, listPhongBan, deXuat, duyetDeXuat, tuChoiDeXuat, hienHanhPhongBan, huyApDungPhongBan,
 };

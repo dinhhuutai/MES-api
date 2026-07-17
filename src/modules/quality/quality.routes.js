@@ -28,6 +28,14 @@ router.get('/oqc/done', rbac('OQC'), c.oqcDone);
 router.post('/oqc/:temId/tra-ve', rbac('OQC'), c.oqcReturn);
 router.post('/oqc/:temId', rbac('OQC'), c.recordOqc);
 
+// Hủy / mở lại TEM SỬA (nhãn 16-) — xóa SL sửa khỏi sổ cái; xem quality.service.
+// ⚠ PHẢI đặt TRƯỚC `/sua/:id/huy`: '/sua/tem-sua/huy' cũng có 3 đoạn nên route động sẽ nuốt
+// với id='tem-sua' → lỗi 'invalid input syntax for type uuid'.
+router.get('/sua/tem-sua/cancelable', rbac('SUA'), c.temSuaList);
+router.get('/sua/tem-sua/deleted', rbac('SUA'), c.temSuaDeletedList);
+router.post('/sua/tem-sua/huy', rbac('SUA'), c.temSuaHuy);
+router.post('/sua/tem-sua/mo', rbac('SUA'), c.temSuaMo);
+
 // Hủy xác nhận KCS / Sửa / OQC (lỡ xác nhận lộn / nhập sai số) — trang Hủy lệnh xác nhận
 router.get('/kcs/cancelable', rbac('KCS'), c.cancelKcsList);
 router.post('/kcs/:id/huy', rbac('KCS'), c.cancelKcs);

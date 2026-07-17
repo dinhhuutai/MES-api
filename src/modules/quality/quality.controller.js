@@ -23,8 +23,10 @@ const recordSua = asyncHandler(async (req, res) =>
 const oqcCandidates = asyncHandler(async (req, res) => ok(res, await service.listOqcCandidates(candFilters(req.query))));
 const recordOqc = asyncHandler(async (req, res) =>
   ok(res, await service.recordOqc(req.params.temId, req.body, req.user.id), 'Đã ghi nhận OQC'));
-const oqcReturn = asyncHandler(async (req, res) =>
-  ok(res, await service.returnOqcToKcs(req.params.temId, req.body, req.user.id), 'Đã trả tem về KCS'));
+const oqcReturn = asyncHandler(async (req, res) => {
+  const r = await service.returnOqcToKcs(req.params.temId, req.body, req.user.id);
+  return ok(res, r, `Đã trả tem về ${r.nguon === 'SUA' ? 'Sửa' : 'KCS'}`);
+});
 
 // Hủy xác nhận KCS / Sửa / OQC (lỡ xác nhận lộn / nhập sai số) — trang Hủy lệnh xác nhận
 const todayD = () => new Date().toISOString().slice(0, 10);
@@ -37,6 +39,18 @@ const cancelSua = asyncHandler(async (req, res) =>
   ok(res, await service.cancelSua(req.params.id, (req.body.lyDo || '').trim() || null, req.user.id), 'Đã hủy xác nhận Sửa'));
 const cancelOqc = asyncHandler(async (req, res) =>
   ok(res, await service.cancelOqc(req.params.id, (req.body.lyDo || '').trim() || null, req.user.id), 'Đã hủy xác nhận OQC'));
+
+// Xóa mềm TEM SỬA (mig 055) — tab "Hủy tem sửa" / "Mở lại tem sửa" ở trang Hủy lệnh xác nhận
+const temSuaList = asyncHandler(async (req, res) => ok(res, await service.listTemSuaCancelable({ search: req.query.search || '' })));
+const temSuaDeletedList = asyncHandler(async (req, res) => ok(res, await service.listTemSuaDeleted({ search: req.query.search || '' })));
+const temSuaHuy = asyncHandler(async (req, res) => {
+  const r = await service.huyTemSua(req.body.temIds || [], req.body.lyDo, req.user.id);
+  return ok(res, r, `Đã hủy ${r.so_tem} tem sửa`);
+});
+const temSuaMo = asyncHandler(async (req, res) => {
+  const r = await service.moTemSua(req.body.temIds || [], req.body.lyDo, req.user.id);
+  return ok(res, r, `Đã mở lại ${r.so_tem} tem sửa`);
+});
 
 // Lịch sử QC trả về (toggle 3 loại)
 const qcTraVeHistory = asyncHandler(async (req, res) =>
@@ -82,4 +96,5 @@ module.exports = {
   giaoDacBietActive, giaoDacBietList, giaoDacBietCreate, giaoDacBietUpdate, giaoDacBietToggle,
   oqcReturn, qcTraVeHistory, temHanhTrinh,
   cancelKcsList, cancelSuaList, cancelOqcList, cancelKcs, cancelSua, cancelOqc,
+  temSuaList, temSuaDeletedList, temSuaHuy, temSuaMo,
 };

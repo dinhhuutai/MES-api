@@ -10,6 +10,7 @@ router.use(auth);
 
 // Literal routes TRƯỚC /:id để không bị bắt nhầm.
 router.get('/metrics', rbac('BAOCAO_VIEW'), c.listMetrics);
+router.get('/datasets', rbac('BAOCAO_VIEW'), c.listDatasets);
 router.get('/tat-ca', rbac('BAOCAO_ASSIGN', 'BAOCAO_APPROVE'), c.listAll);
 
 // Phòng ban

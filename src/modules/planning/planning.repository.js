@@ -33,7 +33,7 @@ async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
 
   const dataSql = `
     SELECT dv.id AS dot_vai_id, dv.ma_dot_vai, dv.so_luong_vai_ve, dv.ngay_vai_ve, dv.han_giao_hang,
-           pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim,
+           pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
            pin.so_luong_don_hang, ldv.ten_loai AS loai_dot_vai,
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
            ${DA_REL}::int AS da_release,
@@ -106,7 +106,8 @@ async function listGopCandidates({ search = '' }) {
   const sql = `
     SELECT dv.id AS dot_vai_id, dv.ma_dot_vai, dv.so_luong_vai_ve::int AS so_luong_vai_ve,
            dv.ngay_vai_ve, dv.han_giao_hang,
-           pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.so_luong_don_hang,
+           pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
+           pin.so_luong_don_hang,
            ldv.ten_loai AS loai_dot_vai, mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang
     FROM dot_vai_ve dv
     JOIN phan_in pin ON pin.id = dv.phan_in_id
@@ -318,7 +319,7 @@ async function getOpenSetMembers() {
   const { rows } = await query(
     `SELECT gs.id AS set_id, dv.id AS dot_vai_id, dv.ma_dot_vai,
             dv.so_luong_vai_ve, dv.ngay_vai_ve, dv.han_giao_hang,
-            pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.so_luong_don_hang,
+            pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.so_luong_don_hang, pin.tinh_chat_in,
             ldv.ten_loai AS loai_dot_vai,
             mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
             EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
@@ -398,7 +399,7 @@ async function release1HistoryByDate(date) {
 const PHAN_INFO_LATERAL = `
   LEFT JOIN LATERAL (
     SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang,
-           pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.ma_phan, pin.so_luong_don_hang,
+           pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.ma_phan, pin.so_luong_don_hang, pin.tinh_chat_in,
            dv.so_luong_vai_ve, dv.ngay_vai_ve, dv.han_giao_hang, ldv.ten_loai AS loai_dot_vai
     FROM lenh_sx_dot_vai lsd
     JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
@@ -417,7 +418,7 @@ function lenhListSql(extraWhere) {
     SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.trang_thai, ls.ngay_ke_hoach,
            cs.ma_chuyen, cs.ten_chuyen,
            info.ten_khach_hang, info.ma_don_hang, info.ma_hang,
-           info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan,
+           info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan, info.tinh_chat_in,
            info.so_luong_don_hang, info.so_luong_vai_ve, info.ngay_vai_ve,
            (SELECT min(dvh.han_giao_hang) FROM lenh_sx_dot_vai lsh JOIN dot_vai_ve dvh ON dvh.id=lsh.dot_vai_ve_id WHERE lsh.lenh_san_xuat_id=ls.id) AS han_giao_hang,
            info.loai_dot_vai,
@@ -473,7 +474,7 @@ async function listReplanCandidates({ search = '', offset = 0, limit = 50 }) {
     SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.ngay_ke_hoach, ls.chuyen_id, ls.trang_thai,
            cs.ma_chuyen, cs.ten_chuyen,
            info.ten_khach_hang, info.ma_don_hang, info.ma_hang,
-           info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan,
+           info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan, info.tinh_chat_in,
            info.so_luong_don_hang, info.so_luong_vai_ve, info.ngay_vai_ve, info.han_giao_hang,
            info.loai_dot_vai,
            (SELECT count(*) FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id)::int AS so_dot_vai

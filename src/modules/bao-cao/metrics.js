@@ -312,6 +312,105 @@ PIN_STAGES.forEach((s) => DEFS.push({
   run: pinAtStage(s.keys),
 }));
 
+// ================= DÒNG CHẢY THEO CHECKPOINT (trả lời: hôm nay vào bao nhiêu, đi tiếp bao nhiêu,
+//                    đang đứng bao nhiêu, nghẽn / sắp nghẽn bao nhiêu, kẹt ở đâu) =================
+// NGUỒN (cố ý dùng đúng nguồn của dashboard để KHÔNG ra 2 con số đá nhau):
+//   · Vào / Rời hôm nay → `lich_su_luan_chuyen` (nơi DUY NHẤT có mốc tg_bd/tg_kt của lượt chuyển trạm).
+//   · Đang ở            → `dashboardRepo.stageCounts()` (dominant stage, y hệt ô giai đoạn dashboard).
+//   · Nghẽn / sắp nghẽn → `dashboardRepo.flowRows()` + `slaStatus()` (y hệt bản đồ nghẽn dashboard).
+// ⚠ `lich_su_luan_chuyen` do tracking.service ghi BEST-EFFORT ⇒ "Vào/Rời hôm nay" có thể thiếu lượt
+//   nếu ghi log lỗi; "Đang ở"/"Nghẽn" thì luôn khớp dashboard vì suy từ trạng thái runtime.
+const { slaStatus } = require('../../utils/sla');
+// flowRows = query nặng → cache dùng chung với datasets.js (1 báo cáo có cả metric nghẽn lẫn khối danh sách).
+const { flowRowsCached } = require('./flowCache');
+
+// Đếm đợt vải đang ở trạm `maTram`; `st` = null → đếm hết, 'NGHEN'/'SAP_NGHEN' → lọc theo SLA.
+// Cùng 1 nguồn (flowRows) nên LUÔN cộng khớp: Nghẽn + Sắp nghẽn ≤ Đợt đang ở.
+const slaCount = (maTram, st) => async () => {
+  const rows = await flowRowsCached();
+  return rows.filter((r) => r.ma_tram === maTram
+    && (st === null || slaStatus(r.phut_da_o, r.sla_phut, r.canh_bao_truoc_phut) === st)).length;
+};
+
+// Số PHẦN IN vào trạm trong hôm nay (lượt chuyển tới trạm — `den_tram_id`).
+const vaoTramHomNay = (maTram) =>
+  `SELECT count(DISTINCT l.phan_in_id)::numeric AS v FROM lich_su_luan_chuyen l
+   JOIN tram tr ON tr.id = l.den_tram_id
+   WHERE tr.ma_tram = '${maTram}' AND ${TODAY_TS('l.tg_bd')}`;
+
+// Số PHẦN IN rời trạm trong hôm nay (hoàn tất trạm đó & đi tiếp — mốc `tg_kt` của lượt Ở trạm này).
+const roiTramHomNay = (maTram) =>
+  `SELECT count(DISTINCT l.phan_in_id)::numeric AS v FROM lich_su_luan_chuyen l
+   JOIN tram tr ON tr.id = l.den_tram_id
+   WHERE tr.ma_tram = '${maTram}' AND l.tg_kt IS NOT NULL AND ${TODAY_TS('l.tg_kt')}`;
+
+// Trạm (checkpoint) đưa vào catalog + map sang key stageCounts (dominant) của dashboard.
+// stageCounts tách READY→READY_KT/READY_QA và Test Run→TESTRUN_CNSP/TESTRUN_QA nên phải gộp lại.
+const CP_FLOW = [
+  { ma: 'READY', ten: 'READY (chuẩn bị KT)', sc: ['READY_KT', 'READY_QA'] },
+  { ma: 'RELEASE_1', ten: 'Release 1', sc: ['RELEASE_1'] },
+  { ma: 'TEST_RUN', ten: 'Test Run', sc: ['TESTRUN_CNSP', 'TESTRUN_QA'] },
+  { ma: 'RELEASE_2', ten: 'Release 2', sc: ['RELEASE_2'] },
+  { ma: 'SAN_XUAT', ten: 'Sản xuất', sc: ['CHO_SAN_XUAT', 'SAN_XUAT'] },
+  { ma: 'CHO_KHO', ten: 'Chờ khô', sc: ['CHO_KHO'] },
+  { ma: 'KIEM', ten: 'KCS (kiểm)', sc: ['KCS'] },
+  { ma: 'SUA', ten: 'Sửa', sc: ['SUA'] },
+  { ma: 'OQC', ten: 'OQC', sc: ['OQC'] },
+  { ma: 'FINISH', ten: 'Hoàn tất', sc: ['DANG_GIAO'] },
+];
+
+CP_FLOW.forEach((cp) => {
+  const nhom = `Dòng chảy theo checkpoint — ${cp.ten}`;
+  DEFS.push(
+    { ma: `CP_${cp.ma}_VAO_HOM_NAY`, ten: `${cp.ten}: Vào hôm nay`, nhom, don_vi: 'phần',
+      mo_ta: `Số phần in CHUYỂN VÀO checkpoint ${cp.ten} trong hôm nay (giờ VN, theo lịch sử luân chuyển).`,
+      run: () => scalar(vaoTramHomNay(cp.ma)) },
+    { ma: `CP_${cp.ma}_ROI_HOM_NAY`, ten: `${cp.ten}: Hoàn tất & qua trạm khác hôm nay`, nhom, don_vi: 'phần',
+      mo_ta: `Số phần in ĐÃ RỜI checkpoint ${cp.ten} (làm xong, đi tiếp trạm sau) trong hôm nay.`,
+      run: () => scalar(roiTramHomNay(cp.ma)) },
+    { ma: `CP_${cp.ma}_DANG_O`, ten: `${cp.ten}: Đang ở checkpoint (phần in)`, nhom, don_vi: 'phần',
+      mo_ta: `Số PHẦN IN hiện đang ở checkpoint ${cp.ten} — dominant stage, KHỚP ô giai đoạn của dashboard.`
+        + ' ⚠ Khác đơn vị với "Nghẽn/Sắp nghẽn" (đếm ĐỢT VẢI): muốn 1 hàng cộng khớp thì dùng'
+        + ' "Đang ở checkpoint (đợt vải)" thay cho ô này.',
+      run: pinAtStage(cp.sc) },
+    { ma: `CP_${cp.ma}_DOT_DANG_O`, ten: `${cp.ten}: Đang ở checkpoint (đợt vải)`, nhom, don_vi: 'đợt',
+      mo_ta: `Số ĐỢT VẢI hiện đang ở checkpoint ${cp.ten}. Cùng nguồn với Nghẽn/Sắp nghẽn nên LUÔN cộng khớp:`
+        + ' Nghẽn + Sắp nghẽn + đúng hạn = ô này.',
+      run: slaCount(cp.ma, null) },
+    { ma: `CP_${cp.ma}_NGHEN`, ten: `${cp.ten}: Nghẽn (quá SLA)`, nhom, don_vi: 'đợt',
+      mo_ta: `Số ĐỢT VẢI đang kẹt ở ${cp.ten} QUÁ thời gian SLA của trạm (khớp bản đồ nghẽn dashboard).`,
+      run: slaCount(cp.ma, 'NGHEN') },
+    { ma: `CP_${cp.ma}_SAP_NGHEN`, ten: `${cp.ten}: Sắp nghẽn`, nhom, don_vi: 'đợt',
+      mo_ta: `Số ĐỢT VẢI ở ${cp.ten} sắp quá SLA (đã vào ngưỡng cảnh báo trước của trạm).`,
+      run: slaCount(cp.ma, 'SAP_NGHEN') },
+  );
+});
+
+// ---------- ĐIỂM NGHẼN (text) — "kẹt ở đâu, vì sao" ----------
+DEFS.push(
+  { ma: 'DIEM_NGHEN_NANG_NHAT', ten: 'Điểm nghẽn nặng nhất', nhom: 'Điểm nghẽn (hiện tại)', don_vi: 'trạm', kieu: 'text',
+    mo_ta: 'Checkpoint đang nghẽn nhiều nhất + số đợt đang quá SLA. Không có nghẽn → "OK." (giống cột "Điểm nghẽn" của báo cáo giấy).',
+    run: async () => {
+      const rows = await flowRowsCached();
+      const dem = {};
+      rows.forEach((r) => {
+        if (slaStatus(r.phut_da_o, r.sla_phut, r.canh_bao_truoc_phut) !== 'NGHEN') return;
+        const k = r.ten_tram || r.ma_tram;
+        dem[k] = (dem[k] || 0) + 1;
+      });
+      const top = Object.entries(dem).sort((a, b) => b[1] - a[1])[0];
+      return top ? `${top[0]} (${top[1]} đợt quá SLA)` : 'OK.';
+    } },
+  { ma: 'TONG_NGHEN_MOI_TRAM', ten: 'Tổng nghẽn (mọi checkpoint)', nhom: 'Điểm nghẽn (hiện tại)', don_vi: 'đợt',
+    mo_ta: 'Tổng số đợt vải đang quá SLA trên TOÀN BỘ dòng chảy.',
+    run: async () => (await flowRowsCached())
+      .filter((r) => slaStatus(r.phut_da_o, r.sla_phut, r.canh_bao_truoc_phut) === 'NGHEN').length },
+  { ma: 'TONG_SAP_NGHEN_MOI_TRAM', ten: 'Tổng sắp nghẽn (mọi checkpoint)', nhom: 'Điểm nghẽn (hiện tại)', don_vi: 'đợt',
+    mo_ta: 'Tổng số đợt vải sắp quá SLA trên TOÀN BỘ dòng chảy.',
+    run: async () => (await flowRowsCached())
+      .filter((r) => slaStatus(r.phut_da_o, r.sla_phut, r.canh_bao_truoc_phut) === 'SAP_NGHEN').length },
+);
+
 const BY_MA = Object.fromEntries(DEFS.map((d) => [d.ma, d]));
 
 // Danh mục cho FE (không kèm hàm run).

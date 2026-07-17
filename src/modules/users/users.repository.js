@@ -2,6 +2,22 @@
 
 const { query, withTransaction } = require('../../config/db');
 
+// Danh sách RÚT GỌN để CHỌN NGƯỜI (combobox owner...) — chỉ id/họ tên/username, KHÔNG kèm
+// email/SĐT/vai trò/phòng ban. Dùng cho màn nghiệp vụ (vd OQC chọn owner cho giao) nên chỉ cần
+// đăng nhập, không đòi USER_VIEW (quyền quản trị user) — xem users.routes.
+async function listOptions({ search = '', limit = 500 }) {
+  const { rows } = await query(
+    `SELECT u.id, u.ho_ten, u.ten_dang_nhap
+     FROM nguoi_dung u
+     WHERE u.dang_hoat_dong = true
+       AND ($1 = '' OR u.ho_ten ILIKE '%'||$1||'%' OR u.ten_dang_nhap ILIKE '%'||$1||'%')
+     ORDER BY u.ho_ten NULLS LAST, u.ten_dang_nhap
+     LIMIT $2`.replace(/\s+/g, ' '),
+    [search, limit]
+  );
+  return rows;
+}
+
 async function list({ search = '', active = null, offset = 0, limit = 20 }) {
   const params = [search, limit, offset];
   let activeCond = '';
@@ -125,5 +141,5 @@ async function setRoles(userId, roleIds, actorId) {
 }
 
 module.exports = {
-  list, findById, existsUsername, nextMaUser, create, update, setActive, setPassword, setRoles,
+  list, listOptions, findById, existsUsername, nextMaUser, create, update, setActive, setPassword, setRoles,
 };

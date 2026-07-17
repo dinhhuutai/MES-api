@@ -5,6 +5,8 @@ const asyncHandler = require('../../utils/asyncHandler');
 const { ok, created } = require('../../utils/response');
 
 const listMetrics = asyncHandler(async (req, res) => ok(res, service.listMetrics()));
+// Danh mục NGUỒN DANH SÁCH (khối bảng nhiều dòng) — cho trình thiết kế chọn nguồn/cột/bộ lọc.
+const listDatasets = asyncHandler(async (req, res) => ok(res, service.listDatasets()));
 
 const list = asyncHandler(async (req, res) =>
   ok(res, await service.listReports({ search: req.query.search, userId: req.user.id, all: false })));
@@ -51,6 +53,6 @@ const huyApDung = asyncHandler(async (req, res) =>
   ok(res, await service.huyApDungPhongBan(req.params.phongBanId, req.user.id), 'Đã gỡ báo cáo khỏi phòng ban'));
 
 module.exports = {
-  listMetrics, list, listAll, getOne, create, update, undo, remove, render, history,
+  listMetrics, listDatasets, list, listAll, getOne, create, update, undo, remove, render, history,
   listPhongBan, deXuat, duyet, tuChoi, hienHanh, huyApDung,
 };

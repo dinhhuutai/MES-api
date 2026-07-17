@@ -52,4 +52,7 @@ async function setRoles(id, roleIds, actorId) {
   return getUser(id);
 }
 
-module.exports = { listUsers, getUser, createUser, updateUser, setActive, resetPassword, setRoles };
+// Chọn người (combobox) — dữ liệu rút gọn, chỉ cần đăng nhập.
+const listUserOptions = ({ search, limit }) => repo.listOptions({ search, limit });
+
+module.exports = { listUsers, listUserOptions, getUser, createUser, updateUser, setActive, resetPassword, setRoles };

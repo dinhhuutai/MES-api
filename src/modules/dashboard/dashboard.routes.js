@@ -6,6 +6,7 @@ const reportService = require('../reports/reports.service');
 const asyncHandler = require('../../utils/asyncHandler');
 const { ok } = require('../../utils/response');
 const auth = require('../../middlewares/auth');
+const { slaStatus } = require('../../utils/sla');
 
 const router = express.Router();
 router.use(auth);
@@ -16,16 +17,8 @@ router.get('/stage-counts', asyncHandler(async (req, res) => ok(res, await repo.
 router.get('/chart-detail', asyncHandler(async (req, res) => ok(res, await repo.chartDetail())));
 
 // ---- Dòng chảy + SLA (theo dõi chủ động — migration 029) ----
-// Tính nghẽn on-the-fly theo SLA trạm.
-function slaStatus(phutDaO, slaPhut, canhBao) {
-  const sla = Number(slaPhut) || 0;
-  const cb = Number(canhBao) || 0;
-  const p = Number(phutDaO) || 0;
-  if (sla <= 0) return 'OK';
-  if (p > sla) return 'NGHEN';
-  if (p >= sla - cb) return 'SAP_NGHEN';
-  return 'OK';
-}
+// Tính nghẽn on-the-fly theo SLA trạm — `slaStatus` nay ở utils/sla.js, dùng chung với
+// metric báo cáo (nhóm "Dòng chảy theo checkpoint") để 2 nơi không ra số khác nhau.
 
 // Gộp danh sách owner theo khóa (ma_tram / ma_checkpoint) + phân loại.
 function groupOwners(rows, key) {

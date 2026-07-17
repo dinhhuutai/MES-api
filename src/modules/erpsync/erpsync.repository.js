@@ -109,15 +109,19 @@ async function upsertMaHang(client, { donHangId, maHang, tenMaHang }) {
   return rows[0].id;
 }
 
-async function upsertPhanIn(client, { maHangId, maPhan, mauVai, kichVai, kichPhim, soLuongDonHang }) {
+// `tinhChatIn` = ERP `Tinhchatin`. COALESCE khi update: ERP không gửi (null) thì GIỮ giá trị cũ,
+// tránh re-sync bằng payload cũ (chưa có trường này) xóa mất tính chất in đã lưu.
+async function upsertPhanIn(client, { maHangId, maPhan, mauVai, kichVai, kichPhim, soLuongDonHang, tinhChatIn }) {
   const { rows } = await client.query(
-    `INSERT INTO phan_in (ma_hang_id, ma_phan, mau_vai, kich_vai, kich_phim, so_luong_don_hang)
-     VALUES ($1,$2,$3,$4,$5,$6)
+    `INSERT INTO phan_in (ma_hang_id, ma_phan, mau_vai, kich_vai, kich_phim, so_luong_don_hang, tinh_chat_in)
+     VALUES ($1,$2,$3,$4,$5,$6,$7)
      ON CONFLICT (ma_phan) DO UPDATE SET
        mau_vai = EXCLUDED.mau_vai, kich_vai = EXCLUDED.kich_vai, kich_phim = EXCLUDED.kich_phim,
-       so_luong_don_hang = EXCLUDED.so_luong_don_hang, updated_date = CURRENT_TIMESTAMP
+       so_luong_don_hang = EXCLUDED.so_luong_don_hang,
+       tinh_chat_in = COALESCE(EXCLUDED.tinh_chat_in, phan_in.tinh_chat_in),
+       updated_date = CURRENT_TIMESTAMP
      RETURNING id`,
-    [maHangId, maPhan, mauVai || null, kichVai || null, kichPhim || null, soLuongDonHang ?? null]
+    [maHangId, maPhan, mauVai || null, kichVai || null, kichPhim || null, soLuongDonHang ?? null, tinhChatIn || null]
   );
   return rows[0].id;
 }

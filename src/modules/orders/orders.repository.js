@@ -101,7 +101,7 @@ async function listVaiVe({ search = '', filters = {}, stage = '', offset = 0, li
     : DEFAULT_ORDER;
   // 1 query duy nhất: tổng số phần in qua COUNT(*) OVER(). Gửi SQL 1 dòng (IPS-safe).
   const sql = `
-    SELECT pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim,
+    SELECT pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
            pin.so_luong_don_hang, pin.loi_nhuan,
            mh.ma_hang, mh.ten_ma_hang, dh.ma_don_hang, dh.so_po,
            kh.ma_khach_hang, kh.ten_khach_hang,

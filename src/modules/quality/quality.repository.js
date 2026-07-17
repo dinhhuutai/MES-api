@@ -95,6 +95,7 @@ async function listCandByCon(condExpr, { search = '', filters = {} } = {}) {
 // KCS: tem đã khô, còn phần chưa kiểm. Sửa: còn phần chờ sửa. OQC: còn phần chờ kiểm cuối.
 // (con_sua/con_oqc > 0 ⟹ đã qua KCS ⟹ đã khô — không cần lọc thêm da_qua_phoi.)
 const listKcsCand = (opt) => listCandByCon(`t.trang_thai = 'DA_KHO' AND ${CON_KCS} > 0`, opt);
+// Sửa: hủy tem sửa = xóa SL sửa khỏi sổ cái ⇒ con_sua về 0 ⇒ tem tự rời hàng đợi (không cần cờ ẩn).
 const listSuaCand = (opt) => listCandByCon(`${CON_SUA} > 0`, opt);
 const listOqcCand = (opt) => listCandByCon(`${CON_OQC} > 0`, opt);
 
@@ -188,17 +189,28 @@ async function addGiaoLedger(client, temId, qty, actorId) {
     [temId, qty, actorId]
   );
 }
-// OQC trả về KCS: đưa phần chờ OQC (đạt KCS) quay lại "chưa kiểm" (giảm sl_kcs_dat).
+// OQC trả về KCS: đưa phần chờ OQC (đạt KCS — tem 15-) quay lại "chưa kiểm" (giảm sl_kcs_dat → tăng con_kcs).
 async function reduceKcsDat(client, temId, qty, actorId) {
   await client.query(
     `UPDATE tem SET sl_kcs_dat = GREATEST(sl_kcs_dat-$2,0), updated_by=$3, updated_date=CURRENT_TIMESTAMP WHERE id=$1`,
     [temId, qty, actorId]
   );
 }
+// OQC trả về SỬA: đưa phần chờ OQC (đã sửa — tem 17-) quay lại "chờ sửa" (giảm sl_sua_dat → tăng con_sua).
+async function reduceSuaDat(client, temId, qty, actorId) {
+  await client.query(
+    `UPDATE tem SET sl_sua_dat = GREATEST(sl_sua_dat-$2,0), updated_by=$3, updated_date=CURRENT_TIMESTAMP WHERE id=$1`,
+    [temId, qty, actorId]
+  );
+}
 
 // Cập nhật trang_thai = công đoạn KÉM tiến độ nhất còn hàng (dominant) — cho dashboard/đơn hàng.
 // Không đụng tem đang phơi (IN/DANG_PHOI) hay đã hủy (HUY).
-async function recomputeTemStage(client, temId, actorId) {
+const recomputeTemStage = (client, temId, actorId) => recomputeTemStageMany(client, [temId], actorId);
+
+// Bản nhiều tem — 1 câu lệnh cho cả lô.
+async function recomputeTemStageMany(client, temIds, actorId) {
+  if (!temIds || temIds.length === 0) return;
   await client.query(
     `UPDATE tem SET trang_thai = CASE
         WHEN trang_thai IN ('IN','DANG_PHOI','HUY') THEN trang_thai
@@ -209,8 +221,8 @@ async function recomputeTemStage(client, temId, actorId) {
         WHEN sl_da_giao > 0 THEN 'DA_GIAO'
         ELSE 'LOAI' END,
        updated_by=$2, updated_date=CURRENT_TIMESTAMP
-     WHERE id=$1`,
-    [temId, actorId]
+     WHERE id = ANY($1::uuid[])`,
+    [temIds, actorId]
   );
 }
 
@@ -579,7 +591,9 @@ async function inlineDoneByDate(date) {
 }
 
 // ============ QC TRẢ VỀ (qc_tra_ve) — dùng chung 3 luồng READY/TEST_RUN/OQC ============
-const RETURN_COL = { READY: 'phan_in_id', TEST_RUN: 'dot_vai_ve_id', OQC: 'tem_id' };
+// OQC trả về TÁCH THEO NGUỒN của phần chờ OQC: 'OQC' = trả về KCS (tem 15-), 'OQC_SUA' = trả về Sửa (tem 17-).
+// Dùng chính cột `loai` (VARCHAR, không ràng buộc) nên KHÔNG cần migration; mỗi màn đọc đúng loại của mình.
+const RETURN_COL = { READY: 'phan_in_id', TEST_RUN: 'dot_vai_ve_id', OQC: 'tem_id', OQC_SUA: 'tem_id' };
 
 // Ghi 1 lần QC trả về (không transaction — gọi sau khi commit nghiệp vụ chính).
 // Best-effort: bảng chưa tạo (migration 042 chưa chạy) → chỉ log, không làm hỏng thao tác trả về.
@@ -633,9 +647,11 @@ async function resolveReturnsMany(loai, ids) {
 }
 
 // Lịch sử QC trả về theo loại + ngày (giờ VN) — cho trang "Lịch sử QC trả về".
-async function listQcTraVe(loai, date) {
+// `loaiList` = 1 hoặc nhiều mã loại (tab OQC gộp cả 'OQC' → KCS và 'OQC_SUA' → Sửa).
+async function listQcTraVe(loaiList, date) {
+  const loais = Array.isArray(loaiList) ? loaiList : [loaiList];
   const sql = `
-    SELECT qtv.created_date AS tg, nd.ho_ten AS nguoi, qtv.ly_do, qtv.checklist_list, qtv.da_xu_ly,
+    SELECT qtv.created_date AS tg, nd.ho_ten AS nguoi, qtv.ly_do, qtv.checklist_list, qtv.da_xu_ly, qtv.loai,
            COALESCE(pin.ma_phan, pin2.ma_phan) AS ma_phan,
            COALESCE(mh.ma_hang, mh2.ma_hang) AS ma_hang,
            COALESCE(kh.ten_khach_hang, kh2.ten_khach_hang) AS ten_khach_hang,
@@ -653,9 +669,9 @@ async function listQcTraVe(loai, date) {
     LEFT JOIN don_hang dh2 ON dh2.id = mh2.don_hang_id
     LEFT JOIN khach_hang kh2 ON kh2.id = dh2.khach_hang_id
     LEFT JOIN tem t ON t.id = qtv.tem_id
-    WHERE qtv.loai = $1 AND (qtv.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $2::date
+    WHERE qtv.loai = ANY($1) AND (qtv.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $2::date
     ORDER BY qtv.created_date DESC`;
-  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [loai, date]);
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [loais, date]);
   return rows;
 }
 
@@ -742,6 +758,117 @@ async function logCancelQc(table, id, temId, maTem, lyDo, actorId) {
   );
 }
 
+// ============ HỦY TEM SỬA — XÓA SL SỬA khỏi sổ cái (KHÔNG cần cột cờ / migration) ============
+// "Tem sửa" (nhãn 16-) = phần chờ sửa `con_sua` của tem. Hủy = bỏ con_sua khỏi `sl_kcs_sua`:
+//   · KCS đã có SL đạt (sl_kcs_dat > 0) → dồn con_sua sang `sl_kcs_huy` (loại hẳn, tem KHÔNG về KCS).
+//   · Chưa có SL đạt (sl_kcs_dat = 0)   → chỉ trừ `sl_kcs_sua` ⇒ SL quay lại `con_kcs` (KCS kiểm lại).
+// con_sua về 0 ⇒ tem tự rời màn Sửa. Mở lại = đảo đúng 2 delta trên (đọc snapshot từ audit_log).
+
+// Tem sửa còn hiệu lực (con_sua > 0) — cho tab "Hủy tem sửa".
+async function listTemSua({ search = '' } = {}) {
+  const params = [];
+  const conds = [`${CON_SUA} > 0`];
+  if (search) {
+    params.push(search);
+    const i = params.length;
+    conds.push(`(t.ma_tem ILIKE '%'||$${i}||'%' OR ls.ma_lenh_san_xuat ILIKE '%'||$${i}||'%' OR ${lenhPhanInMatch('ls.id', `$${i}`)})`);
+  }
+  const sql = `
+    SELECT t.id AS tem_id, t.ma_tem, t.so_luong, t.trang_thai,
+           t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy, t.sl_sua_dat, t.sl_sua_huy,
+           ${CON_SUA} AS con_sua, ${CON_KCS} AS con_kcs, ${CON_OQC} AS con_oqc,
+           ls.ma_lenh_san_xuat, cs.ten_chuyen,
+           info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.mau_vai, info.kich_vai, info.kich_phim
+    FROM tem t
+    JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+    JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+    LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+    ${TEM_INFO_LATERAL}
+    WHERE ${conds.join(' AND ')}
+    ORDER BY t.created_date DESC`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), params);
+  return rows;
+}
+
+// Tem sửa ĐANG bị hủy — suy từ audit_log: sự kiện MỚI NHẤT của tem là HUY_TEM_SUA (chưa bị MO_TEM_SUA
+// đảo lại). Chịu được chuỗi hủy → mở → hủy. Cho tab "Mở lại tem sửa".
+async function listTemSuaDaHuy({ search = '' } = {}) {
+  const params = [];
+  const conds = ["last.hanh_dong = 'HUY_TEM_SUA'"];
+  if (search) {
+    params.push(search);
+    const i = params.length;
+    conds.push(`(t.ma_tem ILIKE '%'||$${i}||'%' OR ls.ma_lenh_san_xuat ILIKE '%'||$${i}||'%' OR ${lenhPhanInMatch('ls.id', `$${i}`)})`);
+  }
+  const sql = `
+    SELECT t.id AS tem_id, t.ma_tem, t.so_luong, t.trang_thai,
+           t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy, ${CON_SUA} AS con_sua, ${CON_KCS} AS con_kcs,
+           ls.ma_lenh_san_xuat, cs.ten_chuyen,
+           info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.mau_vai, info.kich_vai, info.kich_phim,
+           last.tg AS tg_huy, last.gia_tri_moi, nd.ho_ten AS nguoi_huy
+    FROM (
+      SELECT DISTINCT ON (a.id_ban_ghi) a.id_ban_ghi AS tem_id, a.hanh_dong, a.thoi_gian AS tg,
+             a.gia_tri_moi, a.nguoi_thuc_hien_id
+      FROM audit_log a
+      WHERE a.ten_bang = 'tem' AND a.hanh_dong IN ('HUY_TEM_SUA','MO_TEM_SUA')
+      ORDER BY a.id_ban_ghi, a.thoi_gian DESC
+    ) last
+    JOIN tem t ON t.id = last.tem_id::uuid
+    JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+    JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+    LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+    LEFT JOIN nguoi_dung nd ON nd.id = last.nguoi_thuc_hien_id
+    ${TEM_INFO_LATERAL}
+    WHERE ${conds.join(' AND ')}
+    ORDER BY last.tg DESC`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), params);
+  return rows.map((r) => {
+    const v = typeof r.gia_tri_moi === 'string' ? JSON.parse(r.gia_tri_moi || '{}') : (r.gia_tri_moi || {});
+    const { gia_tri_moi, ...rest } = r;
+    return { ...rest, sl_huy: Number(v.sl) || 0, da_cong_huy: !!v.da_cong_huy, ly_do: v.ly_do || null, tu_dong: !!v.tu_dong };
+  });
+}
+
+// Tem + sổ cái phần sửa (để service validate trước khi hủy/mở lại). 1 query cho nhiều tem — IPS-safe.
+// Truyền `client` khi cần đọc TRONG transaction đang mở (thấy các thay đổi chưa commit).
+async function getTemSuaRows(temIds, client) {
+  if (!temIds || temIds.length === 0) return [];
+  const run = client ? client.query.bind(client) : query;
+  const { rows } = await run(
+    `SELECT t.id AS tem_id, t.ma_tem, t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy, t.sl_sua_dat, t.sl_sua_huy,
+            (t.sl_kcs_sua - (t.sl_sua_dat + t.sl_sua_huy)) AS con_sua,
+            ((t.so_luong + t.sl_chenh_lech) - (t.sl_kcs_dat + t.sl_kcs_sua + t.sl_kcs_huy)) AS con_kcs
+     FROM tem t WHERE t.id = ANY($1::uuid[])`.replace(/\s+/g, ' '),
+    [temIds]
+  );
+  return rows;
+}
+const getTemSuaRow = async (temId) => (await getTemSuaRows([temId]))[0] || null;
+
+// Cộng delta vào sổ cái sửa/hủy của NHIỀU tem trong 1 câu lệnh (unnest) — tránh N round-trip.
+// items = [{ temId, dSua, dHuy }] (hủy: dSua=-x, dHuy=+x|0 · mở lại: dSua=+x, dHuy=-x|0).
+async function applyTemSuaLedgerMany(client, items, actorId) {
+  if (!items || items.length === 0) return;
+  await client.query(
+    `UPDATE tem t SET sl_kcs_sua = t.sl_kcs_sua + v.ds, sl_kcs_huy = t.sl_kcs_huy + v.dh,
+       updated_by = $4, updated_date = CURRENT_TIMESTAMP
+     FROM unnest($1::uuid[], $2::int[], $3::int[]) AS v(id, ds, dh) WHERE t.id = v.id`.replace(/\s+/g, ' '),
+    [items.map((i) => i.temId), items.map((i) => i.dSua), items.map((i) => i.dHuy), actorId]
+  );
+}
+
+// Audit hủy/mở lại tem sửa (HUY_TEM_SUA / MO_TEM_SUA) — người/giờ/lý do + snapshot delta để đảo lại.
+// Ghi NHIỀU dòng bằng 1 INSERT (unnest) — `items` = [{ temId, payload }].
+async function logTemSuaMany(client, hanhDong, items, actorId) {
+  if (!items || items.length === 0) return;
+  await client.query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     SELECT 'tem', x.id, $2, x.val::jsonb, $4, CURRENT_TIMESTAMP, $4
+     FROM unnest($1::text[], $3::text[]) AS x(id, val)`.replace(/\s+/g, ' '),
+    [items.map((i) => String(i.temId)), hanhDong, items.map((i) => JSON.stringify(i.payload || {})), actorId]
+  );
+}
+
 // ============ GỘP TEM (KCS) — chuyển SL các tem về tem đầu tiên, hủy các tem nguồn ============
 // Lấy tem + phần in + cờ "chưa kiểm" (sổ cái = 0) để kiểm tra điều kiện gộp.
 async function getTemsForMerge(temIds) {
@@ -784,10 +911,12 @@ async function logGopTem(client, targetTemId, maTem, nguon, actorId) {
 
 module.exports = {
   insertQcTraVe, activeReturnsMap, resolveReturns, resolveReturnsMany, listQcTraVe,
+  listTemSua, listTemSuaDaHuy, getTemSuaRow, getTemSuaRows, applyTemSuaLedgerMany, logTemSuaMany,
   getTemsForMerge, addTemSoLuong, logGopTem,
   listCancelKcs, listCancelSua, listCancelOqc, getCancelKcsRow, getCancelSuaRow, getCancelOqcRow, logCancelQc,
   listKcsCand, listSuaCand, listOqcCand, caPartsForTems, prevConfirmerByTems, getTemBasic, setTemTrangThai, setTemStatusQty,
-  getTemLedger, addKcsLedger, addSuaLedger, addOqcLedger, addGiaoLedger, reduceKcsDat, recomputeTemStage,
+  getTemLedger, addKcsLedger, addSuaLedger, addOqcLedger, addGiaoLedger, reduceKcsDat, reduceSuaDat,
+  recomputeTemStage, recomputeTemStageMany,
   temTimeline,
   nextMaTem, createChildTem, insertTemSplit, getTemForSplit,
   insertKcs, insertSua, nextOqcRound, insertOqc,

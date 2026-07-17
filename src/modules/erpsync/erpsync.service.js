@@ -17,10 +17,47 @@ const KHACH_ERP = 'SL';
 // Loại kinh doanh (`loaikd`) BỎ QUA khi đồng bộ tự động (theo yêu cầu). Thêm/bớt mã ở đây.
 const BO_LOAIKD = new Set(['8I', '2I']);
 
+// TÍNH CHẤT IN (`Tinhchatin`) BỎ QUA — các công đoạn ép/ủi/lụa... không thuộc phạm vi MES này.
+// So khớp sau khi chuẩn hóa (bỏ hết khoảng trắng + viết hoa) nên "C + EP DECAL" == "C+EP DECAL".
+const BO_TINH_CHAT_IN_RAW = [
+  'C+EP DECAL', 'C+KIENG UI', 'DANKEO', 'DQ+EP DINH', 'DQ+EP KIENG', 'DQ+EP LUN', 'EP DC', 'EP DECAL',
+  'EP DIEN', 'EP DINH', 'EP DINH+LS', 'EP DQ', 'EP GAI XU', 'EP KEO', 'EP KIENG', 'EP LUN', 'EP LUN NHUA',
+  'EP LUN PHOI', 'EP LUN+EP NOI', 'EP NHIET', 'EP NHUA MAU', 'EP NHUNG', 'EP NOI', 'EP NOI SLC', 'EP NONG',
+  'EP NONG+LS', 'EP PET', 'EP PHOI', 'IN EP NHUNG', 'IN EP PHOI', 'KIENG UI', 'KIENG UI BONG', 'KIENG UI DQ',
+  'KIENG UI DQ+DQ', 'KIENG UI DQ+EP K', 'KIENG UI+KBONG', 'KIENGUICAO', 'LAZE+EP KIENG', 'LG', 'LG BONG',
+  'LG EP', 'LG MO', 'LG+EP NHUA', 'LS', 'LS+EP KIENG', 'RC+REP DC', 'RDQ+EP LUN', 'REP DECAL', 'REP DIEN',
+  'REP DINH', 'REP DQ', 'REP GAI XU', 'REP KEO', 'REP KIENG', 'REP LUN', 'REP LUN NHUA', 'REP LUN+EP NOI',
+  'REP NHIET', 'REP NHUA MAU', 'REP NHUNG', 'REP NOI', 'REP NOI SLC', 'REP NONG', 'REP PHOI', 'REP UI',
+  'RIN EP NHUNG', 'RIN EP PHOI', 'RKIENG UI', 'RKIENG UI BONG', 'RKIENG UI DQ', 'RKIENG UI DQ+EP K',
+  'RKIENG UI+KBONG', 'RLAZE+EP KIENG', 'RLG', 'RLG EP', 'RLG+EP NHUA', 'RLS', 'RLS+EP KIENG', 'RT+EP DC',
+  'RT+EP DIEN', 'RT+EP DINH', 'RT+EP LUN', 'RT+EP LUN PHOI', 'RT+EP NHUNG', 'RT+EP NOI', 'RT+EP NONG',
+  'RT+EP PHOI', 'RT+EP UI', 'RT+KIENG UI', 'RT+KIENG UI DQ', 'RT+LG EP', 'RTB+EP DINH', 'RTB+EP NHIET',
+  'T+DQ+EPLUN', 'T+EP DC', 'T+EP DIEN', 'T+EP DINH', 'T+EP KIENG', 'T+EP LUN', 'T+EP LUN PHOI', 'T+EP LUN+LS',
+  'T+EP NHUNG', 'T+EP NOI', 'T+EP NONG', 'T+EP PHOI', 'T+EP UI', 'T+KIENG UI', 'T+KIENG UI DQ', 'T+LG EP',
+  'T+LS', 'TB+EP DINH', 'TB+EP NHIET', 'TB+KIENGUIBONG',
+];
+const normTcin = (v) => String(v == null ? '' : v).toUpperCase().replace(/\s+/g, '');
+const BO_TINH_CHAT_IN = new Set(BO_TINH_CHAT_IN_RAW.map(normTcin));
+
 const md5 = (s) => crypto.createHash('md5').update(s).digest('hex');
 const clean = (v) => (v == null ? '' : String(v).trim());
 // DATE 'YYYY-MM-DD' từ chuỗi ISO (cắt phần ngày, không lệch timezone).
 const toDate = (v) => (v ? String(v).slice(0, 10) : null);
+
+// Đọc 1 trường ERP không phân biệt hoa/thường và dấu gạch dưới: field(r,'NgayNhanvai') khớp
+// 'NgayNhanvai' | 'ngaynhanvai' | 'ngay_nhan_vai'... (ERP đặt tên không nhất quán với các cột cũ).
+function field(r, ...names) {
+  const key = (s) => String(s).toLowerCase().replace(/[_\s-]/g, '');
+  const map = new Map(Object.keys(r || {}).map((k) => [key(k), k]));
+  for (const n of names) {
+    const k = map.get(key(n));
+    if (k != null && r[k] != null && String(r[k]).trim() !== '') return r[k];
+  }
+  return null;
+}
+const erpTinhChatIn = (r) => clean(field(r, 'Tinhchatin', 'tinh_chat_in', 'tinhchat_in')) || null;
+// Ngày vải về: ưu tiên NgayNhanvai (ERP mới), lùi về erp_datetime/created_date như trước.
+const erpNgayVaiVe = (r) => toDate(field(r, 'NgayNhanvai', 'ngay_nhan_vai', 'ngay_vai_ve') || r.erp_datetime || r.created_date);
 
 // Khóa định danh ổn định để upsert.
 // QUY TẮC: 1 bản ghi ERP = 1 đợt vải. ERP trả về nhiều dòng giống hệt nhau (chỉ khác received_qty,
@@ -109,10 +146,11 @@ async function processRow(r, maPhan, maDotVai, loaiDotVaiId) {
       maHangId: mhId, maPhan,
       mauVai: clean(r.fabric_color), kichVai: clean(r.fabric_size), kichPhim: clean(r.film_size),
       soLuongDonHang: r.order_qty ?? null,
+      tinhChatIn: erpTinhChatIn(r),
     });
     const { id: dotVaiId, inserted } = await repo.upsertDotVai(client, {
       maDotVai, phanInId: pinId, loaiDotVaiId,
-      ngayVaiVe: toDate(r.erp_datetime || r.created_date), hanGiao: toDate(r.due_date), soLuong: r.received_qty ?? null,
+      ngayVaiVe: erpNgayVaiVe(r), hanGiao: toDate(r.due_date), soLuong: r.received_qty ?? null,
     });
     return { inserted, dotVaiId, pinId };
   });
@@ -157,8 +195,14 @@ async function syncPhieuNhanVai({ fromDate, actorId = null, tuDong = false } = {
       const notSl = clean(r.customer_name).toUpperCase() !== KHACH_ERP.toUpperCase();
       const noCode = !clean(r.code_part);
       const isBoLoai = BO_LOAIKD.has(clean(r.loaikd).toUpperCase()); // bỏ qua loại kinh doanh 8I/2I
+      // Bỏ qua tính chất in ngoài phạm vi MES (ép/ủi/lụa...). Thiếu Tinhchatin → KHÔNG bỏ (vẫn lấy).
+      const isBoTcin = BO_TINH_CHAT_IN.has(normTcin(erpTinhChatIn(r)));
       const { maPhan, maDotVai } = buildKeys(r, seen);
-      return { r, maPhan, maDotVai, skip: notSl || noCode || isBoLoai, notSl, noCode, isBoLoai };
+      return {
+        r, maPhan, maDotVai,
+        skip: notSl || noCode || isBoLoai || isBoTcin,
+        notSl, noCode, isBoLoai, isBoTcin,
+      };
     });
 
     // Task 1: LƯU DỮ LIỆU THÔ trước khi xử lý (gồm cả dòng bị bỏ qua).
@@ -170,15 +214,18 @@ async function syncPhieuNhanVai({ fromDate, actorId = null, tuDong = false } = {
       console.error(`[erp-sync] ✗ Lưu dữ liệu thô lỗi: ${e.message}`);
     }
 
-    let soMoi = 0; let soCapNhat = 0; let soBoQua = 0; let soKhongSl = 0; let soKhongCode = 0; let soBoLoai = 0;
+    let soMoi = 0; let soCapNhat = 0; let soBoQua = 0; let soKhongSl = 0; let soKhongCode = 0; let soBoLoai = 0; let soBoTcin = 0;
     const errors = [];
     const newDotVaiIds = [];
     const resolveLoai = makeLoaiResolver();
     for (const p of prepared) {
-      // Bỏ qua dòng: không đúng khách, thiếu code_part, hoặc loaikd bị loại (8I/2I).
+      // Bỏ qua dòng: sai khách, thiếu code_part, loaikd bị loại (8I/2I), hoặc tính chất in ngoài phạm vi.
       if (p.skip) {
         soBoQua += 1;
-        if (p.notSl) soKhongSl += 1; else if (p.noCode) soKhongCode += 1; else if (p.isBoLoai) soBoLoai += 1;
+        if (p.notSl) soKhongSl += 1;
+        else if (p.noCode) soKhongCode += 1;
+        else if (p.isBoLoai) soBoLoai += 1;
+        else if (p.isBoTcin) soBoTcin += 1;
         continue;
       }
       try {
@@ -202,6 +249,7 @@ async function syncPhieuNhanVai({ fromDate, actorId = null, tuDong = false } = {
     if (soKhongSl) notes.push(`bỏ qua ${soKhongSl} dòng không phải khách '${KHACH_ERP}'`);
     if (soKhongCode) notes.push(`bỏ qua ${soKhongCode} dòng không có code_part`);
     if (soBoLoai) notes.push(`bỏ qua ${soBoLoai} dòng loaikd ${[...BO_LOAIKD].join('/')}`);
+    if (soBoTcin) notes.push(`bỏ qua ${soBoTcin} dòng tính chất in ngoài phạm vi`);
     if (errors.length) notes.push(`lỗi ${errors.length}/${rows.length}: ${errors.slice(0, 3).join(' | ')}`);
     await repo.finishSyncLog(logId, {
       tong: rows.length, soMoi, soCapNhat, soLoi: errors.length, trangThai,
