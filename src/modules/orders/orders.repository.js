@@ -613,6 +613,7 @@ async function searchPhanInForCancel(q, stage = '') {
     SELECT pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim,
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
            (${dominantStageScalar('pin.id')}) AS giai_doan,
+           (SELECT min(d3.han_giao_hang) FROM dot_vai_ve d3 WHERE d3.phan_in_id=pin.id AND d3.trang_thai <> 'DA_HUY') AS han_giao_hang,
            (SELECT count(*) FROM dot_vai_ve d WHERE d.phan_in_id=pin.id AND d.trang_thai <> 'DA_HUY')::int AS so_dot_vai,
            EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve d ON d.id=lsd.dot_vai_ve_id
                    JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id
