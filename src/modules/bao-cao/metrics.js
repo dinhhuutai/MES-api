@@ -52,6 +52,14 @@ const cpDoneToday = (maCp) =>
   `SELECT count(*)::numeric AS v FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
    WHERE cp.ma_checkpoint = '${maCp}' AND kq.trang_thai = 'DAT' AND ${TODAY_TS('kq.tg_xac_nhan')}`;
 
+// Đếm phần in đang HOẠT ĐỘNG, CHƯA QC-READY và CHƯA xác nhận mã checkpoint `maCp` (đang chờ mục đó).
+const readyChoCp = (maCp) =>
+  `SELECT count(*)::numeric AS v FROM phan_in pin WHERE pin.dang_hoat_dong
+     AND NOT EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
+       WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT')
+     AND NOT EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
+       WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = '${maCp}' AND kq.trang_thai = 'DAT')`;
+
 // Đếm đợt vải đang ở 1 trạm hiện tại (ton_tram) theo mã trạm (cần migration 029 mới có dữ liệu).
 const tonTram = (maTram) =>
   `SELECT count(*)::numeric AS v FROM ton_tram tt JOIN tram tr ON tr.id = tt.tram_id
@@ -127,6 +135,17 @@ const DEFS = [
   { ma: 'QC_READY_HOM_NAY', ten: 'Phần in QC-READY hôm nay', nhom: 'Kỹ thuật (hôm nay)', don_vi: 'phần',
     mo_ta: 'Số phần in được QC xác nhận READY (QC_XAC_NHAN=DAT) trong hôm nay.',
     run: () => scalar(cpDoneToday('QC_XAC_NHAN')) },
+
+  // ---------- KỸ THUẬT (hiện tại) — số phần in ĐANG CHỜ từng mục (chưa xác nhận, chưa QC-READY) ----------
+  { ma: 'KHUON_CHO', ten: 'Phần in chờ làm khuôn', nhom: 'Kỹ thuật (hiện tại)', don_vi: 'phần',
+    mo_ta: 'Số phần in đang hoạt động, chưa QC-READY và CHƯA xác nhận KHUÔN (đang cần làm khuôn).',
+    run: () => scalar(readyChoCp('KHUON')) },
+  { ma: 'FILM_CHO', ten: 'Phần in chờ làm film', nhom: 'Kỹ thuật (hiện tại)', don_vi: 'phần',
+    mo_ta: 'Số phần in đang hoạt động, chưa QC-READY và CHƯA xác nhận FILM (đang cần làm film).',
+    run: () => scalar(readyChoCp('FILM')) },
+  { ma: 'MUC_CHO', ten: 'Phần in chờ pha mực', nhom: 'Kỹ thuật (hiện tại)', don_vi: 'phần',
+    mo_ta: 'Số phần in đang hoạt động, chưa QC-READY và CHƯA xác nhận MỰC (đang cần pha mực).',
+    run: () => scalar(readyChoCp('MUC')) },
 
   // ---------- READY / DÒNG CHẢY (hiện tại) ----------
   { ma: 'PHAN_DA_READY', ten: 'Phần in đã READY', nhom: 'READY / dòng chảy (hiện tại)', don_vi: 'phần',

@@ -52,10 +52,21 @@ const COT_PHAN_IN = [
   { key: 'han_giao_hang', ten: 'Hạn giao', kieu: 'ngay' },
   { key: 'ma_dot_vai', ten: 'Mã đợt vải', kieu: 'text' },
   { key: 'loai_dot_vai', ten: 'Loại đợt vải', kieu: 'text' },
+  // --- Chuẩn bị kỹ thuật (READY): lựa chọn đã xác nhận từng mục (gia_tri_text của ket_qua_checkpoint DAT) ---
+  { key: 'ready_khuon', ten: 'Khuôn (READY)', kieu: 'text' },
+  { key: 'ready_film', ten: 'Film (READY)', kieu: 'text' },
+  { key: 'ready_muc', ten: 'Mực (READY)', kieu: 'text' },
+  { key: 'ready_qc', ten: 'QC READY', kieu: 'text' },
   { key: 'ten_tram', ten: 'Trạm hiện tại', kieu: 'text' },
   { key: 'phut_da_o', ten: 'Số phút đã ở trạm', kieu: 'so' },
   { key: 'sla_status', ten: 'Tình trạng SLA', kieu: 'text' },
 ];
+
+// Lựa chọn READY đã xác nhận (DAT) của 1 checkpoint theo phần in → gia_tri_text (Khuôn/Film/Mực).
+const readyChoiceSub = (maCp) =>
+  `(SELECT kq.gia_tri_text FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
+     WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = '${maCp}' AND kq.trang_thai = 'DAT'
+     ORDER BY kq.tg_xac_nhan DESC NULLS LAST LIMIT 1)`;
 
 const SLA_LABEL = { NGHEN: 'Nghẽn', SAP_NGHEN: 'Sắp nghẽn', OK: 'Đúng hạn' };
 
@@ -74,7 +85,13 @@ async function runPhanIn({ loc = {}, gioi_han }) {
     SELECT dv.id AS dot_vai_ve_id, pin.id AS phan_in_id, dv.ma_dot_vai, dv.ngay_vai_ve, dv.han_giao_hang,
            dv.so_luong_vai_ve, ldv.ten_loai AS loai_dot_vai,
            pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in, pin.so_luong_don_hang,
-           mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang
+           mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
+           ${readyChoiceSub('KHUON')} AS ready_khuon,
+           ${readyChoiceSub('FILM')} AS ready_film,
+           ${readyChoiceSub('MUC')} AS ready_muc,
+           (CASE WHEN EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
+              WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT')
+              THEN 'Đã QC' ELSE '' END) AS ready_qc
     FROM dot_vai_ve dv
     JOIN phan_in pin ON pin.id = dv.phan_in_id
     JOIN ma_hang mh ON mh.id = pin.ma_hang_id
@@ -123,10 +140,19 @@ const COT_DOT_SX = [
   { key: 'so_luong_release', ten: 'SL release', kieu: 'so' },
   { key: 'gio_bd', ten: 'Giờ bắt đầu', kieu: 'text' },
   { key: 'gio_kt', ten: 'Giờ kết thúc', kieu: 'text' },
+  // --- Test Run ---
+  { key: 'test_ket_qua', ten: 'Kết quả test', kieu: 'text' },
+  { key: 'so_lan_test', ten: 'Số lần test', kieu: 'so' },
+  { key: 'nguoi_test', ten: 'Người test', kieu: 'text' },
+  { key: 'loai_test', ten: 'Loại test', kieu: 'text' },
+  { key: 'test_tg', ten: 'Thời gian test', kieu: 'text' },
+  { key: 'test_ghi_chu', ten: 'Ghi chú test', kieu: 'text' },
   { key: 'trang_thai', ten: 'Trạng thái', kieu: 'text' },
   { key: 'han_giao_hang', ten: 'Hạn giao', kieu: 'ngay' },
   { key: 'sl_da_in', ten: 'SL đã in', kieu: 'so' },
 ];
+
+const LOAI_TEST_LABEL = { TEST_RUN: 'Test Run', DAP_PHAN: 'Đập phần' };
 
 const LSX_TT = {
   RELEASE_1: 'Release 1', RELEASE_2: 'Release 2 (chờ chạy)', SAN_XUAT: 'Đang sản xuất',
@@ -149,6 +175,16 @@ async function runDotSanXuat({ loc = {}, gioi_han }) {
     SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.trang_thai AS tt, ls.ngay_ke_hoach,
            to_char(ls.tg_bd_kh AT TIME ZONE 'Asia/Ho_Chi_Minh', 'HH24:MI') AS gio_bd,
            to_char(ls.tg_kt_kh AT TIME ZONE 'Asia/Ho_Chi_Minh', 'HH24:MI') AS gio_kt,
+           (SELECT count(*) FROM test_run tr WHERE tr.lenh_san_xuat_id = ls.id)::int AS so_lan_test,
+           (SELECT kq.gia_tri_text FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
+              WHERE kq.lenh_san_xuat_id = ls.id AND cp.ma_checkpoint = 'TEST_CNSP' AND kq.trang_thai = 'DAT' LIMIT 1) AS nguoi_test,
+           (SELECT kq.gia_tri_text FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
+              WHERE kq.lenh_san_xuat_id = ls.id AND cp.ma_checkpoint = 'TEST_QA' AND kq.trang_thai = 'DAT' LIMIT 1) AS loai_test_raw,
+           (SELECT kq.ghi_chu FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
+              WHERE kq.lenh_san_xuat_id = ls.id AND cp.ma_checkpoint = 'TEST_QA' AND kq.trang_thai = 'DAT' LIMIT 1) AS test_ghi_chu,
+           (SELECT to_char(kq.tg_xac_nhan AT TIME ZONE 'Asia/Ho_Chi_Minh', 'DD/MM/YYYY HH24:MI') FROM ket_qua_checkpoint kq
+              JOIN checkpoint cp ON cp.id = kq.checkpoint_id
+              WHERE kq.lenh_san_xuat_id = ls.id AND cp.ma_checkpoint = 'TEST_QA' AND kq.trang_thai = 'DAT' LIMIT 1) AS test_tg,
            cs.ten_chuyen,
            info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan,
            info.mau_vai, info.kich_vai, info.kich_phim, info.tinh_chat_in,
@@ -172,7 +208,15 @@ async function runDotSanXuat({ loc = {}, gioi_han }) {
     ORDER BY ls.ngay_ke_hoach DESC NULLS LAST, cs.ten_chuyen NULLS LAST, ls.created_date DESC
     LIMIT ${limitOf(gioi_han)}`;
   const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), params);
-  return rows.map((r, i) => ({ ...r, stt: i + 1, trang_thai: LSX_TT[r.tt] || r.tt }));
+  return rows.map((r, i) => {
+    const daTest = !!r.loai_test_raw; // có TEST_QA DAT = đã test đạt
+    const boTest = !daTest && ['RELEASE_2', 'SAN_XUAT', 'HOAN_TAT'].includes(r.tt); // vào thẳng R2 = bỏ test run
+    return {
+      ...r, stt: i + 1, trang_thai: LSX_TT[r.tt] || r.tt,
+      loai_test: LOAI_TEST_LABEL[r.loai_test_raw] || r.loai_test_raw || '',
+      test_ket_qua: daTest ? 'Đạt' : boTest ? 'Bỏ test run' : (r.tt === 'RELEASE_1' ? 'Chờ test' : ''),
+    };
+  });
 }
 
 // ============================== 3) TEM (KCS / Sửa / OQC / Giao) ==============================

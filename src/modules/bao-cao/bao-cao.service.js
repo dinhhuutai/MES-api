@@ -70,9 +70,16 @@ async function deleteReport(id, user) {
 async function renderContent(rep) {
   const noiDung = rep.noi_dung_json || {};
   const cells = noiDung.o || {};
-  const usedMetrics = Object.values(cells)
+  // Metric dùng trong Ô (loai='metric') + metric là NGUỒN BIỂU ĐỒ (bieu_do[].nguon='metric').
+  // ⚠ Trước đây chỉ gom metric trong ô ⇒ biểu đồ nguồn "nhóm chỉ số" không có giá trị (ra rỗng/0).
+  const cellMetrics = Object.values(cells)
     .filter((c) => c && c.loai === 'metric' && c.metric)
     .map((c) => c.metric);
+  const chartMetrics = (noiDung.bieu_do || [])
+    .filter((b) => b && b.nguon === 'metric' && Array.isArray(b.metrics))
+    .flatMap((b) => b.metrics)
+    .filter(Boolean);
+  const usedMetrics = [...cellMetrics, ...chartMetrics];
   // Khối danh sách: ô `loai='danh_sach'` là Ô NEO — dữ liệu đổ xuống/ sang phải từ ô đó.
   const dsBlocks = Object.fromEntries(
     Object.entries(cells).filter(([, c]) => c && c.loai === 'danh_sach' && c.ds && c.ds.nguon)
@@ -83,6 +90,10 @@ async function renderContent(rep) {
     datasets.computeBlocks(dsBlocks),
   ]);
   const ketQua = evaluateGrid(cells, metricValues);
+  // Tên metric (ma→ten) cho các metric đã dùng — để biểu đồ nguồn "nhóm chỉ số" hiện TÊN ở trang Xem.
+  const metricNames = Object.fromEntries(
+    [...new Set(usedMetrics)].map((ma) => [ma, metrics.BY_MA[ma] ? metrics.BY_MA[ma].ten : ma])
+  );
   return {
     id: rep.id, ma_bao_cao: rep.ma_bao_cao, ten_bao_cao: rep.ten_bao_cao,
     so_cot: noiDung.so_cot || 8, so_hang: noiDung.so_hang || 20,
@@ -91,7 +102,7 @@ async function renderContent(rep) {
     cot_w: noiDung.cot_w || {}, hang_h: noiDung.hang_h || {}, dong_bang: noiDung.dong_bang || null,
     // Biểu đồ: render DƯỚI lưới (không chiếm ô) — dữ liệu lấy từ khối danh sách hoặc metric, tính ở FE.
     bieu_do: noiDung.bieu_do || [],
-    ket_qua: ketQua, metric_values: metricValues, danh_sach: danhSach,
+    ket_qua: ketQua, metric_values: metricValues, metric_names: metricNames, danh_sach: danhSach,
     tinh_luc: new Date().toISOString(),
   };
 }

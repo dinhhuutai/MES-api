@@ -419,7 +419,36 @@ async function tinhTrangActiveRows() {
 // Tìm phần in (cho màn Sơ đồ phần in). Tìm rỗng → phần in MỚI NHẤT; có tìm → khớp, giới hạn số dòng.
 // KHÔNG tải hết (có thể vài ngàn phần in) — người dùng nhập/quét QR để ra phần in.
 async function tinhTrangPhanInList(search = '', limit = 30) {
+  const s = String(search || '').trim();
   const lim = Math.max(1, Math.min(Number(limit) || 30, 100));
+
+  // KHÔNG nhập tìm kiếm → ưu tiên phần in ĐANG Ở TRẠM GIAO (còn hàng chờ giao: con_giao = sl_oqc_dat - sl_da_giao > 0)
+  // MỚI NHẤT (theo lần OQC đạt gần nhất) — mở trang là thấy ngay việc đang giao. Không có → lùi về "mới nhất theo đợt vải".
+  if (!s) {
+    const { rows: giao } = await query(
+      `SELECT pi.id, pi.ma_phan, pi.mau_vai, pi.kich_vai, pi.kich_phim,
+              mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang, g.recency
+       FROM phan_in pi
+       JOIN ma_hang mh ON mh.id = pi.ma_hang_id
+       JOIN don_hang dh ON dh.id = mh.don_hang_id
+       JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+       JOIN LATERAL (
+         SELECT max(o.created_date) AS recency
+         FROM dot_vai_ve dv
+         JOIN lenh_sx_dot_vai lsd ON lsd.dot_vai_ve_id = dv.id
+         JOIN phieu_san_xuat ps ON ps.lenh_san_xuat_id = lsd.lenh_san_xuat_id
+         JOIN tem t ON t.phieu_san_xuat_id = ps.id
+         JOIN oqc o ON o.tem_id = t.id
+         WHERE dv.phan_in_id = pi.id AND t.trang_thai <> 'HUY'
+           AND (t.sl_oqc_dat - t.sl_da_giao) > 0
+       ) g ON g.recency IS NOT NULL
+       WHERE pi.dang_hoat_dong
+       ORDER BY g.recency DESC
+       LIMIT ${lim}`.replace(/\s+/g, ' ')
+    );
+    if (giao.length) return giao;
+  }
+
   const { rows } = await query(
     `SELECT pi.id, pi.ma_phan, pi.mau_vai, pi.kich_vai, pi.kich_phim,
             mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
@@ -435,7 +464,7 @@ async function tinhTrangPhanInList(search = '', limit = 30) {
             OR pi.kich_vai ILIKE '%'||$1||'%' OR pi.kich_phim ILIKE '%'||$1||'%')
      ORDER BY recency DESC NULLS LAST, pi.ma_phan
      LIMIT ${lim}`.replace(/\s+/g, ' '),
-    [search]
+    [s]
   );
   return rows;
 }
@@ -748,7 +777,7 @@ async function tinhTrangGraph(phanInId) {
   )).rows[0];
   if (!info) return null;
 
-  const [dotVai, links, tems, readyCp, testCp, readyEv, giaoRec, kcsRec] = await Promise.all([
+  const [dotVai, links, tems, readyCp, testCp, readyEv, giaoRec, kcsRec, traVeRec] = await Promise.all([
     query(
       `SELECT dv.id, dv.ma_dot_vai, dv.so_luong_vai_ve, dv.han_giao_hang, dv.trang_thai,
               EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id
@@ -866,6 +895,19 @@ async function tinhTrangGraph(phanInId) {
        ORDER BY k.created_date`.replace(/\s+/g, ' '),
       [phanInId]
     ),
+    // QC TRẢ VỀ theo tem (OQC→KCS = 'OQC' · OQC→Sửa = 'OQC_SUA') — để sơ đồ hiểu vì sao kiểm/sửa lại nhiều lần.
+    query(
+      `SELECT q.tem_id, q.loai, q.ly_do, q.checklist_list, q.da_xu_ly,
+              q.created_date AS tg, u.ho_ten AS nguoi
+       FROM qc_tra_ve q LEFT JOIN nguoi_dung u ON u.id = q.created_by
+       WHERE q.tem_id IN (
+         SELECT t.id FROM tem t JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+         JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id AND ls.trang_thai <> 'HUY'
+         JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
+         JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id AND dv.phan_in_id = $1)
+       ORDER BY q.created_date`.replace(/\s+/g, ' '),
+      [phanInId]
+    ),
   ]);
 
   // Gom link theo lệnh → feeds[]; gom tem theo lệnh.
@@ -891,9 +933,12 @@ async function tinhTrangGraph(phanInId) {
   giaoRec.rows.forEach((r) => { if (!giaoByTem.has(r.tem_id)) giaoByTem.set(r.tem_id, []); giaoByTem.get(r.tem_id).push(r); });
   const kcsByTem = new Map();
   kcsRec.rows.forEach((r) => { if (!kcsByTem.has(r.tem_id)) kcsByTem.set(r.tem_id, []); kcsByTem.get(r.tem_id).push(r); });
+  const traVeByTem = new Map();
+  traVeRec.rows.forEach((r) => { if (!traVeByTem.has(r.tem_id)) traVeByTem.set(r.tem_id, []); traVeByTem.get(r.tem_id).push(r); });
   tems.rows.forEach((t) => {
     t.giao_records = giaoByTem.get(t.tem_id) || [];
     t.kcs_records = kcsByTem.get(t.tem_id) || [];
+    t.tra_ve = traVeByTem.get(t.tem_id) || [];
     const g = lenhMap.get(t.lenh_san_xuat_id); if (g) g.tems.push(t);
   });
 
