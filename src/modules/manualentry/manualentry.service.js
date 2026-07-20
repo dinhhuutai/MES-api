@@ -38,4 +38,35 @@ async function createChain(payload, actorId) {
   return result;
 }
 
-module.exports = { searchKhach, searchDon, searchMaHang, searchPhanIn, listLoaiDotVai, createChain };
+// ─── Cập nhật SL nhận vải / SL release ───────────────────────────────────────
+const searchVaiVe = (q) => repo.searchVaiVe(q || '');
+
+const toInt = (v, label) => {
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < 0) {
+    throw new AppError(`${label} phải là số nguyên ≥ 0`, { status: 422, errorCode: 'VALIDATION_ERROR' });
+  }
+  return n;
+};
+
+async function updateVaiVe(id, soLuong, actorId) {
+  if (!id) throw new AppError('Thiếu đợt vải', { status: 422, errorCode: 'VALIDATION_ERROR' });
+  const val = toInt(soLuong, 'SL nhận vải');
+  await withTransaction((client) => repo.updateVaiVeTx(client, id, val, actorId));
+  sockets.emit('dashboard:refresh', {});
+  return { id, so_luong_vai_ve: val };
+}
+
+async function updateRelease(lenhId, dotId, soLuong, actorId) {
+  if (!lenhId || !dotId) throw new AppError('Thiếu lệnh hoặc đợt vải', { status: 422, errorCode: 'VALIDATION_ERROR' });
+  const val = toInt(soLuong, 'SL release');
+  await withTransaction((client) => repo.updateReleaseTx(client, lenhId, dotId, val, actorId));
+  sockets.emit('dashboard:refresh', {});
+  sockets.emit('production:updated', {});
+  return { lenh_san_xuat_id: lenhId, dot_vai_ve_id: dotId, so_luong: val };
+}
+
+module.exports = {
+  searchKhach, searchDon, searchMaHang, searchPhanIn, listLoaiDotVai, createChain,
+  searchVaiVe, updateVaiVe, updateRelease,
+};

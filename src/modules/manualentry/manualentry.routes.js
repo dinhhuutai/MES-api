@@ -16,4 +16,9 @@ router.get('/phan-in', rbac('ERP_SYNC'), c.phanIn);
 router.get('/loai-dot-vai', rbac('ERP_SYNC'), c.loaiDotVai);
 router.post('/', rbac('ERP_SYNC'), c.create);
 
+// Cập nhật SL nhận vải / SL release (sửa số liệu). ĐẶT TRƯỚC để không đụng '/'.
+router.get('/vai-ve', rbac('ERP_SYNC'), c.vaiVe);
+router.patch('/vai-ve/:id', rbac('ERP_SYNC'), c.updateVaiVe);
+router.patch('/release', rbac('ERP_SYNC'), c.updateRelease);
+
 module.exports = router;

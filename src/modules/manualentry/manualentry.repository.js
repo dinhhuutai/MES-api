@@ -131,4 +131,95 @@ async function createChainTx(client, p, actorId) {
   return { phan_in_id: phanInId, ma_phan: maPhan, dot_vai: dots };
 }
 
-module.exports = { searchKhach, searchDon, searchMaHang, searchPhanIn, listLoaiDotVai, createChainTx };
+// ─── Cập nhật SL nhận vải / SL release (sửa số liệu) ─────────────────────────
+// Tìm đợt vải để cập nhật SL — kèm SL đã release + danh sách lệnh release (nếu có).
+async function searchVaiVe(q, limit = 40) {
+  const lim = Math.max(1, Math.min(Number(limit) || 40, 100));
+  const { rows } = await query(
+    `SELECT dv.id, dv.ma_dot_vai, dv.so_luong_vai_ve, dv.ngay_vai_ve, dv.han_giao_hang, dv.trang_thai,
+            pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim,
+            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
+            COALESCE((SELECT SUM(COALESCE(lsd.so_luong,0)) FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id
+               WHERE lsd.dot_vai_ve_id=dv.id AND ls.trang_thai<>'HUY'),0)::int AS da_release
+     FROM dot_vai_ve dv
+     JOIN phan_in pin ON pin.id = dv.phan_in_id AND pin.dang_hoat_dong
+     JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+     JOIN don_hang dh ON dh.id = mh.don_hang_id
+     JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+     WHERE dv.trang_thai NOT IN ('DA_GOP','DA_HUY')
+       AND ($1='' OR pin.ma_phan ILIKE '%'||$1||'%' OR dv.ma_dot_vai ILIKE '%'||$1||'%' OR mh.ma_hang ILIKE '%'||$1||'%'
+            OR dh.ma_don_hang ILIKE '%'||$1||'%' OR COALESCE(pin.mau_vai,'') ILIKE '%'||$1||'%')
+     ORDER BY dv.created_date DESC LIMIT ${lim}`.replace(/\s+/g, ' '),
+    [q || '']
+  );
+  if (!rows.length) return [];
+  const ids = rows.map((r) => r.id);
+  const { rows: rels } = await query(
+    `SELECT lsd.dot_vai_ve_id, ls.id AS lenh_san_xuat_id, ls.ma_lenh_san_xuat, ls.trang_thai,
+            lsd.so_luong, ls.so_luong_release
+     FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
+     WHERE lsd.dot_vai_ve_id = ANY($1::uuid[]) AND ls.trang_thai <> 'HUY'
+     ORDER BY ls.created_date`.replace(/\s+/g, ' '),
+    [ids]
+  );
+  const byDot = {};
+  rels.forEach((r) => { (byDot[r.dot_vai_ve_id] = byDot[r.dot_vai_ve_id] || []).push(r); });
+  return rows.map((r) => ({
+    ...r,
+    con_release: Math.max(0, (r.so_luong_vai_ve || 0) - r.da_release),
+    releases: byDot[r.id] || [],
+  }));
+}
+
+async function auditLog(client, tenBang, id, hanhDong, cu, moi, actorId) {
+  await client.query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_cu, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ($1,$2,$3,$4::jsonb,$5::jsonb,$6,CURRENT_TIMESTAMP,$6)`,
+    [tenBang, String(id), hanhDong, JSON.stringify(cu), JSON.stringify(moi), actorId]
+  );
+}
+
+// Cập nhật SL nhận vải của 1 đợt vải.
+async function updateVaiVeTx(client, id, val, actorId) {
+  const cur = (await client.query(
+    "SELECT so_luong_vai_ve FROM dot_vai_ve WHERE id=$1 AND trang_thai NOT IN ('DA_GOP','DA_HUY')", [id]
+  )).rows[0];
+  if (!cur) throw new AppError('Đợt vải không tồn tại hoặc đã hủy/gộp', { status: 404, errorCode: 'NOT_FOUND' });
+  await client.query('UPDATE dot_vai_ve SET so_luong_vai_ve=$1, updated_date=now(), updated_by=$2 WHERE id=$3', [val, actorId, id]);
+  await auditLog(client, 'dot_vai_ve', id, 'UPDATE_SL_VAI_VE',
+    { so_luong_vai_ve: cur.so_luong_vai_ve }, { so_luong_vai_ve: val }, actorId);
+}
+
+// Cập nhật SL release của 1 (lệnh, đợt vải): sửa lenh_sx_dot_vai.so_luong + tính lại lenh_san_xuat.so_luong_release=Σ.
+async function updateReleaseTx(client, lenhId, dotId, val, actorId) {
+  const link = (await client.query(
+    `SELECT lsd.so_luong, ls.trang_thai, ls.so_luong_release, ls.ma_lenh_san_xuat
+     FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id
+     WHERE lsd.lenh_san_xuat_id=$1 AND lsd.dot_vai_ve_id=$2`.replace(/\s+/g, ' '), [lenhId, dotId]
+  )).rows[0];
+  if (!link) throw new AppError('Không tìm thấy lệnh release của đợt vải này', { status: 404, errorCode: 'NOT_FOUND' });
+  if (link.trang_thai === 'HUY') throw new AppError('Lệnh đã hủy', { status: 409, errorCode: 'WRONG_STAGE' });
+  const printed = (await client.query(
+    "SELECT COALESCE(SUM(t.so_luong),0)::int AS v FROM phieu_san_xuat ps JOIN tem t ON t.phieu_san_xuat_id=ps.id WHERE ps.lenh_san_xuat_id=$1 AND t.trang_thai<>'HUY'",
+    [lenhId]
+  )).rows[0].v;
+  const others = (await client.query(
+    'SELECT COALESCE(SUM(so_luong),0)::int AS v FROM lenh_sx_dot_vai WHERE lenh_san_xuat_id=$1 AND dot_vai_ve_id<>$2', [lenhId, dotId]
+  )).rows[0].v;
+  const newRelease = others + val;
+  if (newRelease < printed) {
+    throw new AppError(`SL release mới (${newRelease}) nhỏ hơn SL đã in (${printed}) của lệnh ${link.ma_lenh_san_xuat} — không cho giảm dưới mức đã in`,
+      { status: 409, errorCode: 'BELOW_PRINTED' });
+  }
+  await client.query('UPDATE lenh_sx_dot_vai SET so_luong=$1, updated_date=now(), updated_by=$2 WHERE lenh_san_xuat_id=$3 AND dot_vai_ve_id=$4',
+    [val, actorId, lenhId, dotId]);
+  await client.query('UPDATE lenh_san_xuat SET so_luong_release=$1, updated_date=now(), updated_by=$2 WHERE id=$3', [newRelease, actorId, lenhId]);
+  await auditLog(client, 'lenh_san_xuat', lenhId, 'UPDATE_SL_RELEASE',
+    { so_luong_release: link.so_luong_release, dot_vai_ve_id: dotId, lsd_so_luong: link.so_luong },
+    { so_luong_release: newRelease, dot_vai_ve_id: dotId, lsd_so_luong: val }, actorId);
+}
+
+module.exports = {
+  searchKhach, searchDon, searchMaHang, searchPhanIn, listLoaiDotVai, createChainTx,
+  searchVaiVe, updateVaiVeTx, updateReleaseTx,
+};
