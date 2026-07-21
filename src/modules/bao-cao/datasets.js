@@ -303,30 +303,62 @@ const COT_HOAN_THANH = [
   { key: 'kich_phim', ten: 'Kích film', kieu: 'text' },
 ];
 
+// 1 phần in = 1 dòng cho MỖI checkpoint (DISTINCT ON phần in + trạm, lấy lượt hoàn thành muộn nhất trong
+// khoảng ngày đã lọc) ⇒ độ dài danh sách KHỚP số đếm distinct của metric CP_*_ROI_HOM_NAY (trước đây đếm
+// theo LƯỢT nên phình: 1 phần in rời/mở-lại nhiều lần = nhiều dòng).
+// READY: nguồn = QC xác nhận (ket_qua_checkpoint QC_XAC_NHAN=DAT) — mốc READY hoàn tất THẬT, tin cậy.
+// Các trạm khác: nguồn = lich_su_luan_chuyen.tg_kt (best-effort, nhưng deduped theo phần in).
+const READY_TS = 'COALESCE(kq.tg_xac_nhan, kq.created_date)';
 async function runHoanThanhTram({ loc = {}, gioi_han }) {
+  const tram = clean(loc.tram);
   const params = [];
-  const conds = ['l.tg_kt IS NOT NULL', 'pin.dang_hoat_dong'];
-  const nc = ngayCond('l.tg_kt', loc.ngay, true);
-  if (nc) conds.push(nc);
-  if (clean(loc.tram)) { params.push(clean(loc.tram)); conds.push(`tr.ma_tram = $${params.length}`); }
+  let includeReady = true;
+  let includeOther = true;
+  if (tram === 'READY') includeOther = false;
+  else if (tram) includeReady = false;
+
+  const branches = [];
+  if (includeReady) {
+    const rConds = ["cp.ma_checkpoint = 'QC_XAC_NHAN'", "kq.trang_thai = 'DAT'", 'pin.dang_hoat_dong'];
+    const rnc = ngayCond(READY_TS, loc.ngay, true);
+    if (rnc) rConds.push(rnc);
+    branches.push(`SELECT pin.id AS phan_in_id, 'READY'::text AS ma_tram, 'READY (chuẩn bị KT)'::text AS ten_tram, ${READY_TS} AS tg_done
+      FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id JOIN phan_in pin ON pin.id = kq.phan_in_id
+      WHERE ${rConds.join(' AND ')}`);
+  }
+  if (includeOther) {
+    const oConds = ["tr.ma_tram <> 'READY'", 'l.tg_kt IS NOT NULL', 'pin.dang_hoat_dong'];
+    const onc = ngayCond('l.tg_kt', loc.ngay, true);
+    if (onc) oConds.push(onc);
+    if (tram) { params.push(tram); oConds.push(`tr.ma_tram = $${params.length}`); }
+    branches.push(`SELECT l.phan_in_id, tr.ma_tram, tr.ten_tram, l.tg_kt AS tg_done
+      FROM lich_su_luan_chuyen l JOIN tram tr ON tr.id = l.den_tram_id JOIN phan_in pin ON pin.id = l.phan_in_id
+      WHERE ${oConds.join(' AND ')}`);
+  }
+
+  const outer = [];
   if (clean(loc.tim)) {
     params.push(clean(loc.tim));
     const i = params.length;
-    conds.push(`(pin.ma_phan ILIKE '%'||$${i}||'%' OR mh.ma_hang ILIKE '%'||$${i}||'%' OR dh.ma_don_hang ILIKE '%'||$${i}||'%' OR pin.mau_vai ILIKE '%'||$${i}||'%')`);
+    outer.push(`(pin.ma_phan ILIKE '%'||$${i}||'%' OR mh.ma_hang ILIKE '%'||$${i}||'%' OR dh.ma_don_hang ILIKE '%'||$${i}||'%' OR pin.mau_vai ILIKE '%'||$${i}||'%')`);
   }
   const sql = `
-    SELECT to_char(l.tg_kt AT TIME ZONE 'Asia/Ho_Chi_Minh', 'DD/MM/YYYY') AS ngay_hoan_thanh,
-           to_char(l.tg_kt AT TIME ZONE 'Asia/Ho_Chi_Minh', 'HH24:MI') AS gio_hoan_thanh,
-           tr.ten_tram, kh.ten_khach_hang, dh.ma_don_hang,
+    WITH done AS (${branches.join(' UNION ALL ')}),
+    dedup AS (
+      SELECT DISTINCT ON (phan_in_id, ma_tram) phan_in_id, ma_tram, ten_tram, tg_done
+      FROM done ORDER BY phan_in_id, ma_tram, tg_done DESC
+    )
+    SELECT to_char(d.tg_done AT TIME ZONE 'Asia/Ho_Chi_Minh', 'DD/MM/YYYY') AS ngay_hoan_thanh,
+           to_char(d.tg_done AT TIME ZONE 'Asia/Ho_Chi_Minh', 'HH24:MI') AS gio_hoan_thanh,
+           d.ten_tram, kh.ten_khach_hang, dh.ma_don_hang,
            pin.ma_phan, mh.ma_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim
-    FROM lich_su_luan_chuyen l
-    JOIN tram tr ON tr.id = l.den_tram_id
-    JOIN phan_in pin ON pin.id = l.phan_in_id
+    FROM dedup d
+    JOIN phan_in pin ON pin.id = d.phan_in_id
     JOIN ma_hang mh ON mh.id = pin.ma_hang_id
     JOIN don_hang dh ON dh.id = mh.don_hang_id
     JOIN khach_hang kh ON kh.id = dh.khach_hang_id
-    WHERE ${conds.join(' AND ')}
-    ORDER BY l.tg_kt DESC
+    ${outer.length ? 'WHERE ' + outer.join(' AND ') : ''}
+    ORDER BY d.tg_done DESC
     LIMIT ${limitOf(gioi_han)}`;
   const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), params);
   return rows.map((r, i) => ({ ...r, stt: i + 1 }));
@@ -355,6 +387,14 @@ async function runTongHopTram({ loc = {} }) {
            count(DISTINCT l.phan_in_id) FILTER (WHERE l.tg_kt IS NOT NULL AND (l.tg_kt AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = ${VN_TODAY})::int AS roi
     FROM lich_su_luan_chuyen l JOIN tram tr ON tr.id = l.den_tram_id GROUP BY tr.ma_tram`.replace(/\s+/g, ' ').trim());
   const llcBy = Object.fromEntries(llc.map((r) => [r.ma_tram, r]));
+
+  // READY "rời/hoàn thành hôm nay" = QC xác nhận (tin cậy), KHÔNG dùng lich_su_luan_chuyen (over-count).
+  const { rows: qcRoi } = await query(`SELECT count(DISTINCT kq.phan_in_id)::int AS roi
+    FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id JOIN phan_in pin ON pin.id = kq.phan_in_id
+    WHERE cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT' AND pin.dang_hoat_dong
+      AND (COALESCE(kq.tg_xac_nhan, kq.created_date) AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = ${VN_TODAY}`.replace(/\s+/g, ' ').trim());
+  const readyRoi = qcRoi[0] ? qcRoi[0].roi : 0;
+  if (llcBy.READY) llcBy.READY.roi = readyRoi; else llcBy.READY = { vao: 0, roi: readyRoi };
 
   const flow = await flowRowsCached();
   const agg = {};

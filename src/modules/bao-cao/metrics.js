@@ -394,9 +394,23 @@ const vaoTramHomNay = (maTram, lv = 'phan') =>
    JOIN tram tr ON tr.id = l.den_tram_id ${lv === 'phan' ? '' : FLOW_JOIN}
    WHERE tr.ma_tram = '${maTram}' AND ${TODAY_TS('l.tg_bd')}`;
 
+// READY: "hoàn thành & qua trạm khác" = phần in được QC XÁC NHẬN READY (QC_XAC_NHAN=DAT) hôm nay.
+// ⚠ KHÔNG dùng `lich_su_luan_chuyen` cho READY: bảng đó ghi best-effort, khai khống lượt "rời READY"
+// (đợt vải mới về / mở lại READY đóng lượt cũ) ⇒ over-count. QC là mốc READY hoàn tất THẬT, tin cậy,
+// khớp cờ `qc_done` của màn READY & dataset DS_HOAN_THANH_TRAM (lọc READY).
+const QC_LV = { phan: 'pin.id', ma: 'mh.id', don: 'dh.id' };
+const roiReadyHomNay = (lv = 'phan') =>
+  `SELECT count(DISTINCT ${QC_LV[lv]})::numeric AS v
+   FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
+   JOIN phan_in pin ON pin.id = kq.phan_in_id
+   ${lv === 'phan' ? '' : 'JOIN ma_hang mh ON mh.id = pin.ma_hang_id JOIN don_hang dh ON dh.id = mh.don_hang_id'}
+   WHERE cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT' AND pin.dang_hoat_dong
+     AND ${TODAY_TS('COALESCE(kq.tg_xac_nhan, kq.created_date)')}`;
+
 // Số PHẦN/MÃ/ĐƠN rời trạm trong hôm nay (hoàn tất trạm đó & đi tiếp — mốc `tg_kt` của lượt Ở trạm này).
 const roiTramHomNay = (maTram, lv = 'phan') =>
-  `SELECT count(DISTINCT ${FLOW_LV[lv]})::numeric AS v FROM lich_su_luan_chuyen l
+  maTram === 'READY' ? roiReadyHomNay(lv)
+    : `SELECT count(DISTINCT ${FLOW_LV[lv]})::numeric AS v FROM lich_su_luan_chuyen l
    JOIN tram tr ON tr.id = l.den_tram_id ${lv === 'phan' ? '' : FLOW_JOIN}
    WHERE tr.ma_tram = '${maTram}' AND l.tg_kt IS NOT NULL AND ${TODAY_TS('l.tg_kt')}`;
 
