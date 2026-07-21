@@ -364,6 +364,111 @@ async function runHoanThanhTram({ loc = {}, gioi_han }) {
   return rows.map((r, i) => ({ ...r, stt: i + 1 }));
 }
 
+// ============================== 3c) ĐANG Ở READY / HOÀN THÀNH READY (khớp màn Chuẩn bị KT / QC) ==============================
+// 2 danh sách này CỐ Ý dùng ĐÚNG nguồn của màn "Chuẩn bị kỹ thuật" & "QC READY" để số liệu KHỚP MÀN
+// (không lệch như DS_PHAN_IN — cái đó đếm ĐỢT VẢI ở flowRows). Đơn vị = PHẦN IN (1 dòng = 1 phần in).
+
+// Điều kiện "phần in đang ở READY" — trích y hệt technical.listCandidates: còn đợt vải CHƯA release
+// (đã chuyển READY) HOẶC chưa có đợt vải nào, và phần in đang hoạt động.
+const READY_MEMBER = `(EXISTS (SELECT 1 FROM dot_vai_ve dvu WHERE dvu.phan_in_id = pin.id AND dvu.trang_thai <> 'DA_GOP' AND dvu.tg_chuyen_ready IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsu JOIN lenh_san_xuat lu ON lu.id = lsu.lenh_san_xuat_id WHERE lsu.dot_vai_ve_id = dvu.id AND lu.trang_thai <> 'HUY'))
+    OR NOT EXISTS (SELECT 1 FROM dot_vai_ve dvz WHERE dvz.phan_in_id = pin.id AND dvz.trang_thai <> 'DA_GOP'))`;
+const QC_DONE_EXISTS = `EXISTS (SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint cp ON cp.id = k.checkpoint_id
+    WHERE k.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND k.trang_thai = 'DAT')`;
+const readyMark = (maCp) => `(CASE WHEN EXISTS (SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint cp ON cp.id = k.checkpoint_id
+    WHERE k.phan_in_id = pin.id AND cp.ma_checkpoint = '${maCp}' AND k.trang_thai = 'DAT') THEN 'Đã' ELSE '' END)`;
+
+const COT_READY_DANG_O = [
+  { key: 'stt', ten: 'STT', kieu: 'so' },
+  { key: 'ma_phan', ten: 'Code phần', kieu: 'text' },
+  { key: 'ma_hang', ten: 'Mã hàng', kieu: 'text' },
+  { key: 'ten_khach_hang', ten: 'Khách hàng', kieu: 'text' },
+  { key: 'ma_don_hang', ten: 'PO', kieu: 'text' },
+  { key: 'mau_vai', ten: 'Màu vải', kieu: 'text' },
+  { key: 'kich_vai', ten: 'Kích vải', kieu: 'text' },
+  { key: 'kich_phim', ten: 'Kích film', kieu: 'text' },
+  { key: 'tinh_chat_in', ten: 'TC IN', kieu: 'text' },
+  { key: 'so_luong_don_hang', ten: 'SLĐH', kieu: 'so' },
+  { key: 'han_giao_hang', ten: 'Hạn giao', kieu: 'ngay' },
+  { key: 'ready_khuon', ten: 'Khuôn', kieu: 'text' },
+  { key: 'ready_film', ten: 'Film', kieu: 'text' },
+  { key: 'ready_muc', ten: 'Mực', kieu: 'text' },
+  { key: 'so_muc_kt', ten: 'Mục KT xong', kieu: 'text' },
+  { key: 'qc_ready', ten: 'QC READY', kieu: 'text' },
+];
+
+async function runReadyDangO({ loc = {}, gioi_han }) {
+  const params = [];
+  const conds = ['pin.dang_hoat_dong', READY_MEMBER, `NOT ${QC_DONE_EXISTS}`];
+  if (clean(loc.khach)) { params.push(clean(loc.khach)); conds.push(`kh.ten_khach_hang ILIKE '%'||$${params.length}||'%'`); }
+  if (clean(loc.tim)) {
+    params.push(clean(loc.tim));
+    const i = params.length;
+    conds.push(`(pin.ma_phan ILIKE '%'||$${i}||'%' OR mh.ma_hang ILIKE '%'||$${i}||'%' OR dh.ma_don_hang ILIKE '%'||$${i}||'%' OR pin.mau_vai ILIKE '%'||$${i}||'%')`);
+  }
+  const sql = `
+    SELECT pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in, pin.so_luong_don_hang,
+           mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
+           to_char((SELECT min(dv4.han_giao_hang) FROM dot_vai_ve dv4 WHERE dv4.phan_in_id = pin.id AND dv4.trang_thai NOT IN ('DA_GOP','DA_HUY')), 'DD/MM/YYYY') AS han_giao_hang,
+           ${readyMark('KHUON')} AS ready_khuon, ${readyMark('FILM')} AS ready_film, ${readyMark('MUC')} AS ready_muc,
+           ((SELECT count(*) FROM ket_qua_checkpoint k JOIN checkpoint cp ON cp.id = k.checkpoint_id
+              WHERE k.phan_in_id = pin.id AND cp.ma_checkpoint IN ('KHUON','FILM','MUC') AND k.trang_thai = 'DAT')::text || '/3') AS so_muc_kt,
+           '' AS qc_ready
+    FROM phan_in pin
+    JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+    JOIN don_hang dh ON dh.id = mh.don_hang_id
+    JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+    WHERE ${conds.join(' AND ')}
+    ORDER BY kh.ten_khach_hang, dh.ma_don_hang, pin.ma_phan
+    LIMIT ${limitOf(gioi_han)}`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), params);
+  return rows.map((r, i) => ({ ...r, stt: i + 1 }));
+}
+
+const COT_READY_HOAN_THANH = [
+  { key: 'stt', ten: 'STT', kieu: 'so' },
+  { key: 'ngay_hoan_thanh', ten: 'Ngày hoàn thành', kieu: 'ngay' },
+  { key: 'gio_hoan_thanh', ten: 'Giờ hoàn thành', kieu: 'text' },
+  { key: 'nguoi_xac_nhan', ten: 'Người xác nhận (QC)', kieu: 'text' },
+  { key: 'ma_phan', ten: 'Code phần', kieu: 'text' },
+  { key: 'ma_hang', ten: 'Mã hàng', kieu: 'text' },
+  { key: 'ten_khach_hang', ten: 'Khách hàng', kieu: 'text' },
+  { key: 'ma_don_hang', ten: 'PO', kieu: 'text' },
+  { key: 'mau_vai', ten: 'Màu vải', kieu: 'text' },
+  { key: 'kich_vai', ten: 'Kích vải', kieu: 'text' },
+  { key: 'kich_phim', ten: 'Kích film', kieu: 'text' },
+];
+
+// Danh sách phần in đã hoàn thành READY (QC xác nhận) — khớp sidebar "Đã hoàn thành" (scope QC) màn QC READY.
+async function runReadyHoanThanh({ loc = {}, gioi_han }) {
+  const params = [];
+  const conds = ["cp.ma_checkpoint = 'QC_XAC_NHAN'", "kq.trang_thai = 'DAT'", 'pin.dang_hoat_dong'];
+  const nc = ngayCond(READY_TS, loc.ngay, true);
+  if (nc) conds.push(nc);
+  if (clean(loc.tim)) {
+    params.push(clean(loc.tim));
+    const i = params.length;
+    conds.push(`(pin.ma_phan ILIKE '%'||$${i}||'%' OR mh.ma_hang ILIKE '%'||$${i}||'%' OR dh.ma_don_hang ILIKE '%'||$${i}||'%' OR pin.mau_vai ILIKE '%'||$${i}||'%')`);
+  }
+  const sql = `
+    SELECT to_char(${READY_TS} AT TIME ZONE 'Asia/Ho_Chi_Minh', 'DD/MM/YYYY') AS ngay_hoan_thanh,
+           to_char(${READY_TS} AT TIME ZONE 'Asia/Ho_Chi_Minh', 'HH24:MI') AS gio_hoan_thanh,
+           nx.ho_ten AS nguoi_xac_nhan,
+           pin.ma_phan, mh.ma_hang, kh.ten_khach_hang, dh.ma_don_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim
+    FROM ket_qua_checkpoint kq
+    JOIN checkpoint cp ON cp.id = kq.checkpoint_id
+    JOIN phan_in pin ON pin.id = kq.phan_in_id
+    JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+    JOIN don_hang dh ON dh.id = mh.don_hang_id
+    JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+    LEFT JOIN nguoi_dung nx ON nx.id = kq.nguoi_xac_nhan_id
+    WHERE ${conds.join(' AND ')}
+    ORDER BY ${READY_TS} DESC
+    LIMIT ${limitOf(gioi_han)}`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), params);
+  return rows.map((r, i) => ({ ...r, stt: i + 1 }));
+}
+
 // ============================== 4) TỔNG HỢP THEO TRẠM ==============================
 // 1 dòng = 1 checkpoint → sheet "KẾT QUẢ PHA MÀU - CHỤP KHUÔN - FILM - CNSP".
 const COT_TRAM = [
@@ -470,6 +575,14 @@ const DEFS = [
       + '⇒ "danh sách READY đã hoàn thành hôm nay". (Nguồn lịch sử luân chuyển — best-effort.) '
       + 'Xem "đang ở READY hiện tại" ở nguồn "Phần in / đợt vải" với bộ lọc Trạm = READY.',
     loc: locList(['ngay', 'tram', 'tim']), cot: COT_HOAN_THANH, run: runHoanThanhTram },
+  { ma: 'DS_READY_DANG_O', ten: 'Đang ở READY hiện tại (khớp màn Chuẩn bị KT / QC)', don_vi_dong: 'phần in',
+    mo_ta: '1 dòng = 1 PHẦN IN đang ở READY hiện tại (chưa QC xác nhận, còn đợt vải chưa release). '
+      + 'Dùng ĐÚNG nguồn của màn "Chuẩn bị kỹ thuật" / "QC READY" ⇒ số liệu KHỚP MÀN (đơn vị phần in, không phải đợt vải).',
+    loc: locList(['khach', 'tim']), cot: COT_READY_DANG_O, run: runReadyDangO },
+  { ma: 'DS_READY_HOAN_THANH', ten: 'Phần in đã hoàn thành READY (QC xác nhận, theo ngày)', don_vi_dong: 'phần in',
+    mo_ta: '1 dòng = 1 PHẦN IN được QC xác nhận READY. Lọc ngày = Hôm nay ⇒ khớp sidebar "Đã hoàn thành" của màn QC READY '
+      + '(kèm người xác nhận + giờ).',
+    loc: locList(['ngay', 'tim']), cot: COT_READY_HOAN_THANH, run: runReadyHoanThanh },
   { ma: 'DS_TONG_HOP_TRAM', ten: 'Tổng hợp theo trạm (checkpoint)', don_vi_dong: 'trạm',
     mo_ta: '1 dòng = 1 checkpoint: vào/rời hôm nay, đang ở, đúng hạn, sắp nghẽn, nghẽn, điểm nghẽn. '
       + 'Dựng bảng kiểu "Kết quả pha màu - chụp khuôn - film - CNSP".',
