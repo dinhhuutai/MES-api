@@ -14,15 +14,11 @@ const INPUT_CPS = ['KHUON', 'FILM', 'MUC']; // 3 mục kỹ thuật, xác nhận
 const OPTION_CPS = ['KHUON', 'FILM', 'MUC']; // cần chọn option khi xác nhận
 const QC_CP = 'QC_XAC_NHAN';
 const TECH_TOTAL = INPUT_CPS.length; // số mục kỹ thuật cần đủ để hoàn tất READY
-// Ràng buộc thứ tự xác nhận: mục KEY chỉ được xác nhận khi mục phụ thuộc (VALUE) đã DAT.
-// Hiện tại: KHUON yêu cầu FILM đã xác nhận (chưa xác nhận Film thì không xác nhận Khuôn).
-const CP_REQUIRES = { KHUON: 'FILM' };
+// ĐÃ BỎ ràng buộc thứ tự "Khuôn mới cần Film trước" (theo yêu cầu: READY không còn chọn giá trị mới/cũ/gia công,
+// chỉ cần XÁC NHẬN là xong). Giữ CP_REQUIRES rỗng để mọi nhánh phụ thuộc thành no-op — không cần sửa call-site.
+const CP_REQUIRES = {};
 const depKey = (ma) => `${(CP_REQUIRES[ma] || '').toLowerCase()}_done`;
-// Riêng KHUON: chỉ cần Film khi chọn "Khuôn MỚI" (value chứa "mới"). Chọn "Khuôn cũ"/"Gia công" → KHÔNG cần Film.
-const needsFilmForKhuon = (value) => (value || '')
-  .normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/đ/g, 'd').toLowerCase().includes('moi');
-// Có phải áp ràng buộc phụ thuộc cho mục `ma` với giá trị `value` không?
-const depApplies = (ma, value) => (ma === 'KHUON' ? needsFilmForKhuon(value) : true);
+const depApplies = () => false; // không còn ràng buộc phụ thuộc nào
 // Option mặc định (dùng khi cấu hình checkpoint chưa khai báo trong DB).
 const DEFAULT_OPTIONS = {};
 
@@ -165,9 +161,7 @@ async function confirmItem(phanInId, ma, value, actorId) {
   if (!INPUT_CPS.includes(ma)) {
     throw new AppError('Mục kỹ thuật không hợp lệ', { status: 400, errorCode: 'INVALID_ITEM' });
   }
-  if (OPTION_CPS.includes(ma) && (value === undefined || value === null || value === '')) {
-    throw new AppError('Vui lòng chọn giá trị trước khi xác nhận', { status: 422, errorCode: 'VALUE_REQUIRED' });
-  }
+  // Giá trị (mới/cũ/gia công) KHÔNG còn bắt buộc — chỉ cần xác nhận là xong.
   const { tram, byMa } = await loadConfig();
   const cp = byMa[ma];
   if (!cp) throw new AppError(`Checkpoint ${ma} không còn hiệu lực`, { status: 404, errorCode: 'NO_CHECKPOINT' });
@@ -189,7 +183,7 @@ async function confirmItem(phanInId, ma, value, actorId) {
       phanInId,
       checkpointId: cp.id,
       trangThai: 'DAT',
-      giaTriText: OPTION_CPS.includes(ma) ? value : null,
+      giaTriText: OPTION_CPS.includes(ma) ? (value ?? null) : null,
       nguoiXacNhanId: actorId,
       tgXacNhan: new Date(),
       actorId,
@@ -222,12 +216,8 @@ async function confirmItemsBatch(phanInId, items, actorId) {
     const ma = String(it.ma || '').toUpperCase();
     if (!INPUT_CPS.includes(ma) || !byMa[ma]) continue;
     if (results.find((r) => r.ma_checkpoint === ma)?.trang_thai === 'DAT') continue;
-    if (OPTION_CPS.includes(ma)) {
-      if (it.value === undefined || it.value === null || it.value === '') {
-        throw new AppError(`Vui lòng chọn giá trị cho ${byMa[ma].ten_checkpoint}`, { status: 422, errorCode: 'VALUE_REQUIRED' });
-      }
-    }
-    todo.push({ ma, value: OPTION_CPS.includes(ma) ? it.value : null });
+    // Giá trị không bắt buộc — lưu nếu có gửi, không thì null.
+    todo.push({ ma, value: OPTION_CPS.includes(ma) ? (it.value ?? null) : null });
   }
   if (todo.length === 0) throw new AppError('Không có mục nào đủ điều kiện xác nhận', { status: 422, errorCode: 'NOTHING' });
   // Ràng buộc phụ thuộc: mục phụ thuộc phải đã DAT HOẶC được xác nhận cùng lô này (vd Khuôn cần Film).
@@ -264,9 +254,7 @@ async function confirmItemBulk(phanInIds, ma, value, actorId) {
     throw new AppError('Chưa chọn phần in nào', { status: 400, errorCode: 'EMPTY' });
   }
   if (!INPUT_CPS.includes(ma)) throw new AppError('Mục kỹ thuật không hợp lệ', { status: 400, errorCode: 'INVALID_ITEM' });
-  if (OPTION_CPS.includes(ma) && (value === undefined || value === null || value === '')) {
-    throw new AppError('Vui lòng chọn giá trị', { status: 422, errorCode: 'VALUE_REQUIRED' });
-  }
+  // Giá trị không còn bắt buộc — chỉ cần xác nhận.
   const { byMa } = await loadConfig();
   const cp = byMa[ma];
   if (!cp) throw new AppError(`Checkpoint ${ma} không còn hiệu lực`, { status: 404, errorCode: 'NO_CHECKPOINT' });
@@ -286,7 +274,7 @@ async function confirmItemBulk(phanInIds, ma, value, actorId) {
     for (const id of eligible) {
       const kqId = await repo.upsertResult(client, {
         phanInId: id, checkpointId: cp.id, trangThai: 'DAT',
-        giaTriText: OPTION_CPS.includes(ma) ? value : null,
+        giaTriText: OPTION_CPS.includes(ma) ? (value ?? null) : null,
         nguoiXacNhanId: actorId, tgXacNhan: new Date(), actorId,
       });
       await repo.insertStatusLog(client, {
@@ -377,6 +365,28 @@ async function cancelItem(phanInId, ma, actorId) {
   return getDetail(phanInId);
 }
 
+// Bỏ tích 1 mục kỹ thuật (KHUON/FILM/MUC) NGAY TRONG luồng Quét/tích — cho phép người có quyền tech
+// tự sửa khi tích LỘN phần in (khác `cancelItem` cần quyền READY_CANCEL). Chỉ mục kỹ thuật, chưa QC, chưa release.
+async function uncheckItem(phanInId, ma, actorId) {
+  if (!INPUT_CPS.includes(ma)) throw new AppError('Mục kỹ thuật không hợp lệ', { status: 400, errorCode: 'INVALID_ITEM' });
+  const { tram, byMa } = await loadConfig();
+  const cp = byMa[ma];
+  if (!cp) throw new AppError(`Checkpoint ${ma} không còn hiệu lực`, { status: 404, errorCode: 'NO_CHECKPOINT' });
+  if (await repo.isPhanInReleased(phanInId)) {
+    throw new AppError('Phần in đã release — không thể bỏ tích', { status: 409, errorCode: 'ALREADY_RELEASED' });
+  }
+  const results = await repo.getResults(tram.id, phanInId);
+  const state = buildState(results);
+  if (state.qc_done) throw new AppError('Đã QC xác nhận — không thể bỏ tích', { status: 409, errorCode: 'LOCKED' });
+  const cur = results.find((r) => r.ma_checkpoint === ma);
+  if (cur?.trang_thai !== 'DAT') throw new AppError('Mục này chưa được xác nhận', { status: 409, errorCode: 'NOT_CONFIRMED' });
+  await withTransaction(async (client) => { await repo.cancelResult(client, phanInId, cp.id, actorId); });
+  await repo.logCancel(phanInId, [ma], actorId);
+  sockets.emit('ready:confirmed', { phanInId, huy: [ma] });
+  sockets.emit('dashboard:refresh', {});
+  return { phan_in_id: phanInId, ma };
+}
+
 // Lịch sử xác nhận READY đang hiệu lực (cho trang "Lịch sử trạng thái" — Hệ thống). Kèm nhãn mục.
 async function confirmHistory(date, search) {
   const LABEL = { KHUON: 'Khuôn', FILM: 'Film', MUC: 'Mực', HSKT: 'HSKT', QC_XAC_NHAN: 'QC xác nhận' };
@@ -427,6 +437,6 @@ async function reopenReady(phanInId, actorId) {
 
 module.exports = {
   getConfig, listCandidates, itemCounts, getDetail, confirmItem, confirmItemsBatch, confirmItemBulk,
-  confirmQC, confirmQcBatch, cancelItem, history, done, confirmHistory, returnToTech,
+  confirmQC, confirmQcBatch, cancelItem, uncheckItem, history, done, confirmHistory, returnToTech,
   reopenCandidates, reopenReady,
 };

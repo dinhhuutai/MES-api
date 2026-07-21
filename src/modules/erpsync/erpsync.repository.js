@@ -109,9 +109,36 @@ async function upsertMaHang(client, { donHangId, maHang, tenMaHang }) {
   return rows[0].id;
 }
 
-// `tinhChatIn` = ERP `Tinhchatin`. COALESCE khi update: ERP không gửi (null) thì GIỮ giá trị cũ,
-// tránh re-sync bằng payload cũ (chưa có trường này) xóa mất tính chất in đã lưu.
-async function upsertPhanIn(client, { maHangId, maPhan, mauVai, kichVai, kichPhim, soLuongDonHang, tinhChatIn }) {
+// Kiểm tra cột barcode (mig 055) có tồn tại chưa — cache 1 lần. KHÔNG dùng try/catch trong transaction
+// vì 1 statement lỗi làm ABORT cả transaction (Postgres) → fallback trong cùng client sẽ hỏng theo.
+let _hasBarcodeCol = null;
+async function hasBarcodeCol(client) {
+  if (_hasBarcodeCol != null) return _hasBarcodeCol;
+  const { rows } = await client.query(
+    `SELECT 1 FROM information_schema.columns WHERE table_name='phan_in' AND column_name='barcode' LIMIT 1`);
+  _hasBarcodeCol = rows.length > 0;
+  return _hasBarcodeCol;
+}
+
+// `tinhChatIn` = ERP `Tinhchatin`, `barcode` = ERP `barCode`. COALESCE khi update: ERP không gửi (null)
+// thì GIỮ giá trị cũ, tránh re-sync bằng payload cũ (chưa có trường này) xóa mất giá trị đã lưu.
+async function upsertPhanIn(client, { maHangId, maPhan, mauVai, kichVai, kichPhim, soLuongDonHang, tinhChatIn, barcode }) {
+  const base = [maHangId, maPhan, mauVai || null, kichVai || null, kichPhim || null, soLuongDonHang ?? null, tinhChatIn || null];
+  if (await hasBarcodeCol(client)) {
+    const { rows } = await client.query(
+      `INSERT INTO phan_in (ma_hang_id, ma_phan, mau_vai, kich_vai, kich_phim, so_luong_don_hang, tinh_chat_in, barcode)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+       ON CONFLICT (ma_phan) DO UPDATE SET
+         mau_vai = EXCLUDED.mau_vai, kich_vai = EXCLUDED.kich_vai, kich_phim = EXCLUDED.kich_phim,
+         so_luong_don_hang = EXCLUDED.so_luong_don_hang,
+         tinh_chat_in = COALESCE(EXCLUDED.tinh_chat_in, phan_in.tinh_chat_in),
+         barcode = COALESCE(EXCLUDED.barcode, phan_in.barcode),
+         updated_date = CURRENT_TIMESTAMP
+       RETURNING id`,
+      [...base, barcode || null]
+    );
+    return rows[0].id;
+  }
   const { rows } = await client.query(
     `INSERT INTO phan_in (ma_hang_id, ma_phan, mau_vai, kich_vai, kich_phim, so_luong_don_hang, tinh_chat_in)
      VALUES ($1,$2,$3,$4,$5,$6,$7)
@@ -121,7 +148,7 @@ async function upsertPhanIn(client, { maHangId, maPhan, mauVai, kichVai, kichPhi
        tinh_chat_in = COALESCE(EXCLUDED.tinh_chat_in, phan_in.tinh_chat_in),
        updated_date = CURRENT_TIMESTAMP
      RETURNING id`,
-    [maHangId, maPhan, mauVai || null, kichVai || null, kichPhim || null, soLuongDonHang ?? null, tinhChatIn || null]
+    base
   );
   return rows[0].id;
 }
@@ -151,7 +178,8 @@ async function getLoaiDotVaiId(maLoai) {
 //  - phần in ĐÃ có đợt → SL đợt lần này = phần chênh (received_qty lũy kế − đã nhận trước đó). Clamp ≥ 0.
 // Đợt đã tồn tại (re-sync idempotent theo ma_dot_vai) → GIỮ NGUYÊN so_luong_vai_ve đã tính lúc tạo,
 //  chỉ cập nhật ngày/hạn/loại (tránh cộng dồn sai khi ERP trả lại dòng cũ).
-async function upsertDotVai(client, { maDotVai, phanInId, loaiDotVaiId, ngayVaiVe, hanGiao, soLuong }) {
+// `tgChuyenReady`: Date = đợt vào READY ngay (mig 056); null = CHỜ chuyển (pending). Re-sync GIỮ NGUYÊN mốc cũ.
+async function upsertDotVai(client, { maDotVai, phanInId, loaiDotVaiId, ngayVaiVe, hanGiao, soLuong, tgChuyenReady }) {
   const existing = await client.query('SELECT id FROM dot_vai_ve WHERE ma_dot_vai = $1', [maDotVai]);
   if (existing.rows.length) {
     await client.query(
@@ -170,14 +198,38 @@ async function upsertDotVai(client, { maDotVai, phanInId, loaiDotVaiId, ngayVaiV
     if (sl < 0) sl = 0;
   }
   const { rows } = await client.query(
-    `INSERT INTO dot_vai_ve (phan_in_id, loai_dot_vai_id, ma_dot_vai, ngay_vai_ve, han_giao_hang, so_luong_vai_ve, trang_thai)
-     VALUES ($1,$2,$3,$4,$5,$6,'NHAN_VAI') RETURNING id`,
-    [phanInId, loaiDotVaiId || null, maDotVai, ngayVaiVe || null, hanGiao || null, sl]
+    `INSERT INTO dot_vai_ve (phan_in_id, loai_dot_vai_id, ma_dot_vai, ngay_vai_ve, han_giao_hang, so_luong_vai_ve, trang_thai, tg_chuyen_ready)
+     VALUES ($1,$2,$3,$4,$5,$6,'NHAN_VAI',$7) RETURNING id`,
+    [phanInId, loaiDotVaiId || null, maDotVai, ngayVaiVe || null, hanGiao || null, sl, tgChuyenReady || null]
   );
   return { id: rows[0].id, inserted: true };
+}
+
+// Tra id phần in theo ma_phan (để API chính thức biết code phần đã có từ -new chưa).
+async function findPhanInIdByMaPhan(maPhan) {
+  const { rows } = await query('SELECT id FROM phan_in WHERE ma_phan = $1 LIMIT 1', [maPhan]);
+  return rows[0] ? rows[0].id : null;
+}
+
+// Chuyển phần in đã có (từ -new) sang READY: cập nhật barcode/tinh_chat_in + set mốc cho các đợt CHỜ chuyển.
+// Trả về id các đợt vừa được chuyển (để theo dõi dòng chảy). Đợt đã ở READY (mốc ≠ null) không đụng.
+async function promotePhanInToReady(pinId, { barcode, tinhChatIn }) {
+  await query(
+    `UPDATE phan_in SET tinh_chat_in = COALESCE($2, tinh_chat_in),
+       barcode = COALESCE($3, barcode), updated_date = CURRENT_TIMESTAMP WHERE id = $1`,
+    [pinId, tinhChatIn || null, barcode || null]
+  );
+  const { rows } = await query(
+    `UPDATE dot_vai_ve SET tg_chuyen_ready = now(), updated_date = CURRENT_TIMESTAMP
+      WHERE phan_in_id = $1 AND tg_chuyen_ready IS NULL AND trang_thai NOT IN ('DA_GOP','DA_HUY')
+      RETURNING id`,
+    [pinId]
+  );
+  return rows.map((r) => r.id);
 }
 
 module.exports = {
   createSyncLog, finishSyncLog, listSyncHistory, insertRawBatch, saveSyncRaw, getSyncRaw,
   upsertKhachHang, upsertDonHang, upsertMaHang, upsertPhanIn, setPhanInDryMin, getLoaiDotVaiId, upsertDotVai,
+  findPhanInIdByMaPhan, promotePhanInToReady,
 };

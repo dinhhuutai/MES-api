@@ -32,5 +32,7 @@ router.post('/:phanInId/confirm-qc', rbac('READY_QC'), c.confirmQC);
 router.post('/:phanInId/tra-ve', rbac('READY_QC'), c.returnToTech);
 // Hủy xác nhận (Admin/READY_CANCEL) — khi bấm nhầm khuôn/film/mực/HSKT/QC.
 router.post('/:phanInId/huy', rbac('READY_CANCEL'), c.cancelItem);
+// Bỏ tích 1 mục kỹ thuật ngay trong luồng Quét/tích — quyền tech tự sửa khi tích lộn.
+router.post('/:phanInId/uncheck/:ma', rbac('READY_KHUON', 'READY_FILM', 'READY_MUC'), c.uncheckItem);
 
 module.exports = router;

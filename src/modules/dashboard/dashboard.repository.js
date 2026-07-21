@@ -207,7 +207,7 @@ async function stageCounts() {
     dvs AS (
       SELECT d.phan_in_id, ${lenh('id')} AS lenh_id, ${lenh('trang_thai')} AS lenh_tt
       FROM dot_vai_ve d JOIN pin_active p ON p.phan_in_id = d.phan_in_id
-      WHERE d.trang_thai NOT IN ('DA_GOP','DA_HUY')
+      WHERE d.trang_thai NOT IN ('DA_GOP','DA_HUY') AND d.tg_chuyen_ready IS NOT NULL
     ),
     st AS (SELECT phan_in_id, (${dotStageCase('dvs')}) AS stage FROM dvs),
     rk AS (SELECT phan_in_id, stage, array_position(${ORDER_SQL_ARRAY}, stage) AS rnk FROM st),

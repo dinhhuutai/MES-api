@@ -10,12 +10,13 @@ const { buildMeta } = require('../../utils/pagination');
 const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
 
-const NGUON = 'phieu_nhan_vai_60';
+const NGUON = 'phieu_nhan_vai_60';          // API chính thức → chuyển phần in qua READY
+const NGUON_NEW = 'phieu_nhan_vai_60_new';  // API lấy trước → đợt vải CHỜ chuyển READY (trừ 5I)
 
-// CHỈ đồng bộ khách hàng này từ ERP (so khớp customer_name, không phân biệt hoa/thường). Đổi 1 chỗ ở đây.
-const KHACH_ERP = 'SL';
-// Loại kinh doanh (`loaikd`) BỎ QUA khi đồng bộ tự động (theo yêu cầu). Thêm/bớt mã ở đây.
-const BO_LOAIKD = new Set(['8I', '2I']);
+// Loại kinh doanh (`loaikd`) CHỈ LẤY khi đồng bộ: 3I = số lượng (SO_LUONG), 5I = bổ sung (BO_SUNG).
+// Mọi loại khác → BỎ QUA. (Trước đây lọc theo khách hàng 'SL' + blacklist 8I/2I; nay bỏ lọc khách,
+// chuyển sang whitelist loaikd cho rõ ràng.) Thêm/bớt mã ở đây.
+const LAY_LOAIKD = new Set(['3I', '5I']);
 
 // TÍNH CHẤT IN (`Tinhchatin`) BỎ QUA — các công đoạn ép/ủi/lụa... không thuộc phạm vi MES này.
 // So khớp sau khi chuẩn hóa (bỏ hết khoảng trắng + viết hoa) nên "C + EP DECAL" == "C+EP DECAL".
@@ -56,6 +57,8 @@ function field(r, ...names) {
   return null;
 }
 const erpTinhChatIn = (r) => clean(field(r, 'Tinhchatin', 'tinh_chat_in', 'tinhchat_in')) || null;
+// Mã vạch (dãy số) từ ERP — trường `maquet` (cũ: barCode) → phan_in.barcode (đầu đọc quét để tích ở READY).
+const erpBarcode = (r) => clean(field(r, 'maquet', 'ma_quet', 'barCode', 'barcode', 'ma_vach', 'mavach')) || null;
 // Ngày vải về: ưu tiên NgayNhanvai (ERP mới), lùi về erp_datetime/created_date như trước.
 const erpNgayVaiVe = (r) => toDate(field(r, 'NgayNhanvai', 'ngay_nhan_vai', 'ngay_vai_ve') || r.erp_datetime || r.created_date);
 
@@ -90,8 +93,8 @@ function erpProxy() {
 
 // Gọi ERP bằng AXIOS (không phải fetch của Node/undici). Lý do: app cũ dùng axios chạy được vì axios
 // TỰ dùng proxy từ biến môi trường, còn `fetch`(undici) thì KHÔNG → hay timeout UND_ERR_CONNECT_TIMEOUT.
-async function fetchErp(fromDate) {
-  const url = `${env.erp.phieuNhanVaiUrl}?fromDate=${encodeURIComponent(fromDate)}`;
+async function fetchErp(baseUrl, fromDate) {
+  const url = `${baseUrl}?fromDate=${encodeURIComponent(fromDate)}`;
   const timeoutMs = env.erp.syncTimeoutMs || 600000;
   const t0 = Date.now();
   console.log(`[erp-sync] → GET ${url} (timeout ${Math.round(timeoutMs / 1000)}s)`);
@@ -137,7 +140,8 @@ async function fetchErp(fromDate) {
   }
 }
 
-async function processRow(r, maPhan, maDotVai, loaiDotVaiId) {
+// `tgChuyenReady`: Date = đợt vào READY ngay; null = CHỜ chuyển (pending, ẩn khỏi READY).
+async function processRow(r, maPhan, maDotVai, loaiDotVaiId, tgChuyenReady) {
   return withTransaction(async (client) => {
     const khId = await repo.upsertKhachHang(client, { ma: clean(r.customer_name), ten: clean(r.customer_name) });
     const donId = await repo.upsertDonHang(client, { maDon: clean(r.order_name), khachHangId: khId });
@@ -147,10 +151,12 @@ async function processRow(r, maPhan, maDotVai, loaiDotVaiId) {
       mauVai: clean(r.fabric_color), kichVai: clean(r.fabric_size), kichPhim: clean(r.film_size),
       soLuongDonHang: r.order_qty ?? null,
       tinhChatIn: erpTinhChatIn(r),
+      barcode: erpBarcode(r),
     });
     const { id: dotVaiId, inserted } = await repo.upsertDotVai(client, {
       maDotVai, phanInId: pinId, loaiDotVaiId,
       ngayVaiVe: erpNgayVaiVe(r), hanGiao: toDate(r.due_date), soLuong: r.received_qty ?? null,
+      tgChuyenReady: tgChuyenReady || null,
     });
     return { inserted, dotVaiId, pinId };
   });
@@ -177,78 +183,80 @@ function defaultFrom() {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
-// Đồng bộ phiếu nhận vải từ ERP.
-async function syncPhieuNhanVai({ fromDate, actorId = null, tuDong = false } = {}) {
+// Đồng bộ 1 nguồn ERP. `official=false` (API -new): đợt CHỜ chuyển READY (3I) hoặc vào READY luôn (5I).
+// `official=true` (API chính thức): code phần đã có → cập nhật barcode + chuyển pending sang READY;
+// chưa có → tạo mới + vào READY.
+async function runSync({ baseUrl, nguon, official, fromDate, actorId = null, tuDong = false }) {
   const from = fromDate || defaultFrom();
-  const logId = await repo.createSyncLog({ nguon: NGUON, fromDate: from, tuDong }, actorId);
+  const logId = await repo.createSyncLog({ nguon, fromDate: from, tuDong }, actorId);
   try {
-    const { data: rows, rawText } = await fetchErp(from);
+    const { data: rows, rawText } = await fetchErp(baseUrl, from);
 
-    // Lưu NGUYÊN VĂN chuỗi ERP trả về cho lần này (để xem lại "lần đó trả về gì").
     try { await repo.saveSyncRaw(logId, rawText); }
     catch (e) { console.error(`[erp-sync] ✗ Lưu chuỗi thô lỗi: ${e.message}`); }
 
-    // Tính khóa định danh cho TỪNG dòng (mỗi bản ghi = 1 đợt; xem buildKeys).
-    // Bỏ qua khi: (1) không đúng khách KHÁCH_ERP, hoặc (2) không có code_part.
+    // Lọc dòng: bỏ khi thiếu code_part, loaikd ngoài {3I,5I}, hoặc tính chất in ngoài phạm vi. (Không lọc khách.)
     const seen = new Map();
     const prepared = rows.map((r) => {
-      const notSl = clean(r.customer_name).toUpperCase() !== KHACH_ERP.toUpperCase();
       const noCode = !clean(r.code_part);
-      const isBoLoai = BO_LOAIKD.has(clean(r.loaikd).toUpperCase()); // bỏ qua loại kinh doanh 8I/2I
-      // Bỏ qua tính chất in ngoài phạm vi MES (ép/ủi/lụa...). Thiếu Tinhchatin → KHÔNG bỏ (vẫn lấy).
+      const isBoLoai = !LAY_LOAIKD.has(clean(r.loaikd).toUpperCase());
       const isBoTcin = BO_TINH_CHAT_IN.has(normTcin(erpTinhChatIn(r)));
       const { maPhan, maDotVai } = buildKeys(r, seen);
-      return {
-        r, maPhan, maDotVai,
-        skip: notSl || noCode || isBoLoai || isBoTcin,
-        notSl, noCode, isBoLoai, isBoTcin,
-      };
+      return { r, maPhan, maDotVai, skip: noCode || isBoLoai || isBoTcin, noCode, isBoLoai, isBoTcin };
     });
 
-    // Task 1: LƯU DỮ LIỆU THÔ trước khi xử lý (gồm cả dòng bị bỏ qua).
     try {
       await repo.insertRawBatch(logId, prepared.map((p) => ({
         maDotVai: p.maDotVai, codePart: clean(p.r.code_part) || null, boQua: p.skip, payload: p.r,
       })));
-    } catch (e) {
-      console.error(`[erp-sync] ✗ Lưu dữ liệu thô lỗi: ${e.message}`);
-    }
+    } catch (e) { console.error(`[erp-sync] ✗ Lưu dữ liệu thô lỗi: ${e.message}`); }
 
-    let soMoi = 0; let soCapNhat = 0; let soBoQua = 0; let soKhongSl = 0; let soKhongCode = 0; let soBoLoai = 0; let soBoTcin = 0;
+    let soMoi = 0; let soCapNhat = 0; let soBoQua = 0; let soKhongCode = 0; let soBoLoai = 0; let soBoTcin = 0; let soChoChuyen = 0;
     const errors = [];
     const newDotVaiIds = [];
     const resolveLoai = makeLoaiResolver();
     for (const p of prepared) {
-      // Bỏ qua dòng: sai khách, thiếu code_part, loaikd bị loại (8I/2I), hoặc tính chất in ngoài phạm vi.
       if (p.skip) {
         soBoQua += 1;
-        if (p.notSl) soKhongSl += 1;
-        else if (p.noCode) soKhongCode += 1;
-        else if (p.isBoLoai) soBoLoai += 1;
-        else if (p.isBoTcin) soBoTcin += 1;
+        if (p.noCode) soKhongCode += 1; else if (p.isBoLoai) soBoLoai += 1; else if (p.isBoTcin) soBoTcin += 1;
         continue;
       }
       try {
-        const loaiDotVaiId = await resolveLoai(p.r.loaikd);            // ngoài transaction, best-effort
-        const { inserted, dotVaiId, pinId } = await processRow(p.r, p.maPhan, p.maDotVai, loaiDotVaiId);
-        // Đợt vải MỚI: DB trigger (mig 054) tự quyết định READY vs Kế hoạch (mở lại READY nếu phần in
-        // đã từng release & không đang sản xuất). Không cần xử lý ở đây — áp cho cả insert tay lẫn ERP.
-        if (inserted) { soMoi += 1; newDotVaiIds.push(dotVaiId); } else soCapNhat += 1;
-        // tgphoi (phút) → thời gian chờ khô của phần in (best-effort, không phá sync nếu thiếu cột).
         const tgPhoi = Number(p.r.tgphoi);
-        if (Number.isFinite(tgPhoi) && tgPhoi > 0) await repo.setPhanInDryMin(pinId, Math.round(tgPhoi));
-      } catch (e) {
-        errors.push(e.message);
-      }
+        if (official) {
+          // Chính thức: đã có code phần → cập nhật barcode + chuyển pending sang READY; chưa có → tạo mới + READY.
+          const existingPinId = await repo.findPhanInIdByMaPhan(p.maPhan);
+          if (existingPinId) {
+            const promoted = await repo.promotePhanInToReady(existingPinId, {
+              barcode: erpBarcode(p.r), tinhChatIn: erpTinhChatIn(p.r),
+            });
+            promoted.forEach((id) => newDotVaiIds.push(id));
+            soCapNhat += 1;
+            if (Number.isFinite(tgPhoi) && tgPhoi > 0) await repo.setPhanInDryMin(existingPinId, Math.round(tgPhoi));
+          } else {
+            const loaiDotVaiId = await resolveLoai(p.r.loaikd);
+            const { inserted, dotVaiId, pinId } = await processRow(p.r, p.maPhan, p.maDotVai, loaiDotVaiId, new Date());
+            if (inserted) { soMoi += 1; newDotVaiIds.push(dotVaiId); } else soCapNhat += 1;
+            if (Number.isFinite(tgPhoi) && tgPhoi > 0) await repo.setPhanInDryMin(pinId, Math.round(tgPhoi));
+          }
+        } else {
+          // -new: 5I → vào READY ngay; 3I (và khác) → CHỜ chuyển (pending, tg_chuyen_ready = null).
+          const is5I = clean(p.r.loaikd).toUpperCase() === '5I';
+          const tgReady = is5I ? new Date() : null;
+          const loaiDotVaiId = await resolveLoai(p.r.loaikd);
+          const { inserted, dotVaiId, pinId } = await processRow(p.r, p.maPhan, p.maDotVai, loaiDotVaiId, tgReady);
+          if (inserted) { soMoi += 1; if (tgReady) newDotVaiIds.push(dotVaiId); else soChoChuyen += 1; } else soCapNhat += 1;
+          if (Number.isFinite(tgPhoi) && tgPhoi > 0) await repo.setPhanInDryMin(pinId, Math.round(tgPhoi));
+        }
+      } catch (e) { errors.push(e.message); }
     }
-    // Theo dõi dòng chảy: đợt vải mới nhận từ ERP → vào thẳng trạm READY
-    // (hệ MES này BẮT ĐẦU TỪ READY — dữ liệu ERP về coi như đã mở đơn, chờ chuẩn bị kỹ thuật). Best-effort.
+    // Đợt vào READY → theo dõi dòng chảy (trigger mig 054 đã guard: chỉ đợt tg_chuyen_ready ≠ null).
     if (newDotVaiIds.length) await tracking.moveDotVaiTo(newDotVaiIds, 'READY', actorId);
     const trangThai = errors.length && soMoi + soCapNhat === 0 ? 'LOI' : 'THANH_CONG';
     const notes = [];
-    if (soKhongSl) notes.push(`bỏ qua ${soKhongSl} dòng không phải khách '${KHACH_ERP}'`);
+    if (soChoChuyen) notes.push(`${soChoChuyen} đợt chờ chuyển READY (3I)`);
     if (soKhongCode) notes.push(`bỏ qua ${soKhongCode} dòng không có code_part`);
-    if (soBoLoai) notes.push(`bỏ qua ${soBoLoai} dòng loaikd ${[...BO_LOAIKD].join('/')}`);
+    if (soBoLoai) notes.push(`bỏ qua ${soBoLoai} dòng loaikd ngoài ${[...LAY_LOAIKD].join('/')}`);
     if (soBoTcin) notes.push(`bỏ qua ${soBoTcin} dòng tính chất in ngoài phạm vi`);
     if (errors.length) notes.push(`lỗi ${errors.length}/${rows.length}: ${errors.slice(0, 3).join(' | ')}`);
     await repo.finishSyncLog(logId, {
@@ -259,11 +267,21 @@ async function syncPhieuNhanVai({ fromDate, actorId = null, tuDong = false } = {
       sockets.emit('order:updated', { source: 'erp' });
       sockets.emit('dashboard:refresh', {});
     }
-    return { logId, tong: rows.length, soMoi, soCapNhat, soBoQua, soLoi: errors.length, trangThai };
+    return { logId, tong: rows.length, soMoi, soCapNhat, soBoQua, soChoChuyen, soLoi: errors.length, trangThai };
   } catch (e) {
     await repo.finishSyncLog(logId, { tong: 0, soMoi: 0, soCapNhat: 0, soLoi: 0, trangThai: 'LOI', thongDiep: e.message });
     throw e;
   }
+}
+
+// API CHÍNH THỨC /phieu-nhan-vai-60 → chuyển phần in qua READY.
+async function syncPhieuNhanVai({ fromDate, actorId = null, tuDong = false } = {}) {
+  return runSync({ baseUrl: env.erp.phieuNhanVaiUrl, nguon: NGUON, official: true, fromDate, actorId, tuDong });
+}
+
+// API LẤY TRƯỚC /phieu-nhan-vai-60-new → đợt vải CHỜ chuyển READY (trừ 5I vào thẳng READY).
+async function syncPhieuNhanVaiNew({ fromDate, actorId = null, tuDong = false } = {}) {
+  return runSync({ baseUrl: env.erp.phieuNhanVaiNewUrl, nguon: NGUON_NEW, official: false, fromDate, actorId, tuDong });
 }
 
 async function history({ date, page, limit, offset } = {}) {
@@ -277,4 +295,4 @@ async function rawData(logId) {
   return { chuoi_tho: text || null };
 }
 
-module.exports = { syncPhieuNhanVai, history, rawData };
+module.exports = { syncPhieuNhanVai, syncPhieuNhanVaiNew, history, rawData };

@@ -36,9 +36,14 @@ const env = {
     publicBaseUrl: process.env.PUBLIC_BASE_URL || 'https://api.thuanhunglongan.com',
   },
   erp: {
-    // API ERP lấy phiếu nhận vải (60 ngày). Có thể override qua .env.
+    // API ERP lấy phiếu nhận vải CHÍNH THỨC (60 ngày) — dữ liệu này chuyển phần in qua READY. Override qua .env.
     phieuNhanVaiUrl: process.env.ERP_PHIEU_NHAN_VAI_URL
       || 'http://10.84.40.34:5000/api/server/backup/mes/phieu-nhan-vai-60',
+    // API ERP lấy phiếu nhận vải TRƯỚC (khai báo, CHƯA qua READY). Mặc định = URL chính thức + '-new'.
+    phieuNhanVaiNewUrl: process.env.ERP_PHIEU_NHAN_VAI_NEW_URL
+      || (process.env.ERP_PHIEU_NHAN_VAI_URL
+        ? `${process.env.ERP_PHIEU_NHAN_VAI_URL}-new`
+        : 'http://10.84.40.34:5000/api/server/backup/mes/phieu-nhan-vai-60-new'),
     // Bật/tắt job tự đồng bộ mỗi giờ.
     syncEnabled: String(process.env.ERP_SYNC_ENABLED || 'true').toLowerCase() === 'true',
     // Chu kỳ tự đồng bộ (phút). Mặc định 5 phút/lần.

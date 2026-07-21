@@ -101,11 +101,16 @@ async function listVaiVe({ search = '', filters = {}, stage = '', offset = 0, li
     : DEFAULT_ORDER;
   // 1 query duy nhất: tổng số phần in qua COUNT(*) OVER(). Gửi SQL 1 dòng (IPS-safe).
   const sql = `
-    SELECT pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
+    SELECT pin.id AS phan_in_id, pin.ma_phan, pin.barcode, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
            pin.so_luong_don_hang, pin.loi_nhuan,
            mh.ma_hang, mh.ten_ma_hang, dh.ma_don_hang, dh.so_po,
            kh.ma_khach_hang, kh.ten_khach_hang,
            dvj.so_dot, dvj.dot_vai,
+           CASE WHEN dvj.tg_chuyen_ready_min IS NULL THEN NULL
+             ELSE GREATEST(0, EXTRACT(EPOCH FROM (COALESCE(
+               (SELECT min(k.tg_xac_nhan) FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id=k.checkpoint_id
+                  WHERE k.phan_in_id=pin.id AND c.ma_checkpoint IN ('KHUON','FILM','MUC') AND k.trang_thai='DAT'),
+               now()) - dvj.tg_chuyen_ready_min)))::bigint END AS cho_kt_giay,
            ts.pcs_in, ts.so_tem, ts.sl_dat, ts.sl_sua, ts.sl_sua_dat, ts.tems,
            COUNT(*) OVER()::int AS total_count
     ${BASE_JOINS}
@@ -113,6 +118,7 @@ async function listVaiVe({ search = '', filters = {}, stage = '', offset = 0, li
       SELECT count(*)::int AS so_dot,
              COALESCE(SUM(dv.so_luong_vai_ve),0)::int AS tong_vai,
              min(dv.ngay_vai_ve) AS ngay_vai_min, min(dv.han_giao_hang) AS han_min,
+             min(dv.tg_chuyen_ready) AS tg_chuyen_ready_min,
              COALESCE(json_agg(json_build_object(
                'dot_vai_id', dv.id, 'ma_dot_vai', dv.ma_dot_vai, 'so_luong_vai_ve', dv.so_luong_vai_ve,
                'ngay_vai_ve', dv.ngay_vai_ve, 'han_giao_hang', dv.han_giao_hang
@@ -200,7 +206,7 @@ async function dotSanXuatLedger(phanInIds) {
 
 async function findById(id) {
   const sql = `
-    SELECT pin.id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
+    SELECT pin.id, pin.ma_phan, pin.barcode, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
            pin.do_in, pin.mau_in, pin.so_luong_don_hang, pin.loi_nhuan, pin.ghi_chu,
            mh.ma_hang, mh.ten_ma_hang,
            dh.ma_don_hang, dh.so_po, dh.ten_don_hang,

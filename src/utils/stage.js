@@ -10,12 +10,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Thứ tự tiến độ (đầu mảng = kém tiến độ nhất). Dominant = stage có array_position NHỎ nhất.
-const STAGE_ORDER = ['READY_KT', 'READY_QA', 'RELEASE_1', 'TESTRUN_CNSP', 'TESTRUN_QA', 'RELEASE_2',
+// CHO_CHUYEN = đợt vải lấy từ ERP -new nhưng CHƯA qua API chính thức (chưa vào READY) — đứng trước READY.
+const STAGE_ORDER = ['CHO_CHUYEN', 'READY_KT', 'READY_QA', 'RELEASE_1', 'TESTRUN_CNSP', 'TESTRUN_QA', 'RELEASE_2',
   'CHO_SAN_XUAT', 'SAN_XUAT', 'CHO_KHO', 'KCS', 'SUA', 'OQC', 'DANG_GIAO', 'DA_GIAO'];
 const ORDER_SQL_ARRAY = `ARRAY[${STAGE_ORDER.map((s) => `'${s}'`).join(',')}]`;
 
 // Nhãn hiển thị cho từng stage nội bộ (dùng ở cột "Trạm hiện tại").
 const STAGE_LABEL = {
+  CHO_CHUYEN: 'Chờ chuyển READY',
   READY_KT: 'READY (Kỹ thuật)', READY_QA: 'READY (QA)', RELEASE_1: 'Release 1',
   TESTRUN_CNSP: 'Test Run (CNSP)', TESTRUN_QA: 'Test Run (QA)', RELEASE_2: 'Release 2',
   CHO_SAN_XUAT: 'Chờ sản xuất', SAN_XUAT: 'Đang sản xuất', CHO_KHO: 'Chờ khô',
@@ -66,15 +68,20 @@ function dotStageCase(a) {
 // Giai đoạn "dự phòng" cho phần in KHÔNG có đợt vải nào (chưa nhận vải) — LUÔN thuộc READY (chuẩn bị),
 // KHÔNG bao giờ RELEASE_1: không có đợt vải nào để release nên màn Release 1 (theo đợt) không hiện chúng
 // ⇒ nếu xếp RELEASE_1 sẽ đếm dư so với màn. (RELEASE_1 chỉ dành cho phần in CÓ đợt vải chưa release.)
+// Fallback khi phần in KHÔNG có đợt vải ĐÃ VÀO READY (dotSource rỗng): nếu còn đợt CHỜ chuyển (pending)
+// → 'CHO_CHUYEN'; nếu không có đợt nào → READY (chuẩn bị, kỹ thuật có thể làm trước khi vải về).
 function readyFallback(pinId) {
-  return `CASE WHEN (SELECT count(*) FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id=k.checkpoint_id WHERE k.phan_in_id=${pinId} AND c.ma_checkpoint IN ('KHUON','FILM','MUC') AND k.trang_thai='DAT')>=3 THEN 'READY_QA'
+  return `CASE
+      WHEN EXISTS(SELECT 1 FROM dot_vai_ve dp WHERE dp.phan_in_id=${pinId} AND dp.trang_thai NOT IN ('DA_GOP','DA_HUY') AND dp.tg_chuyen_ready IS NULL) THEN 'CHO_CHUYEN'
+      WHEN (SELECT count(*) FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id=k.checkpoint_id WHERE k.phan_in_id=${pinId} AND c.ma_checkpoint IN ('KHUON','FILM','MUC') AND k.trang_thai='DAT')>=3 THEN 'READY_QA'
       ELSE 'READY_KT' END`;
 }
 
-// Rowsource các đợt vải (không DA_GOP/DA_HUY) của phần in `pinId` + lệnh non-HUY mới nhất mỗi đợt.
+// Rowsource các đợt vải (không DA_GOP/DA_HUY, ĐÃ vào READY — tg_chuyen_ready ≠ null) của phần in + lệnh non-HUY mới nhất.
+// Đợt CHỜ chuyển (pending) bị loại ⇒ dominant chỉ tính đợt đã vào dòng chảy; pending → readyFallback ('CHO_CHUYEN').
 function dotSource(pinId) {
   const lenh = (col) => `(SELECT ls.${col} FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id WHERE lsd.dot_vai_ve_id=d.id AND ls.trang_thai<>'HUY' ORDER BY ls.created_date DESC LIMIT 1)`;
-  return `SELECT d.phan_in_id, ${lenh('id')} AS lenh_id, ${lenh('trang_thai')} AS lenh_tt FROM dot_vai_ve d WHERE d.phan_in_id=${pinId} AND d.trang_thai NOT IN ('DA_GOP','DA_HUY')`;
+  return `SELECT d.phan_in_id, ${lenh('id')} AS lenh_id, ${lenh('trang_thai')} AS lenh_tt FROM dot_vai_ve d WHERE d.phan_in_id=${pinId} AND d.trang_thai NOT IN ('DA_GOP','DA_HUY') AND d.tg_chuyen_ready IS NOT NULL`;
 }
 
 // Biểu thức SCALAR: stage dominant của phần in `pinId` (dùng ở orders.stageCondition).

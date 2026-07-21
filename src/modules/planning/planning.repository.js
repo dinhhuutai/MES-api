@@ -399,7 +399,7 @@ async function release1HistoryByDate(date) {
 const PHAN_INFO_LATERAL = `
   LEFT JOIN LATERAL (
     SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang,
-           pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.ma_phan, pin.so_luong_don_hang, pin.tinh_chat_in,
+           pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.ma_phan, pin.barcode, pin.so_luong_don_hang, pin.tinh_chat_in,
            dv.so_luong_vai_ve, dv.ngay_vai_ve, dv.han_giao_hang, ldv.ten_loai AS loai_dot_vai
     FROM lenh_sx_dot_vai lsd
     JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id

@@ -12,11 +12,18 @@ function startErpSyncJob() {
   const intervalMs = Math.max(5, env.erp.syncIntervalMin) * 60 * 1000;
 
   const run = async () => {
+    // Chạy -new TRƯỚC (lấy dữ liệu chờ chuyển) rồi -60 (chuyển những code phần đã có sang READY + barcode).
+    try {
+      const rn = await erpService.syncPhieuNhanVaiNew({ tuDong: true });
+      console.log(`[erp-sync] (-new) OK: ${rn.soMoi} mới (${rn.soChoChuyen || 0} chờ chuyển), ${rn.soCapNhat} cập nhật, ${rn.soLoi} lỗi (tổng ${rn.tong})`);
+    } catch (e) {
+      console.error('[erp-sync] (-new) Lỗi đồng bộ:', e.message);
+    }
     try {
       const r = await erpService.syncPhieuNhanVai({ tuDong: true }); // fromDate mặc định = now - N ngày
-      console.log(`[erp-sync] OK: ${r.soMoi} mới, ${r.soCapNhat} cập nhật, ${r.soLoi} lỗi (tổng ${r.tong})`);
+      console.log(`[erp-sync] (-60) OK: ${r.soMoi} mới, ${r.soCapNhat} cập nhật, ${r.soLoi} lỗi (tổng ${r.tong})`);
     } catch (e) {
-      console.error('[erp-sync] Lỗi đồng bộ:', e.message);
+      console.error('[erp-sync] (-60) Lỗi đồng bộ:', e.message);
     }
   };
 

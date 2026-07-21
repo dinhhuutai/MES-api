@@ -95,6 +95,13 @@ const cancelItem = asyncHandler(async (req, res) => {
   return ok(res, data, 'Đã hủy xác nhận');
 });
 
+// Bỏ tích 1 mục kỹ thuật (trong luồng Quét/tích) — quyền tech, khác hủy xác nhận (READY_CANCEL).
+const uncheckItem = asyncHandler(async (req, res) => {
+  const ma = String(req.params.ma || '').toUpperCase();
+  const data = await service.uncheckItem(req.params.phanInId, ma, req.user.id);
+  return ok(res, data, 'Đã bỏ tích');
+});
+
 const confirmHistory = asyncHandler(async (req, res) => {
   const date = req.query.date || new Date().toISOString().slice(0, 10);
   return ok(res, await service.confirmHistory(date, req.query.search || ''));
@@ -112,6 +119,6 @@ const reopenReady = asyncHandler(async (req, res) =>
 
 module.exports = {
   config, candidates, qcCandidates, itemCounts, detail, history, done,
-  confirmItem, confirmItemsBatch, confirmBulk, confirmQC, qcConfirmBatch, cancelItem, confirmHistory,
+  confirmItem, confirmItemsBatch, confirmBulk, confirmQC, qcConfirmBatch, cancelItem, uncheckItem, confirmHistory,
   returnToTech, reopenCandidates, reopenReady,
 };
