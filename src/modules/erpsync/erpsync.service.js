@@ -56,11 +56,12 @@ function field(r, ...names) {
   }
   return null;
 }
-const erpTinhChatIn = (r) => clean(field(r, 'Tinhchatin', 'tinh_chat_in', 'tinhchat_in')) || null;
+// Tính chất in: trường ERP đúng là `tinhchatin` (field() không phân biệt hoa/thường & gạch dưới).
+const erpTinhChatIn = (r) => clean(field(r, 'tinhchatin', 'tinh_chat_in')) || null;
 // Mã vạch (dãy số) từ ERP — trường `maquet` (cũ: barCode) → phan_in.barcode (đầu đọc quét để tích ở READY).
 const erpBarcode = (r) => clean(field(r, 'maquet', 'ma_quet', 'barCode', 'barcode', 'ma_vach', 'mavach')) || null;
-// Ngày vải về: ưu tiên NgayNhanvai (ERP mới), lùi về erp_datetime/created_date như trước.
-const erpNgayVaiVe = (r) => toDate(field(r, 'NgayNhanvai', 'ngay_nhan_vai', 'ngay_vai_ve') || r.erp_datetime || r.created_date);
+// Ngày vải về: trường ERP đúng là `ngaynhanvai`, lùi về erp_datetime/created_date nếu thiếu.
+const erpNgayVaiVe = (r) => toDate(field(r, 'ngaynhanvai', 'ngay_nhan_vai', 'ngay_vai_ve') || r.erp_datetime || r.created_date);
 
 // Khóa định danh ổn định để upsert.
 // QUY TẮC: 1 bản ghi ERP = 1 đợt vải. ERP trả về nhiều dòng giống hệt nhau (chỉ khác received_qty,

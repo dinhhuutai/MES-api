@@ -82,7 +82,9 @@ async function runPhanIn({ loc = {}, gioi_han }) {
     conds.push(`(pin.ma_phan ILIKE '%'||$${i}||'%' OR mh.ma_hang ILIKE '%'||$${i}||'%' OR dh.ma_don_hang ILIKE '%'||$${i}||'%' OR pin.mau_vai ILIKE '%'||$${i}||'%')`);
   }
   const sql = `
-    SELECT dv.id AS dot_vai_ve_id, pin.id AS phan_in_id, dv.ma_dot_vai, dv.ngay_vai_ve, dv.han_giao_hang,
+    SELECT dv.id AS dot_vai_ve_id, pin.id AS phan_in_id, dv.ma_dot_vai,
+           to_char(dv.ngay_vai_ve, 'DD/MM/YYYY') AS ngay_vai_ve,
+           to_char(dv.han_giao_hang, 'DD/MM/YYYY') AS han_giao_hang,
            dv.so_luong_vai_ve, ldv.ten_loai AS loai_dot_vai,
            pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in, pin.so_luong_don_hang,
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
@@ -172,7 +174,8 @@ async function runDotSanXuat({ loc = {}, gioi_han }) {
     conds.push(`(ls.ma_lenh_san_xuat ILIKE '%'||$${i}||'%' OR info.ma_phan ILIKE '%'||$${i}||'%' OR info.ma_hang ILIKE '%'||$${i}||'%' OR info.mau_vai ILIKE '%'||$${i}||'%')`);
   }
   const sql = `
-    SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.trang_thai AS tt, ls.ngay_ke_hoach,
+    SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.trang_thai AS tt,
+           to_char(ls.ngay_ke_hoach, 'DD/MM/YYYY') AS ngay_ke_hoach,
            to_char(ls.tg_bd_kh AT TIME ZONE 'Asia/Ho_Chi_Minh', 'HH24:MI') AS gio_bd,
            to_char(ls.tg_kt_kh AT TIME ZONE 'Asia/Ho_Chi_Minh', 'HH24:MI') AS gio_kt,
            (SELECT count(*) FROM test_run tr WHERE tr.lenh_san_xuat_id = ls.id)::int AS so_lan_test,
@@ -188,8 +191,8 @@ async function runDotSanXuat({ loc = {}, gioi_han }) {
            cs.ten_chuyen,
            info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan,
            info.mau_vai, info.kich_vai, info.kich_phim, info.tinh_chat_in,
-           (SELECT min(dvh.han_giao_hang) FROM lenh_sx_dot_vai lsh JOIN dot_vai_ve dvh ON dvh.id = lsh.dot_vai_ve_id
-              WHERE lsh.lenh_san_xuat_id = ls.id) AS han_giao_hang,
+           to_char((SELECT min(dvh.han_giao_hang) FROM lenh_sx_dot_vai lsh JOIN dot_vai_ve dvh ON dvh.id = lsh.dot_vai_ve_id
+              WHERE lsh.lenh_san_xuat_id = ls.id), 'DD/MM/YYYY') AS han_giao_hang,
            (SELECT COALESCE(sum(t.so_luong),0)::int FROM phieu_san_xuat ps JOIN tem t ON t.phieu_san_xuat_id = ps.id
               WHERE ps.lenh_san_xuat_id = ls.id AND t.trang_thai <> 'HUY') AS sl_da_in
     FROM lenh_san_xuat ls
@@ -260,7 +263,7 @@ async function runTem({ loc = {}, gioi_han }) {
   }
   const sql = `
     SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai AS tt,
-           (t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS ngay_in_tem,
+           to_char(t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh', 'DD/MM/YYYY') AS ngay_in_tem,
            t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy, t.sl_sua_dat, t.sl_sua_huy, t.sl_oqc_dat, t.sl_da_giao,
            cs.ten_chuyen, info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan, info.mau_vai, info.kich_vai
     FROM tem t
@@ -281,6 +284,52 @@ async function runTem({ loc = {}, gioi_han }) {
     LIMIT ${limitOf(gioi_han)}`;
   const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), params);
   return rows.map((r, i) => ({ ...r, stt: i + 1, trang_thai: TEM_TT[r.tt] || r.tt }));
+}
+
+// ============================== 3b) HOÀN THÀNH / RỜI CHECKPOINT (theo ngày) ==============================
+// 1 dòng = 1 lượt PHẦN IN rời (hoàn thành) 1 checkpoint. Nguồn `lich_su_luan_chuyen` (best-effort như metric
+// CP_*_ROI_HOM_NAY). Lọc trạm=READY + ngày=Hôm nay ⇒ "danh sách ready đã hoàn thành hôm nay".
+const COT_HOAN_THANH = [
+  { key: 'stt', ten: 'STT', kieu: 'so' },
+  { key: 'ngay_hoan_thanh', ten: 'Ngày hoàn thành', kieu: 'ngay' },
+  { key: 'gio_hoan_thanh', ten: 'Giờ hoàn thành', kieu: 'text' },
+  { key: 'ten_tram', ten: 'Checkpoint', kieu: 'text' },
+  { key: 'ten_khach_hang', ten: 'Khách hàng', kieu: 'text' },
+  { key: 'ma_don_hang', ten: 'PO', kieu: 'text' },
+  { key: 'ma_phan', ten: 'Code phần', kieu: 'text' },
+  { key: 'ma_hang', ten: 'Mã hàng', kieu: 'text' },
+  { key: 'mau_vai', ten: 'Màu vải', kieu: 'text' },
+  { key: 'kich_vai', ten: 'Kích vải', kieu: 'text' },
+  { key: 'kich_phim', ten: 'Kích film', kieu: 'text' },
+];
+
+async function runHoanThanhTram({ loc = {}, gioi_han }) {
+  const params = [];
+  const conds = ['l.tg_kt IS NOT NULL', 'pin.dang_hoat_dong'];
+  const nc = ngayCond('l.tg_kt', loc.ngay, true);
+  if (nc) conds.push(nc);
+  if (clean(loc.tram)) { params.push(clean(loc.tram)); conds.push(`tr.ma_tram = $${params.length}`); }
+  if (clean(loc.tim)) {
+    params.push(clean(loc.tim));
+    const i = params.length;
+    conds.push(`(pin.ma_phan ILIKE '%'||$${i}||'%' OR mh.ma_hang ILIKE '%'||$${i}||'%' OR dh.ma_don_hang ILIKE '%'||$${i}||'%' OR pin.mau_vai ILIKE '%'||$${i}||'%')`);
+  }
+  const sql = `
+    SELECT to_char(l.tg_kt AT TIME ZONE 'Asia/Ho_Chi_Minh', 'DD/MM/YYYY') AS ngay_hoan_thanh,
+           to_char(l.tg_kt AT TIME ZONE 'Asia/Ho_Chi_Minh', 'HH24:MI') AS gio_hoan_thanh,
+           tr.ten_tram, kh.ten_khach_hang, dh.ma_don_hang,
+           pin.ma_phan, mh.ma_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim
+    FROM lich_su_luan_chuyen l
+    JOIN tram tr ON tr.id = l.den_tram_id
+    JOIN phan_in pin ON pin.id = l.phan_in_id
+    JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+    JOIN don_hang dh ON dh.id = mh.don_hang_id
+    JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+    WHERE ${conds.join(' AND ')}
+    ORDER BY l.tg_kt DESC
+    LIMIT ${limitOf(gioi_han)}`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), params);
+  return rows.map((r, i) => ({ ...r, stt: i + 1 }));
 }
 
 // ============================== 4) TỔNG HỢP THEO TRẠM ==============================
@@ -376,6 +425,11 @@ const DEFS = [
   { ma: 'DS_TEM', ten: 'Tem (KCS / Sửa / OQC / Giao)', don_vi_dong: 'tem',
     mo_ta: '1 dòng = 1 tem theo ngày in tem, kèm sổ cái số lượng từng công đoạn.',
     loc: locList(['ngay', 'trang_thai_tem', 'chuyen', 'tim']), cot: COT_TEM, run: runTem },
+  { ma: 'DS_HOAN_THANH_TRAM', ten: 'Phần in hoàn thành / rời checkpoint (theo ngày)', don_vi_dong: 'phần in',
+    mo_ta: '1 dòng = 1 phần in ĐÃ HOÀN THÀNH / rời 1 checkpoint. Lọc trạm = READY + ngày = Hôm nay '
+      + '⇒ "danh sách READY đã hoàn thành hôm nay". (Nguồn lịch sử luân chuyển — best-effort.) '
+      + 'Xem "đang ở READY hiện tại" ở nguồn "Phần in / đợt vải" với bộ lọc Trạm = READY.',
+    loc: locList(['ngay', 'tram', 'tim']), cot: COT_HOAN_THANH, run: runHoanThanhTram },
   { ma: 'DS_TONG_HOP_TRAM', ten: 'Tổng hợp theo trạm (checkpoint)', don_vi_dong: 'trạm',
     mo_ta: '1 dòng = 1 checkpoint: vào/rời hôm nay, đang ở, đúng hạn, sắp nghẽn, nghẽn, điểm nghẽn. '
       + 'Dựng bảng kiểu "Kết quả pha màu - chụp khuôn - film - CNSP".',

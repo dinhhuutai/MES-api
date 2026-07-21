@@ -203,6 +203,8 @@ async function stageCounts() {
       FROM phan_in pi JOIN ma_hang mh ON mh.id = pi.ma_hang_id
       JOIN don_hang dh ON dh.id = mh.don_hang_id AND dh.trang_thai IS DISTINCT FROM 'CLOSED_FINANCE'
       WHERE pi.dang_hoat_dong
+        AND (EXISTS (SELECT 1 FROM dot_vai_ve dr WHERE dr.phan_in_id=pi.id AND dr.trang_thai NOT IN ('DA_GOP','DA_HUY') AND dr.tg_chuyen_ready IS NOT NULL)
+             OR NOT EXISTS (SELECT 1 FROM dot_vai_ve da WHERE da.phan_in_id=pi.id AND da.trang_thai NOT IN ('DA_GOP','DA_HUY')))
     ),
     dvs AS (
       SELECT d.phan_in_id, ${lenh('id')} AS lenh_id, ${lenh('trang_thai')} AS lenh_tt

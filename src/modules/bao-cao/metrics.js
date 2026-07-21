@@ -11,6 +11,7 @@
 
 const { query } = require('../../config/db');
 const dashboardRepo = require('../dashboard/dashboard.repository');
+const { dominantStageScalar } = require('../../utils/stage');
 
 // Cache ngắn kết quả stageCounts (đếm phần in theo giai đoạn — nguồn tin cậy như dashboard) để nhiều
 // metric "phần in đang ở trạm" dùng chung 1 lần chạy trong cùng lượt compute (tránh chạy lặp query nặng).
@@ -21,10 +22,42 @@ async function stageCountsCached() {
   _scAt = Date.now();
   return _scPromise;
 }
-// Số PHẦN IN đang ở giai đoạn (gộp nhiều stage key).
+// Số PHẦN IN đang ở giai đoạn (gộp nhiều stage key). PHẦN IN rời rạc theo dominant nên CỘNG được.
 const pinAtStage = (keys) => async () => {
   const sc = await stageCountsCached();
   return keys.reduce((a, k) => a + ((sc.stages && sc.stages[k] && sc.stages[k].phan_in) || 0), 0);
+};
+
+// Đếm ĐANG Ở checkpoint theo ĐƠN / MÃ (không cộng dồn per-substage vì 1 mã/đơn có thể trải nhiều substage
+// READY_KT/READY_QA... → phải DISTINCT theo NHÓM checkpoint). Dùng dominant stage (khớp dashboard) nhóm về
+// CP_FLOW rồi count distinct — 1 query cache dùng chung mọi metric CP_*_DANG_O_MA/_DON.
+const CP_GROUP_CASE = `CASE (${dominantStageScalar('pin.id')})
+    WHEN 'READY_KT' THEN 'READY' WHEN 'READY_QA' THEN 'READY'
+    WHEN 'RELEASE_1' THEN 'RELEASE_1'
+    WHEN 'TESTRUN_CNSP' THEN 'TEST_RUN' WHEN 'TESTRUN_QA' THEN 'TEST_RUN'
+    WHEN 'RELEASE_2' THEN 'RELEASE_2'
+    WHEN 'CHO_SAN_XUAT' THEN 'SAN_XUAT' WHEN 'SAN_XUAT' THEN 'SAN_XUAT'
+    WHEN 'CHO_KHO' THEN 'CHO_KHO' WHEN 'KCS' THEN 'KIEM'
+    WHEN 'SUA' THEN 'SUA' WHEN 'OQC' THEN 'OQC' WHEN 'DANG_GIAO' THEN 'FINISH'
+    ELSE NULL END`;
+let _cpgPromise = null; let _cpgAt = 0;
+async function cpGroupCounts() {
+  if (_cpgPromise && Date.now() - _cpgAt < 2000) return _cpgPromise;
+  _cpgPromise = (async () => {
+    const sql = `SELECT grp, count(DISTINCT phan_in_id)::int AS phan, count(DISTINCT ma_hang_id)::int AS ma, count(DISTINCT don_hang_id)::int AS don
+      FROM (SELECT pin.id AS phan_in_id, mh.id AS ma_hang_id, dh.id AS don_hang_id, ${CP_GROUP_CASE} AS grp
+            FROM phan_in pin JOIN ma_hang mh ON mh.id = pin.ma_hang_id JOIN don_hang dh ON dh.id = mh.don_hang_id
+            WHERE pin.dang_hoat_dong) x
+      WHERE grp IS NOT NULL GROUP BY grp`;
+    const { rows } = await query(sql.replace(/\s+/g, ' ').trim());
+    return Object.fromEntries(rows.map((r) => [r.grp, r]));
+  })();
+  _cpgAt = Date.now();
+  return _cpgPromise;
+}
+const cpGroupAt = (cpMa, level) => async () => {
+  const g = await cpGroupCounts();
+  return (g[cpMa] && g[cpMa][level]) || 0;
 };
 
 // Helper: lấy 1 số vô hướng từ 1 câu SQL trả về cột `v`.
@@ -351,16 +384,20 @@ const slaCount = (maTram, st) => async () => {
     && (st === null || slaStatus(r.phut_da_o, r.sla_phut, r.canh_bao_truoc_phut) === st)).length;
 };
 
-// Số PHẦN IN vào trạm trong hôm nay (lượt chuyển tới trạm — `den_tram_id`).
-const vaoTramHomNay = (maTram) =>
-  `SELECT count(DISTINCT l.phan_in_id)::numeric AS v FROM lich_su_luan_chuyen l
-   JOIN tram tr ON tr.id = l.den_tram_id
+// Đếm VÀO/RỜI trạm hôm nay theo mức phần/mã/đơn (1 trạm → không lo cộng dồn substage).
+const FLOW_LV = { phan: 'l.phan_in_id', ma: 'mh.id', don: 'dh.id' };
+const FLOW_JOIN = 'JOIN phan_in pin ON pin.id = l.phan_in_id JOIN ma_hang mh ON mh.id = pin.ma_hang_id JOIN don_hang dh ON dh.id = mh.don_hang_id';
+
+// Số PHẦN/MÃ/ĐƠN vào trạm trong hôm nay (lượt chuyển tới trạm — `den_tram_id`).
+const vaoTramHomNay = (maTram, lv = 'phan') =>
+  `SELECT count(DISTINCT ${FLOW_LV[lv]})::numeric AS v FROM lich_su_luan_chuyen l
+   JOIN tram tr ON tr.id = l.den_tram_id ${lv === 'phan' ? '' : FLOW_JOIN}
    WHERE tr.ma_tram = '${maTram}' AND ${TODAY_TS('l.tg_bd')}`;
 
-// Số PHẦN IN rời trạm trong hôm nay (hoàn tất trạm đó & đi tiếp — mốc `tg_kt` của lượt Ở trạm này).
-const roiTramHomNay = (maTram) =>
-  `SELECT count(DISTINCT l.phan_in_id)::numeric AS v FROM lich_su_luan_chuyen l
-   JOIN tram tr ON tr.id = l.den_tram_id
+// Số PHẦN/MÃ/ĐƠN rời trạm trong hôm nay (hoàn tất trạm đó & đi tiếp — mốc `tg_kt` của lượt Ở trạm này).
+const roiTramHomNay = (maTram, lv = 'phan') =>
+  `SELECT count(DISTINCT ${FLOW_LV[lv]})::numeric AS v FROM lich_su_luan_chuyen l
+   JOIN tram tr ON tr.id = l.den_tram_id ${lv === 'phan' ? '' : FLOW_JOIN}
    WHERE tr.ma_tram = '${maTram}' AND l.tg_kt IS NOT NULL AND ${TODAY_TS('l.tg_kt')}`;
 
 // Trạm (checkpoint) đưa vào catalog + map sang key stageCounts (dominant) của dashboard.
@@ -403,6 +440,21 @@ CP_FLOW.forEach((cp) => {
       mo_ta: `Số ĐỢT VẢI ở ${cp.ten} sắp quá SLA (đã vào ngưỡng cảnh báo trước của trạm).`,
       run: slaCount(cp.ma, 'SAP_NGHEN') },
   );
+  // Biến thể theo ĐƠN HÀNG / MÃ HÀNG cho Vào / Rời (hoàn thành) hôm nay + Đang ở (phần in đã có sẵn ở trên).
+  [['ma', 'mã hàng', 'mã'], ['don', 'đơn hàng', 'đơn']].forEach(([lv, ten, dv]) => {
+    DEFS.push(
+      { ma: `CP_${cp.ma}_VAO_HOM_NAY_${lv.toUpperCase()}`, ten: `${cp.ten}: Vào hôm nay (${ten})`, nhom, don_vi: dv,
+        mo_ta: `Số ${ten} có phần in CHUYỂN VÀO checkpoint ${cp.ten} trong hôm nay (giờ VN).`,
+        run: () => scalar(vaoTramHomNay(cp.ma, lv)) },
+      { ma: `CP_${cp.ma}_ROI_HOM_NAY_${lv.toUpperCase()}`, ten: `${cp.ten}: Hoàn tất & qua trạm khác hôm nay (${ten})`, nhom, don_vi: dv,
+        mo_ta: `Số ${ten} có phần in ĐÃ RỜI checkpoint ${cp.ten} (làm xong, đi tiếp) trong hôm nay.`,
+        run: () => scalar(roiTramHomNay(cp.ma, lv)) },
+      { ma: `CP_${cp.ma}_DANG_O_${lv.toUpperCase()}`, ten: `${cp.ten}: Đang ở checkpoint (${ten})`, nhom, don_vi: dv,
+        mo_ta: `Số ${ten} có phần in hiện đang ở checkpoint ${cp.ten} (dominant stage, khớp dashboard).`
+          + ' Đếm DISTINCT theo nhóm checkpoint (không cộng dồn substage).',
+        run: cpGroupAt(cp.ma, lv) },
+    );
+  });
 });
 
 // ---------- ĐIỂM NGHẼN (text) — "kẹt ở đâu, vì sao" ----------
