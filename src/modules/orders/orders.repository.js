@@ -63,7 +63,7 @@ const VAIVE_SORT = {
   slIn: 'ts.pcs_in', kiemDat: 'ts.sl_dat', sua: 'ts.sl_sua', suaDat: 'ts.sl_sua_dat',
 };
 
-async function listVaiVe({ search = '', filters = {}, stage = '', offset = 0, limit = 20, sortKey = '', sortDir = '' }) {
+async function listVaiVe({ search = '', filters = {}, stage = '', daChuyen = '', offset = 0, limit = 20, sortKey = '', sortDir = '' }) {
   const params = [];
   const add = (v) => { params.push(v); return `$${params.length}`; };
   const cond = [];
@@ -90,6 +90,10 @@ async function listVaiVe({ search = '', filters = {}, stage = '', offset = 0, li
   }
   const sc = stageCondition(stage);
   if (sc) cond.push(`(${sc})`);
+  // Lọc "đã chuyển / chưa chuyển READY" (chỉ dùng ở chip "Tất cả"). DA = có ≥1 đợt đã chuyển; CHUA = còn đợt chờ & chưa có đợt nào chuyển.
+  const daChuyenEx = "EXISTS (SELECT 1 FROM dot_vai_ve dvc WHERE dvc.phan_in_id=pin.id AND dvc.trang_thai NOT IN ('DA_GOP','DA_HUY') AND dvc.tg_chuyen_ready IS NOT NULL)";
+  if (daChuyen === 'DA') cond.push(daChuyenEx);
+  else if (daChuyen === 'CHUA') cond.push(`(NOT ${daChuyenEx} AND EXISTS (SELECT 1 FROM dot_vai_ve dvp WHERE dvp.phan_in_id=pin.id AND dvp.trang_thai NOT IN ('DA_GOP','DA_HUY') AND dvp.tg_chuyen_ready IS NULL))`);
   cond.push("dh.trang_thai IS DISTINCT FROM 'CLOSED_FINANCE'");
   cond.push('pin.dang_hoat_dong'); // ẩn phần in đã xóa mềm
 
@@ -106,11 +110,14 @@ async function listVaiVe({ search = '', filters = {}, stage = '', offset = 0, li
            mh.ma_hang, mh.ten_ma_hang, dh.ma_don_hang, dh.so_po,
            kh.ma_khach_hang, kh.ten_khach_hang,
            dvj.so_dot, dvj.dot_vai,
-           CASE WHEN dvj.tg_chuyen_ready_min IS NULL THEN NULL
-             ELSE GREATEST(0, EXTRACT(EPOCH FROM (COALESCE(
+           (dvj.tg_chuyen_ready_min IS NOT NULL) AS da_chuyen,
+           CASE
+             WHEN dvj.tg_chuyen_ready_min IS NOT NULL THEN GREATEST(0, EXTRACT(EPOCH FROM (COALESCE(
                (SELECT min(k.tg_xac_nhan) FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id=k.checkpoint_id
                   WHERE k.phan_in_id=pin.id AND c.ma_checkpoint IN ('KHUON','FILM','MUC') AND k.trang_thai='DAT'),
-               now()) - dvj.tg_chuyen_ready_min)))::bigint END AS cho_kt_giay,
+               now()) - dvj.tg_chuyen_ready_min)))::bigint
+             WHEN dvj.pending_created_min IS NOT NULL THEN GREATEST(0, EXTRACT(EPOCH FROM (now() - dvj.pending_created_min)))::bigint
+             ELSE NULL END AS cho_kt_giay,
            ts.pcs_in, ts.so_tem, ts.sl_dat, ts.sl_sua, ts.sl_sua_dat, ts.tems,
            COUNT(*) OVER()::int AS total_count
     ${BASE_JOINS}
@@ -119,6 +126,7 @@ async function listVaiVe({ search = '', filters = {}, stage = '', offset = 0, li
              COALESCE(SUM(dv.so_luong_vai_ve),0)::int AS tong_vai,
              min(dv.ngay_vai_ve) AS ngay_vai_min, min(dv.han_giao_hang) AS han_min,
              min(dv.tg_chuyen_ready) AS tg_chuyen_ready_min,
+             min(dv.created_date) FILTER (WHERE dv.tg_chuyen_ready IS NULL) AS pending_created_min,
              COALESCE(json_agg(json_build_object(
                'dot_vai_id', dv.id, 'ma_dot_vai', dv.ma_dot_vai, 'so_luong_vai_ve', dv.so_luong_vai_ve,
                'ngay_vai_ve', dv.ngay_vai_ve, 'han_giao_hang', dv.han_giao_hang

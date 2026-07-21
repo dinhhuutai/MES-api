@@ -11,6 +11,7 @@ function startErpSyncJob() {
   }
   const intervalMs = Math.max(5, env.erp.syncIntervalMin) * 60 * 1000;
 
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const run = async () => {
     // Chạy -new TRƯỚC (lấy dữ liệu chờ chuyển) rồi -60 (chuyển những code phần đã có sang READY + barcode).
     try {
@@ -19,6 +20,7 @@ function startErpSyncJob() {
     } catch (e) {
       console.error('[erp-sync] (-new) Lỗi đồng bộ:', e.message);
     }
+    await sleep(5000); // giãn nhịp để proc ERP nhả khóa trước khi gọi -60 (tránh deadlock chồng nhau)
     try {
       const r = await erpService.syncPhieuNhanVai({ tuDong: true }); // fromDate mặc định = now - N ngày
       console.log(`[erp-sync] (-60) OK: ${r.soMoi} mới, ${r.soCapNhat} cập nhật, ${r.soLoi} lỗi (tổng ${r.tong})`);

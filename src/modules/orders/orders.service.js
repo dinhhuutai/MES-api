@@ -11,8 +11,8 @@ async function listPhanIn({ search, missingProfit, page, limit, offset }) {
   return { items: rows, meta: buildMeta(page, limit, total) };
 }
 
-async function listVaiVe({ search, filters, stage, page, limit, offset, sortKey, sortDir }) {
-  const { rows, total } = await repo.listVaiVe({ search, filters, stage, offset, limit, sortKey, sortDir });
+async function listVaiVe({ search, filters, stage, daChuyen, page, limit, offset, sortKey, sortDir }) {
+  const { rows, total } = await repo.listVaiVe({ search, filters, stage, daChuyen, offset, limit, sortKey, sortDir });
   // Chế độ TỔNG HỢP (Tất cả + các chip tiền sản xuất): gắn ledger theo TỪNG ĐỢT SẢN XUẤT (query riêng, IPS-safe)
   // để FE gộp 1 dòng/phần in + mở modal "Chi tiết" theo từng đợt.
   const AGG_STAGES = ['', 'ALL', 'READY', 'RELEASE_1', 'TEST_RUN', 'RELEASE_2'];

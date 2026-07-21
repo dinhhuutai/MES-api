@@ -91,9 +91,39 @@ function erpProxy() {
   } catch { return undefined; }
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Lỗi TẠM THỜI phía ERP (nên thử lại): deadlock SQL Server ("Rerun the transaction"), 5xx, timeout, lỗi mạng.
+function isTransientErp(e) {
+  const msg = String(e && e.message || '').toLowerCase();
+  if (msg.includes('deadlock') || msg.includes('rerun the transaction') || msg.includes('timeout expired')) return true;
+  const code = e && e.errorCode;
+  return code === 'ERP_HTTP' || code === 'ERP_TIMEOUT' || code === 'ERP_FETCH_FAILED';
+}
+
+// Gọi ERP có TỰ THỬ LẠI khi lỗi tạm thời (proc ERP hay deadlock — nó bảo "Rerun the transaction").
+async function fetchErp(baseUrl, fromDate) {
+  const maxTry = Math.max(1, env.erp.retry || 3);
+  let lastErr;
+  for (let i = 1; i <= maxTry; i += 1) {
+    try {
+      return await fetchErpAttempt(baseUrl, fromDate);
+    } catch (e) {
+      lastErr = e;
+      if (i < maxTry && isTransientErp(e)) {
+        const wait = 3000 * i; // 3s, 6s...
+        console.warn(`[erp-sync] ⟳ Lỗi tạm thời (lần ${i}/${maxTry}), thử lại sau ${wait / 1000}s: ${e.message}`);
+        await sleep(wait);
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw lastErr;
+}
+
 // Gọi ERP bằng AXIOS (không phải fetch của Node/undici). Lý do: app cũ dùng axios chạy được vì axios
 // TỰ dùng proxy từ biến môi trường, còn `fetch`(undici) thì KHÔNG → hay timeout UND_ERR_CONNECT_TIMEOUT.
-async function fetchErp(baseUrl, fromDate) {
+async function fetchErpAttempt(baseUrl, fromDate) {
   const url = `${baseUrl}?fromDate=${encodeURIComponent(fromDate)}`;
   const timeoutMs = env.erp.syncTimeoutMs || 600000;
   const t0 = Date.now();

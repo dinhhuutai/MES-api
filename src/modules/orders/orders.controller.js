@@ -27,6 +27,7 @@ const listVaiVe = asyncHandler(async (req, res) => {
     search: req.query.search || '',
     filters,
     stage: req.query.stage || '',
+    daChuyen: req.query.daChuyen || '',
     page, limit, offset,
     sortKey: req.query.sortKey || '',
     sortDir: req.query.sortDir || '',

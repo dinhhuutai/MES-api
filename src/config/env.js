@@ -59,6 +59,8 @@ const env = {
     })(),
     // URL forward proxy để ra mạng nội bộ tới ERP (vd http://10.84.40.x:port). Trống = axios tự đọc HTTP_PROXY env.
     proxyUrl: process.env.ERP_PROXY_URL || null,
+    // Số lần thử lại khi ERP lỗi tạm thời (deadlock SQL Server, 5xx, timeout). Mặc định 3.
+    retry: parseInt(process.env.ERP_SYNC_RETRY || '3', 10),
   },
 };
 
