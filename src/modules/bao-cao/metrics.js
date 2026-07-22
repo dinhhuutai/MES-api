@@ -12,6 +12,7 @@
 const { query } = require('../../config/db');
 const dashboardRepo = require('../dashboard/dashboard.repository');
 const { dominantStageScalar } = require('../../utils/stage');
+const { techDoneSql, KHUON_OPT_SQL_LIST } = require('../../utils/tech');
 
 // Cache ngắn kết quả stageCounts (đếm phần in theo giai đoạn — nguồn tin cậy như dashboard) để nhiều
 // metric "phần in đang ở trạm" dùng chung 1 lần chạy trong cùng lượt compute (tránh chạy lặp query nặng).
@@ -86,12 +87,17 @@ const cpDoneToday = (maCp) =>
    WHERE cp.ma_checkpoint = '${maCp}' AND kq.trang_thai = 'DAT' AND ${TODAY_TS('kq.tg_xac_nhan')}`;
 
 // Đếm phần in đang HOẠT ĐỘNG, CHƯA QC-READY và CHƯA xác nhận mã checkpoint `maCp` (đang chờ mục đó).
-const readyChoCp = (maCp) =>
-  `SELECT count(*)::numeric AS v FROM phan_in pin WHERE pin.dang_hoat_dong
+// KHUON: bỏ khách II/AD (Khuôn không bắt buộc nên không tính là "chờ khuôn").
+const readyChoCp = (maCp) => {
+  const khuonExtra = maCp === 'KHUON'
+    ? ` AND (SELECT kh.ten_khach_hang FROM ma_hang mh JOIN don_hang dh ON dh.id = mh.don_hang_id JOIN khach_hang kh ON kh.id = dh.khach_hang_id WHERE mh.id = pin.ma_hang_id) NOT IN (${KHUON_OPT_SQL_LIST})`
+    : '';
+  return `SELECT count(*)::numeric AS v FROM phan_in pin WHERE pin.dang_hoat_dong
      AND NOT EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
        WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT')
      AND NOT EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
-       WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = '${maCp}' AND kq.trang_thai = 'DAT')`;
+       WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = '${maCp}' AND kq.trang_thai = 'DAT')${khuonExtra}`;
+};
 
 // Đếm đợt vải đang ở 1 trạm hiện tại (ton_tram) theo mã trạm (cần migration 029 mới có dữ liệu).
 const tonTram = (maTram) =>
@@ -160,11 +166,14 @@ const DEFS = [
   { ma: 'READY_KT_DU_HOM_NAY', ten: 'Phần in đủ mục KT hôm nay', nhom: 'Kỹ thuật (hôm nay)', don_vi: 'phần',
     mo_ta: 'Số phần in hoàn tất đủ 3 mục kỹ thuật, với mốc xác nhận mục cuối cùng trong hôm nay.',
     run: () => scalar(`SELECT count(*)::numeric AS v FROM (
-      SELECT kq.phan_in_id, count(*) AS n, max(kq.tg_xac_nhan) AS tgmax
+      SELECT kq.phan_in_id, max(kq.tg_xac_nhan) AS tgmax,
+             bool_or(cp.ma_checkpoint='KHUON') AS hk, bool_or(cp.ma_checkpoint='FILM') AS hf, bool_or(cp.ma_checkpoint='MUC') AS hm
       FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
       WHERE cp.ma_checkpoint IN ('KHUON','FILM','MUC') AND kq.trang_thai = 'DAT'
-      GROUP BY kq.phan_in_id HAVING count(*) >= 3
-    ) t WHERE ${TODAY_TS('t.tgmax')}`) },
+      GROUP BY kq.phan_in_id
+    ) t JOIN phan_in pin ON pin.id = t.phan_in_id JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+      JOIN don_hang dh ON dh.id = mh.don_hang_id JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+      WHERE ${TODAY_TS('t.tgmax')} AND ${techDoneSql('kh.ten_khach_hang', 't.hk', 't.hf', 't.hm')}`) },
   { ma: 'QC_READY_HOM_NAY', ten: 'Phần in QC-READY hôm nay', nhom: 'Kỹ thuật (hôm nay)', don_vi: 'phần',
     mo_ta: 'Số phần in được QC xác nhận READY (QC_XAC_NHAN=DAT) trong hôm nay.',
     run: () => scalar(cpDoneToday('QC_XAC_NHAN')) },

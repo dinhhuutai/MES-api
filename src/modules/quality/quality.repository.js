@@ -26,7 +26,9 @@ const TEM_CTX = `
          ${CON_OQC_KCS} AS con_oqc_kcs, ${CON_OQC_SUA} AS con_oqc_sua,
          ls.ma_lenh_san_xuat, cs.ma_chuyen, cs.ten_chuyen,
          info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.mau_vai, info.kich_vai, info.kich_phim,
-         sla.tg_vao, sla.sla_phut, sla.canh_bao_truoc_phut,
+         sla.tg_vao,
+         CASE WHEN lc_gc.ma_loai = 'GIA_CONG' THEN 0 ELSE sla.sla_phut END AS sla_phut,
+         sla.canh_bao_truoc_phut,
          (SELECT string_agg(DISTINCT pin.ma_phan, ', ')
             FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
             JOIN phan_in pin ON pin.id = dv.phan_in_id WHERE lsd.lenh_san_xuat_id = ls.id) AS phan_list
@@ -34,6 +36,7 @@ const TEM_CTX = `
   JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
   JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
   LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+  LEFT JOIN loai_chuyen lc_gc ON lc_gc.id = cs.loai_chuyen_id
   LEFT JOIN LATERAL (
     SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim
     FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
@@ -230,7 +233,7 @@ async function recomputeTemStageMany(client, temIds, actorId) {
 const PHAN_INFO_LATERAL = `
   LEFT JOIN LATERAL (
     SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang,
-           pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.ma_phan
+           pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.ma_phan, pin.tinh_chat_in, dv.han_giao_hang
     FROM lenh_sx_dot_vai lsd
     JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
     JOIN phan_in pin ON pin.id = dv.phan_in_id
@@ -542,7 +545,8 @@ async function oqcHistoryByDate(date) {
 // Trả hình dạng đối tượng cho DonePanel: ma (mã tem) + ngữ cảnh phần in + SL + giờ + người.
 const TEM_INFO_LATERAL = `
   LEFT JOIN LATERAL (
-    SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim
+    SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim,
+           pin.tinh_chat_in, dv.han_giao_hang
     FROM phieu_san_xuat ps JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
     JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
     JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
@@ -563,7 +567,8 @@ async function temDoneByDate(table, date) {
   const sql = `
     SELECT x.created_date AS tg, nd.ho_ten AS nguoi, t.ma_tem AS ma, t.id AS tem_id,
            x.${qtyCol} AS so_luong, x.${kiemCol} AS so_luong_kiem${oqcCols}${suaCols},
-           info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.mau_vai, info.kich_vai, info.kich_phim
+           info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.mau_vai, info.kich_vai, info.kich_phim,
+           info.tinh_chat_in, info.han_giao_hang
     FROM ${table} x JOIN tem t ON t.id = x.tem_id
     LEFT JOIN nguoi_dung nd ON nd.id = x.created_by
     ${TEM_INFO_LATERAL}
@@ -578,7 +583,8 @@ async function inlineDoneByDate(date) {
   const sql = `
     SELECT q.created_date AS tg, nd.ho_ten AS nguoi, ps.ma_phieu_san_xuat AS ma,
            q.so_luong_mau AS so_luong, q.ket_qua,
-           info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.mau_vai, info.kich_vai, info.kich_phim
+           info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.mau_vai, info.kich_vai, info.kich_phim,
+           info.tinh_chat_in, info.han_giao_hang
     FROM qc_in_line q
     JOIN phieu_san_xuat ps ON ps.id = q.phieu_san_xuat_id
     JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id

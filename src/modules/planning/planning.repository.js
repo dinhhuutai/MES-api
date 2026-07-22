@@ -33,7 +33,7 @@ async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
 
   const dataSql = `
     SELECT dv.id AS dot_vai_id, dv.ma_dot_vai, dv.so_luong_vai_ve, dv.ngay_vai_ve, dv.han_giao_hang,
-           pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
+           pin.id AS phan_in_id, pin.ma_phan, pin.barcode, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
            pin.so_luong_don_hang, ldv.ten_loai AS loai_dot_vai,
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
            ${DA_REL}::int AS da_release,
@@ -221,6 +221,15 @@ async function createLenh(client, data, actorId) {
      data.tgBdKh || null, data.tgKtKh || null, actorId]
   );
   return rows[0].id;
+}
+
+// Loại chuyền của 1 chuyền (nhận diện gia công qua ma_loai='GIA_CONG').
+async function getChuyenLoai(chuyenId) {
+  const { rows } = await query(
+    `SELECT lc.ma_loai FROM chuyen_san_xuat cs LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id WHERE cs.id = $1`,
+    [chuyenId]
+  );
+  return rows[0] ? rows[0].ma_loai : null;
 }
 
 // In kiếng: kích hoạt đợt EP_UI (holding CHO_IN_XONG) của 1 đợt IN vừa chạy hoàn tất → chờ chạy (RELEASE_2).
@@ -755,7 +764,7 @@ async function testRunHistoryByDate(date) {
 
 // ===== Danh sách "đã hoàn thành" theo ngày (giờ VN) cho DonePanel — hình dạng đối tượng =====
 const DONE_INFO = `info.ten_khach_hang, info.ma_don_hang, info.ma_hang,
-                   info.mau_vai, info.kich_vai, info.kich_phim`;
+                   info.mau_vai, info.kich_vai, info.kich_phim, info.tinh_chat_in, info.han_giao_hang`;
 
 // Release 1: lệnh sản xuất được tạo trong ngày (mỗi đợt vải 1 lệnh).
 async function release1DoneByDate(date) {
@@ -872,7 +881,7 @@ module.exports = {
   listRelease1Candidates, release1HistoryByDate, nextMaLenh, nextMaLenhTx, createLenh,
   release1DoneByDate, planDoneByDate, testDoneByDate,
   testedDotVaiIds, getDotVaiQty, getDotVaiRemaining, getDotVaiForCompose, phanInDangChay, addLenhDotVai, dotVaiAlreadyReleased,
-  activateEpUi, getLenhGiaiDoan,
+  activateEpUi, getLenhGiaiDoan, getChuyenLoai,
   listGopCandidates, getDotVaiForMerge, adjustDotVaiQty, markDotVaiGop, insertGopHistory, gopHistoryByDate,
   listTestRunCandidates, listRelease2Candidates, getLenhBasic, getLenhDotVai, getTestRuns,
   getLenhTestStatus, insertTestRun, insertTestRunTx, upsertLenhResult, insertStatusLog, setLenhTrangThai,

@@ -3,6 +3,14 @@
 const { query } = require('../../config/db');
 const ordersRepo = require('../orders/orders.repository');
 const { dotStageCase, readyFallback, ORDER_SQL_ARRAY } = require('../../utils/stage');
+const { techDoneSql } = require('../../utils/tech');
+
+// "Đủ mục KT" (READY) trong flowRows: dùng cờ hk/hf/hm của CTE `kt` + tên khách của đợt (b.ten_khach_hang).
+// Khách II/AD: Khuôn không bắt buộc (chỉ cần Film + Mực). Xem utils/tech.js.
+const KT_DONE_FLOW = techDoneSql('b.ten_khach_hang', 'COALESCE(kt.hk,false)', 'COALESCE(kt.hf,false)', 'COALESCE(kt.hm,false)');
+
+// Đợt vải gắn lệnh trên chuyền loại GIA_CONG (gia công) — ở OQC KHÔNG tính SLA (sla_phut=0 ⇒ luôn OK).
+const GIA_CONG_DOT = (dv) => `EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id AND ls.trang_thai<>'HUY' JOIN chuyen_san_xuat cs ON cs.id=ls.chuyen_id JOIN loai_chuyen lc ON lc.id=cs.loai_chuyen_id WHERE lsd.dot_vai_ve_id=${dv} AND lc.ma_loai='GIA_CONG')`;
 
 const groupMap = (rows, keyCol, valCol = 'n') =>
   rows.reduce((acc, r) => { acc[r[keyCol]] = Number(r[valCol]); return acc; }, {});
@@ -402,7 +410,8 @@ async function dieuPhoiExtra() {
 async function tinhTrangActiveRows() {
   const { rows } = await query(
     `SELECT dv.phan_in_id, tr.ma_tram, tr.ten_tram,
-            CASE WHEN tr.ma_tram='CHO_KHO' THEN tr.thoi_gian_quy_dinh_phut + COALESCE(pi.thoi_gian_cho_kho_phut, 60)
+            CASE WHEN tr.ma_tram='OQC' AND ${GIA_CONG_DOT('dv.id')} THEN 0
+                 WHEN tr.ma_tram='CHO_KHO' THEN tr.thoi_gian_quy_dinh_phut + COALESCE(pi.thoi_gian_cho_kho_phut, 60)
                  ELSE tr.thoi_gian_quy_dinh_phut END AS sla_phut, tr.canh_bao_truoc_phut,
             floor(EXTRACT(EPOCH FROM (now() - tt.tg_vao)) / 60)::int AS phut_da_o,
             pi.ma_phan, pi.mau_vai, pi.kich_vai, pi.kich_phim,
@@ -637,11 +646,19 @@ async function flowRows(tramMa = '') {
     ),
     kt AS (
       SELECT kq.phan_in_id,
-             count(DISTINCT c.ma_checkpoint) FILTER (WHERE kq.trang_thai = 'DAT') AS n_kt,
+             bool_or(c.ma_checkpoint='KHUON' AND kq.trang_thai='DAT') AS hk,
+             bool_or(c.ma_checkpoint='FILM' AND kq.trang_thai='DAT') AS hf,
+             bool_or(c.ma_checkpoint='MUC' AND kq.trang_thai='DAT') AS hm,
              max(COALESCE(kq.tg_xac_nhan, kq.created_date)) FILTER (WHERE kq.trang_thai = 'DAT') AS kt_tg
       FROM ket_qua_checkpoint kq JOIN checkpoint c ON c.id = kq.checkpoint_id
       WHERE c.ma_checkpoint IN ('KHUON','FILM','MUC')
       GROUP BY kq.phan_in_id
+    ),
+    gc AS (
+      SELECT lk.dot_vai_ve_id, (lc.ma_loai='GIA_CONG') AS is_gia_cong
+      FROM lk JOIN lenh_san_xuat ls ON ls.id = lk.lenh_id
+      LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+      LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
     ),
     qcp AS (
       SELECT c.thoi_gian_quy_dinh_phut AS sla, c.canh_bao_truoc_phut AS cb
@@ -654,10 +671,11 @@ async function flowRows(tramMa = '') {
            b.ma_hang, b.ma_don_hang, b.ten_khach_hang,
            COALESCE(ta.pcs,0) AS pcs,
            cur.ma_tram, tr.ten_tram, tr.thu_tu,
-           CASE WHEN cur.ma_tram='READY' AND COALESCE(kt.n_kt,0)>=3 THEN qcp.sla
+           CASE WHEN cur.ma_tram='OQC' AND COALESCE(gc.is_gia_cong,false) THEN 0
+                WHEN cur.ma_tram='READY' AND ${KT_DONE_FLOW} THEN qcp.sla
                 WHEN cur.ma_tram='CHO_KHO' THEN tr.thoi_gian_quy_dinh_phut + COALESCE(b.cho_kho_phut, 60)
                 ELSE tr.thoi_gian_quy_dinh_phut END AS sla_phut,
-           CASE WHEN cur.ma_tram='READY' AND COALESCE(kt.n_kt,0)>=3 THEN qcp.cb ELSE tr.canh_bao_truoc_phut END AS canh_bao_truoc_phut,
+           CASE WHEN cur.ma_tram='READY' AND ${KT_DONE_FLOW} THEN qcp.cb ELSE tr.canh_bao_truoc_phut END AS canh_bao_truoc_phut,
            tv.tg_vao,
            floor(EXTRACT(EPOCH FROM (now() - tv.tg_vao)) / 60)::int AS phut_da_o,
            NULL::text AS owner_ho_ten
@@ -668,6 +686,7 @@ async function flowRows(tramMa = '') {
     LEFT JOIN ev ON ev.dot_vai_ve_id = b.dot_vai_ve_id
     LEFT JOIN qc ON qc.phan_in_id = b.phan_in_id
     LEFT JOIN kt ON kt.phan_in_id = b.phan_in_id
+    LEFT JOIN gc ON gc.dot_vai_ve_id = b.dot_vai_ve_id
     CROSS JOIN qcp
     CROSS JOIN LATERAL (SELECT (CASE
         WHEN lk.lenh_id IS NULL THEN (CASE WHEN EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint c ON c.id=kq.checkpoint_id WHERE kq.phan_in_id=b.phan_in_id AND c.ma_checkpoint='QC_XAC_NHAN' AND kq.trang_thai='DAT') THEN 'RELEASE_1' ELSE 'READY' END)
@@ -682,7 +701,7 @@ async function flowRows(tramMa = '') {
         ELSE 'TEST_RUN'
       END) AS ma_tram) cur
     CROSS JOIN LATERAL (SELECT (CASE cur.ma_tram
-        WHEN 'READY' THEN (CASE WHEN COALESCE(kt.n_kt,0)>=3 THEN kt.kt_tg ELSE b.dv_tg END)
+        WHEN 'READY' THEN (CASE WHEN ${KT_DONE_FLOW} THEN kt.kt_tg ELSE b.dv_tg END)
         WHEN 'RELEASE_1' THEN COALESCE(qc.qc_tg, b.dv_tg)
         WHEN 'TEST_RUN' THEN lk.lenh_tg
         WHEN 'RELEASE_2' THEN lk.lenh_tg
@@ -998,7 +1017,8 @@ async function nghenTramEpisodes({ from, to, tram = '' }) {
   const { rows } = await query(
     `SELECT dv.phan_in_id, dv.id AS dot_vai_ve_id, dv.ma_dot_vai,
             tr.ma_tram, tr.ten_tram, tr.thu_tu,
-            CASE WHEN tr.ma_tram='CHO_KHO' THEN tr.thoi_gian_quy_dinh_phut + COALESCE(pi.thoi_gian_cho_kho_phut, 60)
+            CASE WHEN tr.ma_tram='OQC' AND ${GIA_CONG_DOT('dv.id')} THEN 0
+                 WHEN tr.ma_tram='CHO_KHO' THEN tr.thoi_gian_quy_dinh_phut + COALESCE(pi.thoi_gian_cho_kho_phut, 60)
                  ELSE tr.thoi_gian_quy_dinh_phut END AS sla_phut, tr.canh_bao_truoc_phut,
             ls.tg_bd AS tg_vao, ls.tg_kt AS tg_ra,
             GREATEST(0, floor(EXTRACT(EPOCH FROM (ls.tg_kt - ls.tg_bd)) / 60))::int AS dwell_phut,

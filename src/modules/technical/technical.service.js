@@ -8,6 +8,7 @@ const AppError = require('../../utils/AppError');
 const { buildMeta } = require('../../utils/pagination');
 const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
+const { isKhuonOptional } = require('../../utils/tech');
 
 const READY_TRAM = 'READY';
 const INPUT_CPS = ['KHUON', 'FILM', 'MUC']; // 3 mục kỹ thuật, xác nhận độc lập (HSKT đã bỏ)
@@ -58,11 +59,15 @@ function buildState(results) {
   const khuon_done = done('KHUON');
   const film_done = done('FILM');
   const muc_done = done('MUC');
+  // Khách II/AD: Khuôn KHÔNG bắt buộc → đủ KT = Film + Mực. Khách khác = đủ 3 mục.
+  const tenKhach = results[0]?.ten_khach_hang;
+  const khuonReq = !isKhuonOptional(tenKhach);
   return {
     khuon_done,
     film_done,
     muc_done,
-    tech_done: khuon_done && film_done && muc_done,
+    khuon_required: khuonReq,
+    tech_done: film_done && muc_done && (khuon_done || !khuonReq),
     qc_done: done(QC_CP),
   };
 }
@@ -93,7 +98,7 @@ async function listCandidates({ search, page, limit, offset, onlyQcReady = false
   const rm = await qaRepo.activeReturnsMap('READY', rows.map((r) => r.id));
   const items = rows.map((r) => ({
     ...r,
-    trang_thai_ready: r.qc_done ? 'DONE' : r.n_tech_done >= TECH_TOTAL ? 'CHO_QC' : r.n_tech_done > 0 ? 'DANG' : 'CHUA',
+    trang_thai_ready: r.qc_done ? 'DONE' : r.tech_done ? 'CHO_QC' : r.n_tech_done > 0 ? 'DANG' : 'CHUA',
     tra_ve: rm[r.id] || null,
     tra_ve_ly_do: rm[r.id]?.ly_do || null, // giữ tương thích cũ
   }));
@@ -292,7 +297,7 @@ async function confirmQC(phanInId, actorId) {
   const { tram, byMa } = await loadConfig();
   const state = buildState(await repo.getResults(tram.id, phanInId));
   if (!state.tech_done) {
-    throw new AppError('Kỹ thuật chưa hoàn tất 3 mục — QC không thể xác nhận', { status: 409, errorCode: 'TECH_NOT_DONE' });
+    throw new AppError('Kỹ thuật chưa hoàn tất — QC không thể xác nhận', { status: 409, errorCode: 'TECH_NOT_DONE' });
   }
   if (state.qc_done) throw new AppError('Đã QC xác nhận', { status: 409, errorCode: 'ALREADY' });
   if (!byMa[QC_CP]) throw new AppError('Workflow chưa có checkpoint QC', { status: 500, errorCode: 'NO_CHECKPOINT' });

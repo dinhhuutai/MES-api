@@ -3,6 +3,7 @@
 const { withTransaction } = require('../../config/db');
 const repo = require('./planning.repository');
 const qaRepo = require('../quality/quality.repository'); // qc_tra_ve dùng chung
+const productionRepo = require('../production/production.repository'); // phiếu+tem gia công (→ OQC)
 const chuyenRepo = require('../chuyen/chuyen.repository');
 const wf = require('../workflow/workflow.repository');
 const AppError = require('../../utils/AppError');
@@ -212,6 +213,23 @@ async function autoPlanCandidates({ search }) {
   return { items, planned, chuyens };
 }
 
+// GIA CÔNG: đợt SX gửi ra ngoài gia công → KHÔNG in trong xưởng, đi THẲNG OQC.
+// Tạo lệnh HOAN_TAT + phiếu HOAN_TAT + tem CHO_OQC (seed sl_kcs_dat = SL ⇒ con_oqc>0, nguồn KCS)
+// để lọt vào màn OQC (bốc mẫu → Giao như thường). SLA ở OQC bị bỏ (nhận diện qua chuyền loại GIA_CONG).
+async function createGiaCongLenh(client, { versionId, chuyenId, junctions, tongSL, ngayKeHoach, tgBdKh, tgKtKh }, actorId) {
+  const maLenh = await repo.nextMaLenhTx(client);
+  const lenhId = await repo.createLenh(client, {
+    versionId, maLenh, chuyenId, soLuongRelease: tongSL, ngayKeHoach, trangThai: 'HOAN_TAT', giaiDoan: 'IN',
+    tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null,
+  }, actorId);
+  for (const j of junctions) await repo.addLenhDotVai(client, lenhId, j.dotVaiId, actorId, j.soLuong);
+  const maPhieu = await productionRepo.nextMaPhieuTx(client);
+  const phieuId = await productionRepo.createPhieuDone(client, { lenhId, chuyenId, maPhieu, soLuong: tongSL }, actorId);
+  const maTem = await productionRepo.nextMaTemTx(client);
+  await productionRepo.createTemGiaCongOqc(client, { phieuId, maTem, soLuong: tongSL }, actorId);
+  return { id: lenhId, ma_lenh_san_xuat: maLenh, ma_tem: maTem };
+}
+
 async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach }, actorId) {
   if (!Array.isArray(dotVaiIds) || dotVaiIds.length === 0) {
     throw new AppError('Chọn ít nhất một đợt vải', { status: 422, errorCode: 'NO_DOT_VAI' });
@@ -238,6 +256,32 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
     }
   }
   if (plan.length === 0) throw new AppError('Các đợt vải đã release đủ số lượng', { status: 409, errorCode: 'ALL_RELEASED' });
+
+  // GIA CÔNG (chuyền loại GIA_CONG): mỗi đợt → 1 lệnh đi THẲNG OQC (bỏ Test Run/Release 2/Sản xuất/KCS/Sửa).
+  const chuyenLoai = await repo.getChuyenLoai(chuyenId);
+  if (chuyenLoai === 'GIA_CONG') {
+    const version = await wf.getActiveVersion();
+    if (!version) throw new AppError('Chưa cấu hình workflow', { status: 500, errorCode: 'NO_WORKFLOW' });
+    const created = await withTransaction(async (client) => {
+      const out = [];
+      for (const { dvId, qty } of plan) {
+        const c = await createGiaCongLenh(client, {
+          versionId: version.id, chuyenId, junctions: [{ dotVaiId: dvId, soLuong: qty }], tongSL: qty, ngayKeHoach,
+        }, actorId);
+        out.push({ ...c, dot_vai_id: dvId });
+      }
+      return out;
+    });
+    for (const c of created) await tracking.moveByLenh(c.id, 'OQC', actorId);
+    await qaRepo.resolveReturnsMany('TEST_RUN', created.map((c) => c.dot_vai_id));
+    created.forEach((c) => sockets.emit('workflow:updated', { lenhId: c.id, stage: 'OQC', giaCong: true }));
+    sockets.emit('dashboard:refresh', {});
+    const detail = await getLenhDetail(created[0].id);
+    return {
+      ...detail, created_summary: created, created_count: created.length,
+      gia_cong: true, skipped_test_count: created.length,
+    };
+  }
 
   // ĐI TẮT TEST RUN (nhất quán createDotSanXuat / CLAUDE.md §5): bỏ Test Run khi
   //   (phần in ĐANG IN TEM trên chuyền — phiếu DANG_CHAY) HOẶC (SL release của lệnh < 100),
@@ -310,6 +354,21 @@ async function createDotSanXuat({ items, chuyenId, ngayKeHoach, tgBdKh, tgKtKh }
   if (pins.size > 1) throw new AppError('Chỉ gộp các đợt vải CÙNG PHẦN IN (code phần) vào một đợt sản xuất. Muốn gom nhiều phần in cùng màu → dùng Gom set ở READY.', { status: 422, errorCode: 'MIXED_PHAN_IN' });
 
   const tongSL = plan.reduce((s, p) => s + p.soLuong, 0);
+
+  // GIA CÔNG (chuyền loại GIA_CONG): gộp mọi đợt vào 1 lệnh đi THẲNG OQC (bỏ Test Run/SX/KCS...).
+  const chuyenLoaiDsx = await repo.getChuyenLoai(chuyenId);
+  if (chuyenLoaiDsx === 'GIA_CONG') {
+    const version = await wf.getActiveVersion();
+    const gc = await withTransaction(async (client) => createGiaCongLenh(client, {
+      versionId: version.id, chuyenId, junctions: plan.map((p) => ({ dotVaiId: p.dotVaiId, soLuong: p.soLuong })),
+      tongSL, ngayKeHoach, tgBdKh, tgKtKh,
+    }, actorId));
+    await tracking.moveByLenh(gc.id, 'OQC', actorId);
+    await qaRepo.resolveReturnsMany('TEST_RUN', ids);
+    sockets.emit('workflow:updated', { lenhId: gc.id, stage: 'OQC', giaCong: true });
+    sockets.emit('dashboard:refresh', {});
+    return { ...(await getLenhDetail(gc.id)), gia_cong: true, so_luong_release: tongSL };
+  }
 
   // ĐI TẮT TEST RUN (điểm 5): bỏ Test Run khi (phần in ĐANG IN TEM) HOẶC (tổng SL < 100),
   // TRỪ khi có đợt bật cờ LÀM LẠI (đổi HSKT → ép full flow).

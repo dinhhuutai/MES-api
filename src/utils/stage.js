@@ -40,17 +40,18 @@ const CHIP_STAGES = {
   DA_GIAO: ['DA_GIAO'],
 };
 
+const { techDoneSqlByPin } = require('./tech');
+
 // CASE tính stage cho 1 ĐỢT VẢI, dựa trên rowsource alias `a` có cột:
 //   a.phan_in_id, a.lenh_id (lệnh non-HUY mới nhất của đợt, NULL nếu chưa release), a.lenh_tt.
 function dotStageCase(a) {
   const temEx = (cond) => `EXISTS(SELECT 1 FROM phieu_san_xuat ps JOIN tem t ON t.phieu_san_xuat_id=ps.id WHERE ps.lenh_san_xuat_id=${a}.lenh_id AND t.trang_thai<>'HUY' AND ${cond})`;
   const kqPin = (ma) => `EXISTS(SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id=k.checkpoint_id WHERE k.phan_in_id=${a}.phan_in_id AND c.ma_checkpoint='${ma}' AND k.trang_thai='DAT')`;
   const kqLenh = (ma) => `EXISTS(SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id=k.checkpoint_id WHERE k.lenh_san_xuat_id=${a}.lenh_id AND c.ma_checkpoint='${ma}' AND k.trang_thai='DAT')`;
-  const cntPin = (list) => `(SELECT count(*) FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id=k.checkpoint_id WHERE k.phan_in_id=${a}.phan_in_id AND c.ma_checkpoint IN (${list}) AND k.trang_thai='DAT')`;
   return `CASE
       WHEN ${a}.lenh_id IS NULL THEN
         CASE WHEN ${kqPin('QC_XAC_NHAN')} THEN 'RELEASE_1'
-             WHEN ${cntPin("'KHUON','FILM','MUC'")}>=3 THEN 'READY_QA'
+             WHEN ${techDoneSqlByPin(`${a}.phan_in_id`)} THEN 'READY_QA'
              ELSE 'READY_KT' END
       WHEN EXISTS(SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id=${a}.lenh_id AND ps.trang_thai='DANG_CHAY') THEN 'SAN_XUAT'
       WHEN ${temEx("t.trang_thai IN ('IN','DANG_PHOI')")} THEN 'CHO_KHO'
@@ -73,7 +74,7 @@ function dotStageCase(a) {
 function readyFallback(pinId) {
   return `CASE
       WHEN EXISTS(SELECT 1 FROM dot_vai_ve dp WHERE dp.phan_in_id=${pinId} AND dp.trang_thai NOT IN ('DA_GOP','DA_HUY') AND dp.tg_chuyen_ready IS NULL) THEN 'CHO_CHUYEN'
-      WHEN (SELECT count(*) FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id=k.checkpoint_id WHERE k.phan_in_id=${pinId} AND c.ma_checkpoint IN ('KHUON','FILM','MUC') AND k.trang_thai='DAT')>=3 THEN 'READY_QA'
+      WHEN ${techDoneSqlByPin(pinId)} THEN 'READY_QA'
       ELSE 'READY_KT' END`;
 }
 

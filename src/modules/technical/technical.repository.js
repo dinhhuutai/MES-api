@@ -1,6 +1,7 @@
 'use strict';
 
 const { query } = require('../../config/db');
+const { techDoneSql, KHUON_OPT_SQL_LIST } = require('../../utils/tech');
 
 // Đọc cấu hình READY (version + trạm + checkpoint) trong 1 query (giảm round-trip tới DB ở xa).
 async function loadReadyConfig() {
@@ -56,7 +57,8 @@ async function listCandidates({
            ${doneExpr('$3')} AS qc_done${withItems ? `,
            ${doneExpr('$6')} AS khuon_done,
            ${doneExpr('$7')} AS film_done,
-           ${doneExpr('$8')} AS muc_done` : ''},
+           ${doneExpr('$8')} AS muc_done,
+           ${techDoneSql('kh.ten_khach_hang', doneExpr('$6'), doneExpr('$7'), doneExpr('$8'))} AS tech_done` : ''},
            sla.ready_tg_vao, sla.kt_done_tg
     FROM phan_in pin
     JOIN ma_hang mh ON mh.id = pin.ma_hang_id
@@ -98,8 +100,8 @@ async function listCandidates({
   // Gộp data + total vào 1 query bằng COUNT(*) OVER() (1 round-trip thay vì 2).
   const dataSql = `
     SELECT q.*,
-           CASE WHEN $11 THEN (CASE WHEN q.n_tech_done >= ${tt} THEN q.kt_done_tg ELSE NULL END) ELSE q.ready_tg_vao END AS tg_vao,
-           CASE WHEN $11 THEN (CASE WHEN q.n_tech_done >= ${tt} THEN $12::int ELSE NULL END) WHEN q.n_tech_done >= ${tt} THEN NULL ELSE $9::int END AS sla_phut,
+           CASE WHEN $11 THEN (CASE WHEN q.tech_done THEN q.kt_done_tg ELSE NULL END) ELSE q.ready_tg_vao END AS tg_vao,
+           CASE WHEN $11 THEN (CASE WHEN q.tech_done THEN $12::int ELSE NULL END) WHEN q.tech_done THEN NULL ELSE $9::int END AS sla_phut,
            CASE WHEN $11 THEN $13::int ELSE $10::int END AS canh_bao_truoc_phut,
            count(*) OVER()::int AS total_count
     FROM (${selectBase(true)}) q
@@ -120,12 +122,16 @@ async function countReadyItems({ khuonId, filmId, mucId, qcId }) {
   const doneExpr = (param) =>
     `EXISTS (SELECT 1 FROM ket_qua_checkpoint k WHERE k.phan_in_id = pin.id AND k.checkpoint_id = ${param} AND k.trang_thai = 'DAT')`;
   const sql = `
-    SELECT count(*) FILTER (WHERE NOT khuon_done)::int AS khuon,
+    SELECT count(*) FILTER (WHERE NOT khuon_done AND khach NOT IN (${KHUON_OPT_SQL_LIST}))::int AS khuon,
            count(*) FILTER (WHERE NOT film_done)::int AS film,
            count(*) FILTER (WHERE NOT muc_done)::int AS muc
     FROM (
-      SELECT ${doneExpr('$1')} AS khuon_done, ${doneExpr('$2')} AS film_done, ${doneExpr('$3')} AS muc_done
+      SELECT ${doneExpr('$1')} AS khuon_done, ${doneExpr('$2')} AS film_done, ${doneExpr('$3')} AS muc_done,
+             kh.ten_khach_hang AS khach
       FROM phan_in pin
+      JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+      JOIN don_hang dh ON dh.id = mh.don_hang_id
+      JOIN khach_hang kh ON kh.id = dh.khach_hang_id
       WHERE (EXISTS (SELECT 1 FROM dot_vai_ve dvu WHERE dvu.phan_in_id = pin.id AND dvu.trang_thai <> 'DA_GOP' AND dvu.tg_chuyen_ready IS NOT NULL
                        AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsu JOIN lenh_san_xuat lu ON lu.id = lsu.lenh_san_xuat_id
                                        WHERE lsu.dot_vai_ve_id = dvu.id AND lu.trang_thai <> 'HUY'))
@@ -189,7 +195,8 @@ async function listConfirmHistory({ date, search = '' }) {
 //  scope='qc':   phần in đã QC_XAC_NHAN = DAT trong ngày.
 async function doneByDate(date, scope = 'tech') {
   const info = `pin.ma_phan AS ma, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.so_luong_don_hang AS so_luong,
-                mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang`;
+                pin.tinh_chat_in, mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
+                (SELECT min(dv.han_giao_hang) FROM dot_vai_ve dv WHERE dv.phan_in_id = pin.id AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY')) AS han_giao_hang`;
   const joins = `JOIN ma_hang mh ON mh.id = pin.ma_hang_id
                  JOIN don_hang dh ON dh.id = mh.don_hang_id
                  JOIN khach_hang kh ON kh.id = dh.khach_hang_id`;
@@ -209,15 +216,16 @@ async function doneByDate(date, scope = 'tech') {
   } else {
     sql = `
       WITH tech AS (
-        SELECT kq.phan_in_id, kq.tg_xac_nhan, kq.nguoi_xac_nhan_id
+        SELECT kq.phan_in_id, cp.ma_checkpoint, kq.tg_xac_nhan, kq.nguoi_xac_nhan_id
         FROM ket_qua_checkpoint kq
         JOIN checkpoint cp ON cp.id = kq.checkpoint_id
         JOIN tram t ON t.id = cp.tram_id
         WHERE t.ma_tram = 'READY' AND cp.ma_checkpoint IN ('KHUON','FILM','MUC') AND kq.trang_thai = 'DAT'
       ),
       agg AS (
-        SELECT phan_in_id, count(*) AS n, max(tg_xac_nhan) AS tg_done
-        FROM tech GROUP BY phan_in_id HAVING count(*) >= 3
+        SELECT phan_in_id, max(tg_xac_nhan) AS tg_done,
+               bool_or(ma_checkpoint='KHUON') AS hk, bool_or(ma_checkpoint='FILM') AS hf, bool_or(ma_checkpoint='MUC') AS hm
+        FROM tech GROUP BY phan_in_id
       )
       SELECT a.tg_done AS tg, nx.ho_ten AS nguoi, ${info}
       FROM agg a
@@ -227,6 +235,7 @@ async function doneByDate(date, scope = 'tech') {
                          ORDER BY tg_xac_nhan DESC NULLS LAST LIMIT 1) last ON true
       LEFT JOIN nguoi_dung nx ON nx.id = last.nguoi_xac_nhan_id
       WHERE (a.tg_done AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
+        AND ${techDoneSql('kh.ten_khach_hang', 'a.hk', 'a.hf', 'a.hm')}
       ORDER BY a.tg_done DESC`;
   }
   const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [date]);
@@ -264,7 +273,10 @@ async function getResults(tramId, phanInId) {
     `SELECT cp.id AS checkpoint_id, cp.ma_checkpoint, cp.ten_checkpoint, cp.bat_buoc, cp.thu_tu,
             cp.cau_hinh_json, cp.thoi_gian_quy_dinh_phut, cp.canh_bao_truoc_phut, lc.ma_loai AS loai_checkpoint,
             kq.id AS ket_qua_id, kq.trang_thai, kq.gia_tri_text, kq.gia_tri_json,
-            kq.nguoi_xac_nhan_id, kq.tg_xac_nhan, nx.ho_ten AS nguoi_xac_nhan_ten
+            kq.nguoi_xac_nhan_id, kq.tg_xac_nhan, nx.ho_ten AS nguoi_xac_nhan_ten,
+            (SELECT kh.ten_khach_hang FROM phan_in p JOIN ma_hang mh ON mh.id=p.ma_hang_id
+               JOIN don_hang dh ON dh.id=mh.don_hang_id JOIN khach_hang kh ON kh.id=dh.khach_hang_id
+               WHERE p.id=$2) AS ten_khach_hang
      FROM checkpoint cp
      LEFT JOIN loai_checkpoint lc ON lc.id = cp.loai_checkpoint_id
      LEFT JOIN ket_qua_checkpoint kq ON kq.checkpoint_id = cp.id AND kq.phan_in_id = $2

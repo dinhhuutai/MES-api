@@ -103,6 +103,44 @@ async function createPhieu(client, { lenhId, chuyenId, maPhieu }, actorId) {
   return rows[0].id;
 }
 
+// Sinh mã phiếu/tem TRONG transaction (thấy các bản INSERT của cùng client) — cho vòng lặp tạo nhiều lệnh.
+async function nextMaPhieuTx(client) {
+  const { rows } = await client.query(
+    `SELECT 'PSX' || LPAD((COALESCE(MAX(substring(ma_phieu_san_xuat from 4)::int) FILTER (WHERE ma_phieu_san_xuat ~ '^PSX[0-9]+$'),0)+1)::text, 4, '0') AS ma
+     FROM phieu_san_xuat`
+  );
+  return rows[0].ma;
+}
+async function nextMaTemTx(client) {
+  const { rows } = await client.query(
+    `SELECT 'TEM' || LPAD((COALESCE(MAX(substring(ma_tem from 4)::int) FILTER (WHERE ma_tem ~ '^TEM[0-9]+$'),0)+1)::text, 5, '0') AS ma
+     FROM tem`
+  );
+  return rows[0].ma;
+}
+
+// GIA CÔNG: phiếu SX tạo ở trạng thái HOÀN TẤT (không DANG_CHAY) — vì hàng gia công không in trong xưởng.
+// ⚠ Bắt buộc HOAN_TAT: dotStageCase/flowRows ưu tiên phiếu DANG_CHAY → 'SAN_XUAT' TRƯỚC khi xét tem CHO_OQC.
+async function createPhieuDone(client, { lenhId, chuyenId, maPhieu, soLuong }, actorId) {
+  const { rows } = await client.query(
+    `INSERT INTO phieu_san_xuat (lenh_san_xuat_id, chuyen_id, ma_phieu_san_xuat, trang_thai, tg_bd, tg_kt, so_luong_in, created_by)
+     VALUES ($1,$2,$3,'HOAN_TAT',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,$4,$5) RETURNING id`,
+    [lenhId, chuyenId, maPhieu, soLuong, actorId]
+  );
+  return rows[0].id;
+}
+
+// GIA CÔNG: tem tạo THẲNG ở CHO_OQC, seed sl_kcs_dat = SL (coi như đã KCS đạt) ⇒ con_oqc = SL > 0.
+// KHÔNG dùng createTem (set 'IN') và KHÔNG dựa recomputeTemStage (bỏ qua tem 'IN'). Nguồn OQC = KCS.
+async function createTemGiaCongOqc(client, { phieuId, maTem, soLuong }, actorId) {
+  const { rows } = await client.query(
+    `INSERT INTO tem (phieu_san_xuat_id, ma_tem, so_luong, trang_thai, sl_kcs_dat, created_by)
+     VALUES ($1,$2,$3,'CHO_OQC',$3,$4) RETURNING id`,
+    [phieuId, maTem, soLuong, actorId]
+  );
+  return rows[0].id;
+}
+
 async function setLenhChuyen(client, lenhId, chuyenId, actorId) {
   await client.query(
     'UPDATE lenh_san_xuat SET chuyen_id=$2, updated_by=$3, updated_date=CURRENT_TIMESTAMP WHERE id=$1',
@@ -806,6 +844,7 @@ module.exports = {
   cancelPhieuStart, logUndoStart, logChayDacBiet,
   listTemLogByPhieu, nextReprint, logReprint,
   nextMaTem, createTem, logTemPrint, finishPhieu,
+  nextMaPhieuTx, nextMaTemTx, createPhieuDone, createTemGiaCongOqc,
   monitorRunning, monitorQueue, downstreamSlaAfterProduction, listXePhoi, listCurrentPhoi, listTemChoPhoi, addTemToXe, adjustPhoi,
   listDryingTems, confirmDry, getTemBasic,
   promoteFinishedDrying, redryTem, getDryMinForPhieu,
