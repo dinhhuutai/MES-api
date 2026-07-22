@@ -37,7 +37,12 @@ async function attachPrevConfirmer(rows, key) {
   if (!rows || rows.length === 0) return;
   const pc = await repo.prevConfirmerByTems(rows.map((r) => r.tem_id));
   const map = new Map(pc.map((x) => [x.tem_id, x]));
-  rows.forEach((r) => { r.nguoi_truoc = (map.get(r.tem_id) || {})[key] || null; });
+  // Tem GIA CÔNG không có KCS/Sửa/in tem → người xác nhận trạm trước = người Release 1 (người gửi gia công).
+  rows.forEach((r) => {
+    const x = map.get(r.tem_id) || {};
+    r.nguoi_truoc = x.la_gia_cong ? (x.nguoi_release1 || null) : (x[key] || null);
+    r.la_gia_cong = !!x.la_gia_cong; // FE hiện nguồn "Gia công" thay "KCS" cho tem gia công
+  });
 }
 
 // OQC trả tem về trạm trước THEO NGUỒN của phần chờ OQC (kèm lý do bắt buộc) — mig 047:
@@ -198,7 +203,7 @@ async function listSuaCandidates({ search, filters }) {
   const partMap = new Map(parts.map((p) => [p.tem_id, p]));
   const out = rows.map((r) => {
     const p = partMap.get(r.tem_id) || {};
-    return { ...r, ca: caFromParts(p.ca_gio, p.ca_nam, p.ca_tuan, map) };
+    return { ...r, ca: caFromParts(p.ca_gio, p.ca_phut, p.ca_nam, p.ca_tuan, map) };
   });
   // Đánh dấu tem bị OQC trả về SỬA (badge + lý do) — giống badge "Bị OQC trả về" ở KCS.
   const rm = await repo.activeReturnsMap('OQC_SUA', out.map((r) => r.tem_id));

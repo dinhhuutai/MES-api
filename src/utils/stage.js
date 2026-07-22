@@ -12,7 +12,7 @@
 // Thứ tự tiến độ (đầu mảng = kém tiến độ nhất). Dominant = stage có array_position NHỎ nhất.
 // CHO_CHUYEN = đợt vải lấy từ ERP -new nhưng CHƯA qua API chính thức (chưa vào READY) — đứng trước READY.
 const STAGE_ORDER = ['CHO_CHUYEN', 'READY_KT', 'READY_QA', 'RELEASE_1', 'TESTRUN_CNSP', 'TESTRUN_QA', 'RELEASE_2',
-  'CHO_SAN_XUAT', 'SAN_XUAT', 'CHO_KHO', 'KCS', 'SUA', 'OQC', 'DANG_GIAO', 'DA_GIAO'];
+  'CHO_SAN_XUAT', 'SAN_XUAT', 'CHO_KHO', 'KCS', 'SUA', 'GIA_CONG', 'OQC', 'DANG_GIAO', 'DA_GIAO'];
 const ORDER_SQL_ARRAY = `ARRAY[${STAGE_ORDER.map((s) => `'${s}'`).join(',')}]`;
 
 // Nhãn hiển thị cho từng stage nội bộ (dùng ở cột "Trạm hiện tại").
@@ -21,7 +21,7 @@ const STAGE_LABEL = {
   READY_KT: 'READY (Kỹ thuật)', READY_QA: 'READY (QA)', RELEASE_1: 'Release 1',
   TESTRUN_CNSP: 'Test Run (CNSP)', TESTRUN_QA: 'Test Run (QA)', RELEASE_2: 'Release 2',
   CHO_SAN_XUAT: 'Chờ sản xuất', SAN_XUAT: 'Đang sản xuất', CHO_KHO: 'Chờ khô',
-  KCS: 'KCS', SUA: 'Sửa', OQC: 'OQC', DANG_GIAO: 'Đang giao', DA_GIAO: 'Đã giao',
+  KCS: 'KCS', SUA: 'Sửa', GIA_CONG: 'Gia công (chờ chuyển OQC)', OQC: 'OQC', DANG_GIAO: 'Đang giao', DA_GIAO: 'Đã giao',
 };
 
 // Chip ở màn "Danh sách phần in vải về" → danh sách stage nội bộ tương ứng.
@@ -35,6 +35,7 @@ const CHIP_STAGES = {
   CHO_KHO: ['CHO_KHO'],
   KCS: ['KCS'],
   SUA: ['SUA'],
+  GIA_CONG: ['GIA_CONG'],
   OQC: ['OQC'],
   GIAO: ['DANG_GIAO'],
   DA_GIAO: ['DA_GIAO'],
@@ -53,6 +54,7 @@ function dotStageCase(a) {
         CASE WHEN ${kqPin('QC_XAC_NHAN')} THEN 'RELEASE_1'
              WHEN ${techDoneSqlByPin(`${a}.phan_in_id`)} THEN 'READY_QA'
              ELSE 'READY_KT' END
+      WHEN ${a}.lenh_tt='GIA_CONG' THEN 'GIA_CONG'
       WHEN EXISTS(SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id=${a}.lenh_id AND ps.trang_thai='DANG_CHAY') THEN 'SAN_XUAT'
       WHEN ${temEx("t.trang_thai IN ('IN','DANG_PHOI')")} THEN 'CHO_KHO'
       WHEN ${temEx("t.trang_thai='DA_KHO'")} THEN 'KCS'

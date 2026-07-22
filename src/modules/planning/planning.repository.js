@@ -24,8 +24,7 @@ async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
     JOIN khach_hang kh ON kh.id = dh.khach_hang_id
     LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id
     WHERE pin.dang_hoat_dong AND dv.trang_thai <> 'DA_HUY'
-      AND EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
-                  WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT')
+      AND dv.tg_chuyen_ready IS NOT NULL
       AND (COALESCE(dv.so_luong_vai_ve,0) - ${DA_REL}) > 0
       AND NOT EXISTS (SELECT 1 FROM gom_set_dot_vai gsd JOIN gom_set gs ON gs.id = gsd.gom_set_id
                       WHERE gsd.dot_vai_ve_id = dv.id AND gs.trang_thai = 'MO')
@@ -36,6 +35,8 @@ async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
            pin.id AS phan_in_id, pin.ma_phan, pin.barcode, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
            pin.so_luong_don_hang, ldv.ten_loai AS loai_dot_vai,
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
+           EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
+                   WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT') AS qc_done,
            ${DA_REL}::int AS da_release,
            (COALESCE(dv.so_luong_vai_ve,0) - ${DA_REL})::int AS con_release
     ${FROM}
@@ -498,6 +499,106 @@ async function listReplanCandidates({ search = '', offset = 0, limit = 50 }) {
   return { rows: data.rows, total: count.rows[0].total };
 }
 
+// ----- GIA CÔNG: lệnh đang đậu chờ Kế hoạch chuyển OQC (trang_thai='GIA_CONG') -----
+async function listGiaCongLenh({ search = '', offset = 0, limit = 50 }) {
+  const FROM = `
+    FROM lenh_san_xuat ls
+    LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+    LEFT JOIN nguoi_dung nr ON nr.id = ls.created_by
+    ${PHAN_INFO_LATERAL}
+    WHERE ls.trang_thai = 'GIA_CONG'
+      AND ($1 = '' OR ls.ma_lenh_san_xuat ILIKE '%'||$1||'%' OR ${lenhPhanInMatch('ls.id', '$1')})`;
+  const dataSql = `
+    SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.ngay_ke_hoach, ls.created_date,
+           cs.ma_chuyen, cs.ten_chuyen, nr.ho_ten AS nguoi_release,
+           info.ten_khach_hang, info.ma_don_hang, info.ma_hang,
+           info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan, info.tinh_chat_in,
+           info.so_luong_don_hang, info.so_luong_vai_ve, info.ngay_vai_ve, info.han_giao_hang, info.loai_dot_vai,
+           (SELECT count(*) FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id)::int AS so_dot_vai
+    ${FROM}
+    ORDER BY ls.ngay_ke_hoach NULLS LAST, ls.created_date
+    LIMIT $2 OFFSET $3`;
+  const countSql = `SELECT count(*)::int AS total ${FROM}`;
+  const [data, count] = await Promise.all([
+    query(dataSql, [search, limit, offset]),
+    query(countSql, [search]),
+  ]);
+  return { rows: data.rows, total: count.rows[0].total };
+}
+
+// Lệnh gia công (để chuyển OQC): SL + đợt vải junction.
+async function getGiaCongLenh(lenhId) {
+  const { rows } = await query(
+    `SELECT ls.id, ls.ma_lenh_san_xuat, ls.trang_thai, ls.chuyen_id, ls.so_luong_release,
+            ARRAY(SELECT lsd.dot_vai_ve_id FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id) AS dot_vai_ids
+     FROM lenh_san_xuat ls WHERE ls.id = $1`,
+    [lenhId]
+  );
+  return rows[0] || null;
+}
+
+// ----- KẾ HOẠCH TẠM (mig 058): lập kế hoạch sớm cho đợt vải CHƯA QC -----
+async function upsertKeHoachTam({ dotVaiId, phanInId, chuyenId, ngayKeHoach, tgBdKh, tgKtKh, soLuong }, actorId) {
+  await query(
+    `INSERT INTO ke_hoach_tam (dot_vai_ve_id, phan_in_id, chuyen_id, ngay_ke_hoach, tg_bd_kh, tg_kt_kh, so_luong, trang_thai, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,'CHO',$8)
+     ON CONFLICT (dot_vai_ve_id) DO UPDATE SET chuyen_id=EXCLUDED.chuyen_id, ngay_ke_hoach=EXCLUDED.ngay_ke_hoach,
+       tg_bd_kh=EXCLUDED.tg_bd_kh, tg_kt_kh=EXCLUDED.tg_kt_kh, so_luong=EXCLUDED.so_luong, trang_thai='CHO',
+       updated_by=EXCLUDED.created_by, updated_date=now()`.replace(/\s+/g, ' '),
+    [dotVaiId, phanInId, chuyenId || null, ngayKeHoach || null, tgBdKh || null, tgKtKh || null, soLuong || null, actorId]
+  );
+}
+
+async function listKeHoachTamRows({ search = '', offset = 0, limit = 200 }) {
+  const SEARCH = `($1 = '' OR pin.ma_phan ILIKE '%'||$1||'%' OR kh.ten_khach_hang ILIKE '%'||$1||'%'
+                  OR mh.ma_hang ILIKE '%'||$1||'%' OR pin.mau_vai ILIKE '%'||$1||'%' OR dv.ma_dot_vai ILIKE '%'||$1||'%')`;
+  const FROM = `
+    FROM ke_hoach_tam kt
+    JOIN dot_vai_ve dv ON dv.id = kt.dot_vai_ve_id
+    JOIN phan_in pin ON pin.id = kt.phan_in_id
+    JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+    JOIN don_hang dh ON dh.id = mh.don_hang_id
+    JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+    LEFT JOIN chuyen_san_xuat cs ON cs.id = kt.chuyen_id
+    LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id
+    WHERE kt.trang_thai = 'CHO' AND pin.dang_hoat_dong AND dv.trang_thai <> 'DA_HUY' AND ${SEARCH}`;
+  const dataSql = `
+    SELECT kt.id, kt.dot_vai_ve_id, kt.phan_in_id, kt.chuyen_id, kt.ngay_ke_hoach, kt.tg_bd_kh, kt.tg_kt_kh, kt.so_luong,
+           dv.ma_dot_vai, dv.han_giao_hang, cs.ten_chuyen, ldv.ten_loai AS loai_dot_vai,
+           pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
+           mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
+           EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
+                   WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT') AS qc_done
+    ${FROM}
+    ORDER BY kt.ngay_ke_hoach NULLS LAST, kt.created_date
+    LIMIT $2 OFFSET $3`;
+  const countSql = `SELECT count(*)::int AS total ${FROM}`;
+  const [data, count] = await Promise.all([
+    query(dataSql.replace(/\s+/g, ' '), [search, limit, offset]),
+    query(countSql.replace(/\s+/g, ' '), [search]),
+  ]);
+  return { rows: data.rows, total: count.rows[0].total };
+}
+
+async function getKeHoachTam(id) {
+  const { rows } = await query(
+    `SELECT kt.id, kt.dot_vai_ve_id, kt.phan_in_id, kt.chuyen_id, kt.ngay_ke_hoach, kt.tg_bd_kh, kt.tg_kt_kh, kt.so_luong,
+            EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
+                    WHERE kq.phan_in_id = kt.phan_in_id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT') AS qc_done
+     FROM ke_hoach_tam kt WHERE kt.id = $1`.replace(/\s+/g, ' '),
+    [id]
+  );
+  return rows[0] || null;
+}
+
+async function deleteKeHoachTam(id) {
+  await query('DELETE FROM ke_hoach_tam WHERE id = $1', [id]);
+}
+async function deleteKeHoachTamByDotVai(dotVaiIds) {
+  if (!dotVaiIds || dotVaiIds.length === 0) return;
+  await query('DELETE FROM ke_hoach_tam WHERE dot_vai_ve_id = ANY($1::uuid[])', [dotVaiIds]);
+}
+
 // ----- HỦY LỆNH / HOÀN TÁC RELEASE (lệnh RELEASE_1/RELEASE_2 chưa bắt đầu sản xuất) -----
 async function listCancelableLenh({ search = '', offset = 0, limit = 50 }) {
   const FROM = `
@@ -887,6 +988,8 @@ module.exports = {
   getLenhTestStatus, insertTestRun, insertTestRunTx, upsertLenhResult, insertStatusLog, setLenhTrangThai,
   testRunHistoryByDate,
   listReplanCandidates, getLenhForReplan, updateLenhPlan, logPlanChange, planHistoryByDate,
+  listGiaCongLenh, getGiaCongLenh,
+  upsertKeHoachTam, listKeHoachTamRows, getKeHoachTam, deleteKeHoachTam, deleteKeHoachTamByDotVai,
   listCancelableLenh, getLenhForCancel, cancelLenhOrder, cancelReadyQcForDotVai, logLenhCancel,
   listReleasableSets, getOpenSetMembers, getSetForRelease, getSetMembersForRelease, markSetReleased, logGomSetReleased,
 };

@@ -65,6 +65,15 @@ router.get('/replan/candidates', rbac('RELEASE1', 'RELEASE2'), c.replanCandidate
 router.post('/replan/batch', rbac('RELEASE1', 'RELEASE2'), c.replanBatch);
 router.post('/replan/:lenhId', rbac('RELEASE1', 'RELEASE2'), c.replan);
 
+// Gia công: Kế hoạch nhận lại hàng gia công → chuyển OQC
+router.get('/gia-cong', rbac('RELEASE1', 'RELEASE2'), c.giaCongList);
+router.post('/gia-cong/:lenhId/chuyen-oqc', rbac('RELEASE1', 'RELEASE2'), c.giaCongToOqc);
+
+// Kế hoạch tạm: xác nhận lại Release 1 khi phần in Ready xong
+router.get('/ke-hoach-tam', rbac('RELEASE1', 'RELEASE2'), c.keHoachTamList);
+router.post('/ke-hoach-tam/:id/xac-nhan', rbac('RELEASE1', 'RELEASE2'), c.keHoachTamConfirm);
+router.delete('/ke-hoach-tam/:id', rbac('RELEASE1', 'RELEASE2'), c.keHoachTamDelete);
+
 // Hủy lệnh / hoàn tác release (đưa đợt vải về lại Release 1)
 router.get('/huy-lenh/candidates', rbac('RELEASE1', 'RELEASE2'), c.cancelableLenh);
 router.post('/huy-lenh/:lenhId', rbac('RELEASE1', 'RELEASE2'), c.cancelLenh);

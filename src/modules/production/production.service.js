@@ -189,7 +189,7 @@ async function temLabel(temId) {
   if (!data) throw new AppError('Tem không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   // Ca sản xuất = suy từ giờ VN lúc sản xuất + loại ca của tuần (Ngắn/Dài). Query nhẹ riêng (IPS-safe).
   const [parts, map] = await Promise.all([repo.caPartsForTem(temId), planningRepo.caModeMap()]);
-  data.ca = caFromParts(parts.ca_gio, parts.ca_nam, parts.ca_tuan, map);
+  data.ca = caFromParts(parts.ca_gio, parts.ca_phut, parts.ca_nam, parts.ca_tuan, map);
   return data;
 }
 

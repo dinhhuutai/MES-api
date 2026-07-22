@@ -477,6 +477,75 @@ async function runReadyHoanThanh({ loc = {}, gioi_han }) {
   return rows.map((r, i) => ({ ...r, stt: i + 1 }));
 }
 
+// ============================== 3d) PHẦN IN VÀO CHECKPOINT TRONG NGÀY ==============================
+// 1 dòng = 1 PHẦN IN có thời gian VÀO 1 checkpoint trong ngày (nguồn lich_su_luan_chuyen.tg_bd + den_tram)
+// — khớp ý nghĩa metric CP_<TRAM>_VAO_HOM_NAY. Cột "Hoàn thành trong ngày" = phần in đã RỜI checkpoint đó
+// (tg_kt) trong cùng ngày ⇒ vừa thấy "toàn bộ phần in vào trong ngày" vừa thấy "cái nào đã hoàn thành".
+// Lọc Trạm = READY + Ngày = Hôm nay ⇒ "phần in vào READY hôm nay + cái nào đã hoàn thành". (best-effort tracking.)
+const COT_VAO_TRAM = [
+  { key: 'stt', ten: 'STT', kieu: 'so' },
+  { key: 'ngay_vao', ten: 'Ngày vào', kieu: 'ngay' },
+  { key: 'gio_vao', ten: 'Giờ vào', kieu: 'text' },
+  { key: 'ten_tram', ten: 'Checkpoint', kieu: 'text' },
+  { key: 'ten_khach_hang', ten: 'Khách hàng', kieu: 'text' },
+  { key: 'ma_don_hang', ten: 'PO', kieu: 'text' },
+  { key: 'ma_phan', ten: 'Code phần', kieu: 'text' },
+  { key: 'ma_hang', ten: 'Mã hàng', kieu: 'text' },
+  { key: 'mau_vai', ten: 'Màu vải', kieu: 'text' },
+  { key: 'kich_vai', ten: 'Kích vải', kieu: 'text' },
+  { key: 'kich_phim', ten: 'Kích film', kieu: 'text' },
+  { key: 'hoan_thanh', ten: 'Hoàn thành trong ngày', kieu: 'text' },
+  { key: 'gio_hoan_thanh', ten: 'Giờ hoàn thành', kieu: 'text' },
+];
+
+async function runPhanInVaoTram({ loc = {}, gioi_han }) {
+  const tram = clean(loc.tram);
+  const params = [];
+  const vaoConds = ['l.tg_bd IS NOT NULL', 'pin.dang_hoat_dong'];
+  const vnc = ngayCond('l.tg_bd', loc.ngay, true);
+  if (vnc) vaoConds.push(vnc);
+  if (tram) { params.push(tram); vaoConds.push(`tr.ma_tram = $${params.length}`); }
+  // Cờ "Hoàn thành trong ngày" = đã rời trạm (tg_kt) trong cùng ngày đã lọc (rỗng ngày → chỉ cần đã rời).
+  const dc = ngayCond('v.tg_kt', loc.ngay, true);
+  const hoanThanhExpr = dc
+    ? `CASE WHEN v.tg_kt IS NOT NULL AND ${dc} THEN 'Đã hoàn thành' ELSE '' END`
+    : `CASE WHEN v.tg_kt IS NOT NULL THEN 'Đã hoàn thành' ELSE '' END`;
+  const gioHtExpr = dc
+    ? `CASE WHEN v.tg_kt IS NOT NULL AND ${dc} THEN to_char(v.tg_kt AT TIME ZONE 'Asia/Ho_Chi_Minh', 'HH24:MI') ELSE '' END`
+    : `CASE WHEN v.tg_kt IS NOT NULL THEN to_char(v.tg_kt AT TIME ZONE 'Asia/Ho_Chi_Minh', 'HH24:MI') ELSE '' END`;
+  const outer = [];
+  if (clean(loc.tim)) {
+    params.push(clean(loc.tim));
+    const i = params.length;
+    outer.push(`(pin.ma_phan ILIKE '%'||$${i}||'%' OR mh.ma_hang ILIKE '%'||$${i}||'%' OR dh.ma_don_hang ILIKE '%'||$${i}||'%' OR pin.mau_vai ILIKE '%'||$${i}||'%')`);
+  }
+  const sql = `
+    WITH vao AS (
+      SELECT DISTINCT ON (l.phan_in_id, tr.ma_tram) l.phan_in_id, tr.ma_tram, tr.ten_tram, l.tg_bd, l.tg_kt
+      FROM lich_su_luan_chuyen l
+      JOIN tram tr ON tr.id = l.den_tram_id
+      JOIN phan_in pin ON pin.id = l.phan_in_id
+      WHERE ${vaoConds.join(' AND ')}
+      ORDER BY l.phan_in_id, tr.ma_tram, l.tg_bd DESC
+    )
+    SELECT to_char(v.tg_bd AT TIME ZONE 'Asia/Ho_Chi_Minh', 'DD/MM/YYYY') AS ngay_vao,
+           to_char(v.tg_bd AT TIME ZONE 'Asia/Ho_Chi_Minh', 'HH24:MI') AS gio_vao,
+           v.ten_tram, kh.ten_khach_hang, dh.ma_don_hang,
+           pin.ma_phan, mh.ma_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim,
+           ${hoanThanhExpr} AS hoan_thanh,
+           ${gioHtExpr} AS gio_hoan_thanh
+    FROM vao v
+    JOIN phan_in pin ON pin.id = v.phan_in_id
+    JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+    JOIN don_hang dh ON dh.id = mh.don_hang_id
+    JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+    ${outer.length ? 'WHERE ' + outer.join(' AND ') : ''}
+    ORDER BY v.tg_bd DESC
+    LIMIT ${limitOf(gioi_han)}`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), params);
+  return rows.map((r, i) => ({ ...r, stt: i + 1 }));
+}
+
 // ============================== 4) TỔNG HỢP THEO TRẠM ==============================
 // 1 dòng = 1 checkpoint → sheet "KẾT QUẢ PHA MÀU - CHỤP KHUÔN - FILM - CNSP".
 const COT_TRAM = [
@@ -578,6 +647,11 @@ const DEFS = [
   { ma: 'DS_TEM', ten: 'Tem (KCS / Sửa / OQC / Giao)', don_vi_dong: 'tem',
     mo_ta: '1 dòng = 1 tem theo ngày in tem, kèm sổ cái số lượng từng công đoạn.',
     loc: locList(['ngay', 'trang_thai_tem', 'chuyen', 'tim']), cot: COT_TEM, run: runTem },
+  { ma: 'DS_PHAN_IN_VAO_TRAM', ten: 'Phần in VÀO checkpoint trong ngày (+ cờ hoàn thành)', don_vi_dong: 'phần in',
+    mo_ta: '1 dòng = 1 PHẦN IN có thời gian VÀO 1 checkpoint trong ngày (nguồn lịch sử luân chuyển). '
+      + 'Cột "Hoàn thành trong ngày" cho biết phần in nào đã rời checkpoint đó trong cùng ngày. '
+      + 'Lọc Trạm = READY + Ngày = Hôm nay ⇒ "toàn bộ phần in vào READY hôm nay + cái nào đã hoàn thành". (best-effort tracking.)',
+    loc: locList(['ngay', 'tram', 'tim']), cot: COT_VAO_TRAM, run: runPhanInVaoTram },
   { ma: 'DS_HOAN_THANH_TRAM', ten: 'Phần in hoàn thành / rời checkpoint (theo ngày)', don_vi_dong: 'phần in',
     mo_ta: '1 dòng = 1 phần in ĐÃ HOÀN THÀNH / rời 1 checkpoint. Lọc trạm = READY + ngày = Hôm nay '
       + '⇒ "danh sách READY đã hoàn thành hôm nay". (Nguồn lịch sử luân chuyển — best-effort.) '

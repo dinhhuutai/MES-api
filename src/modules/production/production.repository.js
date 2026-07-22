@@ -418,6 +418,7 @@ async function logPauseLenhChay(lenhId, maLenh, printed, actorId) {
 async function caPartsForTem(temId) {
   const { rows } = await query(
     `SELECT EXTRACT(HOUR    FROM created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS ca_gio,
+            EXTRACT(MINUTE  FROM created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS ca_phut,
             EXTRACT(ISOYEAR FROM created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS ca_nam,
             EXTRACT(WEEK    FROM created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS ca_tuan
      FROM tem WHERE id = $1`.replace(/\s+/g, ' '),

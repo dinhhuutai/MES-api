@@ -110,6 +110,25 @@ const approveRelease2Batch = asyncHandler(async (req, res) =>
 const replan = asyncHandler(async (req, res) =>
   ok(res, await service.replan(req.params.lenhId, req.body, req.user.id), 'Đã lập lại kế hoạch'));
 
+const giaCongList = asyncHandler(async (req, res) => {
+  const { page, limit, offset } = getPaging(req.query);
+  return ok(res, await service.listGiaCong({ search: req.query.search || '', page, limit, offset }));
+});
+
+const giaCongToOqc = asyncHandler(async (req, res) =>
+  ok(res, await service.confirmGiaCongToOqc(req.params.lenhId, req.user.id), 'Đã chuyển gia công sang OQC'));
+
+const keHoachTamList = asyncHandler(async (req, res) => {
+  const { page, limit, offset } = getPaging(req.query);
+  return ok(res, await service.listKeHoachTam({ search: req.query.search || '', page, limit, offset }));
+});
+
+const keHoachTamConfirm = asyncHandler(async (req, res) =>
+  ok(res, await service.confirmKeHoachTam(req.params.id, req.user.id), 'Đã xác nhận Release 1 từ kế hoạch tạm'));
+
+const keHoachTamDelete = asyncHandler(async (req, res) =>
+  ok(res, await service.deleteKeHoachTam(req.params.id), 'Đã xóa kế hoạch tạm'));
+
 const replanBatch = asyncHandler(async (req, res) =>
   ok(res, await service.replanBatch(req.body.lenhIds, req.body, req.user.id), 'Lập lại kế hoạch hàng loạt'));
 
@@ -149,6 +168,8 @@ module.exports = {
   confirmCNSP, confirmQA, cancelCNSP, cancelQA, confirmCNSPBatch, confirmQABatch,
   release2Candidates, approveRelease2, approveRelease2Batch, skipTestRun, testRunHistory,
   replanCandidates, replan, replanBatch, planHistory,
+  giaCongList, giaCongToOqc,
+  keHoachTamList, keHoachTamConfirm, keHoachTamDelete,
   cancelableLenh, cancelLenh, returnTestRun,
   release1Done, release2Done, replanDone, testCnspDone, testQaDone,
 };

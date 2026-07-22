@@ -113,6 +113,7 @@ async function caPartsForTems(temIds) {
   const { rows } = await query(
     `SELECT id AS tem_id,
             EXTRACT(HOUR    FROM created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS ca_gio,
+            EXTRACT(MINUTE  FROM created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS ca_phut,
             EXTRACT(ISOYEAR FROM created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS ca_nam,
             EXTRACT(WEEK    FROM created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS ca_tuan
      FROM tem WHERE id = ANY($1::uuid[])`.replace(/\s+/g, ' '),
@@ -138,7 +139,12 @@ async function prevConfirmerByTems(temIds) {
       (SELECT nd.ho_ten FROM (
          SELECT created_by AS uid, created_date AS tg FROM kcs WHERE tem_id = t.id
          UNION ALL SELECT created_by, created_date FROM sua WHERE tem_id = t.id
-       ) e JOIN nguoi_dung nd ON nd.id = e.uid ORDER BY e.tg DESC LIMIT 1) AS nguoi_kcs_sua
+       ) e JOIN nguoi_dung nd ON nd.id = e.uid ORDER BY e.tg DESC LIMIT 1) AS nguoi_kcs_sua,
+      (SELECT nd.ho_ten FROM phieu_san_xuat ps JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+         JOIN nguoi_dung nd ON nd.id = ls.created_by WHERE ps.id = t.phieu_san_xuat_id) AS nguoi_release1,
+      EXISTS (SELECT 1 FROM phieu_san_xuat ps JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+         JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
+         WHERE ps.id = t.phieu_san_xuat_id AND lc.ma_loai = 'GIA_CONG') AS la_gia_cong
     FROM tem t WHERE t.id = ANY($1::uuid[])`;
   const { rows } = await query(sql.replace(/\s+/g, ' '), [temIds]);
   return rows;
