@@ -44,10 +44,10 @@ const env = {
       || (process.env.ERP_PHIEU_NHAN_VAI_URL
         ? `${process.env.ERP_PHIEU_NHAN_VAI_URL}-new`
         : 'http://10.84.40.34:5000/api/server/backup/mes/phieu-nhan-vai-60-new'),
-    // Bật/tắt job tự đồng bộ mỗi giờ.
+    // Bật/tắt job tự đồng bộ theo chu kỳ (mặc định 15 phút/lần).
     syncEnabled: String(process.env.ERP_SYNC_ENABLED || 'true').toLowerCase() === 'true',
-    // Chu kỳ tự đồng bộ (phút). Mặc định 5 phút/lần.
-    syncIntervalMin: parseInt(process.env.ERP_SYNC_INTERVAL_MIN || '5', 10),
+    // Chu kỳ tự đồng bộ (phút). Mặc định 15 phút/lần.
+    syncIntervalMin: parseInt(process.env.ERP_SYNC_INTERVAL_MIN || '15', 10),
     // Cửa sổ lấy dữ liệu: fromDate = hiện tại - N ngày (proc ERP lấy bản ghi tạo TỪ mốc này).
     syncLookbackDays: parseInt(process.env.ERP_SYNC_LOOKBACK_DAYS || '60', 10),
     // Timeout chờ ERP trả về (ms) — ERP chạy proc lâu nên để lớn. Mặc định 10 phút.
