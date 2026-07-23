@@ -223,6 +223,107 @@ async function runDotSanXuat({ loc = {}, gioi_han }) {
   });
 }
 
+// ============================== 2b) TEST RUN HÔM NAY (có mặt / đã test) ==============================
+// 1 dòng = 1 lệnh SX liên quan Test Run. Gồm 2 nhóm:
+//   - "Có mặt ở Test Run" (đang chờ test): lệnh RELEASE_1 CHƯA có TEST_QA đạt → đang ở Test Run.
+//   - "Đã test run": lệnh có TEST_QA đạt (lọc theo NGÀY test) → kèm kết quả + thông tin test của QC.
+// Lọc Ngày = Hôm nay ⇒ danh sách "đã test run HÔM NAY"; nhánh "có mặt/chờ test" là snapshot hiện tại (không theo ngày).
+const COT_TEST_RUN = [
+  { key: 'stt', ten: 'STT', kieu: 'so' },
+  { key: 'tinh_trang', ten: 'Tình trạng', kieu: 'text' },
+  { key: 'ngay_test', ten: 'Ngày test', kieu: 'text' },
+  { key: 'ten_chuyen', ten: 'Chuyền', kieu: 'text' },
+  { key: 'ten_khach_hang', ten: 'Khách hàng', kieu: 'text' },
+  { key: 'ma_don_hang', ten: 'PO', kieu: 'text' },
+  { key: 'ma_phan', ten: 'Code phần', kieu: 'text' },
+  { key: 'ma_hang', ten: 'Mã hàng', kieu: 'text' },
+  { key: 'mau_vai', ten: 'Màu vải', kieu: 'text' },
+  { key: 'kich_vai', ten: 'Kích vải', kieu: 'text' },
+  { key: 'kich_phim', ten: 'Kích film', kieu: 'text' },
+  { key: 'tinh_chat_in', ten: 'TC IN', kieu: 'text' },
+  { key: 'ma_lenh_san_xuat', ten: 'Mã lệnh (LSX)', kieu: 'text' },
+  { key: 'so_luong_release', ten: 'SL release', kieu: 'so' },
+  // --- Kết quả + thông tin test của QC ---
+  { key: 'test_ket_qua', ten: 'Kết quả test', kieu: 'text' },
+  { key: 'nguoi_test', ten: 'Người test', kieu: 'text' },
+  { key: 'loai_test', ten: 'Loại test', kieu: 'text' },
+  { key: 'so_lan_test', ten: 'Số lần test', kieu: 'so' },
+  { key: 'nguoi_qa', ten: 'QC xác nhận', kieu: 'text' },
+  { key: 'test_tg', ten: 'Thời gian test', kieu: 'text' },
+  { key: 'test_ghi_chu', ten: 'Ghi chú test', kieu: 'text' },
+  { key: 'ngay_ke_hoach', ten: 'Ngày SX kế hoạch', kieu: 'ngay' },
+  { key: 'han_giao_hang', ten: 'Hạn giao', kieu: 'ngay' },
+];
+
+async function runTestRun({ loc = {}, gioi_han }) {
+  const params = [];
+  const conds = ["ls.trang_thai <> 'HUY'", 'info.ma_phan IS NOT NULL'];
+  if (clean(loc.chuyen)) { params.push(clean(loc.chuyen)); conds.push(`cs.ten_chuyen ILIKE '%'||$${params.length}||'%'`); }
+  if (clean(loc.tim)) {
+    params.push(clean(loc.tim));
+    const i = params.length;
+    conds.push(`(ls.ma_lenh_san_xuat ILIKE '%'||$${i}||'%' OR info.ma_phan ILIKE '%'||$${i}||'%' OR info.ma_hang ILIKE '%'||$${i}||'%' OR info.mau_vai ILIKE '%'||$${i}||'%')`);
+  }
+  // Nhánh "đã test" lọc theo NGÀY xác nhận TEST_QA — MẶC ĐỊNH (để trống) = HÔM NAY (dataset "Test Run hôm nay").
+  // Nhánh "có mặt/chờ test" là snapshot HIỆN TẠI (không theo ngày) → luôn hiện lệnh đang chờ test ở Test Run.
+  const dayVal = clean(loc.ngay) || 'HOM_NAY';
+  const daTestDate = ngayCond('tq.tg', dayVal, true);
+  const coMat = `(ls.trang_thai = 'RELEASE_1' AND tq.tg IS NULL)`;
+  const daTest = `(tq.tg IS NOT NULL AND ${daTestDate})`;
+  const loai = clean(loc.loai_ds).toUpperCase();
+  if (loai === 'CO_MAT') conds.push(coMat);
+  else if (loai === 'DA_TEST') conds.push(daTest);
+  else conds.push(`(${coMat} OR ${daTest})`);
+
+  const sql = `
+    SELECT ls.ma_lenh_san_xuat, ls.so_luong_release,
+           to_char(ls.ngay_ke_hoach, 'DD/MM/YYYY') AS ngay_ke_hoach,
+           (CASE WHEN tq.tg IS NULL THEN 'Đang chờ test' ELSE 'Đã test' END) AS tinh_trang,
+           (CASE WHEN tq.tg IS NULL THEN 'Chờ test' ELSE 'Đạt' END) AS test_ket_qua,
+           to_char(tq.tg AT TIME ZONE 'Asia/Ho_Chi_Minh', 'DD/MM/YYYY HH24:MI') AS test_tg,
+           to_char(tq.tg AT TIME ZONE 'Asia/Ho_Chi_Minh', 'DD/MM/YYYY') AS ngay_test,
+           tq.loai_raw AS loai_test_raw, tq.ghi_chu AS test_ghi_chu, nqa.ho_ten AS nguoi_qa,
+           tc.nguoi AS nguoi_test,
+           (SELECT count(*) FROM test_run tr WHERE tr.lenh_san_xuat_id = ls.id)::int AS so_lan_test,
+           to_char((SELECT min(dvh.han_giao_hang) FROM lenh_sx_dot_vai lsh JOIN dot_vai_ve dvh ON dvh.id = lsh.dot_vai_ve_id
+              WHERE lsh.lenh_san_xuat_id = ls.id), 'DD/MM/YYYY') AS han_giao_hang,
+           cs.ten_chuyen,
+           info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan,
+           info.mau_vai, info.kich_vai, info.kich_phim, info.tinh_chat_in
+    FROM lenh_san_xuat ls
+    LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+    LEFT JOIN LATERAL (
+      SELECT kq.tg_xac_nhan AS tg, kq.gia_tri_text AS loai_raw, kq.ghi_chu, kq.nguoi_xac_nhan_id
+      FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
+      WHERE kq.lenh_san_xuat_id = ls.id AND cp.ma_checkpoint = 'TEST_QA' AND kq.trang_thai = 'DAT'
+      ORDER BY kq.tg_xac_nhan DESC NULLS LAST LIMIT 1
+    ) tq ON true
+    LEFT JOIN LATERAL (
+      SELECT kq.gia_tri_text AS nguoi FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
+      WHERE kq.lenh_san_xuat_id = ls.id AND cp.ma_checkpoint = 'TEST_CNSP' AND kq.trang_thai = 'DAT'
+      ORDER BY kq.tg_xac_nhan DESC NULLS LAST LIMIT 1
+    ) tc ON true
+    LEFT JOIN nguoi_dung nqa ON nqa.id = tq.nguoi_xac_nhan_id
+    LEFT JOIN LATERAL (
+      SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang,
+             pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.ma_phan, pin.tinh_chat_in
+      FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+      JOIN phan_in pin ON pin.id = dv.phan_in_id AND pin.dang_hoat_dong
+      JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+      JOIN don_hang dh ON dh.id = mh.don_hang_id
+      JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+      WHERE lsd.lenh_san_xuat_id = ls.id ORDER BY pin.ma_phan LIMIT 1
+    ) info ON true
+    WHERE ${conds.join(' AND ')}
+    ORDER BY tq.tg DESC NULLS LAST, ls.ngay_ke_hoach DESC NULLS LAST, ls.created_date DESC
+    LIMIT ${limitOf(gioi_han)}`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), params);
+  return rows.map((r, i) => ({
+    ...r, stt: i + 1,
+    loai_test: LOAI_TEST_LABEL[r.loai_test_raw] || r.loai_test_raw || '',
+  }));
+}
+
 // ============================== 3) TEM (KCS / Sửa / OQC / Giao) ==============================
 const COT_TEM = [
   { key: 'stt', ten: 'STT', kieu: 'so' },
@@ -622,6 +723,8 @@ const CP_FLOW_TRAM = [
 const TRAM_OPTS = () => CP_FLOW_TRAM.map((t) => ({ v: t.ma, ten: t.ten }));
 const LOC_DEF = {
   ngay: { ma: 'ngay', ten: 'Ngày', kieu: 'ngay', mo_ta: 'Để trống = mọi ngày · "Hôm nay" = tự đổi theo ngày xem.' },
+  ngay_testrun: { ma: 'ngay', ten: 'Ngày (đã test)', kieu: 'ngay',
+    mo_ta: 'Lọc NGÀY cho nhánh "đã test". Để trống = HÔM NAY. Nhánh "chờ test" luôn hiện theo hiện tại.' },
   tram: { ma: 'tram', ten: 'Trạm (checkpoint)', kieu: 'chon', chon: TRAM_OPTS },
   chuyen: { ma: 'chuyen', ten: 'Chuyền', kieu: 'chu' },
   khach: { ma: 'khach', ten: 'Khách hàng', kieu: 'chu' },
@@ -630,6 +733,12 @@ const LOC_DEF = {
     chon: () => Object.entries(LSX_TT).filter(([v]) => v !== 'HUY').map(([v, ten]) => ({ v, ten })) },
   trang_thai_tem: { ma: 'trang_thai', ten: 'Trạng thái tem', kieu: 'chon',
     chon: () => Object.entries(TEM_TT).filter(([v]) => v !== 'HUY').map(([v, ten]) => ({ v, ten })) },
+  loai_ds_testrun: { ma: 'loai_ds', ten: 'Loại danh sách', kieu: 'chon',
+    mo_ta: 'Để trống = cả hai (có mặt + đã test).',
+    chon: () => [
+      { v: 'CO_MAT', ten: 'Có mặt ở Test Run (chờ test)' },
+      { v: 'DA_TEST', ten: 'Đã test run' },
+    ] },
 };
 const locList = (keys) => keys.map((k) => {
   const d = LOC_DEF[k];
@@ -644,6 +753,11 @@ const DEFS = [
   { ma: 'DS_DOT_SAN_XUAT', ten: 'Đợt sản xuất / lệnh SX (theo ngày, chuyền)', don_vi_dong: 'lệnh SX',
     mo_ta: '1 dòng = 1 đợt sản xuất (lệnh SX) theo ngày kế hoạch. Dựng bảng kiểu "Test Run bàn A/B / máy tự động".',
     loc: locList(['ngay', 'chuyen', 'trang_thai_lsx', 'tim']), cot: COT_DOT_SX, run: runDotSanXuat },
+  { ma: 'DS_TEST_RUN', ten: 'Test Run hôm nay (có mặt / đã test)', don_vi_dong: 'lệnh SX',
+    mo_ta: '1 dòng = 1 lệnh liên quan Test Run. Mặc định (để trống Ngày) = "đang chờ test ở Test Run hiện tại" + "đã test '
+      + 'HÔM NAY" (kèm kết quả + thông tin test của QC: người test, loại, giờ, ghi chú, QC xác nhận). Đặt Ngày cụ thể để xem '
+      + 'nhánh "đã test" của ngày khác; chọn "Loại danh sách" để chỉ xem 1 nhóm. Cột "Tình trạng" phân biệt Đang chờ test / Đã test.',
+    loc: locList(['ngay_testrun', 'loai_ds_testrun', 'chuyen', 'tim']), cot: COT_TEST_RUN, run: runTestRun },
   { ma: 'DS_TEM', ten: 'Tem (KCS / Sửa / OQC / Giao)', don_vi_dong: 'tem',
     mo_ta: '1 dòng = 1 tem theo ngày in tem, kèm sổ cái số lượng từng công đoạn.',
     loc: locList(['ngay', 'trang_thai_tem', 'chuyen', 'tim']), cot: COT_TEM, run: runTem },

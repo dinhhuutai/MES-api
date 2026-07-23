@@ -526,6 +526,29 @@ async function listGiaCongLenh({ search = '', offset = 0, limit = 50 }) {
   return { rows: data.rows, total: count.rows[0].total };
 }
 
+// Lịch sử "hàng về" gia công đã chuyển OQC trong ngày (từ audit_log GIA_CONG_CHUYEN_OQC).
+// Trả đủ trường để in tem "TH VỀ".
+async function listGiaCongHistory(date) {
+  const sql = `
+    SELECT a.thoi_gian AS tg, nd.ho_ten AS nguoi,
+           ls.id AS lenh_id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.created_date,
+           a.gia_tri_moi->>'ma_tem' AS ma_tem,
+           cs.ma_chuyen, cs.ten_chuyen,
+           info.ten_khach_hang, info.ma_don_hang, info.ma_hang,
+           info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan, info.tinh_chat_in,
+           info.so_luong_don_hang, info.han_giao_hang, info.loai_dot_vai
+    FROM audit_log a
+    JOIN lenh_san_xuat ls ON ls.id = a.id_ban_ghi::uuid
+    LEFT JOIN nguoi_dung nd ON nd.id = a.nguoi_thuc_hien_id
+    LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+    ${PHAN_INFO_LATERAL}
+    WHERE a.ten_bang = 'lenh_san_xuat' AND a.hanh_dong = 'GIA_CONG_CHUYEN_OQC'
+      AND (a.thoi_gian AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
+    ORDER BY a.thoi_gian DESC`;
+  const { rows } = await query(sql.replace(/\s+/g, ' '), [date]);
+  return rows;
+}
+
 // Lệnh gia công (để chuyển OQC): SL + đợt vải junction.
 async function getGiaCongLenh(lenhId) {
   const { rows } = await query(
@@ -565,7 +588,7 @@ async function listKeHoachTamRows({ search = '', offset = 0, limit = 200 }) {
   const dataSql = `
     SELECT kt.id, kt.dot_vai_ve_id, kt.phan_in_id, kt.chuyen_id, kt.ngay_ke_hoach, kt.tg_bd_kh, kt.tg_kt_kh, kt.so_luong,
            dv.ma_dot_vai, dv.han_giao_hang, cs.ten_chuyen, ldv.ten_loai AS loai_dot_vai,
-           pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
+           pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in, pin.barcode,
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
            EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
                    WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT') AS qc_done
@@ -988,7 +1011,7 @@ module.exports = {
   getLenhTestStatus, insertTestRun, insertTestRunTx, upsertLenhResult, insertStatusLog, setLenhTrangThai,
   testRunHistoryByDate,
   listReplanCandidates, getLenhForReplan, updateLenhPlan, logPlanChange, planHistoryByDate,
-  listGiaCongLenh, getGiaCongLenh,
+  listGiaCongLenh, getGiaCongLenh, listGiaCongHistory,
   upsertKeHoachTam, listKeHoachTamRows, getKeHoachTam, deleteKeHoachTam, deleteKeHoachTamByDotVai,
   listCancelableLenh, getLenhForCancel, cancelLenhOrder, cancelReadyQcForDotVai, logLenhCancel,
   listReleasableSets, getOpenSetMembers, getSetForRelease, getSetMembersForRelease, markSetReleased, logGomSetReleased,

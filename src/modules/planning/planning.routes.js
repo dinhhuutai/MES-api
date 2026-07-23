@@ -67,6 +67,7 @@ router.post('/replan/:lenhId', rbac('RELEASE1', 'RELEASE2'), c.replan);
 
 // Gia công: Kế hoạch nhận lại hàng gia công → chuyển OQC
 router.get('/gia-cong', rbac('RELEASE1', 'RELEASE2'), c.giaCongList);
+router.get('/gia-cong/history', rbac('RELEASE1', 'RELEASE2'), c.giaCongHistory);
 router.post('/gia-cong/:lenhId/chuyen-oqc', rbac('RELEASE1', 'RELEASE2'), c.giaCongToOqc);
 
 // Kế hoạch tạm: xác nhận lại Release 1 khi phần in Ready xong

@@ -118,6 +118,9 @@ const giaCongList = asyncHandler(async (req, res) => {
 const giaCongToOqc = asyncHandler(async (req, res) =>
   ok(res, await service.confirmGiaCongToOqc(req.params.lenhId, req.user.id), 'Đã chuyển gia công sang OQC'));
 
+const giaCongHistory = asyncHandler(async (req, res) =>
+  ok(res, await service.giaCongHistory(req.query.date)));
+
 const keHoachTamList = asyncHandler(async (req, res) => {
   const { page, limit, offset } = getPaging(req.query);
   return ok(res, await service.listKeHoachTam({ search: req.query.search || '', page, limit, offset }));
@@ -168,7 +171,7 @@ module.exports = {
   confirmCNSP, confirmQA, cancelCNSP, cancelQA, confirmCNSPBatch, confirmQABatch,
   release2Candidates, approveRelease2, approveRelease2Batch, skipTestRun, testRunHistory,
   replanCandidates, replan, replanBatch, planHistory,
-  giaCongList, giaCongToOqc,
+  giaCongList, giaCongToOqc, giaCongHistory,
   keHoachTamList, keHoachTamConfirm, keHoachTamDelete,
   cancelableLenh, cancelLenh, returnTestRun,
   release1Done, release2Done, replanDone, testCnspDone, testQaDone,

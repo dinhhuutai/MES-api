@@ -801,6 +801,12 @@ async function listGiaCong({ search, page, limit, offset }) {
   return { items: rows, meta: buildMeta(page, limit, total) };
 }
 
+// Lịch sử "hàng về" gia công đã chuyển OQC theo ngày (cho SidePanel + in tem TH VỀ).
+async function giaCongHistory(date) {
+  const d = date || new Date().toISOString().slice(0, 10);
+  return repo.listGiaCongHistory(d);
+}
+
 // Kế hoạch xác nhận đã nhận lại hàng gia công → tạo phiếu HOAN_TAT + tem CHO_OQC (seed sl_kcs_dat = SL,
 // coi như đã KCS đạt ⇒ con_oqc>0) + set lệnh HOAN_TAT, rồi đưa dòng chảy sang OQC. Nguồn hiển thị = "Gia công".
 async function confirmGiaCongToOqc(lenhId, actorId) {
@@ -950,7 +956,7 @@ module.exports = {
   listTestRunCandidates, getLenhDetail, recordTestRun, confirmTest, confirmTestBatch, cancelTest,
   listRelease2Candidates, approveRelease2, approveRelease2Batch, skipTestRun, testRunHistory,
   listReplanCandidates, replan, replanBatch, planHistory,
-  listGiaCong, confirmGiaCongToOqc,
+  listGiaCong, confirmGiaCongToOqc, giaCongHistory,
   listKeHoachTam, confirmKeHoachTam, deleteKeHoachTam,
   listCancelableLenh, rollbackLenh, returnTestRunToRelease1,
   release1Done, release2Done, replanDone, testCnspDone, testQaDone,
