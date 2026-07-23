@@ -110,6 +110,7 @@ async function listVaiVe({ search = '', filters = {}, stage = '', daChuyen = '',
            mh.ma_hang, mh.ten_ma_hang, dh.ma_don_hang, dh.so_po,
            kh.ma_khach_hang, kh.ten_khach_hang,
            dvj.so_dot, dvj.dot_vai, dvj.so_dot_da_chuyen,
+           dvj.created_min AS tg_lay_new, dvj.tg_chuyen_ready_min AS tg_qua_ready,
            (dvj.tg_chuyen_ready_min IS NOT NULL) AS da_chuyen,
            CASE
              WHEN dvj.pending_created_min IS NOT NULL THEN GREATEST(0, EXTRACT(EPOCH FROM (now() - dvj.pending_created_min)))::bigint
@@ -127,6 +128,7 @@ async function listVaiVe({ search = '', filters = {}, stage = '', daChuyen = '',
              COALESCE(SUM(dv.so_luong_vai_ve),0)::int AS tong_vai,
              min(dv.ngay_vai_ve) AS ngay_vai_min, min(dv.han_giao_hang) AS han_min,
              min(dv.tg_chuyen_ready) AS tg_chuyen_ready_min,
+             min(dv.created_date) AS created_min,
              min(dv.created_date) FILTER (WHERE dv.tg_chuyen_ready IS NULL) AS pending_created_min,
              COALESCE(json_agg(json_build_object(
                'dot_vai_id', dv.id, 'ma_dot_vai', dv.ma_dot_vai, 'so_luong_vai_ve', dv.so_luong_vai_ve,

@@ -52,6 +52,8 @@ async function listCandidates({
               WHERE dv3.phan_in_id = pin.id) AS loai_dot_vai,
            (SELECT min(dv4.han_giao_hang) FROM dot_vai_ve dv4
               WHERE dv4.phan_in_id = pin.id AND dv4.trang_thai NOT IN ('DA_GOP','DA_HUY')) AS han_giao_hang,
+           (SELECT min(dv5.tg_chuyen_ready) FROM dot_vai_ve dv5
+              WHERE dv5.phan_in_id = pin.id AND dv5.trang_thai NOT IN ('DA_GOP','DA_HUY') AND dv5.tg_chuyen_ready IS NOT NULL) AS tg_qua_ready,
            (SELECT count(*) FROM ket_qua_checkpoint k
               WHERE k.phan_in_id = pin.id AND k.checkpoint_id = ANY($2::uuid[]) AND k.trang_thai = 'DAT')::int AS n_tech_done,
            ${doneExpr('$3')} AS qc_done${withItems ? `,
