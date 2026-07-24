@@ -28,6 +28,8 @@ async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
       AND (COALESCE(dv.so_luong_vai_ve,0) - ${DA_REL}) > 0
       AND NOT EXISTS (SELECT 1 FROM gom_set_dot_vai gsd JOIN gom_set gs ON gs.id = gsd.gom_set_id
                       WHERE gsd.dot_vai_ve_id = dv.id AND gs.trang_thai = 'MO')
+      AND NOT EXISTS (SELECT 1 FROM ke_hoach_tam kht
+                      WHERE kht.dot_vai_ve_id = dv.id AND kht.trang_thai = 'CHO')
       AND ${SEARCH}`;
 
   const dataSql = `
@@ -587,7 +589,7 @@ async function listKeHoachTamRows({ search = '', offset = 0, limit = 200 }) {
     WHERE kt.trang_thai = 'CHO' AND pin.dang_hoat_dong AND dv.trang_thai <> 'DA_HUY' AND ${SEARCH}`;
   const dataSql = `
     SELECT kt.id, kt.dot_vai_ve_id, kt.phan_in_id, kt.chuyen_id, kt.ngay_ke_hoach, kt.tg_bd_kh, kt.tg_kt_kh, kt.so_luong,
-           dv.ma_dot_vai, dv.han_giao_hang, cs.ten_chuyen, ldv.ten_loai AS loai_dot_vai,
+           dv.ma_dot_vai, dv.han_giao_hang, dv.so_luong_vai_ve, cs.ten_chuyen, ldv.ten_loai AS loai_dot_vai,
            pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in, pin.barcode,
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
            EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
@@ -610,6 +612,18 @@ async function getKeHoachTam(id) {
                     WHERE kq.phan_in_id = kt.phan_in_id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT') AS qc_done
      FROM ke_hoach_tam kt WHERE kt.id = $1`.replace(/\s+/g, ' '),
     [id]
+  );
+  return rows[0] || null;
+}
+
+// Cập nhật bản kế hoạch tạm (chuyền / SL release / ngày kế hoạch). Giữ nguyên giờ BD/KT.
+async function updateKeHoachTam(id, { chuyenId, ngayKeHoach, soLuong }, actorId) {
+  const { rows } = await query(
+    `UPDATE ke_hoach_tam
+        SET chuyen_id = $2, ngay_ke_hoach = $3, so_luong = $4, updated_by = $5, updated_date = now()
+      WHERE id = $1 AND trang_thai = 'CHO'
+      RETURNING id`.replace(/\s+/g, ' '),
+    [id, chuyenId || null, ngayKeHoach || null, soLuong != null ? soLuong : null, actorId]
   );
   return rows[0] || null;
 }
@@ -1026,7 +1040,7 @@ module.exports = {
   testRunHistoryByDate, testRunsByLenh,
   listReplanCandidates, getLenhForReplan, updateLenhPlan, logPlanChange, planHistoryByDate,
   listGiaCongLenh, getGiaCongLenh, listGiaCongHistory,
-  upsertKeHoachTam, listKeHoachTamRows, getKeHoachTam, deleteKeHoachTam, deleteKeHoachTamByDotVai,
+  upsertKeHoachTam, listKeHoachTamRows, getKeHoachTam, updateKeHoachTam, deleteKeHoachTam, deleteKeHoachTamByDotVai,
   listCancelableLenh, getLenhForCancel, cancelLenhOrder, cancelReadyQcForDotVai, logLenhCancel,
   listReleasableSets, getOpenSetMembers, getSetForRelease, getSetMembersForRelease, markSetReleased, logGomSetReleased,
 };

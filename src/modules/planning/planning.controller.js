@@ -129,6 +129,9 @@ const keHoachTamList = asyncHandler(async (req, res) => {
 const keHoachTamConfirm = asyncHandler(async (req, res) =>
   ok(res, await service.confirmKeHoachTam(req.params.id, req.user.id), 'Đã xác nhận Release 1 từ kế hoạch tạm'));
 
+const keHoachTamUpdate = asyncHandler(async (req, res) =>
+  ok(res, await service.updateKeHoachTam(req.params.id, req.body, req.user.id), 'Đã cập nhật kế hoạch tạm'));
+
 const keHoachTamDelete = asyncHandler(async (req, res) =>
   ok(res, await service.deleteKeHoachTam(req.params.id), 'Đã xóa kế hoạch tạm'));
 
@@ -172,7 +175,7 @@ module.exports = {
   release2Candidates, approveRelease2, approveRelease2Batch, skipTestRun, testRunHistory,
   replanCandidates, replan, replanBatch, planHistory,
   giaCongList, giaCongToOqc, giaCongHistory,
-  keHoachTamList, keHoachTamConfirm, keHoachTamDelete,
+  keHoachTamList, keHoachTamConfirm, keHoachTamUpdate, keHoachTamDelete,
   cancelableLenh, cancelLenh, returnTestRun,
   release1Done, release2Done, replanDone, testCnspDone, testQaDone,
 };

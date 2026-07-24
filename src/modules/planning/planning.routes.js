@@ -73,6 +73,7 @@ router.post('/gia-cong/:lenhId/chuyen-oqc', rbac('RELEASE1', 'RELEASE2'), c.giaC
 // Kế hoạch tạm: xác nhận lại Release 1 khi phần in Ready xong
 router.get('/ke-hoach-tam', rbac('RELEASE1', 'RELEASE2'), c.keHoachTamList);
 router.post('/ke-hoach-tam/:id/xac-nhan', rbac('RELEASE1', 'RELEASE2'), c.keHoachTamConfirm);
+router.patch('/ke-hoach-tam/:id', rbac('RELEASE1', 'RELEASE2'), c.keHoachTamUpdate);
 router.delete('/ke-hoach-tam/:id', rbac('RELEASE1', 'RELEASE2'), c.keHoachTamDelete);
 
 // Hủy lệnh / hoàn tác release (đưa đợt vải về lại Release 1)

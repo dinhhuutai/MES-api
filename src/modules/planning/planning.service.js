@@ -788,6 +788,17 @@ async function confirmKeHoachTam(id, actorId) {
   return { ...res, ke_hoach_tam_id: id };
 }
 
+async function updateKeHoachTam(id, { chuyenId, ngayKeHoach, soLuong }, actorId) {
+  const kt = await repo.getKeHoachTam(id);
+  if (!kt) throw new AppError('Kế hoạch tạm không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  const sl = soLuong != null && soLuong !== '' ? Number(soLuong) : null;
+  if (sl != null && !(sl > 0)) throw new AppError('Số lượng release phải lớn hơn 0', { status: 422, errorCode: 'INVALID_QTY' });
+  const res = await repo.updateKeHoachTam(id, { chuyenId, ngayKeHoach, soLuong: sl }, actorId);
+  if (!res) throw new AppError('Không cập nhật được kế hoạch tạm', { status: 409, errorCode: 'UPDATE_FAILED' });
+  sockets.emit('dashboard:refresh', {});
+  return { id };
+}
+
 async function deleteKeHoachTam(id) {
   const kt = await repo.getKeHoachTam(id);
   if (!kt) throw new AppError('Kế hoạch tạm không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
@@ -970,7 +981,7 @@ module.exports = {
   listRelease2Candidates, approveRelease2, approveRelease2Batch, skipTestRun, testRunHistory,
   listReplanCandidates, replan, replanBatch, planHistory,
   listGiaCong, confirmGiaCongToOqc, giaCongHistory,
-  listKeHoachTam, confirmKeHoachTam, deleteKeHoachTam,
+  listKeHoachTam, confirmKeHoachTam, updateKeHoachTam, deleteKeHoachTam,
   listCancelableLenh, rollbackLenh, returnTestRunToRelease1,
   release1Done, release2Done, replanDone, testCnspDone, testQaDone,
   releaseList,
