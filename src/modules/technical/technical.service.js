@@ -96,12 +96,27 @@ async function listCandidates({ search, page, limit, offset, onlyQcReady = false
   });
   // Đánh dấu phần in bị QC (READY) trả về (badge + lọc "chỉ hiện phần bị trả về").
   const rm = await qaRepo.activeReturnsMap('READY', rows.map((r) => r.id));
-  const items = rows.map((r) => ({
-    ...r,
-    trang_thai_ready: r.qc_done ? 'DONE' : r.tech_done ? 'CHO_QC' : r.n_tech_done > 0 ? 'DANG' : 'CHUA',
-    tra_ve: rm[r.id] || null,
-    tra_ve_ly_do: rm[r.id]?.ly_do || null, // giữ tương thích cũ
-  }));
+  // Người + giờ xác nhận từng mục KT (query nhẹ theo PK) → phục vụ bảng/Excel màn READY.
+  const ci = await repo.confirmInfoByPins(rows.map((r) => r.id));
+  const CI_KEY = { KHUON: 'khuon', FILM: 'film', MUC: 'muc' };
+  const ciMap = {};
+  ci.forEach((c) => {
+    const k = CI_KEY[c.ma_checkpoint];
+    if (!k) return;
+    (ciMap[c.phan_in_id] || (ciMap[c.phan_in_id] = {}))[k] = { nguoi: c.nguoi, tg: c.tg };
+  });
+  const items = rows.map((r) => {
+    const c = ciMap[r.id] || {};
+    return {
+      ...r,
+      trang_thai_ready: r.qc_done ? 'DONE' : r.tech_done ? 'CHO_QC' : r.n_tech_done > 0 ? 'DANG' : 'CHUA',
+      tra_ve: rm[r.id] || null,
+      tra_ve_ly_do: rm[r.id]?.ly_do || null, // giữ tương thích cũ
+      film_nguoi: c.film?.nguoi || null, film_tg: c.film?.tg || null,
+      khuon_nguoi: c.khuon?.nguoi || null, khuon_tg: c.khuon?.tg || null,
+      muc_nguoi: c.muc?.nguoi || null, muc_tg: c.muc?.tg || null,
+    };
+  });
   return { items, meta: buildMeta(page, limit, total) };
 }
 

@@ -464,6 +464,23 @@ async function reopenReadyFull(phanInId, actorId, extraLog = {}) {
   return { huy, flagged };
 }
 
+// Người + giờ xác nhận từng mục KT (KHUON/FILM/MUC) của các phần in — query NHẸ theo PK (IPS-safe),
+// tách khỏi listCandidates (đã nặng) để gắn thêm cho bảng/Excel màn READY.
+async function confirmInfoByPins(phanInIds = []) {
+  if (!phanInIds.length) return [];
+  const { rows } = await query(
+    `SELECT k.phan_in_id, cp.ma_checkpoint, nd.ho_ten AS nguoi,
+            COALESCE(k.tg_xac_nhan, k.created_date) AS tg
+     FROM ket_qua_checkpoint k
+     JOIN checkpoint cp ON cp.id = k.checkpoint_id
+     LEFT JOIN nguoi_dung nd ON nd.id = k.nguoi_xac_nhan_id
+     WHERE k.phan_in_id = ANY($1::uuid[]) AND k.trang_thai = 'DAT'
+       AND cp.ma_checkpoint IN ('KHUON','FILM','MUC')`.replace(/\s+/g, ' '),
+    [phanInIds]
+  );
+  return rows;
+}
+
 async function logReopenReady(phanInId, payload, actorId) {
   await query(
     `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
@@ -473,7 +490,7 @@ async function logReopenReady(phanInId, payload, actorId) {
 }
 
 module.exports = {
-  loadReadyConfig, listCandidates, countReadyItems, historyByDate, doneByDate, listConfirmHistory, isPhanInReleased, getPhanInBasic, getResults, getBulkStates,
+  loadReadyConfig, listCandidates, countReadyItems, confirmInfoByPins, historyByDate, doneByDate, listConfirmHistory, isPhanInReleased, getPhanInBasic, getResults, getBulkStates,
   getReadyEntryTime, findResultId, upsertResult, cancelResult, logCancel, insertStatusLog,
   listReopenCandidates, reopenReadyResults, flagUnreleasedDotLamLai, logReopenReady,
   isPhanInProducing, reopenReadyFull,
