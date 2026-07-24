@@ -923,7 +923,7 @@ async function planDoneByDate(date, hanhDong) {
 // Test Run CNSP / QA: lệnh được xác nhận (lich_su_trang_thai) trong ngày theo checkpoint.
 async function testDoneByDate(date, maCheckpoint) {
   const sql = `
-    SELECT l.tg_thuc_hien AS tg, nd.ho_ten AS nguoi, ls.ma_lenh_san_xuat AS ma,
+    SELECT l.tg_thuc_hien AS tg, nd.ho_ten AS nguoi, ls.ma_lenh_san_xuat AS ma, ls.id AS lenh_id,
            ls.so_luong_release AS so_luong, cs.ten_chuyen, ${DONE_INFO}
     FROM lich_su_trang_thai l
     JOIN ket_qua_checkpoint kq ON kq.id = l.ket_qua_checkpoint_id
@@ -936,6 +936,19 @@ async function testDoneByDate(date, maCheckpoint) {
       AND (l.tg_thuc_hien AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
     ORDER BY l.tg_thuc_hien DESC`;
   const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [date, maCheckpoint]);
+  return rows;
+}
+
+// Các LẦN TEST của những lệnh đã cho (kết quả + nguyên nhân nếu lỗi) — query NHẸ theo PK (IPS-safe),
+// tách khỏi testDoneByDate để gắn cột "Lần test 1..N" cho sidebar Đã hoàn thành / Excel.
+async function testRunsByLenh(lenhIds = []) {
+  if (!lenhIds.length) return [];
+  const { rows } = await query(
+    `SELECT tr.lenh_san_xuat_id, tr.lan_test, tr.ket_qua, tr.ghi_chu
+     FROM test_run tr WHERE tr.lenh_san_xuat_id = ANY($1::uuid[])
+     ORDER BY tr.lenh_san_xuat_id, tr.lan_test, tr.created_date`.replace(/\s+/g, ' '),
+    [lenhIds]
+  );
   return rows;
 }
 
@@ -1010,7 +1023,7 @@ module.exports = {
   listGopCandidates, getDotVaiForMerge, adjustDotVaiQty, markDotVaiGop, insertGopHistory, gopHistoryByDate,
   listTestRunCandidates, listRelease2Candidates, getLenhBasic, getLenhDotVai, getTestRuns,
   getLenhTestStatus, insertTestRun, insertTestRunTx, upsertLenhResult, insertStatusLog, setLenhTrangThai,
-  testRunHistoryByDate,
+  testRunHistoryByDate, testRunsByLenh,
   listReplanCandidates, getLenhForReplan, updateLenhPlan, logPlanChange, planHistoryByDate,
   listGiaCongLenh, getGiaCongLenh, listGiaCongHistory,
   upsertKeHoachTam, listKeHoachTamRows, getKeHoachTam, deleteKeHoachTam, deleteKeHoachTamByDotVai,

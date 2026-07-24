@@ -947,8 +947,21 @@ async function releaseList(date) {
 async function release1Done(date) { return repo.release1DoneByDate(date); }
 async function release2Done(date) { return repo.planDoneByDate(date, 'RELEASE_2'); }
 async function replanDone(date) { return repo.planDoneByDate(date, 'REPLAN'); }
-async function testCnspDone(date) { return repo.testDoneByDate(date, CNSP_CP); }
-async function testQaDone(date) { return repo.testDoneByDate(date, QA_CP); }
+// Gắn các LẦN TEST (kết quả + nguyên nhân nếu lỗi) vào từng dòng → cột "Lần test 1..N" ở sidebar/Excel.
+async function attachTestRuns(rows) {
+  const ids = [...new Set(rows.map((r) => r.lenh_id).filter(Boolean))];
+  if (!ids.length) return rows.map((r) => ({ ...r, tests: [] }));
+  const trs = await repo.testRunsByLenh(ids);
+  const byLenh = {};
+  trs.forEach((t) => {
+    (byLenh[t.lenh_san_xuat_id] || (byLenh[t.lenh_san_xuat_id] = []))
+      .push({ lan: t.lan_test, ket_qua: t.ket_qua, ghi_chu: t.ghi_chu });
+  });
+  return rows.map((r) => ({ ...r, tests: byLenh[r.lenh_id] || [] }));
+}
+
+async function testCnspDone(date) { return attachTestRuns(await repo.testDoneByDate(date, CNSP_CP)); }
+async function testQaDone(date) { return attachTestRuns(await repo.testDoneByDate(date, QA_CP)); }
 
 module.exports = {
   listRelease1Candidates, autoPlanCandidates, createRelease1, createDotSanXuat, release1History, listReleaseSets, releaseSet,
