@@ -480,8 +480,24 @@ const QC_DONE_EXISTS = `EXISTS (SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoi
 const readyMark = (maCp) => `(CASE WHEN EXISTS (SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint cp ON cp.id = k.checkpoint_id
     WHERE k.phan_in_id = pin.id AND cp.ma_checkpoint = '${maCp}' AND k.trang_thai = 'DAT') THEN 'Đã' ELSE '' END)`;
 
+// Khối cột thông tin phần in dùng CHUNG cho 2 nhánh của DS_READY_DANG_O (đang ở READY / đã QA theo ngày).
+// Yêu cầu alias sẵn: pin, mh, dh, kh.
+const READY_INFO_SELECT = `
+  pin.id AS phan_in_id,
+  pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in, pin.so_luong_don_hang,
+  mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
+  (SELECT COALESCE(sum(dv5.so_luong_vai_ve),0) FROM dot_vai_ve dv5 WHERE dv5.phan_in_id = pin.id AND dv5.trang_thai NOT IN ('DA_GOP','DA_HUY'))::int AS so_luong_vai_ve,
+  to_char((SELECT min(dv4.han_giao_hang) FROM dot_vai_ve dv4 WHERE dv4.phan_in_id = pin.id AND dv4.trang_thai NOT IN ('DA_GOP','DA_HUY')), 'DD/MM/YYYY') AS han_giao_hang,
+  (CASE WHEN kh.ten_khach_hang IN (${KHUON_OPT_SQL_LIST}) THEN '—' ELSE ${readyMark('KHUON')} END) AS ready_khuon,
+  ${readyMark('FILM')} AS ready_film, ${readyMark('MUC')} AS ready_muc,
+  ((SELECT count(*) FROM ket_qua_checkpoint k JOIN checkpoint cp ON cp.id = k.checkpoint_id
+     WHERE k.phan_in_id = pin.id AND k.trang_thai = 'DAT'
+       AND (cp.ma_checkpoint IN ('FILM','MUC') OR (cp.ma_checkpoint = 'KHUON' AND kh.ten_khach_hang NOT IN (${KHUON_OPT_SQL_LIST}))))::text
+    || '/' || (CASE WHEN kh.ten_khach_hang IN (${KHUON_OPT_SQL_LIST}) THEN '2' ELSE '3' END)) AS so_muc_kt`;
+
 const COT_READY_DANG_O = [
   { key: 'stt', ten: 'STT', kieu: 'so' },
+  { key: 'tinh_trang', ten: 'Tình trạng', kieu: 'text' },
   { key: 'ma_phan', ten: 'Code phần', kieu: 'text' },
   { key: 'ma_hang', ten: 'Mã hàng', kieu: 'text' },
   { key: 'ten_khach_hang', ten: 'Khách hàng', kieu: 'text' },
@@ -498,38 +514,78 @@ const COT_READY_DANG_O = [
   { key: 'ready_muc', ten: 'Mực', kieu: 'text' },
   { key: 'so_muc_kt', ten: 'Mục KT xong', kieu: 'text' },
   { key: 'qc_ready', ten: 'QC READY', kieu: 'text' },
+  { key: 'ngay_ready', ten: 'Ngày QA READY', kieu: 'text' },
+  { key: 'gio_ready', ten: 'Giờ QA READY', kieu: 'text' },
+  { key: 'nguoi_ready', ten: 'Người QA', kieu: 'text' },
 ];
 
+// DS_READY_DANG_O — 2 chế độ theo bộ lọc NGÀY:
+//   - Để trống ngày  → CHỈ "đang ở READY hiện tại" (snapshot, như cũ).
+//   - Chọn ngày (Hôm nay/cụ thể) → GỘP: phần in ĐÃ QA xác nhận READY trong ngày đó (throughput)
+//     + phần in ĐANG ở READY hiện tại (backlog). Cột "Tình trạng" phân biệt 2 nhóm; nhóm "đã QA" kèm ngày/giờ/người.
 async function runReadyDangO({ loc = {}, gioi_han }) {
-  const params = [];
-  const conds = ['pin.dang_hoat_dong', READY_MEMBER, `NOT ${QC_DONE_EXISTS}`];
-  if (clean(loc.khach)) { params.push(clean(loc.khach)); conds.push(`kh.ten_khach_hang ILIKE '%'||$${params.length}||'%'`); }
-  if (clean(loc.tim)) {
-    params.push(clean(loc.tim));
-    const i = params.length;
-    conds.push(`(pin.ma_phan ILIKE '%'||$${i}||'%' OR mh.ma_hang ILIKE '%'||$${i}||'%' OR dh.ma_don_hang ILIKE '%'||$${i}||'%' OR pin.mau_vai ILIKE '%'||$${i}||'%')`);
-  }
-  const sql = `
-    SELECT pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in, pin.so_luong_don_hang,
-           mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
-           (SELECT COALESCE(sum(dv5.so_luong_vai_ve),0) FROM dot_vai_ve dv5 WHERE dv5.phan_in_id = pin.id AND dv5.trang_thai NOT IN ('DA_GOP','DA_HUY'))::int AS so_luong_vai_ve,
-           to_char((SELECT min(dv4.han_giao_hang) FROM dot_vai_ve dv4 WHERE dv4.phan_in_id = pin.id AND dv4.trang_thai NOT IN ('DA_GOP','DA_HUY')), 'DD/MM/YYYY') AS han_giao_hang,
-           (CASE WHEN kh.ten_khach_hang IN (${KHUON_OPT_SQL_LIST}) THEN '—' ELSE ${readyMark('KHUON')} END) AS ready_khuon,
-           ${readyMark('FILM')} AS ready_film, ${readyMark('MUC')} AS ready_muc,
-           ((SELECT count(*) FROM ket_qua_checkpoint k JOIN checkpoint cp ON cp.id = k.checkpoint_id
-              WHERE k.phan_in_id = pin.id AND k.trang_thai = 'DAT'
-                AND (cp.ma_checkpoint IN ('FILM','MUC') OR (cp.ma_checkpoint = 'KHUON' AND kh.ten_khach_hang NOT IN (${KHUON_OPT_SQL_LIST}))))::text
-             || '/' || (CASE WHEN kh.ten_khach_hang IN (${KHUON_OPT_SQL_LIST}) THEN '2' ELSE '3' END)) AS so_muc_kt,
-           '' AS qc_ready
-    FROM phan_in pin
+  const lim = limitOf(gioi_han);
+  const ngay = clean(loc.ngay);
+  const JOINS = `
     JOIN ma_hang mh ON mh.id = pin.ma_hang_id
     JOIN don_hang dh ON dh.id = mh.don_hang_id
-    JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+    JOIN khach_hang kh ON kh.id = dh.khach_hang_id`;
+
+  // 1) ĐANG ở READY hiện tại (snapshot) — luôn lấy.
+  const pc = [];
+  const conds = ['pin.dang_hoat_dong', READY_MEMBER, `NOT ${QC_DONE_EXISTS}`];
+  if (clean(loc.khach)) { pc.push(clean(loc.khach)); conds.push(`kh.ten_khach_hang ILIKE '%'||$${pc.length}||'%'`); }
+  if (clean(loc.tim)) {
+    pc.push(clean(loc.tim)); const i = pc.length;
+    conds.push(`(pin.ma_phan ILIKE '%'||$${i}||'%' OR mh.ma_hang ILIKE '%'||$${i}||'%' OR dh.ma_don_hang ILIKE '%'||$${i}||'%' OR pin.mau_vai ILIKE '%'||$${i}||'%')`);
+  }
+  const sqlCur = `
+    SELECT ${READY_INFO_SELECT},
+           'Đang ở READY'::text AS tinh_trang, ''::text AS qc_ready,
+           ''::text AS ngay_ready, ''::text AS gio_ready, ''::text AS nguoi_ready
+    FROM phan_in pin ${JOINS}
     WHERE ${conds.join(' AND ')}
     ORDER BY kh.ten_khach_hang, dh.ma_don_hang, pin.ma_phan
-    LIMIT ${limitOf(gioi_han)}`;
-  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), params);
-  return rows.map((r, i) => ({ ...r, stt: i + 1 }));
+    LIMIT ${lim}`;
+  const cur = (await query(sqlCur.replace(/\s+/g, ' ').trim(), pc)).rows;
+
+  // 2) ĐÃ QA xác nhận READY trong NGÀY đã chọn — chỉ khi có chọn ngày.
+  let done = [];
+  if (ngay) {
+    const dc = [];
+    const dconds = ["cp.ma_checkpoint = 'QC_XAC_NHAN'", "kq.trang_thai = 'DAT'", 'pin.dang_hoat_dong'];
+    const nc = ngayCond(READY_TS, ngay, true);
+    if (nc) dconds.push(nc);
+    if (clean(loc.khach)) { dc.push(clean(loc.khach)); dconds.push(`kh.ten_khach_hang ILIKE '%'||$${dc.length}||'%'`); }
+    if (clean(loc.tim)) {
+      dc.push(clean(loc.tim)); const i = dc.length;
+      dconds.push(`(pin.ma_phan ILIKE '%'||$${i}||'%' OR mh.ma_hang ILIKE '%'||$${i}||'%' OR dh.ma_don_hang ILIKE '%'||$${i}||'%' OR pin.mau_vai ILIKE '%'||$${i}||'%')`);
+    }
+    const sqlDone = `
+      SELECT DISTINCT ON (pin.id) ${READY_INFO_SELECT},
+             'Đã READY (QA)'::text AS tinh_trang, 'Đã QC'::text AS qc_ready,
+             to_char(${READY_TS} AT TIME ZONE 'Asia/Ho_Chi_Minh', 'DD/MM/YYYY') AS ngay_ready,
+             to_char(${READY_TS} AT TIME ZONE 'Asia/Ho_Chi_Minh', 'HH24:MI') AS gio_ready,
+             nx.ho_ten AS nguoi_ready
+      FROM ket_qua_checkpoint kq
+      JOIN checkpoint cp ON cp.id = kq.checkpoint_id
+      JOIN phan_in pin ON pin.id = kq.phan_in_id ${JOINS}
+      LEFT JOIN nguoi_dung nx ON nx.id = kq.nguoi_xac_nhan_id
+      WHERE ${dconds.join(' AND ')}
+      ORDER BY pin.id, ${READY_TS} DESC
+      LIMIT ${lim}`;
+    done = (await query(sqlDone.replace(/\s+/g, ' ').trim(), dc)).rows;
+  }
+
+  // Gộp: "đã READY (QA)" trước (throughput) rồi "đang ở READY" (backlog); dedupe theo phần in.
+  const seen = new Set();
+  const all = [];
+  for (const r of [...done, ...cur]) {
+    if (seen.has(r.phan_in_id)) continue;
+    seen.add(r.phan_in_id);
+    all.push(r);
+  }
+  return all.slice(0, lim).map((r, i) => ({ ...r, stt: i + 1 }));
 }
 
 const COT_READY_HOAN_THANH = [
@@ -725,6 +781,8 @@ const LOC_DEF = {
   ngay: { ma: 'ngay', ten: 'Ngày', kieu: 'ngay', mo_ta: 'Để trống = mọi ngày · "Hôm nay" = tự đổi theo ngày xem.' },
   ngay_testrun: { ma: 'ngay', ten: 'Ngày (đã test)', kieu: 'ngay',
     mo_ta: 'Lọc NGÀY cho nhánh "đã test". Để trống = HÔM NAY. Nhánh "chờ test" luôn hiện theo hiện tại.' },
+  ngay_ready: { ma: 'ngay', ten: 'Ngày (đã QA READY)', kieu: 'ngay',
+    mo_ta: 'Để trống = CHỈ danh sách đang ở READY hiện tại · Chọn ngày (Hôm nay/cụ thể) = THÊM phần in đã QA xác nhận READY ngày đó.' },
   tram: { ma: 'tram', ten: 'Trạm (checkpoint)', kieu: 'chon', chon: TRAM_OPTS },
   chuyen: { ma: 'chuyen', ten: 'Chuyền', kieu: 'chu' },
   khach: { ma: 'khach', ten: 'Khách hàng', kieu: 'chu' },
@@ -771,10 +829,11 @@ const DEFS = [
       + '⇒ "danh sách READY đã hoàn thành hôm nay". (Nguồn lịch sử luân chuyển — best-effort.) '
       + 'Xem "đang ở READY hiện tại" ở nguồn "Phần in / đợt vải" với bộ lọc Trạm = READY.',
     loc: locList(['ngay', 'tram', 'tim']), cot: COT_HOAN_THANH, run: runHoanThanhTram },
-  { ma: 'DS_READY_DANG_O', ten: 'Đang ở READY hiện tại (khớp màn Chuẩn bị KT / QC)', don_vi_dong: 'phần in',
-    mo_ta: '1 dòng = 1 PHẦN IN đang ở READY hiện tại (chưa QC xác nhận, còn đợt vải chưa release). '
-      + 'Dùng ĐÚNG nguồn của màn "Chuẩn bị kỹ thuật" / "QC READY" ⇒ số liệu KHỚP MÀN (đơn vị phần in, không phải đợt vải).',
-    loc: locList(['khach', 'tim']), cot: COT_READY_DANG_O, run: runReadyDangO },
+  { ma: 'DS_READY_DANG_O', ten: 'Đang ở READY (hiện tại / theo ngày)', don_vi_dong: 'phần in',
+    mo_ta: '1 dòng = 1 PHẦN IN. Để TRỐNG ngày = danh sách đang ở READY hiện tại (chưa QC, còn đợt chưa release — khớp màn '
+      + 'Chuẩn bị KT/QC). CHỌN ngày (Hôm nay/cụ thể) = GỘP thêm phần in ĐÃ QA xác nhận READY ngày đó (kèm giờ/người QA). '
+      + 'Cột "Tình trạng" phân biệt "Đang ở READY" / "Đã READY (QA)".',
+    loc: locList(['ngay_ready', 'khach', 'tim']), cot: COT_READY_DANG_O, run: runReadyDangO },
   { ma: 'DS_READY_HOAN_THANH', ten: 'Phần in đã hoàn thành READY (QC xác nhận, theo ngày)', don_vi_dong: 'phần in',
     mo_ta: '1 dòng = 1 PHẦN IN được QC xác nhận READY. Lọc ngày = Hôm nay ⇒ khớp sidebar "Đã hoàn thành" của màn QC READY '
       + '(kèm người xác nhận + giờ).',
