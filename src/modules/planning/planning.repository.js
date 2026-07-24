@@ -924,11 +924,12 @@ async function planDoneByDate(date, hanhDong) {
 async function testDoneByDate(date, maCheckpoint) {
   const sql = `
     SELECT l.tg_thuc_hien AS tg, nd.ho_ten AS nguoi, ls.ma_lenh_san_xuat AS ma,
-           ls.so_luong_release AS so_luong, ${DONE_INFO}
+           ls.so_luong_release AS so_luong, cs.ten_chuyen, ${DONE_INFO}
     FROM lich_su_trang_thai l
     JOIN ket_qua_checkpoint kq ON kq.id = l.ket_qua_checkpoint_id
     JOIN checkpoint cp ON cp.id = kq.checkpoint_id
     JOIN lenh_san_xuat ls ON ls.id = kq.lenh_san_xuat_id
+    LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
     LEFT JOIN nguoi_dung nd ON nd.id = l.nguoi_thuc_hien_id
     ${PHAN_INFO_LATERAL}
     WHERE cp.ma_checkpoint = $2
