@@ -140,6 +140,7 @@ const COT_DOT_SX = [
   { key: 'kich_phim', ten: 'Kích film', kieu: 'text' },
   { key: 'tinh_chat_in', ten: 'TC IN', kieu: 'text' },
   { key: 'ma_lenh_san_xuat', ten: 'Mã lệnh (LSX)', kieu: 'text' },
+  { key: 'so_luong_don_hang', ten: 'SLĐH', kieu: 'so' },
   { key: 'so_luong_release', ten: 'SL release', kieu: 'so' },
   { key: 'gio_bd', ten: 'Giờ bắt đầu', kieu: 'text' },
   { key: 'gio_kt', ten: 'Giờ kết thúc', kieu: 'text' },
@@ -191,7 +192,7 @@ async function runDotSanXuat({ loc = {}, gioi_han }) {
               WHERE kq.lenh_san_xuat_id = ls.id AND cp.ma_checkpoint = 'TEST_QA' AND kq.trang_thai = 'DAT' LIMIT 1) AS test_tg,
            cs.ten_chuyen,
            info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan,
-           info.mau_vai, info.kich_vai, info.kich_phim, info.tinh_chat_in,
+           info.mau_vai, info.kich_vai, info.kich_phim, info.tinh_chat_in, info.so_luong_don_hang,
            to_char((SELECT min(dvh.han_giao_hang) FROM lenh_sx_dot_vai lsh JOIN dot_vai_ve dvh ON dvh.id = lsh.dot_vai_ve_id
               WHERE lsh.lenh_san_xuat_id = ls.id), 'DD/MM/YYYY') AS han_giao_hang,
            (SELECT COALESCE(sum(t.so_luong),0)::int FROM phieu_san_xuat ps JOIN tem t ON t.phieu_san_xuat_id = ps.id
@@ -200,7 +201,7 @@ async function runDotSanXuat({ loc = {}, gioi_han }) {
     LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
     LEFT JOIN LATERAL (
       SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang,
-             pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.ma_phan, pin.tinh_chat_in
+             pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.ma_phan, pin.tinh_chat_in, pin.so_luong_don_hang
       FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
       JOIN phan_in pin ON pin.id = dv.phan_in_id AND pin.dang_hoat_dong
       JOIN ma_hang mh ON mh.id = pin.ma_hang_id
@@ -242,6 +243,7 @@ const COT_TEST_RUN = [
   { key: 'kich_phim', ten: 'Kích film', kieu: 'text' },
   { key: 'tinh_chat_in', ten: 'TC IN', kieu: 'text' },
   { key: 'ma_lenh_san_xuat', ten: 'Mã lệnh (LSX)', kieu: 'text' },
+  { key: 'so_luong_don_hang', ten: 'SLĐH', kieu: 'so' },
   { key: 'so_luong_release', ten: 'SL release', kieu: 'so' },
   // --- Kết quả + thông tin test của QC ---
   { key: 'test_ket_qua', ten: 'Kết quả test', kieu: 'text' },
@@ -289,7 +291,7 @@ async function runTestRun({ loc = {}, gioi_han }) {
               WHERE lsh.lenh_san_xuat_id = ls.id), 'DD/MM/YYYY') AS han_giao_hang,
            cs.ten_chuyen,
            info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan,
-           info.mau_vai, info.kich_vai, info.kich_phim, info.tinh_chat_in
+           info.mau_vai, info.kich_vai, info.kich_phim, info.tinh_chat_in, info.so_luong_don_hang
     FROM lenh_san_xuat ls
     LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
     LEFT JOIN LATERAL (
@@ -306,7 +308,7 @@ async function runTestRun({ loc = {}, gioi_han }) {
     LEFT JOIN nguoi_dung nqa ON nqa.id = tq.nguoi_xac_nhan_id
     LEFT JOIN LATERAL (
       SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang,
-             pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.ma_phan, pin.tinh_chat_in
+             pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.ma_phan, pin.tinh_chat_in, pin.so_luong_don_hang
       FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
       JOIN phan_in pin ON pin.id = dv.phan_in_id AND pin.dang_hoat_dong
       JOIN ma_hang mh ON mh.id = pin.ma_hang_id
@@ -335,6 +337,7 @@ const COT_TEM = [
   { key: 'ma_hang', ten: 'Mã hàng', kieu: 'text' },
   { key: 'mau_vai', ten: 'Màu vải', kieu: 'text' },
   { key: 'kich_vai', ten: 'Kích vải', kieu: 'text' },
+  { key: 'so_luong_don_hang', ten: 'SLĐH', kieu: 'so' },
   { key: 'so_luong', ten: 'SL in', kieu: 'so' },
   { key: 'sl_kcs_dat', ten: 'KCS đạt', kieu: 'so' },
   { key: 'sl_kcs_sua', ten: 'Chuyển sửa', kieu: 'so' },
@@ -367,13 +370,13 @@ async function runTem({ loc = {}, gioi_han }) {
     SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai AS tt,
            to_char(t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh', 'DD/MM/YYYY') AS ngay_in_tem,
            t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy, t.sl_sua_dat, t.sl_sua_huy, t.sl_oqc_dat, t.sl_da_giao,
-           cs.ten_chuyen, info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan, info.mau_vai, info.kich_vai
+           cs.ten_chuyen, info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan, info.mau_vai, info.kich_vai, info.so_luong_don_hang
     FROM tem t
     JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
     JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
     LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
     LEFT JOIN LATERAL (
-      SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, pin.ma_phan, pin.mau_vai, pin.kich_vai
+      SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.so_luong_don_hang
       FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
       JOIN phan_in pin ON pin.id = dv.phan_in_id AND pin.dang_hoat_dong
       JOIN ma_hang mh ON mh.id = pin.ma_hang_id
@@ -403,6 +406,7 @@ const COT_HOAN_THANH = [
   { key: 'mau_vai', ten: 'Màu vải', kieu: 'text' },
   { key: 'kich_vai', ten: 'Kích vải', kieu: 'text' },
   { key: 'kich_phim', ten: 'Kích film', kieu: 'text' },
+  { key: 'so_luong_don_hang', ten: 'SLĐH', kieu: 'so' },
 ];
 
 // 1 phần in = 1 dòng cho MỖI checkpoint (DISTINCT ON phần in + trạm, lấy lượt hoàn thành muộn nhất trong
@@ -453,7 +457,7 @@ async function runHoanThanhTram({ loc = {}, gioi_han }) {
     SELECT to_char(d.tg_done AT TIME ZONE 'Asia/Ho_Chi_Minh', 'DD/MM/YYYY') AS ngay_hoan_thanh,
            to_char(d.tg_done AT TIME ZONE 'Asia/Ho_Chi_Minh', 'HH24:MI') AS gio_hoan_thanh,
            d.ten_tram, kh.ten_khach_hang, dh.ma_don_hang,
-           pin.ma_phan, mh.ma_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim
+           pin.ma_phan, mh.ma_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.so_luong_don_hang
     FROM dedup d
     JOIN phan_in pin ON pin.id = d.phan_in_id
     JOIN ma_hang mh ON mh.id = pin.ma_hang_id
@@ -600,6 +604,7 @@ const COT_READY_HOAN_THANH = [
   { key: 'mau_vai', ten: 'Màu vải', kieu: 'text' },
   { key: 'kich_vai', ten: 'Kích vải', kieu: 'text' },
   { key: 'kich_phim', ten: 'Kích film', kieu: 'text' },
+  { key: 'so_luong_don_hang', ten: 'SLĐH', kieu: 'so' },
   { key: 'so_luong_vai_ve', ten: 'SL nhận vải', kieu: 'so' },
 ];
 
@@ -618,7 +623,7 @@ async function runReadyHoanThanh({ loc = {}, gioi_han }) {
     SELECT to_char(${READY_TS} AT TIME ZONE 'Asia/Ho_Chi_Minh', 'DD/MM/YYYY') AS ngay_hoan_thanh,
            to_char(${READY_TS} AT TIME ZONE 'Asia/Ho_Chi_Minh', 'HH24:MI') AS gio_hoan_thanh,
            nx.ho_ten AS nguoi_xac_nhan,
-           pin.ma_phan, mh.ma_hang, kh.ten_khach_hang, dh.ma_don_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim,
+           pin.ma_phan, mh.ma_hang, kh.ten_khach_hang, dh.ma_don_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.so_luong_don_hang,
            (SELECT COALESCE(sum(dv5.so_luong_vai_ve),0) FROM dot_vai_ve dv5 WHERE dv5.phan_in_id = pin.id AND dv5.trang_thai NOT IN ('DA_GOP','DA_HUY'))::int AS so_luong_vai_ve
     FROM ket_qua_checkpoint kq
     JOIN checkpoint cp ON cp.id = kq.checkpoint_id
@@ -651,6 +656,7 @@ const COT_VAO_TRAM = [
   { key: 'mau_vai', ten: 'Màu vải', kieu: 'text' },
   { key: 'kich_vai', ten: 'Kích vải', kieu: 'text' },
   { key: 'kich_phim', ten: 'Kích film', kieu: 'text' },
+  { key: 'so_luong_don_hang', ten: 'SLĐH', kieu: 'so' },
   { key: 'hoan_thanh', ten: 'Hoàn thành trong ngày', kieu: 'text' },
   { key: 'gio_hoan_thanh', ten: 'Giờ hoàn thành', kieu: 'text' },
 ];
@@ -688,7 +694,7 @@ async function runPhanInVaoTram({ loc = {}, gioi_han }) {
     SELECT to_char(v.tg_bd AT TIME ZONE 'Asia/Ho_Chi_Minh', 'DD/MM/YYYY') AS ngay_vao,
            to_char(v.tg_bd AT TIME ZONE 'Asia/Ho_Chi_Minh', 'HH24:MI') AS gio_vao,
            v.ten_tram, kh.ten_khach_hang, dh.ma_don_hang,
-           pin.ma_phan, mh.ma_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim,
+           pin.ma_phan, mh.ma_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.so_luong_don_hang,
            ${hoanThanhExpr} AS hoan_thanh,
            ${gioHtExpr} AS gio_hoan_thanh
     FROM vao v

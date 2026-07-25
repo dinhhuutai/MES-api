@@ -12,7 +12,7 @@
 const { query } = require('../../config/db');
 const dashboardRepo = require('../dashboard/dashboard.repository');
 const { dominantStageScalar } = require('../../utils/stage');
-const { techDoneSql, KHUON_OPT_SQL_LIST } = require('../../utils/tech');
+const { techDoneSql, techDoneSqlByPin, KHUON_OPT_SQL_LIST } = require('../../utils/tech');
 
 // Cache ngắn kết quả stageCounts (đếm phần in theo giai đoạn — nguồn tin cậy như dashboard) để nhiều
 // metric "phần in đang ở trạm" dùng chung 1 lần chạy trong cùng lượt compute (tránh chạy lặp query nặng).
@@ -27,6 +27,33 @@ async function stageCountsCached() {
 const pinAtStage = (keys) => async () => {
   const sc = await stageCountsCached();
   return keys.reduce((a, k) => a + ((sc.stages && sc.stages[k] && sc.stages[k].phan_in) || 0), 0);
+};
+
+// TỔNG SL ĐẶT (SLĐH = phan_in.so_luong_don_hang) theo GIAI ĐOẠN DOMINANT — CÙNG membership & dominant với
+// stageCounts (mỗi phần in 1 trạm) ⇒ Σ mọi trạm = tổng SLĐH active, khớp ô giai đoạn dashboard. Cache 2s
+// (query nặng: dominant per phần in) dùng chung cho mọi metric SLDON_O_*.
+let _sldPromise = null; let _sldAt = 0;
+async function slDonByStageCached() {
+  if (_sldPromise && Date.now() - _sldAt < 2000) return _sldPromise;
+  const sql = `SELECT (${dominantStageScalar('pin.id')}) AS stage, COALESCE(sum(pin.so_luong_don_hang),0)::numeric AS sl
+    FROM phan_in pin
+    JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+    JOIN don_hang dh ON dh.id = mh.don_hang_id AND dh.trang_thai IS DISTINCT FROM 'CLOSED_FINANCE'
+    WHERE pin.dang_hoat_dong
+      AND (EXISTS (SELECT 1 FROM dot_vai_ve dr WHERE dr.phan_in_id=pin.id AND dr.trang_thai NOT IN ('DA_GOP','DA_HUY') AND dr.tg_chuyen_ready IS NOT NULL)
+           OR NOT EXISTS (SELECT 1 FROM dot_vai_ve da WHERE da.phan_in_id=pin.id AND da.trang_thai NOT IN ('DA_GOP','DA_HUY')))
+    GROUP BY 1`;
+  _sldPromise = query(sql.replace(/\s+/g, ' ')).then((r) => {
+    const m = {};
+    r.rows.forEach((x) => { m[x.stage] = Number(x.sl) || 0; });
+    return m;
+  });
+  _sldAt = Date.now();
+  return _sldPromise;
+}
+const slDonAtStage = (keys) => async () => {
+  const m = await slDonByStageCached();
+  return keys.reduce((a, k) => a + (m[k] || 0), 0);
 };
 
 // Đếm ĐANG Ở checkpoint theo ĐƠN / MÃ (không cộng dồn per-substage vì 1 mã/đơn có thể trải nhiều substage
@@ -141,6 +168,9 @@ const DEFS = [
   { ma: 'SO_PHAN_IN_TONG', ten: 'Tổng số phần in', nhom: 'Đơn hàng (tổng)', don_vi: 'phần',
     mo_ta: 'Tổng số phần in hiện có (lũy kế).',
     run: () => scalar('SELECT count(*)::numeric AS v FROM phan_in') },
+  { ma: 'TONG_SL_DON_TONG', ten: 'Tổng SL đơn hàng (SLĐH lũy kế)', nhom: 'Đơn hàng (tổng)', don_vi: 'pcs',
+    mo_ta: 'Tổng SL đặt của các phần in đang hoạt động (sum phan_in.so_luong_don_hang) — lũy kế, không theo thời gian.',
+    run: () => scalar('SELECT COALESCE(sum(so_luong_don_hang),0)::numeric AS v FROM phan_in WHERE dang_hoat_dong') },
 
   // ---------- VẢI VỀ (hôm nay) ----------
   { ma: 'SO_DOT_VAI_HOM_NAY', ten: 'Số đợt vải về hôm nay', nhom: 'Vải về (hôm nay)', don_vi: 'đợt',
@@ -188,6 +218,22 @@ const DEFS = [
   { ma: 'MUC_CHO', ten: 'Phần in chờ pha mực', nhom: 'Kỹ thuật (hiện tại)', don_vi: 'phần',
     mo_ta: 'Số phần in đang hoạt động, chưa QC-READY và CHƯA xác nhận MỰC (đang cần pha mực).',
     run: () => scalar(readyChoCp('MUC')) },
+
+  // ---------- QA READY (hiện tại) — trạng thái ở bước QC/QA xác nhận READY ----------
+  { ma: 'QA_DANG_CHO', ten: 'Đang ở QA (chờ QC xác nhận READY)', nhom: 'QA READY (hiện tại)', don_vi: 'phần',
+    mo_ta: 'Số phần in đã ĐỦ mục kỹ thuật (Film/Mực + Khuôn, khách II/AD bỏ Khuôn) nhưng CHƯA được QC/QA xác nhận '
+      + 'READY — đang chờ QA ở màn QC READY.',
+    run: () => scalar(`SELECT count(*)::numeric AS v FROM phan_in pin WHERE pin.dang_hoat_dong
+      AND NOT EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
+        WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT')
+      AND ${techDoneSqlByPin('pin.id')}`) },
+  { ma: 'QA_DA_READY', ten: 'Đã QA xác nhận READY (hiện tại)', nhom: 'QA READY (hiện tại)', don_vi: 'phần',
+    mo_ta: 'Số phần in đã được QC/QA xác nhận READY (QC_XAC_NHAN=DAT). Hiện tại (đồng nghĩa "Phần in đã READY").',
+    run: () => scalar(`SELECT count(DISTINCT kq.phan_in_id)::numeric AS v FROM ket_qua_checkpoint kq
+      JOIN checkpoint cp ON cp.id = kq.checkpoint_id WHERE cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT'`) },
+  { ma: 'QA_DA_READY_HOM_NAY', ten: 'Đã QA xác nhận READY hôm nay', nhom: 'QA READY (hiện tại)', don_vi: 'phần',
+    mo_ta: 'Số phần in được QC/QA xác nhận READY (QC_XAC_NHAN=DAT) trong hôm nay.',
+    run: () => scalar(cpDoneToday('QC_XAC_NHAN')) },
 
   // ---------- READY / DÒNG CHẢY (hiện tại) ----------
   { ma: 'PHAN_DA_READY', ten: 'Phần in đã READY', nhom: 'READY / dòng chảy (hiện tại)', don_vi: 'phần',
@@ -373,6 +419,15 @@ PIN_STAGES.forEach((s) => DEFS.push({
   run: pinAtStage(s.keys),
 }));
 
+// SL ĐƠN HÀNG (SLĐH) đang ở từng trạm — cùng dominant stage với "Phần in đang ở trạm", nhưng CỘNG SL đặt.
+PIN_STAGES.forEach((s) => DEFS.push({
+  ma: s.ma.replace('PIN_O_', 'SLDON_O_'),
+  ten: s.ten.replace('Phần in', 'SL đơn hàng'),
+  nhom: 'SL đơn hàng đang ở trạm (hiện tại)', don_vi: 'pcs',
+  mo_ta: `Tổng SL đặt (SLĐH = so_luong_don_hang) của phần in đang ở giai đoạn này (dominant stage, khớp ô giai đoạn dashboard).`,
+  run: slDonAtStage(s.keys),
+}));
+
 // ================= DÒNG CHẢY THEO CHECKPOINT (trả lời: hôm nay vào bao nhiêu, đi tiếp bao nhiêu,
 //                    đang đứng bao nhiêu, nghẽn / sắp nghẽn bao nhiêu, kẹt ở đâu) =================
 // NGUỒN (cố ý dùng đúng nguồn của dashboard để KHÔNG ra 2 con số đá nhau):
@@ -422,6 +477,24 @@ const roiTramHomNay = (maTram, lv = 'phan') =>
     : `SELECT count(DISTINCT ${FLOW_LV[lv]})::numeric AS v FROM lich_su_luan_chuyen l
    JOIN tram tr ON tr.id = l.den_tram_id ${lv === 'phan' ? '' : FLOW_JOIN}
    WHERE tr.ma_tram = '${maTram}' AND l.tg_kt IS NOT NULL AND ${TODAY_TS('l.tg_kt')}`;
+
+// TỔNG SL ĐẶT (SLĐH) của phần in ĐÃ xác nhận/hoàn tất (rời) trạm trong hôm nay — DISTINCT phần in rồi sum.
+// READY = mốc QC xác nhận (tin cậy); trạm khác = lịch sử luân chuyển tg_kt (best-effort, như roiTramHomNay).
+const slDonRoiTramHomNay = (maTram) =>
+  maTram === 'READY'
+    ? `SELECT COALESCE(sum(x.sldh),0)::numeric AS v FROM (
+         SELECT DISTINCT pin.id, pin.so_luong_don_hang AS sldh
+         FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
+         JOIN phan_in pin ON pin.id = kq.phan_in_id
+         WHERE cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT' AND pin.dang_hoat_dong
+           AND ${TODAY_TS('COALESCE(kq.tg_xac_nhan, kq.created_date)')}
+       ) x`
+    : `SELECT COALESCE(sum(x.sldh),0)::numeric AS v FROM (
+         SELECT DISTINCT pin.id, pin.so_luong_don_hang AS sldh
+         FROM lich_su_luan_chuyen l JOIN tram tr ON tr.id = l.den_tram_id
+         JOIN phan_in pin ON pin.id = l.phan_in_id
+         WHERE tr.ma_tram = '${maTram}' AND l.tg_kt IS NOT NULL AND ${TODAY_TS('l.tg_kt')}
+       ) x`;
 
 // Trạm (checkpoint) đưa vào catalog + map sang key stageCounts (dominant) của dashboard.
 // stageCounts tách READY→READY_KT/READY_QA và Test Run→TESTRUN_CNSP/TESTRUN_QA nên phải gộp lại.
@@ -479,6 +552,16 @@ CP_FLOW.forEach((cp) => {
     );
   });
 });
+
+// ---------- SL ĐƠN HÀNG XÁC NHẬN HÔM NAY (theo trạm) — Σ SLĐH phần in RỜI/hoàn tất trạm trong ngày ----------
+CP_FLOW.forEach((cp) => DEFS.push({
+  ma: `SLDON_XN_${cp.ma}`,
+  ten: `SL đơn hàng ${cp.ten} — xác nhận hôm nay`,
+  nhom: 'SL đơn hàng xác nhận hôm nay (theo trạm)', don_vi: 'pcs',
+  mo_ta: `Tổng SL đặt (SLĐH = so_luong_don_hang) của phần in ĐÃ xác nhận/hoàn tất checkpoint ${cp.ten} trong hôm nay (giờ VN). `
+    + 'READY dùng mốc QC xác nhận (tin cậy); trạm khác dùng lịch sử luân chuyển (best-effort).',
+  run: () => scalar(slDonRoiTramHomNay(cp.ma)),
+}));
 
 // ---------- ĐIỂM NGHẼN (text) — "kẹt ở đâu, vì sao" ----------
 DEFS.push(
