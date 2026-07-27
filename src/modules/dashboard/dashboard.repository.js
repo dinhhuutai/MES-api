@@ -429,6 +429,24 @@ async function tinhTrangActiveRows() {
 
 // Tìm phần in (cho màn Sơ đồ phần in). Tìm rỗng → phần in MỚI NHẤT; có tìm → khớp, giới hạn số dòng.
 // KHÔNG tải hết (có thể vài ngàn phần in) — người dùng nhập/quét QR để ra phần in.
+// Giải mã 1 mã quét → xác định loại + đối tượng (cho nút Quét ở bottom nav / PWA).
+//  - Barcode HSKT (ho_so_ky_thuat.barcode_hskt) → { type:'HSKT', barcode_hskt }.
+//  - Code phần / barcode đợt vải / mã tem (bỏ tiền tố công đoạn + hậu tố lần giao) → { type:'PHAN_IN', ma_phan }.
+async function resolveScanCode(code) {
+  const c = String(code || '').trim();
+  if (!c) return { type: null };
+  const base = c.replace(/^\d+-/, '').replace(/-\d+$/, ''); // baseMaTem: bỏ tiền tố công đoạn + hậu tố lần giao
+  const h = await query('SELECT barcode_hskt FROM ho_so_ky_thuat WHERE barcode_hskt=$1 AND dang_hoat_dong=true LIMIT 1', [c]);
+  if (h.rows[0]) return { type: 'HSKT', barcode_hskt: h.rows[0].barcode_hskt };
+  let p = await query('SELECT ma_phan FROM phan_in WHERE ma_phan=$1 AND dang_hoat_dong LIMIT 1', [c]);
+  if (p.rows[0]) return { type: 'PHAN_IN', ma_phan: p.rows[0].ma_phan };
+  p = await query('SELECT pin.ma_phan FROM dot_vai_ve dv JOIN phan_in pin ON pin.id=dv.phan_in_id WHERE dv.barcode=$1 AND pin.dang_hoat_dong LIMIT 1', [c]);
+  if (p.rows[0]) return { type: 'PHAN_IN', ma_phan: p.rows[0].ma_phan };
+  p = await query('SELECT pin.ma_phan FROM tem t JOIN phieu_san_xuat ps ON ps.id=t.phieu_san_xuat_id JOIN lenh_san_xuat ls ON ls.id=ps.lenh_san_xuat_id JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id=ls.id JOIN dot_vai_ve dv ON dv.id=lsd.dot_vai_ve_id JOIN phan_in pin ON pin.id=dv.phan_in_id WHERE t.ma_tem=$1 LIMIT 1', [base]);
+  if (p.rows[0]) return { type: 'PHAN_IN', ma_phan: p.rows[0].ma_phan };
+  return { type: null };
+}
+
 async function tinhTrangPhanInList(search = '', limit = 30) {
   const s = String(search || '').trim();
   const lim = Math.max(1, Math.min(Number(limit) || 30, 100));
@@ -1097,6 +1115,6 @@ async function nghenChecklistEpisodes({ from, to }) {
 
 module.exports = {
   summary, activity, stageCounts, chartDetail, dieuPhoiExtra, flowRows, flowTimeline, tramOwnersActive, checkpointOwnersActive,
-  tinhTrangActiveRows, tinhTrangPhanInList, tinhTrangDetail, tinhTrangGraph, confirmTodayGroups, confirmTodayDetail,
+  tinhTrangActiveRows, tinhTrangPhanInList, resolveScanCode, tinhTrangDetail, tinhTrangGraph, confirmTodayGroups, confirmTodayDetail,
   nghenTramEpisodes, nghenChecklistEpisodes,
 };

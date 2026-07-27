@@ -186,6 +186,9 @@ router.get('/tinh-trang/phan-in', asyncHandler(async (req, res) => {
   return ok(res, { items: rows, total: rows.length });
 }));
 
+// GET /dashboard/tinh-trang/resolve?code= — giải mã mã quét (QR code phần / tem / barcode đợt vải / barcode HSKT).
+router.get('/tinh-trang/resolve', asyncHandler(async (req, res) => ok(res, await repo.resolveScanCode(req.query.code || ''))));
+
 // GET /dashboard/tinh-trang/phan-in/:id — đồ thị dòng chảy phân nhánh của 1 phần in.
 router.get('/tinh-trang/phan-in/:id', asyncHandler(async (req, res) => {
   const data = await repo.tinhTrangDetail(req.params.id);

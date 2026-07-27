@@ -30,6 +30,8 @@ router.get('/release1/done', rbac('RELEASE1'), c.release1Done);
 router.get('/release1/sets', rbac('RELEASE1'), c.releaseSets);
 router.post('/release1/set/:setId', rbac('RELEASE1'), c.releaseSet);
 router.post('/release1', rbac('RELEASE1'), c.createRelease1);
+// Trả đợt vải ở Release 1 NGƯỢC về Kỹ thuật (mở lại READY: hủy xác nhận Khuôn/Film/Mực/QC + cờ làm lại).
+router.post('/release1/tra-ve-ky-thuat', rbac('RELEASE1'), c.release1TraVeKyThuat);
 
 // Tạo Đợt sản xuất (màn "Tạo đợt sản xuất" — gộp/tách nhiều đợt vải + SL từng đợt)
 router.post('/dot-san-xuat', rbac('RELEASE1'), c.createDotSanXuat);

@@ -9,6 +9,13 @@ const DA_REL = `COALESCE((SELECT SUM(COALESCE(lsd.so_luong,0)) FROM lenh_sx_dot_
     JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
     WHERE lsd.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY'),0)`;
 
+// SELECT-list các cột HSKT ĐANG HOẠT ĐỘNG của 1 phần in (phuong_an_in / barcode_hskt / hskt_id).
+// `pinCol` = biểu thức trỏ phan_in.id (vd 'pin.id'). Dùng cho cột "Phương án in" + gộp ô HSKT ở Kế hoạch.
+const hsktCols = (pinCol) => `
+  (SELECT h.phuong_an_in FROM hskt_phan_in hp JOIN ho_so_ky_thuat h ON h.id=hp.hskt_id WHERE hp.phan_in_id=${pinCol} AND hp.dang_hoat_dong AND h.dang_hoat_dong LIMIT 1) AS phuong_an_in,
+  (SELECT h.barcode_hskt FROM hskt_phan_in hp JOIN ho_so_ky_thuat h ON h.id=hp.hskt_id WHERE hp.phan_in_id=${pinCol} AND hp.dang_hoat_dong AND h.dang_hoat_dong LIMIT 1) AS barcode_hskt,
+  (SELECT h.id FROM hskt_phan_in hp JOIN ho_so_ky_thuat h ON h.id=hp.hskt_id WHERE hp.phan_in_id=${pinCol} AND hp.dang_hoat_dong AND h.dang_hoat_dong LIMIT 1) AS hskt_id`;
+
 // ----- RELEASE 1: đợt vải của phần in đã READY, CÒN phần chưa release (SL vải về − đã release > 0) -----
 // Release theo số lượng: 1 đợt có thể release nhiều lần → nhiều lệnh; đợt ở lại pool tới khi release đủ.
 async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
@@ -34,13 +41,14 @@ async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
 
   const dataSql = `
     SELECT dv.id AS dot_vai_id, dv.ma_dot_vai, dv.so_luong_vai_ve, dv.ngay_vai_ve, dv.han_giao_hang,
-           pin.id AS phan_in_id, pin.ma_phan, pin.barcode, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
+           pin.id AS phan_in_id, pin.ma_phan, dv.barcode, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
            pin.so_luong_don_hang, ldv.ten_loai AS loai_dot_vai,
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
            EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
                    WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT') AS qc_done,
            ${DA_REL}::int AS da_release,
-           (COALESCE(dv.so_luong_vai_ve,0) - ${DA_REL})::int AS con_release
+           (COALESCE(dv.so_luong_vai_ve,0) - ${DA_REL})::int AS con_release,
+           ${hsktCols('pin.id')}
     ${FROM}
     ORDER BY pin.mau_vai, pin.ma_phan, dv.ma_dot_vai
     LIMIT $2 OFFSET $3`;
@@ -411,8 +419,9 @@ async function release1HistoryByDate(date) {
 const PHAN_INFO_LATERAL = `
   LEFT JOIN LATERAL (
     SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang,
-           pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.ma_phan, pin.barcode, pin.so_luong_don_hang, pin.tinh_chat_in,
-           dv.so_luong_vai_ve, dv.ngay_vai_ve, dv.han_giao_hang, ldv.ten_loai AS loai_dot_vai
+           pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.ma_phan, dv.barcode, pin.so_luong_don_hang, pin.tinh_chat_in,
+           dv.so_luong_vai_ve, dv.ngay_vai_ve, dv.han_giao_hang, ldv.ten_loai AS loai_dot_vai,
+           ${hsktCols('pin.id')}
     FROM lenh_sx_dot_vai lsd
     JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
     JOIN phan_in pin ON pin.id = dv.phan_in_id
@@ -431,6 +440,7 @@ function lenhListSql(extraWhere) {
            cs.ma_chuyen, cs.ten_chuyen,
            info.ten_khach_hang, info.ma_don_hang, info.ma_hang,
            info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan, info.tinh_chat_in,
+           info.phuong_an_in, info.barcode_hskt, info.hskt_id,
            info.so_luong_don_hang, info.so_luong_vai_ve, info.ngay_vai_ve,
            (SELECT min(dvh.han_giao_hang) FROM lenh_sx_dot_vai lsh JOIN dot_vai_ve dvh ON dvh.id=lsh.dot_vai_ve_id WHERE lsh.lenh_san_xuat_id=ls.id) AS han_giao_hang,
            info.loai_dot_vai,
@@ -487,6 +497,7 @@ async function listReplanCandidates({ search = '', offset = 0, limit = 50 }) {
            cs.ma_chuyen, cs.ten_chuyen,
            info.ten_khach_hang, info.ma_don_hang, info.ma_hang,
            info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan, info.tinh_chat_in,
+           info.phuong_an_in, info.barcode_hskt, info.hskt_id,
            info.so_luong_don_hang, info.so_luong_vai_ve, info.ngay_vai_ve, info.han_giao_hang,
            info.loai_dot_vai,
            (SELECT count(*) FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id)::int AS so_dot_vai
@@ -515,6 +526,7 @@ async function listGiaCongLenh({ search = '', offset = 0, limit = 50 }) {
            cs.ma_chuyen, cs.ten_chuyen, nr.ho_ten AS nguoi_release,
            info.ten_khach_hang, info.ma_don_hang, info.ma_hang,
            info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan, info.tinh_chat_in,
+           info.phuong_an_in, info.barcode_hskt, info.hskt_id,
            info.so_luong_don_hang, info.so_luong_vai_ve, info.ngay_vai_ve, info.han_giao_hang, info.loai_dot_vai,
            (SELECT count(*) FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id)::int AS so_dot_vai
     ${FROM}
@@ -590,8 +602,9 @@ async function listKeHoachTamRows({ search = '', offset = 0, limit = 200 }) {
   const dataSql = `
     SELECT kt.id, kt.dot_vai_ve_id, kt.phan_in_id, kt.chuyen_id, kt.ngay_ke_hoach, kt.tg_bd_kh, kt.tg_kt_kh, kt.so_luong,
            dv.ma_dot_vai, dv.han_giao_hang, dv.so_luong_vai_ve, cs.ten_chuyen, ldv.ten_loai AS loai_dot_vai,
-           pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in, pin.barcode,
+           pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in, dv.barcode,
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
+           ${hsktCols('pin.id')},
            EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
                    WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT') AS qc_done
     ${FROM}
@@ -1027,8 +1040,28 @@ async function releaseListByDate(date) {
   return rows;
 }
 
+// ----- Trả về Kỹ thuật (Release 1 → READY) -----
+async function phanInIdByDotVai(dotVaiId) {
+  const { rows } = await query('SELECT phan_in_id FROM dot_vai_ve WHERE id = $1', [dotVaiId]);
+  return rows[0] ? rows[0].phan_in_id : null;
+}
+async function dotVaiReleasedOne(dotVaiId) {
+  const { rows } = await query(
+    `SELECT EXISTS(SELECT 1 FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id WHERE lsd.dot_vai_ve_id=$1 AND ls.trang_thai<>'HUY') AS e`,
+    [dotVaiId]
+  );
+  return !!rows[0].e;
+}
+async function auditTraVeKyThuat(pinId, dotVaiId, lyDo, actorId) {
+  await query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by) VALUES ('phan_in',$1,'TRA_VE_KY_THUAT',$2::jsonb,$3,now(),$3)`,
+    [String(pinId), JSON.stringify({ dot_vai_id: dotVaiId, ly_do: (lyDo || '').trim() || null }), actorId]
+  );
+}
+
 module.exports = {
   releaseListByDate,
+  phanInIdByDotVai, dotVaiReleasedOne, auditTraVeKyThuat,
   listCaTuan, caModeMap, upsertCaTuan,
   listRelease1Candidates, release1HistoryByDate, nextMaLenh, nextMaLenhTx, createLenh,
   release1DoneByDate, planDoneByDate, testDoneByDate,

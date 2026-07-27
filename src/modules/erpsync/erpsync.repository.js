@@ -1,6 +1,6 @@
 'use strict';
 
-const { query } = require('../../config/db');
+const { query, withTransaction } = require('../../config/db');
 
 // ----- Log đồng bộ -----
 async function createSyncLog({ nguon, fromDate, tuDong }, actorId) {
@@ -179,14 +179,14 @@ async function getLoaiDotVaiId(maLoai) {
 // Đợt đã tồn tại (re-sync idempotent theo ma_dot_vai) → GIỮ NGUYÊN so_luong_vai_ve đã tính lúc tạo,
 //  chỉ cập nhật ngày/hạn/loại (tránh cộng dồn sai khi ERP trả lại dòng cũ).
 // `tgChuyenReady`: Date = đợt vào READY ngay (mig 056); null = CHỜ chuyển (pending). Re-sync GIỮ NGUYÊN mốc cũ.
-async function upsertDotVai(client, { maDotVai, phanInId, loaiDotVaiId, ngayVaiVe, hanGiao, soLuong, tgChuyenReady }) {
+async function upsertDotVai(client, { maDotVai, phanInId, loaiDotVaiId, ngayVaiVe, hanGiao, soLuong, tgChuyenReady, barcode }) {
   const existing = await client.query('SELECT id FROM dot_vai_ve WHERE ma_dot_vai = $1', [maDotVai]);
   if (existing.rows.length) {
     await client.query(
       `UPDATE dot_vai_ve SET loai_dot_vai_id = COALESCE($2, loai_dot_vai_id),
-         ngay_vai_ve = $3, han_giao_hang = $4, updated_date = CURRENT_TIMESTAMP
+         ngay_vai_ve = $3, han_giao_hang = $4, barcode = COALESCE($5, barcode), updated_date = CURRENT_TIMESTAMP
        WHERE ma_dot_vai = $1`,
-      [maDotVai, loaiDotVaiId || null, ngayVaiVe || null, hanGiao || null]
+      [maDotVai, loaiDotVaiId || null, ngayVaiVe || null, hanGiao || null, barcode || null]
     );
     return { id: existing.rows[0].id, inserted: false };
   }
@@ -198,9 +198,9 @@ async function upsertDotVai(client, { maDotVai, phanInId, loaiDotVaiId, ngayVaiV
     if (sl < 0) sl = 0;
   }
   const { rows } = await client.query(
-    `INSERT INTO dot_vai_ve (phan_in_id, loai_dot_vai_id, ma_dot_vai, ngay_vai_ve, han_giao_hang, so_luong_vai_ve, trang_thai, tg_chuyen_ready)
-     VALUES ($1,$2,$3,$4,$5,$6,'NHAN_VAI',$7) RETURNING id`,
-    [phanInId, loaiDotVaiId || null, maDotVai, ngayVaiVe || null, hanGiao || null, sl, tgChuyenReady || null]
+    `INSERT INTO dot_vai_ve (phan_in_id, loai_dot_vai_id, ma_dot_vai, ngay_vai_ve, han_giao_hang, so_luong_vai_ve, trang_thai, tg_chuyen_ready, barcode)
+     VALUES ($1,$2,$3,$4,$5,$6,'NHAN_VAI',$7,$8) RETURNING id`,
+    [phanInId, loaiDotVaiId || null, maDotVai, ngayVaiVe || null, hanGiao || null, sl, tgChuyenReady || null, barcode || null]
   );
   return { id: rows[0].id, inserted: true };
 }
@@ -215,21 +215,152 @@ async function findPhanInIdByMaPhan(maPhan) {
 // Trả về id các đợt vừa được chuyển (để theo dõi dòng chảy). Đợt đã ở READY (mốc ≠ null) không đụng.
 async function promotePhanInToReady(pinId, { barcode, tinhChatIn }) {
   await query(
-    `UPDATE phan_in SET tinh_chat_in = COALESCE($2, tinh_chat_in),
-       barcode = COALESCE($3, barcode), updated_date = CURRENT_TIMESTAMP WHERE id = $1`,
-    [pinId, tinhChatIn || null, barcode || null]
+    `UPDATE phan_in SET tinh_chat_in = COALESCE($2, tinh_chat_in), updated_date = CURRENT_TIMESTAMP WHERE id = $1`,
+    [pinId, tinhChatIn || null]
   );
+  // barcode (IDDotReady) thuộc ĐỢT VẢI: gán cho các đợt đang CHỜ chuyển của phần in nếu chưa có + chuyển vào READY.
   const { rows } = await query(
-    `UPDATE dot_vai_ve SET tg_chuyen_ready = now(), updated_date = CURRENT_TIMESTAMP
+    `UPDATE dot_vai_ve SET tg_chuyen_ready = now(), barcode = COALESCE(barcode, $2), updated_date = CURRENT_TIMESTAMP
       WHERE phan_in_id = $1 AND tg_chuyen_ready IS NULL AND trang_thai NOT IN ('DA_GOP','DA_HUY')
       RETURNING id`,
-    [pinId]
+    [pinId, barcode || null]
   );
   return rows.map((r) => r.id);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HSKT + KTCankiemtra (thay trigger mig 054, mig 059/060). Tất cả BEST-EFFORT gọi
+// ngoài transaction chính của processRow — lỗi phụ không chặn đồng bộ đợt vải.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// id các checkpoint trạm READY (KHUON/FILM/MUC/QC_XAC_NHAN) của workflow hiện hành.
+async function readyCheckpointIds() {
+  const { rows } = await query(
+    `SELECT cp.ma_checkpoint, cp.id FROM workflow_version wv JOIN tram t ON t.workflow_version_id=wv.id AND t.ma_tram='READY' JOIN checkpoint cp ON cp.tram_id=t.id AND cp.dang_hoat_dong=true WHERE wv.la_hien_hanh=true AND cp.ma_checkpoint = ANY($1)`,
+    [['KHUON', 'FILM', 'MUC', 'QC_XAC_NHAN']]
+  );
+  const m = {};
+  rows.forEach((r) => { m[r.ma_checkpoint] = r.id; });
+  return m;
+}
+
+// KTCankiemtra=0 → GIẢ LẬP kỹ thuật đã xác nhận: đặt DAT cho KHUON/FILM/MUC + QC_XAC_NHAN
+// → phần in tech_done + qc_done → vào thẳng Release 1 (không cần thao tác READY).
+async function simulateReadyDone(pinId) {
+  const cp = await readyCheckpointIds();
+  const ids = ['KHUON', 'FILM', 'MUC', 'QC_XAC_NHAN'].map((m) => cp[m]).filter(Boolean);
+  if (!ids.length) return;
+  await withTransaction(async (client) => {
+    for (const id of ids) {
+      await client.query(
+        `WITH upd AS (UPDATE ket_qua_checkpoint SET trang_thai='DAT', tg_xac_nhan=now(), updated_date=now() WHERE phan_in_id=$1 AND checkpoint_id=$2 RETURNING id) INSERT INTO ket_qua_checkpoint (checkpoint_id, phan_in_id, trang_thai, tg_xac_nhan) SELECT $2,$1,'DAT',now() WHERE NOT EXISTS (SELECT 1 FROM upd)`,
+        [pinId, id]
+      );
+    }
+  });
+}
+
+// Phần in đã từng release (có lệnh ≠ HUY)?
+async function isPhanInReleased(pinId) {
+  const { rows } = await query(
+    `SELECT EXISTS(SELECT 1 FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id JOIN dot_vai_ve dv ON dv.id=lsd.dot_vai_ve_id WHERE dv.phan_in_id=$1 AND ls.trang_thai<>'HUY') AS e`,
+    [pinId]
+  );
+  return !!rows[0].e;
+}
+
+// KTCankiemtra=1 cho phần in ĐÃ release (đợt mới) → MỞ LẠI READY (port SQL trigger mig 054):
+// hủy xác nhận READY (Khuôn/Film/Mực/QC) + gắn cờ can_lam_lai_ready cho đợt chưa release.
+async function reopenReadyForPhanIn(pinId) {
+  await withTransaction(async (client) => {
+    await client.query(
+      `UPDATE ket_qua_checkpoint SET trang_thai='HUY', nguoi_xac_nhan_id=NULL, tg_xac_nhan=NULL, updated_date=now() WHERE phan_in_id=$1 AND trang_thai='DAT' AND checkpoint_id IN (SELECT cp.id FROM checkpoint cp JOIN tram t ON t.id=cp.tram_id JOIN workflow_version wv ON wv.id=t.workflow_version_id AND wv.la_hien_hanh WHERE t.ma_tram='READY')`,
+      [pinId]
+    );
+    await client.query(
+      `UPDATE dot_vai_ve dv SET can_lam_lai_ready=true, updated_date=now() WHERE dv.phan_in_id=$1 AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY') AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai l JOIN lenh_san_xuat ls ON ls.id=l.lenh_san_xuat_id WHERE l.dot_vai_ve_id=dv.id AND ls.trang_thai<>'HUY')`,
+      [pinId]
+    );
+  });
+}
+
+// Lưu vết KTCankiemtra vào đợt vải (boolean: 1=cần KT → true).
+async function setDotVaiKtCanKiemTra(dotVaiIds, val) {
+  if (!dotVaiIds || !dotVaiIds.length || val == null) return;
+  await query('UPDATE dot_vai_ve SET kt_can_kiem_tra=$2, updated_date=now() WHERE id = ANY($1::uuid[])',
+    [dotVaiIds, Number(val) === 1]);
+}
+
+// Upsert HSKT cho 1 phần in theo barcode_hskt (mô hình nhiều–nhiều + phiên bản, mig 059).
+// - Chưa có HSKT active theo barcode → tạo mới (phiên bản 1) + ghi lịch sử TAO.
+// - Đã có, Pain khác → tạo PHIÊN BẢN MỚI (deactivate bản cũ + relink phần in) + lịch sử.
+// - Link phần in vào HSKT active (junction hskt_phan_in).
+async function upsertHsktForPin({ pinId, barcodeHskt, pain, inset, maDonReady, actorId = null }) {
+  if (!barcodeHskt) return null;
+  return withTransaction(async (client) => {
+    const { rows: act } = await client.query(
+      'SELECT id, phuong_an_in, phien_ban FROM ho_so_ky_thuat WHERE barcode_hskt=$1 AND dang_hoat_dong=true LIMIT 1',
+      [barcodeHskt]
+    );
+    let hsktId; let phienBan; let curPain;
+    if (!act.length) {
+      const ins = await client.query(
+        `INSERT INTO ho_so_ky_thuat (barcode_hskt, ma_hskt, phuong_an_in, inset, phien_ban, ma_don_ready, dang_hoat_dong, created_by) VALUES ($1,$1,$2,$3,1,$4,true,$5) RETURNING id`,
+        [barcodeHskt, pain ?? null, inset === true, maDonReady || null, actorId]
+      );
+      hsktId = ins.rows[0].id;
+      await client.query(
+        `INSERT INTO lich_su_hskt (hskt_id, phan_in_id, hanh_dong, chi_tiet, phien_ban, nguoi_id) VALUES ($1,$2,'TAO',$3,1,$4)`,
+        [hsktId, pinId, `Tạo HSKT từ ERP (barcode ${barcodeHskt})`, actorId]
+      );
+    } else {
+      hsktId = act[0].id; phienBan = act[0].phien_ban || 1; curPain = act[0].phuong_an_in;
+      if (pain != null && Number(pain) !== Number(curPain)) {
+        await client.query('UPDATE ho_so_ky_thuat SET dang_hoat_dong=false, updated_date=now() WHERE id=$1', [hsktId]);
+        const ins = await client.query(
+          `INSERT INTO ho_so_ky_thuat (barcode_hskt, ma_hskt, phuong_an_in, inset, phien_ban, ma_don_ready, so_luong_vai_pass, so_lan_in, so_pass_bo, thong_so_json, ghi_chu, dang_hoat_dong, created_by) SELECT barcode_hskt, ma_hskt, $2, inset, $3, ma_don_ready, so_luong_vai_pass, so_lan_in, so_pass_bo, thong_so_json, ghi_chu, true, $4 FROM ho_so_ky_thuat WHERE id=$1 RETURNING id`,
+          [hsktId, pain, phienBan + 1, actorId]
+        );
+        const newId = ins.rows[0].id;
+        await client.query(
+          `INSERT INTO hskt_phan_in (hskt_id, phan_in_id, created_by) SELECT $2, phan_in_id, $3 FROM hskt_phan_in WHERE hskt_id=$1 AND dang_hoat_dong ON CONFLICT (hskt_id, phan_in_id) DO NOTHING`,
+          [hsktId, newId, actorId]
+        );
+        await client.query('UPDATE hskt_phan_in SET dang_hoat_dong=false WHERE hskt_id=$1', [hsktId]);
+        await client.query(
+          `INSERT INTO lich_su_hskt (hskt_id, phan_in_id, hanh_dong, chi_tiet, phien_ban, nguoi_id) VALUES ($1,$2,'DOI_PHUONG_AN_IN',$3,$4,$5)`,
+          [newId, pinId, `Đổi phương án in ${curPain ?? '—'}→${pain} (ERP)`, phienBan + 1, actorId]
+        );
+        hsktId = newId;
+      }
+    }
+    await client.query(
+      `INSERT INTO hskt_phan_in (hskt_id, phan_in_id, created_by) VALUES ($1,$2,$3) ON CONFLICT (hskt_id, phan_in_id) DO UPDATE SET dang_hoat_dong=true`,
+      [hsktId, pinId, actorId]
+    );
+    return hsktId;
+  });
+}
+
+// Đợt vải đủ điều kiện auto gom set từ ERP: chưa release, còn READY, chưa thuộc set mở.
+async function eligibleDotVaiForGom(pinIds) {
+  const { rows } = await query(
+    `SELECT dv.id, dv.phan_in_id FROM dot_vai_ve dv WHERE dv.phan_in_id = ANY($1::uuid[]) AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY') AND dv.tg_chuyen_ready IS NOT NULL AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id WHERE lsd.dot_vai_ve_id=dv.id AND ls.trang_thai<>'HUY') AND NOT EXISTS (SELECT 1 FROM gom_set_dot_vai gsd JOIN gom_set gs ON gs.id=gsd.gom_set_id WHERE gsd.dot_vai_ve_id=dv.id AND gs.trang_thai='MO')`,
+    [pinIds]
+  );
+  return rows;
+}
+
+// Set gom ERP đã tạo cho barcode HSKT này chưa (idempotent) — nhận diện qua ghi_chu.
+async function openSetByGhiChu(ghiChu) {
+  const { rows } = await query(`SELECT id FROM gom_set WHERE ghi_chu=$1 AND trang_thai='MO' LIMIT 1`, [ghiChu]);
+  return rows[0] ? rows[0].id : null;
 }
 
 module.exports = {
   createSyncLog, finishSyncLog, listSyncHistory, insertRawBatch, saveSyncRaw, getSyncRaw,
   upsertKhachHang, upsertDonHang, upsertMaHang, upsertPhanIn, setPhanInDryMin, getLoaiDotVaiId, upsertDotVai,
   findPhanInIdByMaPhan, promotePhanInToReady,
+  readyCheckpointIds, simulateReadyDone, isPhanInReleased, reopenReadyForPhanIn, setDotVaiKtCanKiemTra,
+  upsertHsktForPin, eligibleDotVaiForGom, openSetByGhiChu,
 };

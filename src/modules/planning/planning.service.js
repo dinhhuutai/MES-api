@@ -10,6 +10,7 @@ const AppError = require('../../utils/AppError');
 const { buildMeta } = require('../../utils/pagination');
 const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
+const erpRepo = require('../erpsync/erpsync.repository'); // reopenReadyForPhanIn (mở lại READY)
 
 const TEST_TRAM = 'TEST_RUN';
 const CNSP_CP = 'TEST_CNSP';
@@ -224,6 +225,28 @@ async function createGiaCongLenh(client, { versionId, chuyenId, junctions, tongS
   }, actorId);
   for (const j of junctions) await repo.addLenhDotVai(client, lenhId, j.dotVaiId, actorId, j.soLuong);
   return { id: lenhId, ma_lenh_san_xuat: maLenh };
+}
+
+// Trả 1 đợt vải ở Release 1 NGƯỢC về Kỹ thuật: mở lại READY cho phần in (hủy xác nhận Khuôn/Film/Mực/QC
+// + gắn cờ can_lam_lai_ready cho đợt chưa release). Chỉ khi đợt CHƯA release (chưa có lệnh ≠ HUY).
+async function traVeKyThuat({ dotVaiId, lyDo }, actorId) {
+  if (!dotVaiId) throw new AppError('Thiếu đợt vải', { status: 400, errorCode: 'EMPTY' });
+  const reason = (lyDo || '').trim();
+  if (!reason) throw new AppError('Nhập lý do trả về Kỹ thuật', { status: 422, errorCode: 'NO_LY_DO' });
+  const pinId = await repo.phanInIdByDotVai(dotVaiId);
+  if (!pinId) throw new AppError('Không tìm thấy đợt vải', { status: 404, errorCode: 'NOT_FOUND' });
+  if (await repo.dotVaiReleasedOne(dotVaiId)) {
+    throw new AppError('Đợt vải đã release — hãy hủy lệnh trước khi trả về Kỹ thuật', { status: 409, errorCode: 'RELEASED' });
+  }
+  await erpRepo.reopenReadyForPhanIn(pinId);
+  await repo.auditTraVeKyThuat(pinId, dotVaiId, reason, actorId);
+  // Ghi qc_tra_ve loai='RELEASE1' (mức phần in) → màn READY/QC READY hiện badge + LÝ DO trả về;
+  // cờ tự tắt khi QC xác nhận READY lại (technical.confirmQC → resolveReturns('RELEASE1')).
+  await qaRepo.insertQcTraVe({ loai: 'RELEASE1', phanInId: pinId, dotVaiId, lyDo: reason }, actorId);
+  await tracking.moveByPhanIn(pinId, 'READY', actorId);
+  sockets.emit('workflow:updated', { stage: 'READY', traVe: true });
+  sockets.emit('dashboard:refresh', {});
+  return { phan_in_id: pinId };
 }
 
 async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach, tgBdKh, tgKtKh }, actorId) {
@@ -975,7 +998,7 @@ async function testCnspDone(date) { return attachTestRuns(await repo.testDoneByD
 async function testQaDone(date) { return attachTestRuns(await repo.testDoneByDate(date, QA_CP)); }
 
 module.exports = {
-  listRelease1Candidates, autoPlanCandidates, createRelease1, createDotSanXuat, release1History, listReleaseSets, releaseSet,
+  listRelease1Candidates, autoPlanCandidates, createRelease1, traVeKyThuat, createDotSanXuat, release1History, listReleaseSets, releaseSet,
   listGopCandidates, gopDotVai, gopHistory,
   listTestRunCandidates, getLenhDetail, recordTestRun, confirmTest, confirmTestBatch, cancelTest,
   listRelease2Candidates, approveRelease2, approveRelease2Batch, skipTestRun, testRunHistory,

@@ -605,7 +605,10 @@ async function inlineDoneByDate(date) {
 // ============ QC TRẢ VỀ (qc_tra_ve) — dùng chung 3 luồng READY/TEST_RUN/OQC ============
 // OQC trả về TÁCH THEO NGUỒN của phần chờ OQC: 'OQC' = trả về KCS (tem 15-), 'OQC_SUA' = trả về Sửa (tem 17-).
 // Dùng chính cột `loai` (VARCHAR, không ràng buộc) nên KHÔNG cần migration; mỗi màn đọc đúng loại của mình.
-const RETURN_COL = { READY: 'phan_in_id', TEST_RUN: 'dot_vai_ve_id', OQC: 'tem_id', OQC_SUA: 'tem_id' };
+// 'RELEASE1' = Kế hoạch (Release 1) trả đợt vải NGƯỢC về Kỹ thuật → hiện lý do ở màn READY (mức phần in).
+const RETURN_COL = {
+  READY: 'phan_in_id', RELEASE1: 'phan_in_id', TEST_RUN: 'dot_vai_ve_id', OQC: 'tem_id', OQC_SUA: 'tem_id',
+};
 
 // Ghi 1 lần QC trả về (không transaction — gọi sau khi commit nghiệp vụ chính).
 // Best-effort: bảng chưa tạo (migration 042 chưa chạy) → chỉ log, không làm hỏng thao tác trả về.

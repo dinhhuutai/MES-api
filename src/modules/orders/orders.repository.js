@@ -105,7 +105,9 @@ async function listVaiVe({ search = '', filters = {}, stage = '', daChuyen = '',
     : DEFAULT_ORDER;
   // 1 query duy nhất: tổng số phần in qua COUNT(*) OVER(). Gửi SQL 1 dòng (IPS-safe).
   const sql = `
-    SELECT pin.id AS phan_in_id, pin.ma_phan, pin.barcode, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
+    SELECT pin.id AS phan_in_id, pin.ma_phan,
+           (SELECT string_agg(DISTINCT dvb.barcode, ', ') FROM dot_vai_ve dvb WHERE dvb.phan_in_id = pin.id AND dvb.barcode IS NOT NULL) AS barcode,
+           pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
            pin.so_luong_don_hang, pin.loi_nhuan,
            mh.ma_hang, mh.ten_ma_hang, dh.ma_don_hang, dh.so_po,
            kh.ma_khach_hang, kh.ten_khach_hang,
@@ -217,7 +219,9 @@ async function dotSanXuatLedger(phanInIds) {
 
 async function findById(id) {
   const sql = `
-    SELECT pin.id, pin.ma_phan, pin.barcode, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
+    SELECT pin.id, pin.ma_phan,
+           (SELECT string_agg(DISTINCT dvb.barcode, ', ') FROM dot_vai_ve dvb WHERE dvb.phan_in_id = pin.id AND dvb.barcode IS NOT NULL) AS barcode,
+           pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
            pin.do_in, pin.mau_in, pin.so_luong_don_hang, pin.loi_nhuan, pin.ghi_chu,
            mh.ma_hang, mh.ten_ma_hang,
            dh.ma_don_hang, dh.so_po, dh.ten_don_hang,

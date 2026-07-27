@@ -47,7 +47,7 @@ const confirmItem = asyncHandler(async (req, res) => {
   if (!perms.includes('*') && !perms.includes(perm)) {
     throw new AppError(`Không có quyền xác nhận mục này (${perm})`, { status: 403, errorCode: 'FORBIDDEN', details: [perm] });
   }
-  const data = await service.confirmItem(req.params.phanInId, ma, req.body.value, req.user.id);
+  const data = await service.confirmItem(req.params.phanInId, ma, req.body.value, req.user.id, req.body.phuong_an_in);
   return ok(res, data, 'Đã xác nhận');
 });
 
@@ -63,7 +63,7 @@ const confirmItemsBatch = asyncHandler(async (req, res) => {
       throw new AppError(`Không có quyền xác nhận mục ${ma} (${perm})`, { status: 403, errorCode: 'FORBIDDEN', details: [perm] });
     }
   }
-  const data = await service.confirmItemsBatch(req.params.phanInId, items, req.user.id);
+  const data = await service.confirmItemsBatch(req.params.phanInId, items, req.user.id, req.body.phuong_an_in);
   return ok(res, data, 'Đã xác nhận các mục đã chọn');
 });
 

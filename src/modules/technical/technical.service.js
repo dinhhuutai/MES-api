@@ -9,6 +9,18 @@ const { buildMeta } = require('../../utils/pagination');
 const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
 const { isKhuonOptional } = require('../../utils/tech');
+const hsktRepo = require('../hskt/hskt.repository');
+
+// Đổi phương án in của HSKT active của phần in (khi xác nhận Khuôn có nhập phương án in).
+async function applyPhuongAnIn(phanInId, phuongAnIn, actorId) {
+  if (phuongAnIn == null || phuongAnIn === '') return;
+  const p = Number(phuongAnIn);
+  if (![1, 2, 3].includes(p)) return;
+  const h = await hsktRepo.activeHsktOfPhanIn(phanInId);
+  if (h && Number(h.phuong_an_in) !== p) {
+    try { await hsktRepo.changePhuongAnIn(h.id, p, actorId); } catch (e) { /* best-effort */ }
+  }
+}
 
 const READY_TRAM = 'READY';
 const INPUT_CPS = ['KHUON', 'FILM', 'MUC']; // 3 mục kỹ thuật, xác nhận độc lập (HSKT đã bỏ)
@@ -96,6 +108,8 @@ async function listCandidates({ search, page, limit, offset, onlyQcReady = false
   });
   // Đánh dấu phần in bị QC (READY) trả về (badge + lọc "chỉ hiện phần bị trả về").
   const rm = await qaRepo.activeReturnsMap('READY', rows.map((r) => r.id));
+  // ... và bị KẾ HOẠCH trả về từ Release 1 (loai='RELEASE1') — hiện lý do ngay tại READY.
+  const rkh = await qaRepo.activeReturnsMap('RELEASE1', rows.map((r) => r.id));
   // Người + giờ xác nhận từng mục KT (query nhẹ theo PK) → phục vụ bảng/Excel màn READY.
   const ci = await repo.confirmInfoByPins(rows.map((r) => r.id));
   const CI_KEY = { KHUON: 'khuon', FILM: 'film', MUC: 'muc' };
@@ -112,6 +126,7 @@ async function listCandidates({ search, page, limit, offset, onlyQcReady = false
       trang_thai_ready: r.qc_done ? 'DONE' : r.tech_done ? 'CHO_QC' : r.n_tech_done > 0 ? 'DANG' : 'CHUA',
       tra_ve: rm[r.id] || null,
       tra_ve_ly_do: rm[r.id]?.ly_do || null, // giữ tương thích cũ
+      tra_ve_kh: rkh[r.id] || null,          // Kế hoạch (Release 1) trả về Kỹ thuật
       film_nguoi: c.film?.nguoi || null, film_tg: c.film?.tg || null,
       khuon_nguoi: c.khuon?.nguoi || null, khuon_tg: c.khuon?.tg || null,
       muc_nguoi: c.muc?.nguoi || null, muc_tg: c.muc?.tg || null,
@@ -168,16 +183,23 @@ async function getDetail(phanInId) {
   // Thời điểm vào trạm READY (để FE tính SLA checklist). Best-effort — thiếu 029/ton_tram thì null.
   let readyTgVao = null;
   try { readyTgVao = await repo.getReadyEntryTime(phanInId); } catch { readyTgVao = null; }
+  // Lý do bị trả về (QC READY & Kế hoạch/Release 1) — hiện banner trong panel READY.
+  const [rmQc, rmKh] = await Promise.all([
+    qaRepo.activeReturnsMap('READY', [phanInId]),
+    qaRepo.activeReturnsMap('RELEASE1', [phanInId]),
+  ]);
   return {
     phan_in: phanIn,
     ready_tg_vao: readyTgVao,
+    tra_ve: rmQc[phanInId] || null,
+    tra_ve_kh: rmKh[phanInId] || null,
     checkpoints: results.map((r) => ({ ...r, options: optionsFor(r.ma_checkpoint, r.cau_hinh_json) })),
     state: buildState(results),
   };
 }
 
-// Xác nhận 1 mục kỹ thuật (KHUON/FILM/MUC/HSKT) độc lập.
-async function confirmItem(phanInId, ma, value, actorId) {
+// Xác nhận 1 mục kỹ thuật (KHUON/FILM/MUC/HSKT) độc lập. phuongAnIn (tùy chọn, ở mục Khuôn) → cập nhật HSKT.
+async function confirmItem(phanInId, ma, value, actorId, phuongAnIn = null) {
   if (!INPUT_CPS.includes(ma)) {
     throw new AppError('Mục kỹ thuật không hợp lệ', { status: 400, errorCode: 'INVALID_ITEM' });
   }
@@ -213,6 +235,7 @@ async function confirmItem(phanInId, ma, value, actorId) {
     });
   });
 
+  if (ma === 'KHUON') await applyPhuongAnIn(phanInId, phuongAnIn, actorId);
   const after = buildState(await repo.getResults(tram.id, phanInId));
   await tracking.moveByPhanIn(phanInId, READY_TRAM, actorId); // theo dõi dòng chảy: đợt vải vào trạm READY
   sockets.emit('ready:confirmed', { phanInId, buoc: ma, tech_done: after.tech_done });
@@ -220,8 +243,8 @@ async function confirmItem(phanInId, ma, value, actorId) {
   return getDetail(phanInId);
 }
 
-// Xác nhận nhiều mục kỹ thuật cùng lúc (1 transaction). items: [{ ma, value }].
-async function confirmItemsBatch(phanInId, items, actorId) {
+// Xác nhận nhiều mục kỹ thuật cùng lúc (1 transaction). items: [{ ma, value }]. phuongAnIn: cập nhật HSKT nếu có Khuôn.
+async function confirmItemsBatch(phanInId, items, actorId, phuongAnIn = null) {
   if (!Array.isArray(items) || items.length === 0) {
     throw new AppError('Chưa chọn mục nào để xác nhận', { status: 400, errorCode: 'EMPTY' });
   }
@@ -261,6 +284,7 @@ async function confirmItemsBatch(phanInId, items, actorId) {
     }
   });
 
+  if (todo.some((t) => t.ma === 'KHUON')) await applyPhuongAnIn(phanInId, phuongAnIn, actorId);
   const after = buildState(await repo.getResults(tram.id, phanInId));
   await tracking.moveByPhanIn(phanInId, READY_TRAM, actorId); // theo dõi dòng chảy
   sockets.emit('ready:confirmed', { phanInId, buoc: todo.map((t) => t.ma), tech_done: after.tech_done });
@@ -324,7 +348,8 @@ async function confirmQC(phanInId, actorId) {
     });
     await repo.insertStatusLog(client, { ketQuaId: kqId, trangThaiMoiId: datId, nguoiId: actorId, lyDo: 'QC xác nhận — READY hoàn thành' });
   });
-  await qaRepo.resolveReturns('READY', phanInId); // QC đạt lại → tắt cờ "bị QC trả về"
+  await qaRepo.resolveReturns('READY', phanInId);    // QC đạt lại → tắt cờ "bị QC trả về"
+  await qaRepo.resolveReturns('RELEASE1', phanInId); // ... và cờ "Kế hoạch trả về Kỹ thuật"
   sockets.emit('ready:confirmed', { phanInId, buoc: 'QC', ready: true });
   sockets.emit('dashboard:refresh', {});
   return getDetail(phanInId);

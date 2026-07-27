@@ -41,7 +41,9 @@ async function listCandidates({
     `EXISTS (SELECT 1 FROM ket_qua_checkpoint k WHERE k.phan_in_id = pin.id AND k.checkpoint_id = ${param} AND k.trang_thai = 'DAT')`;
   // withItems=true: kèm cờ tình trạng từng mục (cho bảng); dùng $6..$9.
   const selectBase = (withItems) => `
-    SELECT pin.id, pin.ma_phan, pin.barcode, pin.mau_vai, pin.kich_vai, pin.kich_phim,
+    SELECT pin.id, pin.ma_phan,
+           (SELECT string_agg(DISTINCT dvb.barcode, ',') FROM dot_vai_ve dvb WHERE dvb.phan_in_id = pin.id AND dvb.barcode IS NOT NULL) AS barcode,
+           pin.mau_vai, pin.kich_vai, pin.kich_phim,
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
            (SELECT string_agg(DISTINCT gs.ma_set, ', ')
               FROM dot_vai_ve dv JOIN gom_set_dot_vai gsd ON gsd.dot_vai_ve_id = dv.id
@@ -61,6 +63,9 @@ async function listCandidates({
            ${doneExpr('$7')} AS film_done,
            ${doneExpr('$8')} AS muc_done,
            ${techDoneSql('kh.ten_khach_hang', doneExpr('$6'), doneExpr('$7'), doneExpr('$8'))} AS tech_done` : ''},
+           (SELECT h.phuong_an_in FROM hskt_phan_in hp JOIN ho_so_ky_thuat h ON h.id=hp.hskt_id WHERE hp.phan_in_id=pin.id AND hp.dang_hoat_dong AND h.dang_hoat_dong LIMIT 1) AS phuong_an_in,
+           (SELECT h.barcode_hskt FROM hskt_phan_in hp JOIN ho_so_ky_thuat h ON h.id=hp.hskt_id WHERE hp.phan_in_id=pin.id AND hp.dang_hoat_dong AND h.dang_hoat_dong LIMIT 1) AS barcode_hskt,
+           (SELECT h.id FROM hskt_phan_in hp JOIN ho_so_ky_thuat h ON h.id=hp.hskt_id WHERE hp.phan_in_id=pin.id AND hp.dang_hoat_dong AND h.dang_hoat_dong LIMIT 1) AS hskt_id,
            sla.ready_tg_vao, sla.kt_done_tg
     FROM phan_in pin
     JOIN ma_hang mh ON mh.id = pin.ma_hang_id

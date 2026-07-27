@@ -16,6 +16,10 @@ const autoPlanCandidates = asyncHandler(async (req, res) =>
 const createRelease1 = asyncHandler(async (req, res) =>
   created(res, await service.createRelease1(req.body, req.user.id), 'Đã Release 1 — tạo lệnh sản xuất'));
 
+// Trả đợt vải ở Release 1 ngược về Kỹ thuật (mở lại READY).
+const release1TraVeKyThuat = asyncHandler(async (req, res) =>
+  ok(res, await service.traVeKyThuat(req.body, req.user.id), 'Đã trả về Kỹ thuật (mở lại READY)'));
+
 // Tạo Đợt sản xuất (gộp/tách nhiều đợt vải + SL từng đợt vào 1 đợt SX)
 const createDotSanXuat = asyncHandler(async (req, res) =>
   created(res, await service.createDotSanXuat(req.body, req.user.id), 'Đã tạo đợt sản xuất'));
@@ -168,7 +172,7 @@ const upsertCaTuan = asyncHandler(async (req, res) =>
 
 module.exports = {
   listCaTuan, upsertCaTuan,
-  release1Candidates, autoPlanCandidates, createRelease1, createDotSanXuat, release1History, releaseList, releaseSets, releaseSet,
+  release1Candidates, autoPlanCandidates, createRelease1, release1TraVeKyThuat, createDotSanXuat, release1History, releaseList, releaseSets, releaseSet,
   gopCandidates, gopDotVai, gopHistory,
   testRunCandidates, lenhDetail, recordTestRun,
   confirmCNSP, confirmQA, cancelCNSP, cancelQA, confirmCNSPBatch, confirmQABatch,
