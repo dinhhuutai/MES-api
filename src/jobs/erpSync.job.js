@@ -11,21 +11,13 @@ function startErpSyncJob() {
   }
   const intervalMs = Math.max(5, env.erp.syncIntervalMin) * 60 * 1000;
 
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // MỘT API duy nhất (/phieu-nhan-vai-60): đợt vải vào thẳng READY (KTCankiemtra=0 → đi tiếp Release 1).
   const run = async () => {
-    // Chạy -new TRƯỚC (lấy dữ liệu chờ chuyển) rồi -60 (chuyển những code phần đã có sang READY + barcode).
-    try {
-      const rn = await erpService.syncPhieuNhanVaiNew({ tuDong: true });
-      console.log(`[erp-sync] (-new) OK: ${rn.soMoi} mới (${rn.soChoChuyen || 0} chờ chuyển), ${rn.soCapNhat} cập nhật, ${rn.soLoi} lỗi (tổng ${rn.tong})`);
-    } catch (e) {
-      console.error('[erp-sync] (-new) Lỗi đồng bộ:', e.message);
-    }
-    await sleep(5000); // giãn nhịp để proc ERP nhả khóa trước khi gọi -60 (tránh deadlock chồng nhau)
     try {
       const r = await erpService.syncPhieuNhanVai({ tuDong: true }); // fromDate mặc định = now - N ngày
-      console.log(`[erp-sync] (-60) OK: ${r.soMoi} mới, ${r.soCapNhat} cập nhật, ${r.soLoi} lỗi (tổng ${r.tong})`);
+      console.log(`[erp-sync] OK: ${r.soMoi} mới, ${r.soCapNhat} cập nhật, ${r.soLoi} lỗi (tổng ${r.tong})`);
     } catch (e) {
-      console.error('[erp-sync] (-60) Lỗi đồng bộ:', e.message);
+      console.error('[erp-sync] Lỗi đồng bộ:', e.message);
     }
   };
 

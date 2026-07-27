@@ -39,11 +39,6 @@ const env = {
     // API ERP lấy phiếu nhận vải CHÍNH THỨC (60 ngày) — dữ liệu này chuyển phần in qua READY. Override qua .env.
     phieuNhanVaiUrl: process.env.ERP_PHIEU_NHAN_VAI_URL
       || 'http://10.84.40.34:5000/api/server/backup/mes/phieu-nhan-vai-60',
-    // API ERP lấy phiếu nhận vải TRƯỚC (khai báo, CHƯA qua READY). Mặc định = URL chính thức + '-new'.
-    phieuNhanVaiNewUrl: process.env.ERP_PHIEU_NHAN_VAI_NEW_URL
-      || (process.env.ERP_PHIEU_NHAN_VAI_URL
-        ? `${process.env.ERP_PHIEU_NHAN_VAI_URL}-new`
-        : 'http://10.84.40.34:5000/api/server/backup/mes/phieu-nhan-vai-60-new'),
     // Bật/tắt job tự đồng bộ theo chu kỳ (mặc định 5 phút/lần).
     syncEnabled: String(process.env.ERP_SYNC_ENABLED || 'true').toLowerCase() === 'true',
     // Chu kỳ tự đồng bộ (phút). Mặc định 5 phút/lần (sàn tối thiểu 5 — xem jobs/erpSync.job.js).

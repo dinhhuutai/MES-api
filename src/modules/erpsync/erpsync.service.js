@@ -11,8 +11,7 @@ const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
 const gomRepo = require('../gomset/gomset.repository');
 
-const NGUON = 'phieu_nhan_vai_60';          // API chính thức → chuyển phần in qua READY
-const NGUON_NEW = 'phieu_nhan_vai_60_new';  // API lấy trước → đợt vải CHỜ chuyển READY (trừ 5I)
+const NGUON = 'phieu_nhan_vai_60';          // API DUY NHẤT → đợt vải vào thẳng READY
 
 // Loại kinh doanh (`loaikd`) CHỈ LẤY khi đồng bộ: 3I = số lượng (SO_LUONG), 5I = bổ sung (BO_SUNG).
 // Mọi loại khác → BỎ QUA. (Trước đây lọc theo khách hàng 'SL' + blacklist 8I/2I; nay bỏ lọc khách,
@@ -243,10 +242,10 @@ async function autoGomSetByHskt(barcodeHskt, pinIds, actorId) {
   sockets.emit('workflow:updated', { stage: 'GOM_SET', source: 'erp' });
 }
 
-// Đồng bộ 1 nguồn ERP. `official=false` (API -new): đợt CHỜ chuyển READY (3I) hoặc vào READY luôn (5I).
-// `official=true` (API chính thức): code phần đã có → cập nhật barcode + chuyển pending sang READY;
-// chưa có → tạo mới + vào READY.
-async function runSync({ baseUrl, nguon, official, fromDate, actorId = null, tuDong = false }) {
+// Đồng bộ ERP (MỘT API duy nhất `/phieu-nhan-vai-60`): mọi đợt vải hợp lệ vào THẲNG READY,
+// rồi cờ `KTCankiemtra` quyết định ở lại READY (=1) hay giả lập KT xong để đi thẳng Release 1 (=0).
+// (Luồng 2 API "lấy trước" đã BỎ — không còn trạng thái "chờ chuyển READY".)
+async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = false }) {
   const from = fromDate || defaultFrom();
   const logId = await repo.createSyncLog({ nguon, fromDate: from, tuDong }, actorId);
   try {
@@ -271,7 +270,7 @@ async function runSync({ baseUrl, nguon, official, fromDate, actorId = null, tuD
       })));
     } catch (e) { console.error(`[erp-sync] ✗ Lưu dữ liệu thô lỗi: ${e.message}`); }
 
-    let soMoi = 0; let soCapNhat = 0; let soBoQua = 0; let soKhongCode = 0; let soBoLoai = 0; let soBoTcin = 0; let soChoChuyen = 0;
+    let soMoi = 0; let soCapNhat = 0; let soBoQua = 0; let soKhongCode = 0; let soBoLoai = 0; let soBoTcin = 0;
     const errors = [];
     const newDotVaiIds = [];
     const insetGroups = new Map(); // barcode_hskt (Inset=1, vào READY) → Set(pinId) cho auto gom set
@@ -285,34 +284,19 @@ async function runSync({ baseUrl, nguon, official, fromDate, actorId = null, tuD
       let pinId = null; let affectedDotVaiIds = []; let intoReady = false;
       try {
         const tgPhoi = Number(p.r.tgphoi);
-        if (official) {
-          // Chính thức: đã có code phần → cập nhật barcode + chuyển pending sang READY; chưa có → tạo mới + READY.
-          const existingPinId = await repo.findPhanInIdByMaPhan(p.maPhan);
-          if (existingPinId) {
-            const promoted = await repo.promotePhanInToReady(existingPinId, {
-              barcode: erpBarcode(p.r), tinhChatIn: erpTinhChatIn(p.r),
-            });
-            promoted.forEach((id) => newDotVaiIds.push(id));
-            soCapNhat += 1;
-            pinId = existingPinId; affectedDotVaiIds = promoted; intoReady = true;
-            if (Number.isFinite(tgPhoi) && tgPhoi > 0) await repo.setPhanInDryMin(existingPinId, Math.round(tgPhoi));
-          } else {
-            const loaiDotVaiId = await resolveLoai(p.r.loaikd);
-            const { inserted, dotVaiId, pinId: pid } = await processRow(p.r, p.maPhan, p.maDotVai, loaiDotVaiId, new Date());
-            if (inserted) { soMoi += 1; newDotVaiIds.push(dotVaiId); } else soCapNhat += 1;
-            pinId = pid; affectedDotVaiIds = [dotVaiId]; intoReady = true;
-            if (Number.isFinite(tgPhoi) && tgPhoi > 0) await repo.setPhanInDryMin(pid, Math.round(tgPhoi));
-          }
-        } else {
-          // -new: 5I → vào READY ngay; 3I (và khác) → CHỜ chuyển (pending, tg_chuyen_ready = null).
-          const is5I = clean(p.r.loaikd).toUpperCase() === '5I';
-          const tgReady = is5I ? new Date() : null;
-          const loaiDotVaiId = await resolveLoai(p.r.loaikd);
-          const { inserted, dotVaiId, pinId: pid } = await processRow(p.r, p.maPhan, p.maDotVai, loaiDotVaiId, tgReady);
-          if (inserted) { soMoi += 1; if (tgReady) newDotVaiIds.push(dotVaiId); else soChoChuyen += 1; } else soCapNhat += 1;
-          pinId = pid; affectedDotVaiIds = [dotVaiId]; intoReady = !!tgReady;
-          if (Number.isFinite(tgPhoi) && tgPhoi > 0) await repo.setPhanInDryMin(pid, Math.round(tgPhoi));
-        }
+        // Upsert theo `ma_dot_vai` (idempotent): đợt mới thì tạo, đợt đã có thì cập nhật —
+        // phần in đã tồn tại vẫn nhận thêm đợt vải mới. Mốc vào READY = now().
+        const loaiDotVaiId = await resolveLoai(p.r.loaikd);
+        const { inserted, dotVaiId, pinId: pid } = await processRow(p.r, p.maPhan, p.maDotVai, loaiDotVaiId, new Date());
+        if (inserted) { soMoi += 1; newDotVaiIds.push(dotVaiId); } else soCapNhat += 1;
+        pinId = pid; affectedDotVaiIds = [dotVaiId]; intoReady = true;
+        if (Number.isFinite(tgPhoi) && tgPhoi > 0) await repo.setPhanInDryMin(pid, Math.round(tgPhoi));
+        // Dọn dữ liệu CŨ thời 2 API: đợt của phần in này còn kẹt "chờ chuyển" (tg_chuyen_ready NULL)
+        // → đưa nốt vào READY. Dữ liệu mới không bao giờ rơi vào nhánh này.
+        const promoted = await repo.promotePhanInToReady(pid, {
+          barcode: erpBarcode(p.r), tinhChatIn: erpTinhChatIn(p.r),
+        });
+        promoted.forEach((id) => { newDotVaiIds.push(id); affectedDotVaiIds.push(id); });
       } catch (e) { errors.push(e.message); }
 
       // Xử lý phụ (HSKT / KTCankiemtra / gom set) — BEST-EFFORT, không chặn đồng bộ đợt.
@@ -347,7 +331,6 @@ async function runSync({ baseUrl, nguon, official, fromDate, actorId = null, tuD
     }
     const trangThai = errors.length && soMoi + soCapNhat === 0 ? 'LOI' : 'THANH_CONG';
     const notes = [];
-    if (soChoChuyen) notes.push(`${soChoChuyen} đợt chờ chuyển READY (3I)`);
     if (soKhongCode) notes.push(`bỏ qua ${soKhongCode} dòng không có code_part`);
     if (soBoLoai) notes.push(`bỏ qua ${soBoLoai} dòng loaikd ngoài ${[...LAY_LOAIKD].join('/')}`);
     if (soBoTcin) notes.push(`bỏ qua ${soBoTcin} dòng tính chất in ngoài phạm vi`);
@@ -360,22 +343,18 @@ async function runSync({ baseUrl, nguon, official, fromDate, actorId = null, tuD
       sockets.emit('order:updated', { source: 'erp' });
       sockets.emit('dashboard:refresh', {});
     }
-    return { logId, tong: rows.length, soMoi, soCapNhat, soBoQua, soChoChuyen, soLoi: errors.length, trangThai };
+    return { logId, tong: rows.length, soMoi, soCapNhat, soBoQua, soLoi: errors.length, trangThai };
   } catch (e) {
     await repo.finishSyncLog(logId, { tong: 0, soMoi: 0, soCapNhat: 0, soLoi: 0, trangThai: 'LOI', thongDiep: e.message });
     throw e;
   }
 }
 
-// API CHÍNH THỨC /phieu-nhan-vai-60 → chuyển phần in qua READY.
+// API DUY NHẤT /phieu-nhan-vai-60 → đợt vải vào READY (hoặc thẳng Release 1 khi KTCankiemtra=0).
 async function syncPhieuNhanVai({ fromDate, actorId = null, tuDong = false } = {}) {
-  return runSync({ baseUrl: env.erp.phieuNhanVaiUrl, nguon: NGUON, official: true, fromDate, actorId, tuDong });
+  return runSync({ baseUrl: env.erp.phieuNhanVaiUrl, nguon: NGUON, fromDate, actorId, tuDong });
 }
 
-// API LẤY TRƯỚC /phieu-nhan-vai-60-new → đợt vải CHỜ chuyển READY (trừ 5I vào thẳng READY).
-async function syncPhieuNhanVaiNew({ fromDate, actorId = null, tuDong = false } = {}) {
-  return runSync({ baseUrl: env.erp.phieuNhanVaiNewUrl, nguon: NGUON_NEW, official: false, fromDate, actorId, tuDong });
-}
 
 async function history({ date, page, limit, offset } = {}) {
   const { rows, total } = await repo.listSyncHistory({ date: date || null, offset, limit });
@@ -388,4 +367,4 @@ async function rawData(logId) {
   return { chuoi_tho: text || null };
 }
 
-module.exports = { syncPhieuNhanVai, syncPhieuNhanVaiNew, history, rawData, autoGomSetByHskt };
+module.exports = { syncPhieuNhanVai, history, rawData, autoGomSetByHskt };

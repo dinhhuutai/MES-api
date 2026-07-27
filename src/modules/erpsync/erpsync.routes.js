@@ -9,7 +9,6 @@ const router = express.Router();
 router.use(auth);
 
 router.post('/sync/phieu-nhan-vai', rbac('ERP_SYNC'), c.syncPhieuNhanVai);
-router.post('/sync/phieu-nhan-vai-new', rbac('ERP_SYNC'), c.syncPhieuNhanVaiNew);
 router.get('/sync/history', rbac('ERP_SYNC'), c.history);
 router.get('/sync/:id/raw', rbac('ERP_SYNC'), c.rawData);
 
