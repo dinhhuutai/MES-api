@@ -137,7 +137,14 @@ const keHoachTamUpdate = asyncHandler(async (req, res) =>
   ok(res, await service.updateKeHoachTam(req.params.id, req.body, req.user.id), 'Đã cập nhật kế hoạch tạm'));
 
 const keHoachTamDelete = asyncHandler(async (req, res) =>
-  ok(res, await service.deleteKeHoachTam(req.params.id), 'Đã xóa kế hoạch tạm'));
+  ok(res, await service.deleteKeHoachTam(req.params.id, req.user.id), 'Đã xóa kế hoạch tạm'));
+
+// Lịch sử thao tác + Đã hoàn thành (đã xác nhận Release 1) của Kế hoạch tạm — theo ngày (giờ VN).
+const keHoachTamHistory = asyncHandler(async (req, res) =>
+  ok(res, await service.keHoachTamHistory(req.query.date || new Date().toISOString().slice(0, 10))));
+
+const keHoachTamDone = asyncHandler(async (req, res) =>
+  ok(res, await service.keHoachTamDone(req.query.date || new Date().toISOString().slice(0, 10))));
 
 const replanBatch = asyncHandler(async (req, res) =>
   ok(res, await service.replanBatch(req.body.lenhIds, req.body, req.user.id), 'Lập lại kế hoạch hàng loạt'));
@@ -179,7 +186,7 @@ module.exports = {
   release2Candidates, approveRelease2, approveRelease2Batch, skipTestRun, testRunHistory,
   replanCandidates, replan, replanBatch, planHistory,
   giaCongList, giaCongToOqc, giaCongHistory,
-  keHoachTamList, keHoachTamConfirm, keHoachTamUpdate, keHoachTamDelete,
+  keHoachTamList, keHoachTamConfirm, keHoachTamUpdate, keHoachTamDelete, keHoachTamHistory, keHoachTamDone,
   cancelableLenh, cancelLenh, returnTestRun,
   release1Done, release2Done, replanDone, testCnspDone, testQaDone,
 };

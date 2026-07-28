@@ -74,6 +74,9 @@ router.post('/gia-cong/:lenhId/chuyen-oqc', rbac('RELEASE1', 'RELEASE2'), c.giaC
 
 // Kế hoạch tạm: xác nhận lại Release 1 khi phần in Ready xong
 router.get('/ke-hoach-tam', rbac('RELEASE1', 'RELEASE2'), c.keHoachTamList);
+// ĐẶT TRƯỚC các route có tham số để 'history'/'done' không bị hiểu thành :id.
+router.get('/ke-hoach-tam/history', rbac('RELEASE1', 'RELEASE2'), c.keHoachTamHistory);
+router.get('/ke-hoach-tam/done', rbac('RELEASE1', 'RELEASE2'), c.keHoachTamDone);
 router.post('/ke-hoach-tam/:id/xac-nhan', rbac('RELEASE1', 'RELEASE2'), c.keHoachTamConfirm);
 router.patch('/ke-hoach-tam/:id', rbac('RELEASE1', 'RELEASE2'), c.keHoachTamUpdate);
 router.delete('/ke-hoach-tam/:id', rbac('RELEASE1', 'RELEASE2'), c.keHoachTamDelete);

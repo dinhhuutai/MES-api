@@ -584,6 +584,62 @@ async function upsertKeHoachTam({ dotVaiId, phanInId, chuyenId, ngayKeHoach, tgB
        updated_by=EXCLUDED.created_by, updated_date=now()`.replace(/\s+/g, ' '),
     [dotVaiId, phanInId, chuyenId || null, ngayKeHoach || null, tgBdKh || null, tgKtKh || null, soLuong || null, actorId]
   );
+  await logKeHoachTam('LUU_KE_HOACH_TAM', dotVaiId, { chuyen_id: chuyenId || null, ngay_ke_hoach: ngayKeHoach || null, so_luong: soLuong || null }, actorId);
+}
+
+// ─── LỊCH SỬ KẾ HOẠCH TẠM ────────────────────────────────────────────────────
+// Dòng `ke_hoach_tam` bị XÓA khi xác nhận Release 1 / xóa tay ⇒ không còn dấu vết.
+// Vì vậy mọi thao tác ghi 1 dòng audit_log (id_ban_ghi = dot_vai_ve_id) để tra lại được AI lập kế hoạch, LÚC NÀO.
+// Tên khách/mã hàng/chuyền KHÔNG lưu trong payload — join lại lúc đọc để luôn khớp dữ liệu hiện tại.
+const KHT_TABLE = 'ke_hoach_tam';
+async function logKeHoachTam(hanhDong, dotVaiId, payload, actorId) {
+  try {
+    await query(
+      `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+       VALUES ($1,$2,$3,$4::jsonb,$5,now(),$5)`,
+      [KHT_TABLE, String(dotVaiId), hanhDong, JSON.stringify(payload || {}), actorId || null]
+    );
+  } catch (e) { console.error(`[ke-hoach-tam] ✗ ghi lịch sử lỗi: ${e.message}`); }
+}
+
+// Nguồn dùng chung cho Lịch sử + Đã hoàn thành của Kế hoạch tạm (lọc theo ngày giờ VN).
+const KHT_HISTORY_FROM = `
+  FROM audit_log a
+  LEFT JOIN nguoi_dung nd ON nd.id = a.nguoi_thuc_hien_id
+  LEFT JOIN dot_vai_ve dv ON dv.id::text = a.id_ban_ghi
+  LEFT JOIN phan_in pin ON pin.id = dv.phan_in_id
+  LEFT JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+  LEFT JOIN don_hang dh ON dh.id = mh.don_hang_id
+  LEFT JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+  LEFT JOIN chuyen_san_xuat cs ON cs.id::text = (a.gia_tri_moi->>'chuyen_id')
+  WHERE a.ten_bang = 'ke_hoach_tam'
+    AND (a.thoi_gian AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date`;
+
+async function keHoachTamHistoryByDate(date) {
+  const sql = `
+    SELECT a.thoi_gian AS tg, nd.ho_ten AS nguoi, a.hanh_dong,
+           pin.ma_phan, pin.mau_vai, dv.ma_dot_vai, cs.ten_chuyen,
+           (a.gia_tri_moi->>'so_luong') AS so_luong,
+           (a.gia_tri_moi->>'ngay_ke_hoach') AS ngay_ke_hoach,
+           (a.gia_tri_moi->>'ma_lenh') AS ma_lenh
+    ${KHT_HISTORY_FROM}
+    ORDER BY a.thoi_gian DESC`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [date]);
+  return rows;
+}
+
+// "Đã hoàn thành" = kế hoạch tạm đã XÁC NHẬN Release 1 trong ngày (đã ra lệnh sản xuất thật).
+async function keHoachTamDoneByDate(date) {
+  const sql = `
+    SELECT a.thoi_gian AS tg, nd.ho_ten AS nguoi,
+           COALESCE(a.gia_tri_moi->>'ma_lenh', dv.ma_dot_vai) AS ma,
+           (a.gia_tri_moi->>'so_luong')::int AS so_luong,
+           pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
+           mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang, dv.han_giao_hang, cs.ten_chuyen
+    ${KHT_HISTORY_FROM} AND a.hanh_dong = 'XAC_NHAN_KE_HOACH_TAM'
+    ORDER BY a.thoi_gian DESC`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [date]);
+  return rows;
 }
 
 async function listKeHoachTamRows({ search = '', offset = 0, limit = 200 }) {
@@ -1074,6 +1130,7 @@ module.exports = {
   listReplanCandidates, getLenhForReplan, updateLenhPlan, logPlanChange, planHistoryByDate,
   listGiaCongLenh, getGiaCongLenh, listGiaCongHistory,
   upsertKeHoachTam, listKeHoachTamRows, getKeHoachTam, updateKeHoachTam, deleteKeHoachTam, deleteKeHoachTamByDotVai,
+  logKeHoachTam, keHoachTamHistoryByDate, keHoachTamDoneByDate,
   listCancelableLenh, getLenhForCancel, cancelLenhOrder, cancelReadyQcForDotVai, logLenhCancel,
   listReleasableSets, getOpenSetMembers, getSetForRelease, getSetMembersForRelease, markSetReleased, logGomSetReleased,
 };

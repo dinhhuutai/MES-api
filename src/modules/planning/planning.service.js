@@ -470,9 +470,15 @@ async function createDotSanXuat({ items, chuyenId, ngayKeHoach, tgBdKh, tgKtKh }
   return { ...(await getLenhDetail(lenhId)), skipped_test: diTat, so_luong_release: tongSL, in_kieng: inKieng, ep_ui_id: epUiId };
 }
 
+// Lịch sử Release 1 = lệnh đã tạo trong ngày + CÁC THAO TÁC KẾ HOẠCH TẠM (lập/sửa/xóa/xác nhận).
+// Gộp 2 nguồn vì đứng ở màn Release 1 sẽ KHÔNG thấy đợt vải đã có kế hoạch tạm (candidate loại chúng ra)
+// ⇒ không gộp thì không ai biết đợt đó "biến mất" là do có người lập kế hoạch sớm.
 async function release1History(date) {
-  const rows = await repo.release1HistoryByDate(date);
-  return rows.map((r) => ({
+  const [rows, kht] = await Promise.all([
+    repo.release1HistoryByDate(date),
+    repo.keHoachTamHistoryByDate(date),
+  ]);
+  const lenh = rows.map((r) => ({
     tg: r.tg,
     nguoi: r.nguoi || '—',
     hanh_dong: 'Release 1',
@@ -480,6 +486,14 @@ async function release1History(date) {
     chi_tiet: [r.ma_phan, r.mau_vai, r.ma_dot_vai].filter(Boolean).join(' · ')
       + (r.ten_chuyen ? ` → ${r.ten_chuyen}` : ''),
   }));
+  const tam = kht.map((r) => ({
+    tg: r.tg,
+    nguoi: r.nguoi || '—',
+    hanh_dong: KHT_LABEL[r.hanh_dong] || r.hanh_dong,
+    doi_tuong: r.ma_lenh || r.ma_phan || '',
+    chi_tiet: khtChiTiet(r),
+  }));
+  return [...lenh, ...tam].sort((a, b) => new Date(b.tg) - new Date(a.tg));
 }
 
 // ----- RELEASE SET (gom set → 1 lệnh sản xuất chung) -----
@@ -808,6 +822,10 @@ async function confirmKeHoachTam(id, actorId) {
     ngayKeHoach: kt.ngay_ke_hoach, tgBdKh: kt.tg_bd_kh, tgKtKh: kt.tg_kt_kh,
   }, actorId);
   await repo.deleteKeHoachTam(id);
+  await repo.logKeHoachTam('XAC_NHAN_KE_HOACH_TAM', kt.dot_vai_ve_id, {
+    chuyen_id: kt.chuyen_id, ngay_ke_hoach: kt.ngay_ke_hoach, so_luong: kt.so_luong,
+    ma_lenh: (res.created_summary && res.created_summary[0]?.ma_lenh_san_xuat) || res.ma_lenh_san_xuat || null,
+  }, actorId);
   return { ...res, ke_hoach_tam_id: id };
 }
 
@@ -818,16 +836,46 @@ async function updateKeHoachTam(id, { chuyenId, ngayKeHoach, soLuong }, actorId)
   if (sl != null && !(sl > 0)) throw new AppError('Số lượng release phải lớn hơn 0', { status: 422, errorCode: 'INVALID_QTY' });
   const res = await repo.updateKeHoachTam(id, { chuyenId, ngayKeHoach, soLuong: sl }, actorId);
   if (!res) throw new AppError('Không cập nhật được kế hoạch tạm', { status: 409, errorCode: 'UPDATE_FAILED' });
+  await repo.logKeHoachTam('SUA_KE_HOACH_TAM', kt.dot_vai_ve_id,
+    { chuyen_id: chuyenId || null, ngay_ke_hoach: ngayKeHoach || null, so_luong: sl }, actorId);
   sockets.emit('dashboard:refresh', {});
   return { id };
 }
 
-async function deleteKeHoachTam(id) {
+async function deleteKeHoachTam(id, actorId) {
   const kt = await repo.getKeHoachTam(id);
   if (!kt) throw new AppError('Kế hoạch tạm không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   await repo.deleteKeHoachTam(id);
+  await repo.logKeHoachTam('XOA_KE_HOACH_TAM', kt.dot_vai_ve_id,
+    { chuyen_id: kt.chuyen_id, ngay_ke_hoach: kt.ngay_ke_hoach, so_luong: kt.so_luong }, actorId);
   return { id };
 }
+
+// Lịch sử thao tác Kế hoạch tạm theo ngày (nguồn audit_log — dòng tạm đã bị xóa khi lên lệnh).
+const KHT_LABEL = {
+  LUU_KE_HOACH_TAM: 'Lập kế hoạch tạm',
+  SUA_KE_HOACH_TAM: 'Sửa kế hoạch tạm',
+  XOA_KE_HOACH_TAM: 'Xóa kế hoạch tạm',
+  XAC_NHAN_KE_HOACH_TAM: 'Xác nhận Release 1',
+};
+function khtChiTiet(r) {
+  const parts = [[r.ma_phan, r.mau_vai, r.ma_dot_vai].filter(Boolean).join(' · ')];
+  if (r.ten_chuyen) parts.push(`chuyền ${r.ten_chuyen}`);
+  if (r.so_luong) parts.push(`SL ${r.so_luong}`);
+  if (r.ngay_ke_hoach) parts.push(`ngày KH ${String(r.ngay_ke_hoach).slice(0, 10)}`);
+  return parts.filter(Boolean).join(' · ');
+}
+async function keHoachTamHistory(date) {
+  const rows = await repo.keHoachTamHistoryByDate(date);
+  return rows.map((r) => ({
+    tg: r.tg,
+    nguoi: r.nguoi || '—',
+    hanh_dong: KHT_LABEL[r.hanh_dong] || r.hanh_dong,
+    doi_tuong: r.ma_lenh || r.ma_phan || '',
+    chi_tiet: khtChiTiet(r),
+  }));
+}
+async function keHoachTamDone(date) { return repo.keHoachTamDoneByDate(date); }
 
 // ----- GIA CÔNG: màn Kế hoạch nhận lại hàng gia công rồi chuyển OQC -----
 async function listGiaCong({ search, page, limit, offset }) {
@@ -1004,7 +1052,7 @@ module.exports = {
   listRelease2Candidates, approveRelease2, approveRelease2Batch, skipTestRun, testRunHistory,
   listReplanCandidates, replan, replanBatch, planHistory,
   listGiaCong, confirmGiaCongToOqc, giaCongHistory,
-  listKeHoachTam, confirmKeHoachTam, updateKeHoachTam, deleteKeHoachTam,
+  listKeHoachTam, confirmKeHoachTam, updateKeHoachTam, deleteKeHoachTam, keHoachTamHistory, keHoachTamDone,
   listCancelableLenh, rollbackLenh, returnTestRunToRelease1,
   release1Done, release2Done, replanDone, testCnspDone, testQaDone,
   releaseList,
