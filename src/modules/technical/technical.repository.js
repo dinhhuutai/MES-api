@@ -63,14 +63,19 @@ async function listCandidates({
            ${doneExpr('$7')} AS film_done,
            ${doneExpr('$8')} AS muc_done,
            ${techDoneSql('kh.ten_khach_hang', doneExpr('$6'), doneExpr('$7'), doneExpr('$8'))} AS tech_done` : ''},
-           (SELECT h.phuong_an_in FROM hskt_phan_in hp JOIN ho_so_ky_thuat h ON h.id=hp.hskt_id WHERE hp.phan_in_id=pin.id AND hp.dang_hoat_dong AND h.dang_hoat_dong LIMIT 1) AS phuong_an_in,
-           (SELECT h.barcode_hskt FROM hskt_phan_in hp JOIN ho_so_ky_thuat h ON h.id=hp.hskt_id WHERE hp.phan_in_id=pin.id AND hp.dang_hoat_dong AND h.dang_hoat_dong LIMIT 1) AS barcode_hskt,
-           (SELECT h.id FROM hskt_phan_in hp JOIN ho_so_ky_thuat h ON h.id=hp.hskt_id WHERE hp.phan_in_id=pin.id AND hp.dang_hoat_dong AND h.dang_hoat_dong LIMIT 1) AS hskt_id,
+           hs.phuong_an_in, hs.barcode_hskt, hs.hskt_id, hs.hskt_inset,
            sla.ready_tg_vao, sla.kt_done_tg
     FROM phan_in pin
     JOIN ma_hang mh ON mh.id = pin.ma_hang_id
     JOIN don_hang dh ON dh.id = mh.don_hang_id
     JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+    LEFT JOIN LATERAL (
+      -- HSKT đang hoạt động của phần in (1 LATERAL thay 3 subquery cũ). hskt_inset = ERP Inset:
+      -- 0 = không gom set; khác 0 = có gom set, các phần in CÙNG barcode_hskt là 1 nhóm gom set.
+      SELECT h.phuong_an_in, h.barcode_hskt, h.id AS hskt_id, h.inset AS hskt_inset
+        FROM hskt_phan_in hp JOIN ho_so_ky_thuat h ON h.id = hp.hskt_id
+       WHERE hp.phan_in_id = pin.id AND hp.dang_hoat_dong AND h.dang_hoat_dong LIMIT 1
+    ) hs ON true
     LEFT JOIN LATERAL (
       -- ready_tg_vao = mốc "vào READY" (ton_tram 029, fallback đợt vải về — đợt chưa release).
       -- kt_done_tg   = mốc KT hoàn tất = lần xác nhận MUỘN NHẤT trong 3 mục KHUON/FILM/MUC (bắt đầu đếm SLA QC).

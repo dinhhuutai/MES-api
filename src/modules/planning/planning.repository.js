@@ -9,12 +9,17 @@ const DA_REL = `COALESCE((SELECT SUM(COALESCE(lsd.so_luong,0)) FROM lenh_sx_dot_
     JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
     WHERE lsd.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY'),0)`;
 
-// SELECT-list các cột HSKT ĐANG HOẠT ĐỘNG của 1 phần in (phuong_an_in / barcode_hskt / hskt_id).
+// SELECT-list các cột HSKT ĐANG HOẠT ĐỘNG của 1 phần in (phuong_an_in / barcode_hskt / hskt_id / hskt_inset).
 // `pinCol` = biểu thức trỏ phan_in.id (vd 'pin.id'). Dùng cho cột "Phương án in" + gộp ô HSKT ở Kế hoạch.
+// `hskt_inset` = ERP Inset (0 = không gom set; ≠0 = có gom set ⇒ phần in CÙNG HSKT là 1 nhóm gom set,
+// quét 1 code phần/barcode HSKT là chọn cả nhóm — xem ScanCollectModal).
+const HSKT_SUB = (pinCol, col) =>
+  `(SELECT ${col} FROM hskt_phan_in hp JOIN ho_so_ky_thuat h ON h.id=hp.hskt_id WHERE hp.phan_in_id=${pinCol} AND hp.dang_hoat_dong AND h.dang_hoat_dong LIMIT 1)`;
 const hsktCols = (pinCol) => `
-  (SELECT h.phuong_an_in FROM hskt_phan_in hp JOIN ho_so_ky_thuat h ON h.id=hp.hskt_id WHERE hp.phan_in_id=${pinCol} AND hp.dang_hoat_dong AND h.dang_hoat_dong LIMIT 1) AS phuong_an_in,
-  (SELECT h.barcode_hskt FROM hskt_phan_in hp JOIN ho_so_ky_thuat h ON h.id=hp.hskt_id WHERE hp.phan_in_id=${pinCol} AND hp.dang_hoat_dong AND h.dang_hoat_dong LIMIT 1) AS barcode_hskt,
-  (SELECT h.id FROM hskt_phan_in hp JOIN ho_so_ky_thuat h ON h.id=hp.hskt_id WHERE hp.phan_in_id=${pinCol} AND hp.dang_hoat_dong AND h.dang_hoat_dong LIMIT 1) AS hskt_id`;
+  ${HSKT_SUB(pinCol, 'h.phuong_an_in')} AS phuong_an_in,
+  ${HSKT_SUB(pinCol, 'h.barcode_hskt')} AS barcode_hskt,
+  ${HSKT_SUB(pinCol, 'h.inset')} AS hskt_inset,
+  ${HSKT_SUB(pinCol, 'h.id')} AS hskt_id`;
 
 // ----- RELEASE 1: đợt vải của phần in đã READY, CÒN phần chưa release (SL vải về − đã release > 0) -----
 // Release theo số lượng: 1 đợt có thể release nhiều lần → nhiều lệnh; đợt ở lại pool tới khi release đủ.
@@ -440,7 +445,7 @@ function lenhListSql(extraWhere) {
            cs.ma_chuyen, cs.ten_chuyen,
            info.ten_khach_hang, info.ma_don_hang, info.ma_hang,
            info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan, info.tinh_chat_in,
-           info.phuong_an_in, info.barcode_hskt, info.hskt_id,
+           info.phuong_an_in, info.barcode_hskt, info.hskt_id, info.hskt_inset,
            info.so_luong_don_hang, info.so_luong_vai_ve, info.ngay_vai_ve,
            (SELECT min(dvh.han_giao_hang) FROM lenh_sx_dot_vai lsh JOIN dot_vai_ve dvh ON dvh.id=lsh.dot_vai_ve_id WHERE lsh.lenh_san_xuat_id=ls.id) AS han_giao_hang,
            info.loai_dot_vai,
@@ -497,7 +502,7 @@ async function listReplanCandidates({ search = '', offset = 0, limit = 50 }) {
            cs.ma_chuyen, cs.ten_chuyen,
            info.ten_khach_hang, info.ma_don_hang, info.ma_hang,
            info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan, info.tinh_chat_in,
-           info.phuong_an_in, info.barcode_hskt, info.hskt_id,
+           info.phuong_an_in, info.barcode_hskt, info.hskt_id, info.hskt_inset,
            info.so_luong_don_hang, info.so_luong_vai_ve, info.ngay_vai_ve, info.han_giao_hang,
            info.loai_dot_vai,
            (SELECT count(*) FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id)::int AS so_dot_vai
@@ -526,7 +531,7 @@ async function listGiaCongLenh({ search = '', offset = 0, limit = 50 }) {
            cs.ma_chuyen, cs.ten_chuyen, nr.ho_ten AS nguoi_release,
            info.ten_khach_hang, info.ma_don_hang, info.ma_hang,
            info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan, info.tinh_chat_in,
-           info.phuong_an_in, info.barcode_hskt, info.hskt_id,
+           info.phuong_an_in, info.barcode_hskt, info.hskt_id, info.hskt_inset,
            info.so_luong_don_hang, info.so_luong_vai_ve, info.ngay_vai_ve, info.han_giao_hang, info.loai_dot_vai,
            (SELECT count(*) FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id)::int AS so_dot_vai
     ${FROM}

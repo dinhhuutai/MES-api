@@ -14,6 +14,11 @@ async function listCandidates({ search = '', offset = 0, limit = 50 }) {
     JOIN ma_hang mh ON mh.id = pin.ma_hang_id
     JOIN don_hang dh ON dh.id = mh.don_hang_id
     JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+    LEFT JOIN LATERAL (
+      SELECT h.barcode_hskt, h.id AS hskt_id, h.inset AS hskt_inset
+        FROM hskt_phan_in hp JOIN ho_so_ky_thuat h ON h.id = hp.hskt_id
+       WHERE hp.phan_in_id = pin.id AND hp.dang_hoat_dong AND h.dang_hoat_dong LIMIT 1
+    ) hs ON true
     WHERE NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
                       WHERE lsd.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY')
       AND NOT EXISTS (SELECT 1 FROM gom_set_dot_vai gsd JOIN gom_set gs ON gs.id = gsd.gom_set_id
@@ -26,8 +31,7 @@ async function listCandidates({ search = '', offset = 0, limit = 50 }) {
     SELECT dv.id AS dot_vai_id, dv.ma_dot_vai, dv.barcode, dv.inset, dv.so_luong_vai_ve, dv.ngay_vai_ve, dv.han_giao_hang,
            pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.so_luong_don_hang,
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
-           (SELECT h.barcode_hskt FROM hskt_phan_in hp JOIN ho_so_ky_thuat h ON h.id = hp.hskt_id
-             WHERE hp.phan_in_id = pin.id AND hp.dang_hoat_dong AND h.dang_hoat_dong LIMIT 1) AS barcode_hskt,
+           hs.barcode_hskt, hs.hskt_id, hs.hskt_inset,
            EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
                    WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT') AS qc_done,
            COUNT(*) OVER()::int AS total
