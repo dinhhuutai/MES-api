@@ -179,14 +179,15 @@ async function getLoaiDotVaiId(maLoai) {
 // Đợt đã tồn tại (re-sync idempotent theo ma_dot_vai) → GIỮ NGUYÊN so_luong_vai_ve đã tính lúc tạo,
 //  chỉ cập nhật ngày/hạn/loại (tránh cộng dồn sai khi ERP trả lại dòng cũ).
 // `tgChuyenReady`: Date = đợt vào READY ngay (mig 056); null = CHỜ chuyển (pending). Re-sync GIỮ NGUYÊN mốc cũ.
-async function upsertDotVai(client, { maDotVai, phanInId, loaiDotVaiId, ngayVaiVe, hanGiao, soLuong, tgChuyenReady, barcode }) {
+async function upsertDotVai(client, { maDotVai, phanInId, loaiDotVaiId, ngayVaiVe, hanGiao, soLuong, tgChuyenReady, barcode, inset }) {
   const existing = await client.query('SELECT id FROM dot_vai_ve WHERE ma_dot_vai = $1', [maDotVai]);
   if (existing.rows.length) {
     await client.query(
       `UPDATE dot_vai_ve SET loai_dot_vai_id = COALESCE($2, loai_dot_vai_id),
-         ngay_vai_ve = $3, han_giao_hang = $4, barcode = COALESCE($5, barcode), updated_date = CURRENT_TIMESTAMP
+         ngay_vai_ve = $3, han_giao_hang = $4, barcode = COALESCE($5, barcode),
+         inset = COALESCE($6, inset), updated_date = CURRENT_TIMESTAMP
        WHERE ma_dot_vai = $1`,
-      [maDotVai, loaiDotVaiId || null, ngayVaiVe || null, hanGiao || null, barcode || null]
+      [maDotVai, loaiDotVaiId || null, ngayVaiVe || null, hanGiao || null, barcode || null, inset ?? null]
     );
     return { id: existing.rows[0].id, inserted: false };
   }
@@ -198,9 +199,9 @@ async function upsertDotVai(client, { maDotVai, phanInId, loaiDotVaiId, ngayVaiV
     if (sl < 0) sl = 0;
   }
   const { rows } = await client.query(
-    `INSERT INTO dot_vai_ve (phan_in_id, loai_dot_vai_id, ma_dot_vai, ngay_vai_ve, han_giao_hang, so_luong_vai_ve, trang_thai, tg_chuyen_ready, barcode)
-     VALUES ($1,$2,$3,$4,$5,$6,'NHAN_VAI',$7,$8) RETURNING id`,
-    [phanInId, loaiDotVaiId || null, maDotVai, ngayVaiVe || null, hanGiao || null, sl, tgChuyenReady || null, barcode || null]
+    `INSERT INTO dot_vai_ve (phan_in_id, loai_dot_vai_id, ma_dot_vai, ngay_vai_ve, han_giao_hang, so_luong_vai_ve, trang_thai, tg_chuyen_ready, barcode, inset)
+     VALUES ($1,$2,$3,$4,$5,$6,'NHAN_VAI',$7,$8,$9) RETURNING id`,
+    [phanInId, loaiDotVaiId || null, maDotVai, ngayVaiVe || null, hanGiao || null, sl, tgChuyenReady || null, barcode || null, inset ?? null]
   );
   return { id: rows[0].id, inserted: true };
 }
@@ -306,7 +307,7 @@ async function upsertHsktForPin({ pinId, barcodeHskt, pain, inset, maDonReady, a
     if (!act.length) {
       const ins = await client.query(
         `INSERT INTO ho_so_ky_thuat (barcode_hskt, ma_hskt, phuong_an_in, inset, phien_ban, ma_don_ready, dang_hoat_dong, created_by) VALUES ($1,$1,$2,$3,1,$4,true,$5) RETURNING id`,
-        [barcodeHskt, pain ?? null, inset === true, maDonReady || null, actorId]
+        [barcodeHskt, pain ?? null, inset ?? null, maDonReady || null, actorId]
       );
       hsktId = ins.rows[0].id;
       await client.query(
@@ -333,6 +334,13 @@ async function upsertHsktForPin({ pinId, barcodeHskt, pain, inset, maDonReady, a
         );
         hsktId = newId;
       }
+      // Số nhóm gom set + đợt ready THEO LẦN ĐỒNG BỘ MỚI NHẤT (phần in có thể sang đợt ready khác
+      // với số nhóm khác) — giữ bản active khớp ERP để trang Hồ sơ kỹ thuật hiển thị đúng.
+      await client.query(
+        `UPDATE ho_so_ky_thuat SET inset = COALESCE($2, inset), ma_don_ready = COALESCE($3, ma_don_ready),
+           updated_date = now() WHERE id = $1`,
+        [hsktId, inset ?? null, maDonReady || null]
+      );
     }
     await client.query(
       `INSERT INTO hskt_phan_in (hskt_id, phan_in_id, created_by) VALUES ($1,$2,$3) ON CONFLICT (hskt_id, phan_in_id) DO UPDATE SET dang_hoat_dong=true`,
@@ -343,10 +351,12 @@ async function upsertHsktForPin({ pinId, barcodeHskt, pain, inset, maDonReady, a
 }
 
 // Đợt vải đủ điều kiện auto gom set từ ERP: chưa release, còn READY, chưa thuộc set mở.
-async function eligibleDotVaiForGom(pinIds) {
+// Lọc theo CHÍNH các đợt vải của nhóm Inset (không lấy theo phần in — phần in có thể còn đợt
+// vải của đợt ready khác, không thuộc nhóm gom set này).
+async function eligibleDotVaiByIds(dotVaiIds) {
   const { rows } = await query(
-    `SELECT dv.id, dv.phan_in_id FROM dot_vai_ve dv WHERE dv.phan_in_id = ANY($1::uuid[]) AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY') AND dv.tg_chuyen_ready IS NOT NULL AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id WHERE lsd.dot_vai_ve_id=dv.id AND ls.trang_thai<>'HUY') AND NOT EXISTS (SELECT 1 FROM gom_set_dot_vai gsd JOIN gom_set gs ON gs.id=gsd.gom_set_id WHERE gsd.dot_vai_ve_id=dv.id AND gs.trang_thai='MO')`,
-    [pinIds]
+    `SELECT dv.id, dv.phan_in_id FROM dot_vai_ve dv WHERE dv.id = ANY($1::uuid[]) AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY') AND dv.tg_chuyen_ready IS NOT NULL AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id WHERE lsd.dot_vai_ve_id=dv.id AND ls.trang_thai<>'HUY') AND NOT EXISTS (SELECT 1 FROM gom_set_dot_vai gsd JOIN gom_set gs ON gs.id=gsd.gom_set_id WHERE gsd.dot_vai_ve_id=dv.id AND gs.trang_thai='MO')`,
+    [dotVaiIds]
   );
   return rows;
 }
@@ -362,5 +372,5 @@ module.exports = {
   upsertKhachHang, upsertDonHang, upsertMaHang, upsertPhanIn, setPhanInDryMin, getLoaiDotVaiId, upsertDotVai,
   findPhanInIdByMaPhan, promotePhanInToReady,
   readyCheckpointIds, simulateReadyDone, isPhanInReleased, reopenReadyForPhanIn, setDotVaiKtCanKiemTra,
-  upsertHsktForPin, eligibleDotVaiForGom, openSetByGhiChu,
+  upsertHsktForPin, eligibleDotVaiByIds, openSetByGhiChu,
 };

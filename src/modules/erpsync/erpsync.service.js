@@ -65,8 +65,10 @@ const erpBarcodeHskt = (r) => clean(field(r, 'BarcodeHKT', 'barcode_hkt', 'barco
 const toIntOrNull = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
 // Pain = phương án in (1 Bàn / 2 Máy / 3 Robot).
 const erpPain = (r) => toIntOrNull(field(r, 'Pain', 'pain', 'phuong_an_in'));
-// Inset = có gom set (1) hay không (0). Trả boolean|null.
-const erpInset = (r) => { const v = field(r, 'Inset', 'inset'); return v == null ? null : Number(v) === 1; };
+// Inset = SỐ NHÓM GOM SET (0 = không gom set; N>0 = nhóm N) — phạm vi số nhóm là TRONG 1 ĐỢT READY
+// (IDDotReady), không phải toàn hệ thống. ⚠ KHÔNG phải cờ true/false, và KHÔNG gom theo BarcodeHKT
+// (barcode HSKT là duy nhất theo phần in). Trả int|null.
+const erpInset = (r) => toIntOrNull(field(r, 'Inset', 'inset'));
 // KTCankiemtra: 1 = cần KT (làm lại READY), 0 = KT không cần (auto qua Release 1). Trả 0/1|null.
 const erpKtCanKiemTra = (r) => toIntOrNull(field(r, 'KTCankiemtra', 'kt_can_kiem_tra', 'ktcankiemtra'));
 // Ngày vải về: trường ERP đúng là `ngaynhanvai`, lùi về erp_datetime/created_date nếu thiếu.
@@ -196,7 +198,7 @@ async function processRow(r, maPhan, maDotVai, loaiDotVaiId, tgChuyenReady) {
     const { id: dotVaiId, inserted } = await repo.upsertDotVai(client, {
       maDotVai, phanInId: pinId, loaiDotVaiId,
       ngayVaiVe: erpNgayVaiVe(r), hanGiao: toDate(r.due_date), soLuong: r.received_qty ?? null,
-      tgChuyenReady: tgChuyenReady || null, barcode: erpBarcode(r),
+      tgChuyenReady: tgChuyenReady || null, barcode: erpBarcode(r), inset: erpInset(r),
     });
     return { inserted, dotVaiId, pinId };
   });
@@ -223,21 +225,22 @@ function defaultFrom() {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
-// Tự gom set từ ERP: các phần in cùng BarcodeHKT (Inset=1) → gom đợt vải đủ điều kiện thành 1 set.
+// Tự gom set từ ERP theo NHÓM `Inset` trong 1 ĐỢT READY: các phần in cùng đợt ready (IDDotReady)
+// và cùng số nhóm Inset (>0) → gom đợt vải đủ điều kiện thành 1 set.
 // Idempotent: nhận diện set đã tạo qua ghi_chu; cần ≥2 đợt vải thuộc ≥2 phần in.
-async function autoGomSetByHskt(barcodeHskt, pinIds, actorId) {
-  const rows = await repo.eligibleDotVaiForGom(pinIds);
+async function autoGomSetByInset(maDonReady, inset, dotVaiIds, actorId) {
+  const rows = await repo.eligibleDotVaiByIds(dotVaiIds);
   const dvIds = rows.map((r) => r.id);
   const distinctPins = new Set(rows.map((r) => r.phan_in_id));
   if (dvIds.length < 2 || distinctPins.size < 2) return;
-  const ghiChu = `ERP gom set · HSKT ${barcodeHskt}`;
+  const ghiChu = `ERP gom set · Đợt ready ${maDonReady} · Set ${inset}`;
   if (await repo.openSetByGhiChu(ghiChu)) return; // đã gom rồi
   const maSet = await gomRepo.nextMaSet();
   await withTransaction(async (client) => {
     const setId = await gomRepo.createSet(client, { maSet, ghiChu }, actorId);
     for (const id of dvIds) await gomRepo.addDotVai(client, setId, id, actorId);
     await gomRepo.logGomAction(client, setId, 'CREATE_SET',
-      `Tự gom từ ERP (Inset=1, HSKT ${barcodeHskt}): ${dvIds.length} đợt vải / ${distinctPins.size} phần in`, actorId);
+      `Tự gom từ ERP (đợt ready ${maDonReady}, Inset=${inset}): ${dvIds.length} đợt vải / ${distinctPins.size} phần in`, actorId);
   });
   sockets.emit('workflow:updated', { stage: 'GOM_SET', source: 'erp' });
 }
@@ -273,7 +276,8 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
     let soMoi = 0; let soCapNhat = 0; let soBoQua = 0; let soKhongCode = 0; let soBoLoai = 0; let soBoTcin = 0;
     const errors = [];
     const newDotVaiIds = [];
-    const insetGroups = new Map(); // barcode_hskt (Inset=1, vào READY) → Set(pinId) cho auto gom set
+    // Nhóm gom set: khóa = "<IDDotReady>#<Inset>" (Inset>0) → { maDonReady, inset, dotVaiIds, pinIds }.
+    const insetGroups = new Map();
     const resolveLoai = makeLoaiResolver();
     for (const p of prepared) {
       if (p.skip) {
@@ -314,20 +318,25 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
             if (ktCan === 0) await repo.simulateReadyDone(pinId);              // giả lập KT xong → Release 1
             else if (await repo.isPhanInReleased(pinId)) await repo.reopenReadyForPhanIn(pinId); // KTCankiemtra=1 & đã release → làm lại READY
           } catch (e) { console.error(`[erp-sync] ✗ KTCankiemtra lỗi (${p.maPhan}): ${e.message}`); }
-          if (inset && barcodeHskt) {
-            if (!insetGroups.has(barcodeHskt)) insetGroups.set(barcodeHskt, new Set());
-            insetGroups.get(barcodeHskt).add(pinId);
+          // Gom set theo (đợt ready, số nhóm Inset) — Inset là SỐ NHÓM, phạm vi trong 1 đợt ready.
+          const maDonReady = erpBarcode(p.r);
+          if (inset > 0 && maDonReady) {
+            const key = `${maDonReady}#${inset}`;
+            if (!insetGroups.has(key)) insetGroups.set(key, { maDonReady, inset, dotVaiIds: new Set(), pinIds: new Set() });
+            const g = insetGroups.get(key);
+            affectedDotVaiIds.forEach((id) => g.dotVaiIds.add(id));
+            g.pinIds.add(pinId);
           }
         }
       }
     }
     // Đợt vào READY → theo dõi dòng chảy.
     if (newDotVaiIds.length) await tracking.moveDotVaiTo(newDotVaiIds, 'READY', actorId);
-    // Auto gom set từ ERP: Inset=1 & cùng BarcodeHKT có ≥2 phần in → gom (idempotent theo ghi_chu).
-    for (const [barcodeHskt, pinSet] of insetGroups) {
-      if (pinSet.size < 2) continue;
-      try { await autoGomSetByHskt(barcodeHskt, [...pinSet], actorId); }
-      catch (e) { console.error(`[erp-sync] ✗ Auto gom set lỗi (HSKT ${barcodeHskt}): ${e.message}`); }
+    // Auto gom set từ ERP: cùng đợt ready & cùng Inset (>0) có ≥2 phần in → gom (idempotent theo ghi_chu).
+    for (const [key, g] of insetGroups) {
+      if (g.pinIds.size < 2) continue;
+      try { await autoGomSetByInset(g.maDonReady, g.inset, [...g.dotVaiIds], actorId); }
+      catch (e) { console.error(`[erp-sync] ✗ Auto gom set lỗi (${key}): ${e.message}`); }
     }
     const trangThai = errors.length && soMoi + soCapNhat === 0 ? 'LOI' : 'THANH_CONG';
     const notes = [];
@@ -367,4 +376,4 @@ async function rawData(logId) {
   return { chuoi_tho: text || null };
 }
 
-module.exports = { syncPhieuNhanVai, history, rawData, autoGomSetByHskt };
+module.exports = { syncPhieuNhanVai, history, rawData, autoGomSetByInset };
