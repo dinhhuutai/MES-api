@@ -7,7 +7,7 @@ async function listCandidates({ search = '', offset = 0, limit = 50 }) {
   const SEARCH = `($1 = '' OR pin.ma_phan ILIKE '%'||$1||'%' OR kh.ten_khach_hang ILIKE '%'||$1||'%'
                   OR mh.ma_hang ILIKE '%'||$1||'%' OR pin.mau_vai ILIKE '%'||$1||'%'
                   OR pin.kich_vai ILIKE '%'||$1||'%' OR pin.kich_phim ILIKE '%'||$1||'%'
-                  OR dv.ma_dot_vai ILIKE '%'||$1||'%')`;
+                  OR dv.ma_dot_vai ILIKE '%'||$1||'%' OR dv.barcode ILIKE '%'||$1||'%')`;
   const FROM = `
     FROM dot_vai_ve dv
     JOIN phan_in pin ON pin.id = dv.phan_in_id AND pin.dang_hoat_dong AND dv.trang_thai <> 'DA_HUY'
@@ -23,7 +23,7 @@ async function listCandidates({ search = '', offset = 0, limit = 50 }) {
                       WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT')
       AND ${SEARCH}`;
   const dataSql = `
-    SELECT dv.id AS dot_vai_id, dv.ma_dot_vai, dv.so_luong_vai_ve, dv.ngay_vai_ve, dv.han_giao_hang,
+    SELECT dv.id AS dot_vai_id, dv.ma_dot_vai, dv.barcode, dv.so_luong_vai_ve, dv.ngay_vai_ve, dv.han_giao_hang,
            pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.so_luong_don_hang,
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
            EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
