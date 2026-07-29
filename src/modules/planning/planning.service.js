@@ -811,10 +811,54 @@ async function listKeHoachTam({ search, page, limit, offset }) {
   return { items: rows, meta: buildMeta(page, limit, total) };
 }
 
+// KẾ HOẠCH TẠM CHO CẢ GOM SET: set chưa đủ QC thì KHÔNG release được (phải in chung 1 lệnh), nhưng
+// VẪN phải lập kế hoạch sớm được. Ở đây chỉ ghi kế hoạch tạm cho MỌI đợt vải trong set — không tạo lệnh,
+// không đụng tới set. Khi cả set Ready xong, xác nhận ở màn Kế hoạch tạm sẽ release nguyên set thành 1 lệnh.
+async function keHoachTamSet(setId, { chuyenId, ngayKeHoach, tgBdKh, tgKtKh }, actorId) {
+  if (!chuyenId) throw new AppError('Chọn chuyền sản xuất', { status: 422, errorCode: 'NO_CHUYEN' });
+  const set = await repo.getSetForRelease(setId);
+  if (!set) throw new AppError('Set không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  if (set.trang_thai !== 'MO') throw new AppError('Set không ở trạng thái mở', { status: 409, errorCode: 'NOT_OPEN' });
+  const members = await repo.getSetMembersForRelease(setId);
+  if (members.length === 0) throw new AppError('Set chưa có đợt vải', { status: 422, errorCode: 'EMPTY' });
+  if (members.some((m) => m.da_release)) {
+    throw new AppError('Có đợt vải trong set đã được release', { status: 409, errorCode: 'ALREADY_RELEASED' });
+  }
+  for (const m of members) {
+    await repo.upsertKeHoachTam({
+      dotVaiId: m.dot_vai_id, phanInId: m.phan_in_id, chuyenId, ngayKeHoach,
+      tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null, soLuong: m.so_luong,
+    }, actorId);
+  }
+  sockets.emit('dashboard:refresh', {});
+  return { set_id: setId, ma_set: set.ma_set, ke_hoach_tam_count: members.length, chi_tam: true };
+}
+
 async function confirmKeHoachTam(id, actorId) {
   const kt = await repo.getKeHoachTam(id);
   if (!kt) throw new AppError('Kế hoạch tạm không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   if (!kt.qc_done) throw new AppError('Phần in chưa Ready xong (chưa có xác nhận QA) — chưa thể Release 1', { status: 409, errorCode: 'NOT_READY' });
+
+  // Đợt thuộc GOM SET đang mở → phải release CẢ SET thành 1 lệnh chung (không tách lẻ từng đợt).
+  const gs = await repo.getOpenSetOfDotVai(kt.dot_vai_ve_id);
+  if (gs) {
+    if (gs.so_chua_ready > 0) {
+      throw new AppError(`Đợt vải thuộc ${gs.ma_set} — còn ${gs.so_chua_ready} đợt trong set chưa Ready, phải chờ cả set xong mới release chung`,
+        { status: 409, errorCode: 'SET_NOT_READY' });
+    }
+    // Lấy danh sách đợt TRƯỚC khi release (sau khi release set đổi trạng thái, khó truy lại).
+    const members = await repo.getSetMembersForRelease(gs.id);
+    const ids = members.length ? members.map((m) => m.dot_vai_id) : [kt.dot_vai_ve_id];
+    const res = await releaseSet(gs.id, {
+      chuyenId: kt.chuyen_id, ngayKeHoach: kt.ngay_ke_hoach,
+    }, actorId);
+    await repo.deleteKeHoachTamByDotVai(ids);
+    await repo.logKeHoachTam('XAC_NHAN_KE_HOACH_TAM', kt.dot_vai_ve_id, {
+      chuyen_id: kt.chuyen_id, ngay_ke_hoach: kt.ngay_ke_hoach, so_luong: kt.so_luong,
+      ma_set: gs.ma_set, ma_lenh: (res && (res.ma_lenh_san_xuat || res.lenh?.ma_lenh_san_xuat)) || null,
+    }, actorId);
+    return { ...res, ke_hoach_tam_id: id, ma_set: gs.ma_set };
+  }
   // Tái dùng createRelease1 với chuyền/giờ/ngày đã lưu (giờ phần in đã QC → đi đường release thật).
   const res = await createRelease1({
     dotVaiIds: [kt.dot_vai_ve_id], chuyenId: kt.chuyen_id,
@@ -1052,7 +1096,7 @@ module.exports = {
   listRelease2Candidates, approveRelease2, approveRelease2Batch, skipTestRun, testRunHistory,
   listReplanCandidates, replan, replanBatch, planHistory,
   listGiaCong, confirmGiaCongToOqc, giaCongHistory,
-  listKeHoachTam, confirmKeHoachTam, updateKeHoachTam, deleteKeHoachTam, keHoachTamHistory, keHoachTamDone,
+  listKeHoachTam, keHoachTamSet, confirmKeHoachTam, updateKeHoachTam, deleteKeHoachTam, keHoachTamHistory, keHoachTamDone,
   listCancelableLenh, rollbackLenh, returnTestRunToRelease1,
   release1Done, release2Done, replanDone, testCnspDone, testQaDone,
   releaseList,

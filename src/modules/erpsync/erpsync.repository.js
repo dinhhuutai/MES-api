@@ -296,8 +296,47 @@ async function setDotVaiKtCanKiemTra(dotVaiIds, val) {
 // - Chưa có HSKT active theo barcode → tạo mới (phiên bản 1) + ghi lịch sử TAO.
 // - Đã có, Pain khác → tạo PHIÊN BẢN MỚI (deactivate bản cũ + relink phần in) + lịch sử.
 // - Link phần in vào HSKT active (junction hskt_phan_in).
-async function upsertHsktForPin({ pinId, barcodeHskt, pain, inset, maDonReady, actorId = null }) {
-  if (!barcodeHskt) return null;
+// ERP có dòng gửi `Pain` nhưng THIẾU `BarcodeHKT` (thực tế 29/07: 15/130 dòng) — trước đây bỏ qua hẳn
+// ⇒ phần in đó KHÔNG có HSKT ⇒ mọi màn hiện "Phương án in = —". Nay vẫn tạo HSKT (barcode NULL, ma_hskt
+// = code phần) để giữ phương án in; không quét được bằng mã vạch (không có) và KHÔNG gom set (cần barcode).
+// Khi ERP gửi barcode thật về sau, bản không-barcode bị vô hiệu hóa để không tồn tại 2 HSKT active.
+async function upsertHsktNoBarcode(client, { pinId, maPhan, pain, inset, actorId }) {
+  const { rows: cur } = await client.query(
+    `SELECT h.id, h.phuong_an_in FROM hskt_phan_in hp JOIN ho_so_ky_thuat h ON h.id = hp.hskt_id
+      WHERE hp.phan_in_id = $1 AND hp.dang_hoat_dong AND h.dang_hoat_dong AND h.barcode_hskt IS NULL LIMIT 1`,
+    [pinId]
+  );
+  if (cur.length) {
+    await client.query(
+      `UPDATE ho_so_ky_thuat SET phuong_an_in = COALESCE($2, phuong_an_in), inset = COALESCE($3, inset),
+         updated_date = now() WHERE id = $1`,
+      [cur[0].id, pain ?? null, inset ?? null]
+    );
+    return cur[0].id;
+  }
+  const ins = await client.query(
+    `INSERT INTO ho_so_ky_thuat (barcode_hskt, ma_hskt, phuong_an_in, inset, phien_ban, dang_hoat_dong, created_by)
+     VALUES (NULL,$1,$2,$3,1,true,$4) RETURNING id`,
+    [maPhan || null, pain ?? null, inset ?? null, actorId]
+  );
+  const id = ins.rows[0].id;
+  await client.query(
+    `INSERT INTO hskt_phan_in (hskt_id, phan_in_id, created_by) VALUES ($1,$2,$3)
+     ON CONFLICT (hskt_id, phan_in_id) DO UPDATE SET dang_hoat_dong=true`,
+    [id, pinId, actorId]
+  );
+  await client.query(
+    `INSERT INTO lich_su_hskt (hskt_id, phan_in_id, hanh_dong, chi_tiet, phien_ban, nguoi_id) VALUES ($1,$2,'TAO',$3,1,$4)`,
+    [id, pinId, 'Tạo HSKT từ ERP (ERP thiếu BarcodeHKT — chỉ lưu phương án in)', actorId]
+  );
+  return id;
+}
+
+async function upsertHsktForPin({ pinId, barcodeHskt, pain, inset, maDonReady, maPhan, actorId = null }) {
+  if (!barcodeHskt) {
+    if (pain == null) return null; // không có gì để lưu
+    return withTransaction((client) => upsertHsktNoBarcode(client, { pinId, maPhan, pain, inset, actorId }));
+  }
   return withTransaction(async (client) => {
     const { rows: act } = await client.query(
       'SELECT id, phuong_an_in, phien_ban FROM ho_so_ky_thuat WHERE barcode_hskt=$1 AND dang_hoat_dong=true LIMIT 1',
@@ -345,6 +384,14 @@ async function upsertHsktForPin({ pinId, barcodeHskt, pain, inset, maDonReady, a
     await client.query(
       `INSERT INTO hskt_phan_in (hskt_id, phan_in_id, created_by) VALUES ($1,$2,$3) ON CONFLICT (hskt_id, phan_in_id) DO UPDATE SET dang_hoat_dong=true`,
       [hsktId, pinId, actorId]
+    );
+    // Đã có HSKT thật (có barcode) → vô hiệu hóa bản tạm không-barcode của phần in này (nếu có),
+    // để `activeHsktOfPhanIn`/candidate không bắt nhầm bản tạm.
+    await client.query(
+      `UPDATE ho_so_ky_thuat SET dang_hoat_dong=false, updated_date=now()
+        WHERE barcode_hskt IS NULL AND dang_hoat_dong
+          AND id IN (SELECT hskt_id FROM hskt_phan_in WHERE phan_in_id = $1)`,
+      [pinId]
     );
     return hsktId;
   });

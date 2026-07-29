@@ -310,7 +310,8 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
         const pain = erpPain(p.r);
         const inset = erpInset(p.r);
         const ktCan = erpKtCanKiemTra(p.r);
-        try { await repo.upsertHsktForPin({ pinId, barcodeHskt, pain, inset, maDonReady: erpBarcode(p.r), actorId }); }
+        // `maPhan` để đặt tên HSKT khi ERP thiếu BarcodeHKT (vẫn giữ được phương án in).
+        try { await repo.upsertHsktForPin({ pinId, barcodeHskt, pain, inset, maDonReady: erpBarcode(p.r), maPhan: p.maPhan, actorId }); }
         catch (e) { console.error(`[erp-sync] ✗ HSKT lỗi (${p.maPhan}): ${e.message}`); }
         try { if (ktCan != null) await repo.setDotVaiKtCanKiemTra(affectedDotVaiIds, ktCan); }
         catch (e) { console.error(`[erp-sync] ✗ kt_can_kiem_tra lỗi: ${e.message}`); }

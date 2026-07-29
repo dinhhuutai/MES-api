@@ -130,6 +130,10 @@ const keHoachTamList = asyncHandler(async (req, res) => {
   return ok(res, await service.listKeHoachTam({ search: req.query.search || '', page, limit, offset }));
 });
 
+// Lập kế hoạch tạm cho cả gom set (set chưa đủ Ready — chưa release được nhưng vẫn lên kế hoạch trước).
+const keHoachTamSet = asyncHandler(async (req, res) =>
+  ok(res, await service.keHoachTamSet(req.params.setId, req.body, req.user.id), 'Đã lưu kế hoạch tạm cho set'));
+
 const keHoachTamConfirm = asyncHandler(async (req, res) =>
   ok(res, await service.confirmKeHoachTam(req.params.id, req.user.id), 'Đã xác nhận Release 1 từ kế hoạch tạm'));
 
@@ -186,7 +190,7 @@ module.exports = {
   release2Candidates, approveRelease2, approveRelease2Batch, skipTestRun, testRunHistory,
   replanCandidates, replan, replanBatch, planHistory,
   giaCongList, giaCongToOqc, giaCongHistory,
-  keHoachTamList, keHoachTamConfirm, keHoachTamUpdate, keHoachTamDelete, keHoachTamHistory, keHoachTamDone,
+  keHoachTamList, keHoachTamSet, keHoachTamConfirm, keHoachTamUpdate, keHoachTamDelete, keHoachTamHistory, keHoachTamDone,
   cancelableLenh, cancelLenh, returnTestRun,
   release1Done, release2Done, replanDone, testCnspDone, testQaDone,
 };

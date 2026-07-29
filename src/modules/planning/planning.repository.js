@@ -666,6 +666,8 @@ async function listKeHoachTamRows({ search = '', offset = 0, limit = 200 }) {
            pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in, dv.barcode,
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
            ${hsktCols('pin.id')},
+           (SELECT gs.ma_set FROM gom_set_dot_vai gsd JOIN gom_set gs ON gs.id = gsd.gom_set_id
+             WHERE gsd.dot_vai_ve_id = dv.id AND gs.trang_thai = 'MO' LIMIT 1) AS ma_set,
            EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
                    WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT') AS qc_done
     ${FROM}
@@ -677,6 +679,24 @@ async function listKeHoachTamRows({ search = '', offset = 0, limit = 200 }) {
     query(countSql.replace(/\s+/g, ' '), [search]),
   ]);
   return { rows: data.rows, total: count.rows[0].total };
+}
+
+// Gom set ĐANG MỞ chứa đợt vải này (nếu có) + đã đủ QC chưa. Dùng để: (1) hiện badge "thuộc set" ở
+// màn Kế hoạch tạm; (2) khi xác nhận Release 1 thì release CẢ SET thành 1 lệnh chung thay vì tách lẻ.
+async function getOpenSetOfDotVai(dotVaiId) {
+  const { rows } = await query(
+    `SELECT gs.id, gs.ma_set,
+            (SELECT count(*) FROM gom_set_dot_vai d WHERE d.gom_set_id = gs.id)::int AS so_dot_vai,
+            (SELECT count(*) FROM gom_set_dot_vai d JOIN dot_vai_ve dv2 ON dv2.id = d.dot_vai_ve_id
+               JOIN phan_in p2 ON p2.id = dv2.phan_in_id
+              WHERE d.gom_set_id = gs.id AND NOT EXISTS (
+                SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
+                 WHERE kq.phan_in_id = p2.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT'))::int AS so_chua_ready
+       FROM gom_set_dot_vai gsd JOIN gom_set gs ON gs.id = gsd.gom_set_id
+      WHERE gsd.dot_vai_ve_id = $1 AND gs.trang_thai = 'MO' LIMIT 1`.replace(/\s+/g, ' '),
+    [dotVaiId]
+  );
+  return rows[0] || null;
 }
 
 async function getKeHoachTam(id) {
@@ -1134,7 +1154,7 @@ module.exports = {
   testRunHistoryByDate, testRunsByLenh,
   listReplanCandidates, getLenhForReplan, updateLenhPlan, logPlanChange, planHistoryByDate,
   listGiaCongLenh, getGiaCongLenh, listGiaCongHistory,
-  upsertKeHoachTam, listKeHoachTamRows, getKeHoachTam, updateKeHoachTam, deleteKeHoachTam, deleteKeHoachTamByDotVai,
+  upsertKeHoachTam, listKeHoachTamRows, getKeHoachTam, getOpenSetOfDotVai, updateKeHoachTam, deleteKeHoachTam, deleteKeHoachTamByDotVai,
   logKeHoachTam, keHoachTamHistoryByDate, keHoachTamDoneByDate,
   listCancelableLenh, getLenhForCancel, cancelLenhOrder, cancelReadyQcForDotVai, logLenhCancel,
   listReleasableSets, getOpenSetMembers, getSetForRelease, getSetMembersForRelease, markSetReleased, logGomSetReleased,
