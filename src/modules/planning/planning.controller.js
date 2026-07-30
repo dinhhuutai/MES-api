@@ -166,9 +166,11 @@ const cancelableLenh = asyncHandler(async (req, res) => {
 const cancelLenh = asyncHandler(async (req, res) =>
   ok(res, await service.rollbackLenh(req.params.lenhId, req.body, req.user.id), 'Đã hoàn tác chuyển trạm'));
 
-// Test Run QC trả về Release 1 (hủy lệnh + lý do).
-const returnTestRun = asyncHandler(async (req, res) =>
-  ok(res, await service.returnTestRunToRelease1(req.params.lenhId, req.body, req.user.id), 'Đã trả về Release 1'));
+// Test Run không đạt → trả về KỸ THUẬT (READY): chọn mục rớt (Khuôn/Film/Mực) + lý do. GIỮ NGUYÊN lệnh
+// → QC xác nhận READY xong là đợt vải nhảy thẳng lại Test Run, không phải Release 1 lại.
+const returnTestRunToReady = asyncHandler(async (req, res) =>
+  ok(res, await service.returnTestRunToReady(req.params.lenhId, req.body, req.user.id),
+    'Đã trả về Kỹ thuật — phần in quay lại READY'));
 
 const today = () => new Date().toISOString().slice(0, 10);
 const release1Done = asyncHandler(async (req, res) => ok(res, await service.release1Done(req.query.date || today())));
@@ -191,6 +193,6 @@ module.exports = {
   replanCandidates, replan, replanBatch, planHistory,
   giaCongList, giaCongToOqc, giaCongHistory,
   keHoachTamList, keHoachTamSet, keHoachTamConfirm, keHoachTamUpdate, keHoachTamDelete, keHoachTamHistory, keHoachTamDone,
-  cancelableLenh, cancelLenh, returnTestRun,
+  cancelableLenh, cancelLenh, returnTestRunToReady,
   release1Done, release2Done, replanDone, testCnspDone, testQaDone,
 };

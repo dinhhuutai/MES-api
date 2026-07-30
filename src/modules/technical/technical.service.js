@@ -110,6 +110,8 @@ async function listCandidates({ search, page, limit, offset, onlyQcReady = false
   const rm = await qaRepo.activeReturnsMap('READY', rows.map((r) => r.id));
   // ... và bị KẾ HOẠCH trả về từ Release 1 (loai='RELEASE1') — hiện lý do ngay tại READY.
   const rkh = await qaRepo.activeReturnsMap('RELEASE1', rows.map((r) => r.id));
+  // ... và bị TEST RUN (QA) trả về (loai='TEST_RUN_KT') — kèm checklist mục rớt (Khuôn/Film/Mực).
+  const rtt = await qaRepo.activeReturnsMap('TEST_RUN_KT', rows.map((r) => r.id));
   // Người + giờ xác nhận từng mục KT (query nhẹ theo PK) → phục vụ bảng/Excel màn READY.
   const ci = await repo.confirmInfoByPins(rows.map((r) => r.id));
   const CI_KEY = { KHUON: 'khuon', FILM: 'film', MUC: 'muc' };
@@ -127,6 +129,7 @@ async function listCandidates({ search, page, limit, offset, onlyQcReady = false
       tra_ve: rm[r.id] || null,
       tra_ve_ly_do: rm[r.id]?.ly_do || null, // giữ tương thích cũ
       tra_ve_kh: rkh[r.id] || null,          // Kế hoạch (Release 1) trả về Kỹ thuật
+      tra_ve_test: rtt[r.id] || null,        // Test Run (QA) trả về Kỹ thuật — kèm mục rớt
       film_nguoi: c.film?.nguoi || null, film_tg: c.film?.tg || null,
       khuon_nguoi: c.khuon?.nguoi || null, khuon_tg: c.khuon?.tg || null,
       muc_nguoi: c.muc?.nguoi || null, muc_tg: c.muc?.tg || null,
@@ -184,15 +187,17 @@ async function getDetail(phanInId) {
   let readyTgVao = null;
   try { readyTgVao = await repo.getReadyEntryTime(phanInId); } catch { readyTgVao = null; }
   // Lý do bị trả về (QC READY & Kế hoạch/Release 1) — hiện banner trong panel READY.
-  const [rmQc, rmKh] = await Promise.all([
+  const [rmQc, rmKh, rmTest] = await Promise.all([
     qaRepo.activeReturnsMap('READY', [phanInId]),
     qaRepo.activeReturnsMap('RELEASE1', [phanInId]),
+    qaRepo.activeReturnsMap('TEST_RUN_KT', [phanInId]),
   ]);
   return {
     phan_in: phanIn,
     ready_tg_vao: readyTgVao,
     tra_ve: rmQc[phanInId] || null,
     tra_ve_kh: rmKh[phanInId] || null,
+    tra_ve_test: rmTest[phanInId] || null,
     checkpoints: results.map((r) => ({ ...r, options: optionsFor(r.ma_checkpoint, r.cau_hinh_json) })),
     state: buildState(results),
   };
@@ -348,9 +353,26 @@ async function confirmQC(phanInId, actorId) {
     });
     await repo.insertStatusLog(client, { ketQuaId: kqId, trangThaiMoiId: datId, nguoiId: actorId, lyDo: 'QC xác nhận — READY hoàn thành' });
   });
-  await qaRepo.resolveReturns('READY', phanInId);    // QC đạt lại → tắt cờ "bị QC trả về"
-  await qaRepo.resolveReturns('RELEASE1', phanInId); // ... và cờ "Kế hoạch trả về Kỹ thuật"
-  sockets.emit('ready:confirmed', { phanInId, buoc: 'QC', ready: true });
+  await qaRepo.resolveReturns('READY', phanInId);      // QC đạt lại → tắt cờ "bị QC trả về"
+  await qaRepo.resolveReturns('RELEASE1', phanInId);   // ... và cờ "Kế hoạch trả về Kỹ thuật"
+  await qaRepo.resolveReturns('TEST_RUN_KT', phanInId); // ... và cờ "Test Run trả về Kỹ thuật"
+
+  // TEST RUN TRẢ VỀ: lệnh được GIỮ NGUYÊN nên làm lại xong là ĐI THẲNG LẠI TEST RUN — Kế hoạch KHÔNG
+  // phải Release 1 lần nữa. (Lệnh vẫn RELEASE_1 + kết quả test đã bị hủy ⇒ tự hiện lại ở màn Test Run.)
+  let veTestRun = null;
+  try {
+    const l = await repo.lenhChoKyThuatByPhanIn(phanInId);
+    if (l && l.lenh_id) {
+      const dvIds = l.dot_vai_ids || [];
+      await qaRepo.resolveReturnsMany('TEST_RUN', dvIds);
+      if (dvIds.length) await tracking.moveDotVaiTo(dvIds, 'TEST_RUN', actorId);
+      veTestRun = l.lenh_id;
+    }
+  } catch (e) {
+    console.error(`[ready-qc] ✗ Đưa lệnh về Test Run lỗi (${phanInId}): ${e.message}`);
+  }
+  sockets.emit('ready:confirmed', { phanInId, buoc: 'QC', ready: true, ve_test_run: veTestRun });
+  if (veTestRun) sockets.emit('workflow:updated', { lenhId: veTestRun, stage: 'TEST_RUN' });
   sockets.emit('dashboard:refresh', {});
   return getDetail(phanInId);
 }

@@ -49,11 +49,19 @@ function dotStageCase(a) {
   const temEx = (cond) => `EXISTS(SELECT 1 FROM phieu_san_xuat ps JOIN tem t ON t.phieu_san_xuat_id=ps.id WHERE ps.lenh_san_xuat_id=${a}.lenh_id AND t.trang_thai<>'HUY' AND ${cond})`;
   const kqPin = (ma) => `EXISTS(SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id=k.checkpoint_id WHERE k.phan_in_id=${a}.phan_in_id AND c.ma_checkpoint='${ma}' AND k.trang_thai='DAT')`;
   const kqLenh = (ma) => `EXISTS(SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id=k.checkpoint_id WHERE k.lenh_san_xuat_id=${a}.lenh_id AND c.ma_checkpoint='${ma}' AND k.trang_thai='DAT')`;
+  // ⚠ Nhánh 2 (RELEASE_1 + chưa có phiếu + phần in CHƯA QC) = TEST RUN KHÔNG ĐẠT, QA trả về Kỹ thuật:
+  // lệnh được GIỮ NGUYÊN (để QC xong nhảy lại Test Run) nên đợt vẫn có lenh_id — nếu không có nhánh này,
+  // dashboard/chip sẽ đếm phần in ở Test Run trong khi thực tế nó đang nằm ở READY chờ làm lại.
+  // Bất biến: release luôn đòi QC xong ⇒ QC bị hủy + chưa in tem = đang làm lại READY.
   return `CASE
       WHEN ${a}.lenh_id IS NULL THEN
         CASE WHEN ${kqPin('QC_XAC_NHAN')} THEN 'RELEASE_1'
              WHEN ${techDoneSqlByPin(`${a}.phan_in_id`)} THEN 'READY_QA'
              ELSE 'READY_KT' END
+      WHEN ${a}.lenh_tt='RELEASE_1'
+           AND NOT EXISTS(SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id=${a}.lenh_id)
+           AND NOT ${kqPin('QC_XAC_NHAN')} THEN
+        CASE WHEN ${techDoneSqlByPin(`${a}.phan_in_id`)} THEN 'READY_QA' ELSE 'READY_KT' END
       WHEN ${a}.lenh_tt='GIA_CONG' THEN 'GIA_CONG'
       WHEN EXISTS(SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id=${a}.lenh_id AND ps.trang_thai='DANG_CHAY') THEN 'SAN_XUAT'
       WHEN ${temEx("t.trang_thai IN ('IN','DANG_PHOI')")} THEN 'CHO_KHO'

@@ -556,6 +556,15 @@ async function releaseSet(setId, { chuyenId, soLuongRelease, ngayKeHoach }, acto
 async function listTestRunCandidates({ search, page, limit, offset }) {
   const { byMa } = await loadTestConfig();
   const rows = await repo.listTestRunCandidates({ cnspId: byMa[CNSP_CP].id, qaId: byMa[QA_CP].id, search, offset, limit });
+  // Lệnh đang CHỜ KỸ THUẬT (đã bị QA trả về READY, `cho_ky_thuat` từ repo): gắn lý do + mục rớt để FE
+  // hiện badge "Chờ kỹ thuật làm lại". Lấy theo đợt vải của lệnh (qc_tra_ve loai='TEST_RUN').
+  const choKt = rows.filter((r) => r.cho_ky_thuat);
+  if (choKt.length) {
+    const perLenh = await Promise.all(choKt.map((r) => tracking.dotVaiFromLenh(r.id)));
+    const allDv = [...new Set(perLenh.flat())];
+    const rm = await qaRepo.activeReturnsMap('TEST_RUN', allDv);
+    choKt.forEach((r, i) => { r.tra_ve = (perLenh[i] || []).map((id) => rm[id]).find(Boolean) || null; });
+  }
   return { items: rows, meta: buildMeta(page, limit, rows.length) };
 }
 
@@ -563,16 +572,21 @@ async function getLenhDetail(lenhId) {
   const { byMa } = await loadTestConfig();
   const lenh = await repo.getLenhBasic(lenhId);
   if (!lenh) throw new AppError('Lệnh sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
-  const [dotVai, testRuns, status] = await Promise.all([
+  const [dotVai, testRuns, status, kt] = await Promise.all([
     repo.getLenhDotVai(lenhId),
     repo.getTestRuns(lenhId),
     repo.getLenhTestStatus(lenhId, byMa[CNSP_CP].id, byMa[QA_CP].id),
+    repo.lenhChoKyThuat(lenhId), // đã bị QA trả về READY → panel khóa thao tác test
   ]);
-  return { lenh, dot_vai: dotVai, test_runs: testRuns, state: status };
+  return {
+    lenh: { ...lenh, cho_ky_thuat: kt ? kt.cho_ky_thuat === true : false },
+    dot_vai: dotVai, test_runs: testRuns, state: status,
+  };
 }
 
 async function recordTestRun(lenhId, body, actorId) {
   await repo.getLenhBasic(lenhId);
+  await assertKhongChoKyThuat(lenhId);
   await repo.insertTestRun(lenhId, body, actorId);
   sockets.emit('workflow:updated', { lenhId, stage: 'TEST_RUN' });
   return getLenhDetail(lenhId);
@@ -585,6 +599,7 @@ async function confirmTest(lenhId, which, actorId, extra = {}) {
   if (lenh.trang_thai !== 'RELEASE_1') {
     throw new AppError('Đợt không ở trạng thái Test Run', { status: 409, errorCode: 'WRONG_STAGE' });
   }
+  await assertKhongChoKyThuat(lenhId); // đã bị QA trả về READY → chờ kỹ thuật/QC làm lại xong mới test
   const datId = await wf.getTrangThaiId('DAT');
 
   if (which === 'qa') {
@@ -704,6 +719,7 @@ async function skipTestRun(lenhId, actorId) {
   if (!lenh) throw new AppError('Đợt sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   if (lenh.trang_thai === 'RELEASE_2') throw new AppError('Đợt đã ở Release 2 (chờ sản xuất)', { status: 409, errorCode: 'ALREADY' });
   if (lenh.trang_thai !== 'RELEASE_1') throw new AppError('Chỉ bỏ Test Run khi đợt đang ở Test Run', { status: 409, errorCode: 'WRONG_STAGE' });
+  await assertKhongChoKyThuat(lenhId);
   await withTransaction(async (client) => {
     await repo.setLenhTrangThai(client, lenhId, 'RELEASE_2', actorId);
     await repo.logPlanChange(client, lenhId, 'RELEASE_2',
@@ -782,21 +798,72 @@ async function rollbackLenh(lenhId, { target, lyDo }, actorId) {
   return { id: lenhId, target: TARGET, dot_vai: dotVaiIds.length, tu_set: lenh.tu_set === true };
 }
 
-// Test Run QC TRẢ VỀ Release 1: hủy lệnh (đợt vải về pool Release 1) + đánh dấu QC trả về (lý do bắt buộc).
-async function returnTestRunToRelease1(lenhId, { lyDo }, actorId) {
+// ─── TEST RUN KHÔNG ĐẠT → TRẢ VỀ KỸ THUẬT (READY) ────────────────────────────
+// QA chọn mục rớt (Khuôn/Film/Mực) → đúng mục đó phải xác nhận lại; QC xác nhận xong thì đợt vải
+// nhảy THẲNG về Test Run (technical.confirmQC), Kế hoạch KHÔNG phải Release 1 lại.
+// ⇒ Vì vậy **GIỮ NGUYÊN lệnh** (khác `rollbackLenh` — hàm đó hủy lệnh, đợt vải rơi về pool Release 1).
+const TECH_ITEMS = ['KHUON', 'FILM', 'MUC'];
+
+// Chuẩn hóa mục rớt + LUẬT LAN TRUYỀN: làm lại FILM ⇒ phải chụp lại KHUÔN (không ngược lại).
+// Đặt ở service để gọi API trực tiếp cũng không lách được.
+function normalizeTechItems(checklists) {
+  const set = new Set((Array.isArray(checklists) ? checklists : [])
+    .map((m) => String(m || '').trim().toUpperCase())
+    .filter((m) => TECH_ITEMS.includes(m)));
+  if (set.has('FILM')) set.add('KHUON');
+  return TECH_ITEMS.filter((m) => set.has(m)); // giữ thứ tự Khuôn → Film → Mực
+}
+
+async function returnTestRunToReady(lenhId, { checklists, lyDo }, actorId) {
   const reason = (lyDo || '').trim();
-  if (!reason) throw new AppError('Nhập lý do trả về Release 1', { status: 422, errorCode: 'NO_LY_DO' });
+  if (!reason) throw new AppError('Nhập lý do trả về Kỹ thuật', { status: 422, errorCode: 'NO_LY_DO' });
+  const chosen = normalizeTechItems(checklists);
+  if (chosen.length === 0) {
+    throw new AppError('Chọn ít nhất 1 mục không đạt (Khuôn / Film / Mực)', { status: 422, errorCode: 'NO_ITEM' });
+  }
   const lenh = await repo.getLenhBasic(lenhId);
   if (!lenh) throw new AppError('Lệnh sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   if (lenh.trang_thai !== 'RELEASE_1') {
-    throw new AppError('Chỉ trả về Release 1 khi lệnh đang ở Test Run', { status: 409, errorCode: 'WRONG_STAGE' });
+    throw new AppError('Chỉ trả về Kỹ thuật khi lệnh đang ở Test Run', { status: 409, errorCode: 'WRONG_STAGE' });
+  }
+  const info = await repo.lenhChoKyThuat(lenhId);
+  if (info && info.co_phieu) {
+    throw new AppError('Lệnh đã bắt đầu sản xuất (đã in tem) — không trả về Kỹ thuật được', { status: 409, errorCode: 'HAS_PHIEU' });
   }
   const dotVaiIds = await tracking.dotVaiFromLenh(lenhId);
-  await rollbackLenh(lenhId, { target: 'RELEASE_1', lyDo: reason }, actorId); // hủy lệnh → đợt vải về pool
-  for (const dvId of dotVaiIds) {
-    await qaRepo.insertQcTraVe({ loai: 'TEST_RUN', dotVaiId: dvId, lenhId, lyDo: reason }, actorId);
+  const pinIds = await repo.phanInIdsByLenh(lenhId);
+
+  await withTransaction(async (client) => {
+    await repo.cancelTestResults(client, lenhId, actorId);                        // phải test lại
+    await repo.cancelReadyItemsByPhanIn(client, pinIds, chosen, actorId);         // mục rớt → xác nhận lại
+    await repo.cancelReadyQcForDotVai(client, dotVaiIds, actorId);                // QC phải duyệt lại
+  });
+
+  const checklistList = chosen.join(',');
+  // 2 loại: TEST_RUN_KT (mức phần in) → badge ở READY/QC READY · TEST_RUN (mức đợt vải) → Lịch sử QC trả về
+  // + badge "Chờ kỹ thuật làm lại" ở màn Test Run.
+  for (const pinId of pinIds) {
+    await qaRepo.insertQcTraVe({ loai: 'TEST_RUN_KT', phanInId: pinId, lenhId, checklistList, lyDo: reason }, actorId);
   }
-  return { lenh_id: lenhId, dot_vai: dotVaiIds.length };
+  for (const dvId of dotVaiIds) {
+    await qaRepo.insertQcTraVe({ loai: 'TEST_RUN', dotVaiId: dvId, lenhId, checklistList, lyDo: reason }, actorId);
+  }
+  await repo.logPlanChange(null, lenhId, 'TRA_VE_KY_THUAT_TEST_RUN',
+    { trang_thai: 'RELEASE_1' },
+    { ma_lenh: lenh.ma_lenh_san_xuat, checklists: chosen, ly_do: reason, giu_lenh: true }, actorId);
+  await tracking.moveDotVaiTo(dotVaiIds, 'READY', actorId);
+  sockets.emit('workflow:updated', { lenhId, stage: 'READY', traVe: true });
+  sockets.emit('dashboard:refresh', {});
+  return { lenh_id: lenhId, dot_vai: dotVaiIds.length, phan_in: pinIds.length, checklists: chosen };
+}
+
+// Chặn mọi thao tác test khi lệnh đang chờ kỹ thuật làm lại (đã bị QA trả về READY).
+async function assertKhongChoKyThuat(lenhId) {
+  const info = await repo.lenhChoKyThuat(lenhId);
+  if (info && info.cho_ky_thuat) {
+    throw new AppError('Lệnh đang chờ kỹ thuật làm lại (READY) — chưa test được',
+      { status: 409, errorCode: 'CHO_KY_THUAT' });
+  }
 }
 
 // ----- LẬP KẾ HOẠCH LẠI -----
@@ -1093,11 +1160,12 @@ module.exports = {
   listRelease1Candidates, autoPlanCandidates, createRelease1, traVeKyThuat, createDotSanXuat, release1History, listReleaseSets, releaseSet,
   listGopCandidates, gopDotVai, gopHistory,
   listTestRunCandidates, getLenhDetail, recordTestRun, confirmTest, confirmTestBatch, cancelTest,
+  returnTestRunToReady,
   listRelease2Candidates, approveRelease2, approveRelease2Batch, skipTestRun, testRunHistory,
   listReplanCandidates, replan, replanBatch, planHistory,
   listGiaCong, confirmGiaCongToOqc, giaCongHistory,
   listKeHoachTam, keHoachTamSet, confirmKeHoachTam, updateKeHoachTam, deleteKeHoachTam, keHoachTamHistory, keHoachTamDone,
-  listCancelableLenh, rollbackLenh, returnTestRunToRelease1,
+  listCancelableLenh, rollbackLenh,
   release1Done, release2Done, replanDone, testCnspDone, testQaDone,
   releaseList,
   listCaTuan, upsertCaTuan,

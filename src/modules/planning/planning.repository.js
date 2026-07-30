@@ -439,6 +439,15 @@ const PHAN_INFO_LATERAL = `
     LIMIT 1
   ) info ON true`;
 
+// Lệnh ĐANG CHỜ KỸ THUẬT LÀM LẠI: Test Run không đạt → QA trả về READY nhưng lệnh được GIỮ NGUYÊN
+// (không hủy, không phải Release 1 lại). Nhận diện = còn phần in trong lệnh CHƯA có QC_XAC_NHAN đạt.
+// Bất biến: release luôn đòi QC xong ⇒ QC bị hủy = đang làm lại kỹ thuật.
+const CHO_KY_THUAT_SQL = (lenhCol) => `EXISTS (
+  SELECT 1 FROM lenh_sx_dot_vai lk JOIN dot_vai_ve dk ON dk.id = lk.dot_vai_ve_id
+   WHERE lk.lenh_san_xuat_id = ${lenhCol}
+     AND NOT EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cq ON cq.id = kq.checkpoint_id
+                      WHERE kq.phan_in_id = dk.phan_in_id AND cq.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT'))`;
+
 function lenhListSql(extraWhere) {
   return `
     SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.trang_thai, ls.ngay_ke_hoach,
@@ -453,7 +462,8 @@ function lenhListSql(extraWhere) {
            EXISTS (SELECT 1 FROM ket_qua_checkpoint k WHERE k.lenh_san_xuat_id = ls.id AND k.checkpoint_id = $2 AND k.trang_thai='DAT') AS qa_done,
            (SELECT count(*) FROM test_run tr WHERE tr.lenh_san_xuat_id = ls.id)::int AS so_lan_test,
            (SELECT count(*) FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id)::int AS so_dot_vai,
-           (SELECT count(DISTINCT dv.phan_in_id) FROM lenh_sx_dot_vai lsd2 JOIN dot_vai_ve dv ON dv.id = lsd2.dot_vai_ve_id WHERE lsd2.lenh_san_xuat_id = ls.id)::int AS so_phan_in
+           (SELECT count(DISTINCT dv.phan_in_id) FROM lenh_sx_dot_vai lsd2 JOIN dot_vai_ve dv ON dv.id = lsd2.dot_vai_ve_id WHERE lsd2.lenh_san_xuat_id = ls.id)::int AS so_phan_in,
+           ${CHO_KY_THUAT_SQL('ls.id')} AS cho_ky_thuat
     FROM lenh_san_xuat ls
     LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
     ${PHAN_INFO_LATERAL}
@@ -798,6 +808,56 @@ async function cancelReadyQcForDotVai(client, dotVaiIds, actorId) {
        AND phan_in_id IN (SELECT DISTINCT phan_in_id FROM dot_vai_ve WHERE id = ANY($1::uuid[]))`,
     [dotVaiIds, actorId]
   );
+}
+
+// ─── TEST RUN KHÔNG ĐẠT → TRẢ VỀ READY (GIỮ LỆNH) ────────────────────────────
+// Khác `rollbackLenh`: KHÔNG hủy lệnh, KHÔNG bỏ junction, KHÔNG mở lại gom set — để khi kỹ thuật/QC
+// làm lại xong thì đợt vải nhảy THẲNG về Test Run, Kế hoạch không phải Release 1 lần nữa.
+
+// Hủy xác nhận CHỈ các mục kỹ thuật được chọn (KHUON/FILM/MUC) của nhiều phần in.
+// (`erpRepo.reopenReadyForPhanIn` hủy SẠCH mọi mục READY — ở đây chỉ hủy mục rớt.)
+async function cancelReadyItemsByPhanIn(client, pinIds, maList, actorId) {
+  if (!pinIds || !pinIds.length || !maList || !maList.length) return;
+  await client.query(
+    `UPDATE ket_qua_checkpoint SET trang_thai='HUY', nguoi_xac_nhan_id=NULL, tg_xac_nhan=NULL,
+       updated_by=$3, updated_date=CURRENT_TIMESTAMP
+     WHERE trang_thai='DAT' AND phan_in_id = ANY($1::uuid[])
+       AND checkpoint_id IN (SELECT cp.id FROM checkpoint cp JOIN tram t ON t.id=cp.tram_id
+             JOIN workflow_version wv ON wv.id=t.workflow_version_id AND wv.la_hien_hanh
+            WHERE t.ma_tram='READY' AND cp.ma_checkpoint = ANY($2::text[]))`.replace(/\s+/g, ' '),
+    [pinIds, maList, actorId]
+  );
+}
+
+// Hủy kết quả test (TEST_CNSP/TEST_QA) của lệnh → lệnh phải test lại từ đầu. KHÔNG đụng trạng thái lệnh.
+async function cancelTestResults(client, lenhId, actorId) {
+  await client.query(
+    `UPDATE ket_qua_checkpoint SET trang_thai='HUY', nguoi_xac_nhan_id=NULL, tg_xac_nhan=NULL,
+       updated_by=$2, updated_date=CURRENT_TIMESTAMP
+     WHERE lenh_san_xuat_id=$1 AND trang_thai='DAT'
+       AND checkpoint_id IN (SELECT id FROM checkpoint WHERE ma_checkpoint IN ('TEST_CNSP','TEST_QA'))`.replace(/\s+/g, ' '),
+    [lenhId, actorId]
+  );
+}
+
+async function phanInIdsByLenh(lenhId) {
+  const { rows } = await query(
+    `SELECT DISTINCT dv.phan_in_id FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+      WHERE lsd.lenh_san_xuat_id = $1`,
+    [lenhId]
+  );
+  return rows.map((r) => r.phan_in_id);
+}
+
+// Lệnh có đang chờ kỹ thuật làm lại không (khóa mọi thao tác test) + có phiếu SX chưa.
+async function lenhChoKyThuat(lenhId) {
+  const { rows } = await query(
+    `SELECT ${CHO_KY_THUAT_SQL('ls.id')} AS cho_ky_thuat,
+            EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = ls.id) AS co_phieu
+       FROM lenh_san_xuat ls WHERE ls.id = $1`.replace(/\s+/g, ' '),
+    [lenhId]
+  );
+  return rows[0] || null;
 }
 
 async function logLenhCancel(lenhId, maLenh, lyDo, actorId) {
@@ -1157,5 +1217,6 @@ module.exports = {
   upsertKeHoachTam, listKeHoachTamRows, getKeHoachTam, getOpenSetOfDotVai, updateKeHoachTam, deleteKeHoachTam, deleteKeHoachTamByDotVai,
   logKeHoachTam, keHoachTamHistoryByDate, keHoachTamDoneByDate,
   listCancelableLenh, getLenhForCancel, cancelLenhOrder, cancelReadyQcForDotVai, logLenhCancel,
+  cancelReadyItemsByPhanIn, cancelTestResults, phanInIdsByLenh, lenhChoKyThuat,
   listReleasableSets, getOpenSetMembers, getSetForRelease, getSetMembersForRelease, markSetReleased, logGomSetReleased,
 };

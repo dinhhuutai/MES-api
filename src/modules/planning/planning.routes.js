@@ -52,7 +52,8 @@ router.post('/test-run/:lenhId/skip', rbac('TESTRUN_QA', 'RELEASE2'), c.skipTest
 router.post('/test-run/:lenhId/cancel-cnsp', rbac('TESTRUN_CNSP'), c.cancelCNSP);
 router.post('/test-run/:lenhId/cancel-qa', rbac('TESTRUN_QA'), c.cancelQA);
 // Test Run QC trả về Release 1 (hủy lệnh, đợt vải về pool) — kèm lý do.
-router.post('/test-run/:lenhId/tra-ve-release1', rbac('TESTRUN_QA'), c.returnTestRun);
+// Test không đạt → trả về KỸ THUẬT (READY) theo mục rớt; lệnh GIỮ NGUYÊN để QC xong nhảy lại Test Run.
+router.post('/test-run/:lenhId/tra-ve-ky-thuat', rbac('TESTRUN_QA'), c.returnTestRunToReady);
 
 // Release 2 (Kế hoạch duyệt cuối)
 router.get('/release2/candidates', rbac('RELEASE2'), c.release2Candidates);

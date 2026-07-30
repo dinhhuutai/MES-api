@@ -93,10 +93,17 @@ async function listCandidates({
     -- Ở READY khi phần in CÒN đợt vải CHƯA release (đợt không nằm trong lệnh ≠ HUY), HOẶC chưa có đợt vải nào.
     -- ⇒ phần in đã release hết đợt thì rời READY; nhưng nếu "Mở lại READY" (hủy QC) mà còn đợt mới chưa release
     -- thì quay lại danh sách READY để làm lại kỹ thuật/QC (kể cả khi phần in đã có đợt sản xuất trước).
+    -- Nhánh 3: TEST RUN KHÔNG ĐẠT trả về Kỹ thuật — lệnh được GIỮ NGUYÊN (để QC xong nhảy lại Test Run)
+    -- nên đợt vải VẪN thuộc lệnh; không có nhánh này thì phần in sẽ KHÔNG hiện ở READY để làm lại.
+    -- Nhận diện: đợt thuộc lệnh RELEASE_1 CHƯA có phiếu SX (kết hợp OUTER_WHERE q.qc_done = false).
     WHERE (EXISTS (SELECT 1 FROM dot_vai_ve dvu WHERE dvu.phan_in_id = pin.id AND dvu.trang_thai <> 'DA_GOP' AND dvu.tg_chuyen_ready IS NOT NULL
                      AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsu JOIN lenh_san_xuat lu ON lu.id = lsu.lenh_san_xuat_id
                                      WHERE lsu.dot_vai_ve_id = dvu.id AND lu.trang_thai <> 'HUY'))
-             OR NOT EXISTS (SELECT 1 FROM dot_vai_ve dvz WHERE dvz.phan_in_id = pin.id AND dvz.trang_thai <> 'DA_GOP'))
+             OR NOT EXISTS (SELECT 1 FROM dot_vai_ve dvz WHERE dvz.phan_in_id = pin.id AND dvz.trang_thai <> 'DA_GOP')
+             OR EXISTS (SELECT 1 FROM dot_vai_ve dvt JOIN lenh_sx_dot_vai lst ON lst.dot_vai_ve_id = dvt.id
+                          JOIN lenh_san_xuat lt ON lt.id = lst.lenh_san_xuat_id AND lt.trang_thai = 'RELEASE_1'
+                         WHERE dvt.phan_in_id = pin.id AND dvt.trang_thai <> 'DA_GOP' AND dvt.tg_chuyen_ready IS NOT NULL
+                           AND NOT EXISTS (SELECT 1 FROM phieu_san_xuat pst WHERE pst.lenh_san_xuat_id = lt.id)))
       AND pin.dang_hoat_dong
       AND ${SEARCH}`;
 
@@ -263,6 +270,22 @@ async function isPhanInReleased(phanInId) {
     [phanInId]
   );
   return rows[0]?.released === true;
+}
+
+// Lệnh ĐANG CHỜ KỸ THUẬT của 1 phần in = lệnh RELEASE_1 CHƯA có phiếu SX (Test Run trả về nhưng lệnh
+// được GIỮ NGUYÊN). Dùng ở `confirmQC`: QC xác nhận xong thì đẩy đợt vải của lệnh này THẲNG về TEST_RUN
+// (không qua Release 1).
+async function lenhChoKyThuatByPhanIn(phanInId) {
+  const { rows } = await query(
+    `SELECT ls.id AS lenh_id, array_agg(DISTINCT lsd.dot_vai_ve_id::text) AS dot_vai_ids
+       FROM lenh_san_xuat ls JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
+       JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+      WHERE ls.trang_thai = 'RELEASE_1' AND dv.phan_in_id = $1
+        AND NOT EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = ls.id)
+      GROUP BY ls.id ORDER BY max(ls.created_date) DESC LIMIT 1`.replace(/\s+/g, ' '),
+    [phanInId]
+  );
+  return rows[0] || null;
 }
 
 async function getPhanInBasic(phanInId) {
@@ -503,5 +526,5 @@ module.exports = {
   loadReadyConfig, listCandidates, countReadyItems, confirmInfoByPins, historyByDate, doneByDate, listConfirmHistory, isPhanInReleased, getPhanInBasic, getResults, getBulkStates,
   getReadyEntryTime, findResultId, upsertResult, cancelResult, logCancel, insertStatusLog,
   listReopenCandidates, reopenReadyResults, flagUnreleasedDotLamLai, logReopenReady,
-  isPhanInProducing, reopenReadyFull,
+  isPhanInProducing, reopenReadyFull, lenhChoKyThuatByPhanIn,
 };
