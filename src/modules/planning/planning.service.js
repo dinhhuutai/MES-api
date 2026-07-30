@@ -762,8 +762,10 @@ async function rollbackLenh(lenhId, { target, lyDo }, actorId) {
   const lenh = await repo.getLenhForCancel(lenhId);
   if (!lenh) throw new AppError('Lệnh sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   if (lenh.trang_thai === 'HUY') throw new AppError('Lệnh đã hủy', { status: 409, errorCode: 'ALREADY' });
-  if (!['RELEASE_1', 'RELEASE_2'].includes(lenh.trang_thai)) {
-    throw new AppError('Chỉ hoàn tác lệnh đang ở Release 1 / Release 2 (chưa vào sản xuất)', { status: 409, errorCode: 'WRONG_STAGE' });
+  // GIA_CONG = lệnh gia công còn đậu ở màn Kế hoạch > Gia công (chưa "Chuyển OQC" nên chưa có phiếu/tem)
+  // ⇒ hoàn tác được như Release 1/2 (đích hợp lệ: RELEASE_1 / READY — không có Test Run).
+  if (!['RELEASE_1', 'RELEASE_2', 'GIA_CONG'].includes(lenh.trang_thai)) {
+    throw new AppError('Chỉ hoàn tác lệnh đang ở Release 1 / Release 2 / Gia công (chưa vào sản xuất)', { status: 409, errorCode: 'WRONG_STAGE' });
   }
   if (lenh.co_phieu) {
     throw new AppError('Lệnh đã bắt đầu sản xuất (đã in tem) — không thể hoàn tác tự động', { status: 409, errorCode: 'HAS_PHIEU' });

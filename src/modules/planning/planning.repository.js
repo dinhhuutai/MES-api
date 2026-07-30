@@ -740,13 +740,16 @@ async function deleteKeHoachTamByDotVai(dotVaiIds) {
   await query('DELETE FROM ke_hoach_tam WHERE dot_vai_ve_id = ANY($1::uuid[])', [dotVaiIds]);
 }
 
-// ----- HỦY LỆNH / HOÀN TÁC RELEASE (lệnh RELEASE_1/RELEASE_2 chưa bắt đầu sản xuất) -----
+// ----- HỦY LỆNH / HOÀN TÁC RELEASE (lệnh RELEASE_1/RELEASE_2/GIA_CONG chưa bắt đầu sản xuất) -----
+// GIA_CONG = lệnh trên chuyền loại "Gia công" đang đậu ở màn Kế hoạch > Gia công (chưa "Chuyển OQC" nên
+// CHƯA có phiếu/tem) ⇒ hủy được y như Release 1/2. Thiếu mã này thì Release 1 lỡ chọn chuyền gia công
+// sẽ KHÔNG hiện ở tab "Hủy lệnh sản xuất" (lỗi đã báo).
 async function listCancelableLenh({ search = '', offset = 0, limit = 50 }) {
   const FROM = `
     FROM lenh_san_xuat ls
     LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
     ${PHAN_INFO_LATERAL}
-    WHERE ls.trang_thai IN ('RELEASE_1','RELEASE_2')
+    WHERE ls.trang_thai IN ('RELEASE_1','RELEASE_2','GIA_CONG')
       AND NOT EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = ls.id)
       AND ($1 = '' OR ls.ma_lenh_san_xuat ILIKE '%'||$1||'%' OR ${lenhPhanInMatch('ls.id', '$1')})`;
   const dataSql = `
@@ -757,7 +760,10 @@ async function listCancelableLenh({ search = '', offset = 0, limit = 50 }) {
            info.so_luong_don_hang, info.so_luong_vai_ve,
            EXISTS (SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id=k.checkpoint_id
                    WHERE k.lenh_san_xuat_id=ls.id AND c.ma_checkpoint IN ('TEST_CNSP','TEST_QA') AND k.trang_thai='DAT') AS co_test,
-           (SELECT count(*) FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id)::int AS so_dot_vai
+           (SELECT count(*) FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id)::int AS so_dot_vai,
+           (SELECT count(DISTINCT dv2.phan_in_id) FROM lenh_sx_dot_vai lsd2
+              JOIN dot_vai_ve dv2 ON dv2.id = lsd2.dot_vai_ve_id
+              WHERE lsd2.lenh_san_xuat_id = ls.id)::int AS so_phan_in
     ${FROM}
     ORDER BY ls.created_date DESC
     LIMIT $2 OFFSET $3`;

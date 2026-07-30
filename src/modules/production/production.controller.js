@@ -28,18 +28,31 @@ const chayDacBiet = asyncHandler(async (req, res) =>
 const printTem = asyncHandler(async (req, res) =>
   ok(res, await service.printTem(req.params.phieuId, req.body.soLuong, req.user.id), 'Đã in tem'));
 
+// In tem NHIỀU phần in 1 lượt (lệnh gom set): body { items: [{ dotVaiId, soLuong }] }.
+const printTemBatch = asyncHandler(async (req, res) => {
+  const data = await service.printTemBatch(req.params.phieuId, req.body?.items, req.user.id);
+  return ok(res, data, `Đã in ${data.tems_in.length} tem`);
+});
+
 const finish = asyncHandler(async (req, res) =>
   ok(res, await service.finishRun(req.params.phieuId, req.user.id), 'Đã hoàn tất chạy'));
 
 const reprintTem = asyncHandler(async (req, res) =>
   ok(res, await service.reprintTem(req.params.temId, req.body.lyDo, req.user.id), 'Đã in lại tem'));
 
-const temLabel = asyncHandler(async (req, res) => ok(res, await service.temLabel(req.params.temId)));
+// ?dotVaiId= → nhãn lấy đúng phần in của đợt vải đó (in tem lệnh gom set).
+const temLabel = asyncHandler(async (req, res) =>
+  ok(res, await service.temLabel(req.params.temId, req.query.dotVaiId || null)));
 
 const temLogs = asyncHandler(async (req, res) => ok(res, await service.temLogs(req.params.phieuId)));
 
 const addVaiHuy = asyncHandler(async (req, res) =>
-  ok(res, await service.addVaiHuy(req.params.phieuId, req.body, req.user.id), 'Đã ghi vải hủy'));
+  ok(res, await service.addVaiHuy(req.params.phieuId, req.body, req.user.id),
+    req.body?.loai === 'THIEU' ? 'Đã ghi vải thiếu' : 'Đã ghi vải hủy'));
+
+// Phân công sản xuất: body { caTruongId, chuyenTruong, items: [{ dotVaiId, thoIn, soLuongHuy, soLuongThieu }] }
+const savePhanCong = asyncHandler(async (req, res) =>
+  ok(res, await service.savePhanCong(req.params.phieuId, req.body || {}, req.user.id), 'Đã lưu phân công'));
 
 const stopLine = asyncHandler(async (req, res) =>
   ok(res, await service.stopLine(req.params.phieuId, req.body.lyDo, req.user.id), 'Đã ngừng chuyền'));
@@ -102,9 +115,9 @@ const vuotSanXuat = asyncHandler(async (req, res) =>
   ok(res, await service.vuotSanXuat(req.params.phieuId, req.body?.soLuong, req.user.id), 'Đã ghi nhận vượt sản xuất'));
 
 module.exports = {
-  candidates, getRun, start, chayDacBietCandidates, chayDacBiet, printTem, reprintTem, temLabel, temLogs, finish, monitor,
+  candidates, getRun, start, chayDacBietCandidates, chayDacBiet, printTem, printTemBatch, reprintTem, temLabel, temLogs, finish, monitor,
   xePhoi, temChoPhoi, themTem, adjustPhoi, drying, confirmDry, redry,
-  stopLine, resumeLine, addVaiHuy, vuotSanXuat,
+  stopLine, resumeLine, addVaiHuy, savePhanCong, vuotSanXuat,
   cancelableTem, cancelPrintTem,
   closeCandidates, closeProduction,
   reopenCandidates, reopenProduction, pauseLenhChay,

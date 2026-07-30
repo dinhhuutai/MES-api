@@ -17,11 +17,15 @@ router.post('/:lenhId/start', rbac('PROD_RUN'), c.start);
 router.get('/chay-dac-biet/candidates', rbac('PROD_RUN'), c.chayDacBietCandidates);
 router.post('/chay-dac-biet/:lenhId', rbac('PROD_RUN'), c.chayDacBiet);
 router.post('/phieu/:phieuId/tem', rbac('PROD_RUN'), c.printTem);
+// In tem nhiều phần in 1 lượt (lệnh GOM SET) — mỗi đợt vải 1 số lượng, in liên tiếp
+router.post('/phieu/:phieuId/tem-batch', rbac('PROD_RUN'), c.printTemBatch);
 router.post('/phieu/:phieuId/finish', rbac('PROD_RUN'), c.finish);
 router.post('/tem/:temId/in-lai', rbac('PROD_RUN'), c.reprintTem);
 router.get('/tem/:temId/label', rbac('PROD_RUN', 'PROD_MONITOR'), c.temLabel);
 router.get('/phieu/:phieuId/tem-logs', rbac('PROD_RUN', 'PROD_MONITOR'), c.temLogs);
-router.post('/phieu/:phieuId/vai-huy', rbac('PROD_RUN'), c.addVaiHuy);
+router.post('/phieu/:phieuId/vai-huy', rbac('PROD_RUN'), c.addVaiHuy); // body.loai: HUY (vải hư) | THIEU
+// Phân công sản xuất (thợ in theo phần in + ca trưởng/chuyền trưởng + SL vải hủy/thiếu) — sidebar Sản xuất
+router.post('/phieu/:phieuId/phan-cong', rbac('PROD_RUN'), c.savePhanCong);
 router.post('/phieu/:phieuId/ngung', rbac('PROD_RUN'), c.stopLine);
 router.post('/phieu/:phieuId/hoat-dong-lai', rbac('PROD_RUN'), c.resumeLine);
 

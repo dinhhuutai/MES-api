@@ -166,48 +166,119 @@ async function getLenhBasic(lenhId) {
   return rows[0] || null;
 }
 
-// Danh sách đợt vải / phần in của 1 lệnh (cho ô chọn "vải hủy theo phần in" khi lệnh có nhiều phần in).
+// Danh sách đợt vải / phần in của 1 lệnh. Dùng cho: ô chọn "vải hủy/thiếu theo phần in",
+// modal IN TEM theo gom set và modal PHÂN CÔNG (mỗi phần in 1 dòng: khách hàng → loại đợt vải).
+// `sl_vao_sx` = SL vải của đợt đó đưa vào đợt SX (lenh_sx_dot_vai.so_luong) → trần in tem TỪNG đợt.
 async function getLenhDotVaiList(lenhId) {
   const { rows } = await query(
-    `SELECT dv.id AS dot_vai_ve_id, dv.ma_dot_vai, dv.so_luong_vai_ve,
-            pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim
+    `SELECT dv.id AS dot_vai_ve_id, dv.ma_dot_vai, dv.so_luong_vai_ve, dv.han_giao_hang,
+            COALESCE(lsd.so_luong, dv.so_luong_vai_ve)::int AS sl_vao_sx,
+            pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim,
+            pin.tinh_chat_in, pin.so_luong_don_hang,
+            kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, ldv.ten_loai AS ten_loai_dot_vai
      FROM lenh_sx_dot_vai lsd
      JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
      JOIN phan_in pin ON pin.id = dv.phan_in_id
+     JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+     JOIN don_hang dh ON dh.id = mh.don_hang_id
+     JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+     LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id
      WHERE lsd.lenh_san_xuat_id = $1
-     ORDER BY pin.ma_phan, dv.ma_dot_vai`,
+     ORDER BY pin.ma_phan, dv.ma_dot_vai`.replace(/\s+/g, ' '),
     [lenhId]
   );
   return rows;
 }
 
-// Ghi 1 lần vải hủy. Best-effort: nếu bảng chưa tạo (migration 039 chưa chạy) → ném lỗi để service báo.
-async function insertVaiHuy({ phieuId, lenhId, dotVaiId, phanInId, soLuong, lyDo }, actorId) {
-  const { rows } = await query(
-    `INSERT INTO vai_huy (phieu_san_xuat_id, lenh_san_xuat_id, dot_vai_ve_id, phan_in_id, so_luong, ly_do, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-    [phieuId || null, lenhId || null, dotVaiId || null, phanInId || null, soLuong, lyDo || null, actorId]
-  );
-  return rows[0].id;
-}
-
-// Lịch sử vải hủy của 1 lệnh (best-effort: bảng chưa có → trả []).
-async function listVaiHuyByLenh(lenhId) {
+// Ghi 1 lần vải hủy / vải thiếu (cùng sổ `vai_huy`, phân biệt bằng cột `loai` — mig 063).
+// Best-effort: bảng/cột chưa có (migration 039/063 chưa chạy) → ném lỗi để service báo.
+async function insertVaiHuy({ phieuId, lenhId, dotVaiId, phanInId, soLuong, lyDo, loai }, actorId) {
+  const isThieu = loai === 'THIEU';
+  const base = [phieuId || null, lenhId || null, dotVaiId || null, phanInId || null, soLuong, lyDo || null];
   try {
     const { rows } = await query(
-      `SELECT vh.id, vh.so_luong, vh.ly_do, vh.created_date,
-              pin.ma_phan, pin.mau_vai, dv.ma_dot_vai, nd.ho_ten AS nguoi
+      `INSERT INTO vai_huy (phieu_san_xuat_id, lenh_san_xuat_id, dot_vai_ve_id, phan_in_id, so_luong, ly_do, loai, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+      [...base, isThieu ? 'THIEU' : 'HUY', actorId]
+    );
+    return rows[0].id;
+  } catch (e) {
+    // mig 063 chưa chạy (chưa có cột `loai`): VẪN ghi được vải hủy như trước để không phá tính năng cũ;
+    // riêng vải THIẾU thì không thể phân biệt → báo rõ để người vận hành chạy migration.
+    if (isThieu) throw e;
+    const { rows } = await query(
+      `INSERT INTO vai_huy (phieu_san_xuat_id, lenh_san_xuat_id, dot_vai_ve_id, phan_in_id, so_luong, ly_do, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+      [...base, actorId]
+    );
+    return rows[0].id;
+  }
+}
+
+// Lịch sử vải hủy + vải thiếu của 1 lệnh (best-effort: bảng chưa có → trả []).
+// Cột `loai` do mig 063 thêm → nếu chưa chạy, fallback query không có cột đó (mọi dòng coi là HUY).
+async function listVaiHuyByLenh(lenhId) {
+  const SEL = (loaiCol) => `
+      SELECT vh.id, vh.so_luong, vh.ly_do, vh.created_date, ${loaiCol} AS loai,
+             pin.ma_phan, pin.mau_vai, dv.ma_dot_vai, nd.ho_ten AS nguoi
        FROM vai_huy vh
        LEFT JOIN phan_in pin ON pin.id = vh.phan_in_id
        LEFT JOIN dot_vai_ve dv ON dv.id = vh.dot_vai_ve_id
        LEFT JOIN nguoi_dung nd ON nd.id = vh.created_by
        WHERE vh.lenh_san_xuat_id = $1
-       ORDER BY vh.created_date DESC`,
-      [lenhId]
-    );
+       ORDER BY vh.created_date DESC`.replace(/\s+/g, ' ');
+  try {
+    const { rows } = await query(SEL('vh.loai'), [lenhId]);
     return rows;
   } catch (e) {
-    return []; // migration 039 chưa chạy
+    try {
+      const { rows } = await query(SEL("'HUY'"), [lenhId]); // mig 063 chưa chạy
+      return rows;
+    } catch (e2) {
+      return []; // mig 039 chưa chạy
+    }
+  }
+}
+
+// ----- PHÂN CÔNG SẢN XUẤT (mig 063) -----
+// Mức PHIẾU: ca trưởng (tài khoản) + chuyền trưởng (chữ). Mức ĐỢT VẢI: thợ in.
+async function setPhieuTruong(client, phieuId, { caTruongId, chuyenTruong }, actorId) {
+  await client.query(
+    `UPDATE phieu_san_xuat SET ca_truong_id=$2, chuyen_truong=$3, updated_by=$4, updated_date=CURRENT_TIMESTAMP
+     WHERE id=$1`,
+    [phieuId, caTruongId || null, chuyenTruong || null, actorId]
+  );
+}
+
+async function upsertPhanCong(client, { phieuId, dotVaiId, phanInId, thoIn }, actorId) {
+  await client.query(
+    `INSERT INTO phan_cong_san_xuat (phieu_san_xuat_id, dot_vai_ve_id, phan_in_id, tho_in, created_by)
+     VALUES ($1,$2,$3,$4,$5)
+     ON CONFLICT (phieu_san_xuat_id, dot_vai_ve_id)
+     DO UPDATE SET tho_in = EXCLUDED.tho_in, phan_in_id = EXCLUDED.phan_in_id,
+                   updated_by = EXCLUDED.created_by, updated_date = CURRENT_TIMESTAMP`,
+    [phieuId, dotVaiId || null, phanInId || null, (thoIn || '').trim() || null, actorId]
+  );
+}
+
+// Phân công hiện tại của 1 phiếu (best-effort: mig 063 chưa chạy → trả rỗng).
+async function getPhanCongByPhieu(phieuId) {
+  try {
+    const [head, items] = await Promise.all([
+      query(
+        `SELECT ps.ca_truong_id, nd.ho_ten AS ca_truong_ten, ps.chuyen_truong
+         FROM phieu_san_xuat ps LEFT JOIN nguoi_dung nd ON nd.id = ps.ca_truong_id
+         WHERE ps.id = $1`,
+        [phieuId]
+      ),
+      query(
+        'SELECT dot_vai_ve_id, phan_in_id, tho_in FROM phan_cong_san_xuat WHERE phieu_san_xuat_id = $1',
+        [phieuId]
+      ),
+    ]);
+    return { ...(head.rows[0] || {}), items: items.rows };
+  } catch (e) {
+    return { items: [] };
   }
 }
 
@@ -427,7 +498,27 @@ async function caPartsForTem(temId) {
   return rows[0] || {};
 }
 
-async function getTemLabelData(temId) {
+// Dữ liệu nhãn tem. `dotVaiId` (tùy chọn) = in tem cho ĐỢT VẢI cụ thể của lệnh GOM SET → nhãn lấy
+// đúng khách/đơn/mã hàng/màu/kích của phần in đó thay vì phần in đại diện (PHAN_INFO_LATERAL LIMIT 1).
+// ⚠ Bảng `tem` KHÔNG lưu đợt vải (theo chốt "giữ schema như cũ") ⇒ chỉ nhãn IN NGAY LÚC ĐÓ mới đúng
+// phần in; in lại từ danh sách "Tem đã in" (không truyền dotVaiId) sẽ hiện phần in đại diện.
+async function getTemLabelData(temId, dotVaiId = null) {
+  const INFO = dotVaiId
+    ? `
+  LEFT JOIN LATERAL (
+    SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang,
+           pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.ma_phan, pin.so_luong_don_hang
+    FROM lenh_sx_dot_vai lsd
+    JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+    JOIN phan_in pin ON pin.id = dv.phan_in_id
+    JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+    JOIN don_hang dh ON dh.id = mh.don_hang_id
+    JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+    WHERE lsd.lenh_san_xuat_id = COALESCE(ls.lenh_lien_ket_id, ls.id) AND dv.id = $2::uuid
+    LIMIT 1
+  ) info ON true`
+    : PHAN_INFO_LATERAL;
+  const params = dotVaiId ? [temId, dotVaiId] : [temId];
   const { rows } = await query(
     `SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.created_date,
             ls.ma_lenh_san_xuat, cs.ma_chuyen, cs.ten_chuyen, ps.tg_bd AS tg_bd_in,
@@ -441,9 +532,9 @@ async function getTemLabelData(temId) {
      JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
      JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
      LEFT JOIN chuyen_san_xuat cs ON cs.id = ps.chuyen_id
-     ${PHAN_INFO_LATERAL}
+     ${INFO}
      WHERE t.id = $1`,
-    [temId]
+    params
   );
   return rows[0] || null;
 }
@@ -527,6 +618,7 @@ async function finishPhieu(phieuId, actorId) {
 async function monitorRunning() {
   const { rows } = await query(
     `SELECT ps.id AS phieu_id, ls.id AS lenh_id, cs.id AS chuyen_id, cs.ma_chuyen, cs.ten_chuyen,
+            lc.ma_loai AS ma_loai_chuyen, lc.ten_loai AS ten_loai_chuyen,
             cs.dinh_muc_gio, ps.tg_bd, ls.ma_lenh_san_xuat, ls.ngay_ke_hoach,
             ls.so_luong_release AS target, ${PHAN_AGG} AS phan_list,
             info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan, info.mau_vai, info.kich_vai, info.kich_phim,
@@ -541,6 +633,7 @@ async function monitorRunning() {
      FROM phieu_san_xuat ps
      JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
      JOIN chuyen_san_xuat cs ON cs.id = ps.chuyen_id
+     LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
      ${PHAN_INFO_LATERAL}
      WHERE ps.trang_thai='DANG_CHAY'
      ORDER BY cs.ma_chuyen`
@@ -566,10 +659,11 @@ async function downstreamSlaAfterProduction() {
 async function monitorQueue() {
   const { rows } = await query(
     `SELECT ls.ma_lenh_san_xuat, ls.so_luong_release AS target, ls.ngay_ke_hoach,
-            cs.ma_chuyen, cs.ten_chuyen,
+            cs.ma_chuyen, cs.ten_chuyen, lc.ma_loai AS ma_loai_chuyen, lc.ten_loai AS ten_loai_chuyen,
             info.ten_khach_hang, info.ma_hang, info.ma_phan, info.mau_vai, info.kich_vai, info.kich_phim, info.han_giao_hang
      FROM lenh_san_xuat ls
      JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+     LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
      ${PHAN_INFO_LATERAL}
      WHERE ls.trang_thai='RELEASE_2'
      ORDER BY cs.ma_chuyen, ls.ngay_ke_hoach NULLS LAST, ls.created_date`
@@ -846,6 +940,7 @@ module.exports = {
   listTemLogByPhieu, nextReprint, logReprint,
   nextMaTem, createTem, logTemPrint, finishPhieu,
   nextMaPhieuTx, nextMaTemTx, createPhieuDone, createTemGiaCongOqc,
+  setPhieuTruong, upsertPhanCong, getPhanCongByPhieu,
   monitorRunning, monitorQueue, downstreamSlaAfterProduction, listXePhoi, listCurrentPhoi, listTemChoPhoi, addTemToXe, adjustPhoi,
   listDryingTems, confirmDry, getTemBasic,
   promoteFinishedDrying, redryTem, getDryMinForPhieu,

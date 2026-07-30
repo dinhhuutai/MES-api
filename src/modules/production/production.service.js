@@ -20,18 +20,24 @@ async function getRun(lenhId) {
   const phieu = await repo.getActivePhieu(lenhId);
   const tems = phieu ? await repo.getTemsByPhieu(phieu.id) : [];
   const printed = tems.reduce((s, t) => s + (t.trang_thai === 'HUY' ? 0 : (Number(t.so_luong) || 0)), 0);
-  const [ngungList, ngungActive, dotVai, vaiHuy] = phieu
+  const [ngungList, ngungActive, dotVai, vaiHuy, phanCong] = phieu
     ? await Promise.all([repo.listNgungByPhieu(phieu.id), repo.getActiveNgung(phieu.id),
-                         repo.getLenhDotVaiList(lenhId), repo.listVaiHuyByLenh(lenhId)])
-    : [[], null, await repo.getLenhDotVaiList(lenhId), await repo.listVaiHuyByLenh(lenhId)];
+                         repo.getLenhDotVaiList(lenhId), repo.listVaiHuyByLenh(lenhId),
+                         repo.getPhanCongByPhieu(phieu.id)])
+    : [[], null, await repo.getLenhDotVaiList(lenhId), await repo.listVaiHuyByLenh(lenhId), { items: [] }];
+  // Lệnh GOM SET = nhiều PHẦN IN khác nhau trong cùng 1 đợt SX (in chung 1 chuyền).
+  const soPhanIn = new Set(dotVai.map((d) => d.phan_in_id)).size;
   return { lenh, phieu, tems, printed, ngung_list: ngungList, ngung_active: ngungActive,
-           dot_vai: dotVai, vai_huy: vaiHuy };
+           dot_vai: dotVai, vai_huy: vaiHuy, phan_cong: phanCong,
+           so_phan_in: soPhanIn, co_gom_set: soPhanIn > 1 };
 }
 
-// Ghi 1 lần vải hủy trong lúc sản xuất, theo đợt vải / phần in của lệnh.
-async function addVaiHuy(phieuId, { dotVaiId, soLuong, lyDo }, actorId) {
+// Ghi 1 lần vải hủy (= vải hư) hoặc vải THIẾU trong lúc sản xuất, theo đợt vải / phần in của lệnh.
+async function addVaiHuy(phieuId, { dotVaiId, soLuong, lyDo, loai }, actorId) {
   const qty = Number(soLuong);
-  if (!qty || qty <= 0) throw new AppError('Số lượng vải hủy phải > 0', { status: 422, errorCode: 'INVALID_QTY' });
+  const isThieu = loai === 'THIEU';
+  const nhan = isThieu ? 'vải thiếu' : 'vải hủy';
+  if (!qty || qty <= 0) throw new AppError(`Số lượng ${nhan} phải > 0`, { status: 422, errorCode: 'INVALID_QTY' });
   const phieu = await repo.getPhieuById(phieuId);
   if (!phieu) throw new AppError('Phiếu sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   const dotVaiList = await repo.getLenhDotVaiList(phieu.lenh_san_xuat_id);
@@ -40,16 +46,63 @@ async function addVaiHuy(phieuId, { dotVaiId, soLuong, lyDo }, actorId) {
   const chosen = dotVaiId
     ? dotVaiList.find((d) => d.dot_vai_ve_id === dotVaiId)
     : (dotVaiList.length === 1 ? dotVaiList[0] : null);
-  if (!chosen) throw new AppError('Chọn phần in cần ghi vải hủy', { status: 422, errorCode: 'NO_PHAN_IN' });
+  if (!chosen) throw new AppError(`Chọn phần in cần ghi ${nhan}`, { status: 422, errorCode: 'NO_PHAN_IN' });
   try {
     await repo.insertVaiHuy({
       phieuId, lenhId: phieu.lenh_san_xuat_id, dotVaiId: chosen.dot_vai_ve_id,
-      phanInId: chosen.phan_in_id, soLuong: qty, lyDo,
+      phanInId: chosen.phan_in_id, soLuong: qty, lyDo, loai: isThieu ? 'THIEU' : 'HUY',
     }, actorId);
   } catch (e) {
-    throw new AppError('Chưa ghi được vải hủy (kiểm tra migration 039_vai_huy)', { status: 500, errorCode: 'VAI_HUY_FAILED' });
+    throw new AppError(`Chưa ghi được ${nhan} (kiểm tra migration 039_vai_huy + 063_vai_thieu_phan_cong)`,
+      { status: 500, errorCode: 'VAI_HUY_FAILED' });
   }
-  sockets.emit('production:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'vai-huy' });
+  sockets.emit('production:updated', { lenhId: phieu.lenh_san_xuat_id, action: isThieu ? 'vai-thieu' : 'vai-huy' });
+  return getRun(phieu.lenh_san_xuat_id);
+}
+
+// ----- PHÂN CÔNG SẢN XUẤT (mig 063) -----
+// 1 lần lưu: ca trưởng (tài khoản) + chuyền trưởng (chữ) ở mức phiếu; mỗi phần in 1 dòng
+// thợ in + SL vải hủy + SL vải thiếu (SL > 0 mới ghi thêm vào sổ `vai_huy`).
+async function savePhanCong(phieuId, { caTruongId, chuyenTruong, items }, actorId) {
+  const phieu = await repo.getPhieuById(phieuId);
+  if (!phieu) throw new AppError('Phiếu sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  const dotVaiList = await repo.getLenhDotVaiList(phieu.lenh_san_xuat_id);
+  const byId = new Map(dotVaiList.map((d) => [d.dot_vai_ve_id, d]));
+  const rows = Array.isArray(items) ? items : [];
+  for (const it of rows) {
+    if (it && it.dotVaiId && !byId.has(it.dotVaiId)) {
+      throw new AppError('Đợt vải không thuộc đợt sản xuất này', { status: 422, errorCode: 'BAD_DOT_VAI' });
+    }
+  }
+  try {
+    await withTransaction(async (client) => {
+      await repo.setPhieuTruong(client, phieuId, { caTruongId, chuyenTruong: (chuyenTruong || '').trim() }, actorId);
+      for (const it of rows) {
+        const d = byId.get(it.dotVaiId);
+        if (!d) continue;
+        await repo.upsertPhanCong(client, {
+          phieuId, dotVaiId: d.dot_vai_ve_id, phanInId: d.phan_in_id, thoIn: it.thoIn,
+        }, actorId);
+      }
+    });
+  } catch (e) {
+    throw new AppError('Chưa lưu được phân công (kiểm tra migration 063_vai_thieu_phan_cong)',
+      { status: 500, errorCode: 'PHAN_CONG_FAILED' });
+  }
+  // Vải hủy/thiếu ghi SAU (ngoài transaction phân công) để mỗi lượt là 1 bản ghi sổ có người + giờ.
+  for (const it of rows) {
+    const d = byId.get(it.dotVaiId);
+    if (!d) continue;
+    for (const [key, loai] of [['soLuongHuy', 'HUY'], ['soLuongThieu', 'THIEU']]) {
+      const qty = Number(it[key]);
+      if (!(qty > 0)) continue;
+      await repo.insertVaiHuy({
+        phieuId, lenhId: phieu.lenh_san_xuat_id, dotVaiId: d.dot_vai_ve_id, phanInId: d.phan_in_id,
+        soLuong: qty, lyDo: (it.lyDo || '').trim() || 'Phân công sản xuất', loai,
+      }, actorId);
+    }
+  }
+  sockets.emit('production:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'phan-cong' });
   return getRun(phieu.lenh_san_xuat_id);
 }
 
@@ -169,6 +222,80 @@ async function printTem(phieuId, soLuong, actorId) {
   return { ...run, new_tem_id: newTemId };
 }
 
+// IN TEM NHIỀU PHẦN IN 1 LƯỢT (lệnh GOM SET): mỗi đợt vải/phần in nhập 1 số lượng → tạo N tem trong
+// CÙNG 1 transaction, FE in nhãn liên tiếp (xong phần in 1 → phần in 2 → …).
+// Trần số lượng (theo chốt "như hiện tại, theo từng đợt của từng phần"):
+//   · từng dòng : ≤ 110% SL đưa vào SX của đợt đó (lenh_sx_dot_vai.so_luong)
+//   · tổng cộng : đã in + Σ nhập ≤ 110% SL release của lệnh (giữ nguyên luật cũ)
+// ⚠ Trần TỪNG DÒNG chỉ tính trong LƯỢT NHẤN NÀY, không lũy kế qua các lượt in trước — vì bảng `tem`
+//   không lưu đợt vải (giữ schema như cũ) nên không biết đã in bao nhiêu cho từng phần in.
+//   Trần TỔNG của lệnh vẫn lũy kế đầy đủ nên không in vượt được toàn lệnh.
+async function printTemBatch(phieuId, items, actorId) {
+  const list = (Array.isArray(items) ? items : [])
+    .map((it) => ({ dotVaiId: it.dotVaiId || null, soLuong: Number(it.soLuong) }))
+    .filter((it) => it.soLuong > 0);
+  if (!list.length) throw new AppError('Nhập số lượng in cho ít nhất 1 phần in', { status: 422, errorCode: 'EMPTY' });
+
+  const phieu = await repo.getPhieuById(phieuId);
+  if (!phieu) throw new AppError('Phiếu sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  if (phieu.trang_thai !== 'DANG_CHAY') {
+    throw new AppError('Phiếu không ở trạng thái đang chạy', { status: 409, errorCode: 'WRONG_STAGE' });
+  }
+
+  const dotVaiList = await repo.getLenhDotVaiList(phieu.lenh_san_xuat_id);
+  const byId = new Map(dotVaiList.map((d) => [d.dot_vai_ve_id, d]));
+  for (const it of list) {
+    if (!it.dotVaiId) continue;
+    const d = byId.get(it.dotVaiId);
+    if (!d) throw new AppError('Đợt vải không thuộc đợt sản xuất này', { status: 422, errorCode: 'BAD_DOT_VAI' });
+    const capDot = Math.floor((Number(d.sl_vao_sx) || 0) * 1.1);
+    if (capDot > 0 && it.soLuong > capDot) {
+      throw new AppError(
+        `Phần in ${d.ma_phan}: vượt 110% SL vào sản xuất của đợt (tối đa ${capDot}, nhập ${it.soLuong})`,
+        { status: 422, errorCode: 'OVER_LIMIT_DOT' }
+      );
+    }
+  }
+
+  const lenh = await repo.getLenhBasic(phieu.lenh_san_xuat_id);
+  const target = Number(lenh?.so_luong_release) || 0;
+  const tong = list.reduce((s, x) => s + x.soLuong, 0);
+  if (target > 0) {
+    const printed = await repo.getPrintedTotal(phieuId);
+    const max = Math.floor(target * 1.1);
+    if (printed + tong > max) {
+      throw new AppError(
+        `Vượt quá 110% SL release của đợt SX (tối đa ${max}, đã in ${printed}, còn được in ${Math.max(0, max - printed)}, đang nhập ${tong})`,
+        { status: 422, errorCode: 'OVER_LIMIT' }
+      );
+    }
+  }
+
+  const xe = await repo.getDefaultXePhoi();
+  if (!xe) throw new AppError('Chưa cấu hình xe phơi để bắt đầu phơi', { status: 409, errorCode: 'NO_XE' });
+  const dryMin = (await repo.getDryMinForPhieu(phieuId)) ?? DEFAULT_DRY_MIN;
+
+  const out = [];
+  await withTransaction(async (client) => {
+    for (const it of list) {
+      const maTem = await repo.nextMaTemTx(client); // trong TX: mã tem không trùng giữa các dòng
+      const temId = await repo.createTem(client, { phieuId, maTem, soLuong: it.soLuong }, actorId);
+      await repo.logTemPrint(client, { temId, maTem, actorId });
+      await repo.addTemToXe(client, { temId, xeId: xe.id, soLuongPhoi: it.soLuong, phut: dryMin }, actorId);
+      const d = it.dotVaiId ? byId.get(it.dotVaiId) : null;
+      out.push({
+        tem_id: temId, ma_tem: maTem, dot_vai_id: it.dotVaiId, so_luong: it.soLuong,
+        ma_phan: d ? d.ma_phan : null,
+      });
+    }
+  });
+  await tracking.moveByLenh(phieu.lenh_san_xuat_id, 'CHO_KHO', actorId);
+  sockets.emit('production:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'tem', so_tem: out.length });
+  sockets.emit('drying:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'auto-phoi' });
+  const run = await getRun(phieu.lenh_san_xuat_id);
+  return { ...run, tems_in: out, new_tem_id: out[0]?.tem_id || null };
+}
+
 // In lại tem = in lại NHÃN của CHÍNH tem đó — GIỮ NGUYÊN mã tem + sổ cái + xe phơi (không tạo tem mới,
 // không đụng đồng hồ phơi). Dùng khi tem GIẤY bị mất/rách. Chỉ ghi thêm 1 lần in vào log_tem
 // (tăng so_lan_in) + lý do để lưu vết. Cho in lại ở mọi giai đoạn trừ tem đã HỦY.
@@ -184,8 +311,9 @@ async function reprintTem(temId, lyDo, actorId) {
   return { ...run, new_tem_id: temId, reprinted: ctx.ma_tem, so_lan_in: soLan };
 }
 
-async function temLabel(temId) {
-  const data = await repo.getTemLabelData(temId);
+// `dotVaiId` (tùy chọn): in nhãn cho ĐÚNG phần in của đợt vải đó — dùng khi in tem lệnh GOM SET.
+async function temLabel(temId, dotVaiId = null) {
+  const data = await repo.getTemLabelData(temId, dotVaiId);
   if (!data) throw new AppError('Tem không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   // Ca sản xuất = suy từ giờ VN lúc sản xuất + loại ca của tuần (Ngắn/Dài). Query nhẹ riêng (IPS-safe).
   const [parts, map] = await Promise.all([repo.caPartsForTem(temId), planningRepo.caModeMap()]);
@@ -442,9 +570,9 @@ async function vuotSanXuat(phieuId, soLuong, actorId) {
 }
 
 module.exports = {
-  listCandidates, getRun, startProduction, startProductionSpecial, printTem, reprintTem, temLabel, temLogs, finishRun, monitor, vuotSanXuat,
+  listCandidates, getRun, startProduction, startProductionSpecial, printTem, printTemBatch, reprintTem, temLabel, temLogs, finishRun, monitor, vuotSanXuat,
   getXePhoi, listTemChoPhoi, addToXe, adjustPhoi, listDrying, confirmDry, redry,
-  stopLine, resumeLine, addVaiHuy,
+  stopLine, resumeLine, addVaiHuy, savePhanCong,
   listCancelableTem, cancelPrintTem,
   listCloseCandidates, closeProduction,
   listReopenCandidates, reopenProduction, pauseLenhChay,
