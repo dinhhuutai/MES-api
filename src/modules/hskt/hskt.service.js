@@ -5,8 +5,9 @@ const AppError = require('../../utils/AppError');
 const { buildMeta } = require('../../utils/pagination');
 const sockets = require('../../sockets');
 
-// Nhãn phương án in (Pain): 1 Bàn, 2 Máy, 3 Robot.
-const PHUONG_AN = { 1: 'Bàn', 2: 'Máy', 3: 'Robot' };
+// Nhãn phương án in (Pain): 1 Bàn, 2 Máy, 3 Robot — nguồn chung `utils/hskt.js`.
+const { PHUONG_AN_IN: PHUONG_AN, isValidPain } = require('../../utils/hskt');
+
 const paLabel = (v) => (v == null ? null : (PHUONG_AN[Number(v)] || String(v)));
 
 async function list({ search, page, limit, offset }) {
@@ -42,13 +43,21 @@ async function byBarcode(barcode) {
   return { hskt: { ...hskt, phuong_an_in_ten: paLabel(hskt.phuong_an_in) }, phan_in: phanIn };
 }
 
+// Đổi phương án in → tạo phiên bản mới + ĐỔI SỐ CUỐI mã vạch HSKT theo phương án in.
 async function changePhuongAnIn(id, pain, actorId) {
   const p = Number(pain);
-  if (![1, 2, 3].includes(p)) throw new AppError('Phương án in không hợp lệ (1 Bàn / 2 Máy / 3 Robot)', { status: 422, errorCode: 'INVALID' });
-  const newId = await repo.changePhuongAnIn(id, p, actorId);
-  if (!newId) throw new AppError('HSKT không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
-  sockets.emit('workflow:updated', { stage: 'HSKT', hsktId: newId });
-  return detail(newId);
+  if (!isValidPain(p)) throw new AppError('Phương án in không hợp lệ (1 Bàn / 2 Máy / 3 Robot)', { status: 422, errorCode: 'INVALID' });
+  const res = await repo.changePhuongAnIn(id, p, actorId);
+  if (!res) throw new AppError('HSKT không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  if (res.error === 'BARCODE_TRUNG') {
+    throw new AppError(
+      `Đã có hồ sơ kỹ thuật khác đang dùng mã vạch ${res.barcode_moi} — không thể đổi phương án in`,
+      { status: 409, errorCode: 'BARCODE_TRUNG' }
+    );
+  }
+  sockets.emit('workflow:updated', { stage: 'HSKT', hsktId: res.id });
+  const data = await detail(res.id);
+  return { ...data, barcode_cu: res.barcode_cu, barcode_moi: res.barcode_moi };
 }
 
 module.exports = { list, detail, byPhanIn, byBarcode, changePhuongAnIn, PHUONG_AN };

@@ -302,15 +302,17 @@ async function setDotVaiKtCanKiemTra(dotVaiIds, val) {
 // Khi ERP gửi barcode thật về sau, bản không-barcode bị vô hiệu hóa để không tồn tại 2 HSKT active.
 async function upsertHsktNoBarcode(client, { pinId, maPhan, pain, inset, actorId }) {
   const { rows: cur } = await client.query(
-    `SELECT h.id, h.phuong_an_in FROM hskt_phan_in hp JOIN ho_so_ky_thuat h ON h.id = hp.hskt_id
+    `SELECT h.id, h.phuong_an_in, h.pa_in_sua_tay FROM hskt_phan_in hp JOIN ho_so_ky_thuat h ON h.id = hp.hskt_id
       WHERE hp.phan_in_id = $1 AND hp.dang_hoat_dong AND h.dang_hoat_dong AND h.barcode_hskt IS NULL LIMIT 1`,
     [pinId]
   );
   if (cur.length) {
+    // MES THẮNG: đã sửa tay thì ERP không ghi đè phương án in (chỉ còn cập nhật inset).
+    const painGhi = cur[0].pa_in_sua_tay === true ? null : (pain ?? null);
     await client.query(
       `UPDATE ho_so_ky_thuat SET phuong_an_in = COALESCE($2, phuong_an_in), inset = COALESCE($3, inset),
          updated_date = now() WHERE id = $1`,
-      [cur[0].id, pain ?? null, inset ?? null]
+      [cur[0].id, painGhi, inset ?? null]
     );
     return cur[0].id;
   }
@@ -338,14 +340,18 @@ async function upsertHsktForPin({ pinId, barcodeHskt, pain, inset, maDonReady, m
     return withTransaction((client) => upsertHsktNoBarcode(client, { pinId, maPhan, pain, inset, actorId }));
   }
   return withTransaction(async (client) => {
+    // ⚠⚠ TRA THEO CẢ `barcode_hskt_goc` (mig 064): MES cho phép đổi SỐ CUỐI barcode theo phương án in,
+    // nhưng ERP **giữ nguyên** barcode ⇒ ERP vẫn gửi mã CŨ. Nếu chỉ khớp `barcode_hskt` thì không tìm
+    // thấy ⇒ TẠO HSKT TRÙNG LẶP (2 bản active cho cùng phần in) và thay đổi thủ công coi như bị hủy.
     const { rows: act } = await client.query(
-      'SELECT id, phuong_an_in, phien_ban FROM ho_so_ky_thuat WHERE barcode_hskt=$1 AND dang_hoat_dong=true LIMIT 1',
+      `SELECT id, phuong_an_in, phien_ban, pa_in_sua_tay FROM ho_so_ky_thuat
+        WHERE (barcode_hskt=$1 OR barcode_hskt_goc=$1) AND dang_hoat_dong=true LIMIT 1`,
       [barcodeHskt]
     );
     let hsktId; let phienBan; let curPain;
     if (!act.length) {
       const ins = await client.query(
-        `INSERT INTO ho_so_ky_thuat (barcode_hskt, ma_hskt, phuong_an_in, inset, phien_ban, ma_don_ready, dang_hoat_dong, created_by) VALUES ($1,$1,$2,$3,1,$4,true,$5) RETURNING id`,
+        `INSERT INTO ho_so_ky_thuat (barcode_hskt, barcode_hskt_goc, ma_hskt, phuong_an_in, inset, phien_ban, ma_don_ready, dang_hoat_dong, created_by) VALUES ($1,$1,$1,$2,$3,1,$4,true,$5) RETURNING id`,
         [barcodeHskt, pain ?? null, inset ?? null, maDonReady || null, actorId]
       );
       hsktId = ins.rows[0].id;
@@ -355,10 +361,15 @@ async function upsertHsktForPin({ pinId, barcodeHskt, pain, inset, maDonReady, m
       );
     } else {
       hsktId = act[0].id; phienBan = act[0].phien_ban || 1; curPain = act[0].phuong_an_in;
-      if (pain != null && Number(pain) !== Number(curPain)) {
+      // MES THẮNG: đã sửa tay ở trang Hồ sơ kỹ thuật thì ERP KHÔNG ghi đè phương án in nữa
+      // (cũng không đụng barcode). Vẫn cập nhật inset/ma_don_ready ở dưới.
+      // CỐ Ý không ghi `lich_su_hskt` cho lần bỏ qua: job ERP chạy 5 PHÚT/LẦN sẽ spam lịch sử —
+      // thay bằng badge "Đã sửa tay" ở trang Hồ sơ kỹ thuật.
+      const suaTay = act[0].pa_in_sua_tay === true;
+      if (!suaTay && pain != null && Number(pain) !== Number(curPain)) {
         await client.query('UPDATE ho_so_ky_thuat SET dang_hoat_dong=false, updated_date=now() WHERE id=$1', [hsktId]);
         const ins = await client.query(
-          `INSERT INTO ho_so_ky_thuat (barcode_hskt, ma_hskt, phuong_an_in, inset, phien_ban, ma_don_ready, so_luong_vai_pass, so_lan_in, so_pass_bo, thong_so_json, ghi_chu, dang_hoat_dong, created_by) SELECT barcode_hskt, ma_hskt, $2, inset, $3, ma_don_ready, so_luong_vai_pass, so_lan_in, so_pass_bo, thong_so_json, ghi_chu, true, $4 FROM ho_so_ky_thuat WHERE id=$1 RETURNING id`,
+          `INSERT INTO ho_so_ky_thuat (barcode_hskt, barcode_hskt_goc, pa_in_sua_tay, ma_hskt, phuong_an_in, inset, phien_ban, ma_don_ready, so_luong_vai_pass, so_lan_in, so_pass_bo, thong_so_json, ghi_chu, dang_hoat_dong, created_by) SELECT barcode_hskt, COALESCE(barcode_hskt_goc, barcode_hskt), false, ma_hskt, $2, inset, $3, ma_don_ready, so_luong_vai_pass, so_lan_in, so_pass_bo, thong_so_json, ghi_chu, true, $4 FROM ho_so_ky_thuat WHERE id=$1 RETURNING id`,
           [hsktId, pain, phienBan + 1, actorId]
         );
         const newId = ins.rows[0].id;
