@@ -36,9 +36,37 @@ async function byPhanIn(phanInId) {
 }
 
 // Quét barcode HSKT → HSKT + danh sách phần in (cho modal).
-async function byBarcode(barcode) {
-  const hskt = await repo.activeHsktByBarcode(String(barcode || '').trim());
-  if (!hskt) throw new AppError('Không tìm thấy HSKT theo mã vạch', { status: 404, errorCode: 'NOT_FOUND' });
+// Quét ở trang Hồ sơ kỹ thuật (chốt 2026-08-03):
+//   `kieu='qr'`      → nội dung QR là **CODE PHẦN** (`phan_in.ma_phan`) → ra HSKT của phần in đó.
+//   `kieu='barcode'` → mã vạch 1D là **BARCODE HSKT**, chỉ so **11 SỐ ĐẦU** (số cuối = phương án in,
+//                      đổi PA là đổi số cuối ⇒ so đủ 12 số thì phiếu giấy in mã cũ quét không ra).
+// Không rõ loại (gõ tay / deep-link `?bc=`) → thử lần lượt: khớp barcode CHÍNH XÁC → 11 số đầu → code phần.
+// Trả cùng shape cho mọi đường vào.
+async function byBarcode(barcode, kieu) {
+  const code = String(barcode || '').trim();
+  if (!code) throw new AppError('Chưa có mã để tra', { status: 422, errorCode: 'NO_CODE' });
+
+  let hskt = null;
+  if (kieu === 'qr') {
+    hskt = await repo.activeHsktByMaPhan(code);
+  } else if (kieu === 'barcode') {
+    hskt = await repo.activeHsktByBarcodePrefix(code);
+  } else {
+    hskt = await repo.activeHsktByBarcode(code)
+      || await repo.activeHsktByBarcodePrefix(code)
+      || await repo.activeHsktByMaPhan(code);
+  }
+  // Quét nhầm chế độ là chuyện thường ở xưởng → thử nốt đường còn lại trước khi báo không thấy.
+  if (!hskt) {
+    hskt = kieu === 'qr'
+      ? await repo.activeHsktByBarcodePrefix(code)
+      : await repo.activeHsktByMaPhan(code);
+  }
+  if (!hskt) {
+    const nhan = kieu === 'qr' ? 'code phần' : 'mã vạch';
+    throw new AppError(`Không tìm thấy hồ sơ kỹ thuật theo ${nhan} "${code}"`,
+      { status: 404, errorCode: 'NOT_FOUND' });
+  }
   const phanIn = await repo.phanInOfHskt(hskt.id);
   return { hskt: { ...hskt, phuong_an_in_ten: paLabel(hskt.phuong_an_in) }, phan_in: phanIn };
 }

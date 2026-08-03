@@ -118,14 +118,45 @@ async function activeHsktOfPhanIn(phanInId) {
   return rows[0] || null;
 }
 
-// HSKT active theo barcode (cho luồng quét).
-// ⚠ CỐ Ý khớp CHÍNH XÁC `barcode_hskt` (mã đang hiển thị/in), KHÔNG khớp `barcode_hskt_goc`:
-// chốt nghiệp vụ là phiếu giấy in barcode CŨ thì thôi không quét được nữa, phải in lại phiếu.
+const HSKT_COLS = `id, barcode_hskt, barcode_hskt_goc, pa_in_sua_tay, ma_hskt, phuong_an_in, phien_ban,
+  inset, ma_don_ready`;
+
+// HSKT active theo barcode — khớp CHÍNH XÁC (dùng cho các luồng quét khác ngoài trang Hồ sơ kỹ thuật).
 async function activeHsktByBarcode(barcode) {
   const { rows } = await query(
-    `SELECT id, barcode_hskt, barcode_hskt_goc, pa_in_sua_tay, ma_hskt, phuong_an_in, phien_ban,
-            inset, ma_don_ready
-     FROM ho_so_ky_thuat WHERE barcode_hskt = $1 AND dang_hoat_dong = true LIMIT 1`, [barcode]);
+    `SELECT ${HSKT_COLS} FROM ho_so_ky_thuat WHERE barcode_hskt = $1 AND dang_hoat_dong = true LIMIT 1`,
+    [barcode]);
+  return rows[0] || null;
+}
+
+// HSKT active theo **11 SỐ ĐẦU** của barcode (chốt 2026-08-03, dùng ở trang Hồ sơ kỹ thuật).
+// Barcode HSKT = 12 số: 11 số đầu là ĐỊNH DANH, số cuối là PHƯƠNG ÁN IN (mig 064). Đổi phương án in
+// làm đổi số cuối ⇒ phiếu giấy in mã CŨ sẽ không khớp nếu so cả 12 số. So 11 số đầu thì quét được
+// CẢ mã cũ lẫn mã mới mà vẫn ra đúng 1 hồ sơ.
+// ⚠ An toàn vì 11 số đầu là DUY NHẤT: đối chiếu prod 2026-08-03 = 252/252 HSKT active có barcode 12 số,
+// 252 prefix khác nhau (không va chạm). Vẫn `ORDER BY updated_date DESC` phòng dữ liệu lệch về sau.
+async function activeHsktByBarcodePrefix(barcode) {
+  const s = String(barcode || '').trim();
+  if (!/^\d{11,12}$/.test(s)) return null;
+  const { rows } = await query(
+    `SELECT ${HSKT_COLS} FROM ho_so_ky_thuat
+      WHERE dang_hoat_dong = true AND barcode_hskt ~ '^[0-9]{12}$'
+        AND left(barcode_hskt, 11) = left($1, 11)
+      ORDER BY updated_date DESC NULLS LAST, created_date DESC LIMIT 1`.replace(/\s+/g, ' '), [s]);
+  return rows[0] || null;
+}
+
+// HSKT active theo CODE PHẦN (`phan_in.ma_phan`) — luồng quét QR ở trang Hồ sơ kỹ thuật.
+async function activeHsktByMaPhan(maPhan) {
+  const s = String(maPhan || '').trim();
+  if (!s) return null;
+  const { rows } = await query(
+    `SELECT ${HSKT_COLS.split(',').map((c) => `h.${c.trim()}`).join(', ')}
+     FROM phan_in pin
+     JOIN hskt_phan_in hp ON hp.phan_in_id = pin.id AND hp.dang_hoat_dong
+     JOIN ho_so_ky_thuat h ON h.id = hp.hskt_id AND h.dang_hoat_dong
+     WHERE pin.dang_hoat_dong AND upper(btrim(pin.ma_phan)) = upper($1)
+     ORDER BY h.updated_date DESC NULLS LAST, h.created_date DESC LIMIT 1`.replace(/\s+/g, ' '), [s]);
   return rows[0] || null;
 }
 
@@ -203,4 +234,5 @@ async function changePhuongAnIn(hsktId, pain, actorId) {
 
 module.exports = {
   listHskt, getHsktById, phanInOfHskt, activeHsktOfPhanIn, activeHsktByBarcode, historyByBarcode, changePhuongAnIn,
+  activeHsktByBarcodePrefix, activeHsktByMaPhan,
 };

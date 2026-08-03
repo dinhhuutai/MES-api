@@ -17,7 +17,9 @@ const list = asyncHandler(async (req, res) => {
 });
 
 const byPhanIn = asyncHandler(async (req, res) => ok(res, await service.byPhanIn(req.params.phanInId)));
-const byBarcode = asyncHandler(async (req, res) => ok(res, await service.byBarcode(req.params.barcode)));
+// `?kieu=qr` → nội dung là CODE PHẦN · `?kieu=barcode` → barcode HSKT (so 11 số đầu) · bỏ trống → tự dò.
+const byBarcode = asyncHandler(async (req, res) =>
+  ok(res, await service.byBarcode(req.params.barcode, req.query.kieu)));
 const detail = asyncHandler(async (req, res) => ok(res, await service.detail(req.params.id)));
 
 const changePhuongAnIn = asyncHandler(async (req, res) =>
