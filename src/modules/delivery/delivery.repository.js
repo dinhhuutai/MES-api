@@ -16,7 +16,9 @@ const DON_SUB = (col, alias) => `(SELECT string_agg(DISTINCT ${col}, ', ')
 async function listTemSanSang({ search = '', filters = {}, ngayTu = '', ngayDen = '' } = {}) {
   const f = filters || {};
   const params = [];
-  const conds = ['(t.sl_oqc_dat - t.sl_da_giao) > 0'];
+  // ⚠ LOẠI TEM ĐÃ HỦY (cùng lý do như `quality.repository.listCandByCon`): danh sách lọc theo sổ cái,
+  // mà `softDeletePhanInTx` set tem HUY nhưng KHÔNG xóa sổ cái ⇒ tem của phần in đã hủy vẫn chờ giao.
+  const conds = ["t.trang_thai <> 'HUY'", '(t.sl_oqc_dat - t.sl_da_giao) > 0'];
   if (search) {
     params.push(search); const i = params.length;
     conds.push(`(t.ma_tem ILIKE '%'||$${i}||'%' OR ls.ma_lenh_san_xuat ILIKE '%'||$${i}||'%' OR ${lenhPhanInMatch('ls.id', `$${i}`)})`);

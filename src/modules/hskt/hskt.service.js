@@ -10,8 +10,8 @@ const { PHUONG_AN_IN: PHUONG_AN, isValidPain } = require('../../utils/hskt');
 
 const paLabel = (v) => (v == null ? null : (PHUONG_AN[Number(v)] || String(v)));
 
-async function list({ search, page, limit, offset }) {
-  const { rows, total } = await repo.listHskt({ search, offset, limit });
+async function list({ search, filters, page, limit, offset }) {
+  const { rows, total } = await repo.listHskt({ search, filters, offset, limit });
   const items = rows.map((r) => ({ ...r, phuong_an_in_ten: paLabel(r.phuong_an_in) }));
   return { items, meta: buildMeta(page, limit, total) };
 }

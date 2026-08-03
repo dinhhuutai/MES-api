@@ -119,11 +119,25 @@ const giaCongList = asyncHandler(async (req, res) => {
   return ok(res, await service.listGiaCong({ search: req.query.search || '', page, limit, offset }));
 });
 
-const giaCongToOqc = asyncHandler(async (req, res) =>
-  ok(res, await service.confirmGiaCongToOqc(req.params.lenhId, req.user.id), 'Đã chuyển gia công sang OQC'));
+// Nhận hàng gia công (có thể NHIỀU LẦN): body `so_luong` = SL của lần nhận này; bỏ trống = nhận nốt phần còn lại.
+const giaCongToOqc = asyncHandler(async (req, res) => {
+  const r = await service.confirmGiaCongToOqc(req.params.lenhId, { soLuong: req.body?.so_luong }, req.user.id);
+  return ok(res, r, r.hoan_tat
+    ? 'Đã chuyển gia công sang OQC — lệnh nhận đủ số lượng'
+    : `Đã chuyển ${r.so_luong} sang OQC — còn lại ${r.con_lai}`);
+});
 
 const giaCongHistory = asyncHandler(async (req, res) =>
   ok(res, await service.giaCongHistory(req.query.date)));
+
+const giaCongTemCancelable = asyncHandler(async (req, res) => {
+  const { page, limit, offset } = getPaging(req.query);
+  return ok(res, await service.listGiaCongTemCancelable({ search: req.query.search || '', page, limit, offset }));
+});
+
+const giaCongTemHuy = asyncHandler(async (req, res) =>
+  ok(res, await service.cancelGiaCongTem(req.params.temId, req.body, req.user.id),
+    'Đã hủy tem gia công — số lượng quay lại phần chờ nhận'));
 
 const keHoachTamList = asyncHandler(async (req, res) => {
   const { page, limit, offset } = getPaging(req.query);
@@ -191,7 +205,7 @@ module.exports = {
   confirmCNSP, confirmQA, cancelCNSP, cancelQA, confirmCNSPBatch, confirmQABatch,
   release2Candidates, approveRelease2, approveRelease2Batch, skipTestRun, testRunHistory,
   replanCandidates, replan, replanBatch, planHistory,
-  giaCongList, giaCongToOqc, giaCongHistory,
+  giaCongList, giaCongToOqc, giaCongHistory, giaCongTemCancelable, giaCongTemHuy,
   keHoachTamList, keHoachTamSet, keHoachTamConfirm, keHoachTamUpdate, keHoachTamDelete, keHoachTamHistory, keHoachTamDone,
   cancelableLenh, cancelLenh, returnTestRunToReady,
   release1Done, release2Done, replanDone, testCnspDone, testQaDone,

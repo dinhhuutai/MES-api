@@ -1003,34 +1003,109 @@ async function giaCongHistory(date) {
 }
 
 // Kế hoạch xác nhận đã nhận lại hàng gia công → tạo phiếu HOAN_TAT + tem CHO_OQC (seed sl_kcs_dat = SL,
-// coi như đã KCS đạt ⇒ con_oqc>0) + set lệnh HOAN_TAT, rồi đưa dòng chảy sang OQC. Nguồn hiển thị = "Gia công".
-async function confirmGiaCongToOqc(lenhId, actorId) {
+// coi như đã KCS đạt ⇒ con_oqc>0), rồi đưa dòng chảy sang OQC. Nguồn hiển thị = "Gia công".
+// ⚠ HÀNG GIA CÔNG CÓ THỂ VỀ NHIỀU LẦN: mỗi lần nhận = 1 phiếu + 1 TEM RIÊNG mang SL của lần đó
+// (OQC bốc mẫu từng tem độc lập, truy vết được lô nào về lúc nào). Lệnh CHỈ rời màn Gia công
+// (→ HOAN_TAT + tracking sang OQC) khi Σ SL đã chuyển ĐỦ `so_luong_release`; chưa đủ thì vẫn đậu lại
+// với phần "còn lại" để nhận tiếp. Bỏ trống `soLuong` = chuyển hết phần còn lại (hành vi cũ).
+async function confirmGiaCongToOqc(lenhId, { soLuong } = {}, actorId) {
   const lenh = await repo.getGiaCongLenh(lenhId);
   if (!lenh) throw new AppError('Lệnh sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   if (lenh.trang_thai !== 'GIA_CONG') {
     throw new AppError('Lệnh không ở trạng thái chờ gia công (đã chuyển OQC?)', { status: 409, errorCode: 'NOT_GIA_CONG' });
   }
-  const qty = Number(lenh.so_luong_release) || 0;
-  if (!(qty > 0)) throw new AppError('SL release của lệnh không hợp lệ', { status: 422, errorCode: 'INVALID_QTY' });
+  const tong = Number(lenh.so_luong_release) || 0;
+  const daChuyen = Number(lenh.da_chuyen) || 0;
+  const conLai = tong - daChuyen;
+  if (!(tong > 0)) throw new AppError('SL release của lệnh không hợp lệ', { status: 422, errorCode: 'INVALID_QTY' });
+  if (!(conLai > 0)) {
+    throw new AppError('Lệnh đã chuyển đủ số lượng xuống OQC', { status: 409, errorCode: 'DA_DU_SL' });
+  }
+  const qty = soLuong == null || soLuong === '' ? conLai : Math.trunc(Number(soLuong));
+  if (!Number.isFinite(qty) || qty <= 0) {
+    throw new AppError('Số lượng nhận về phải lớn hơn 0', { status: 422, errorCode: 'INVALID_QTY' });
+  }
+  if (qty > conLai) {
+    throw new AppError(`Số lượng nhận về (${qty}) vượt phần còn lại của lệnh (${conLai})`,
+      { status: 422, errorCode: 'OVER_REMAINING' });
+  }
+  const xong = daChuyen + qty >= tong;
 
   const maTem = await withTransaction(async (client) => {
     const maPhieu = await productionRepo.nextMaPhieuTx(client);
     const phieuId = await productionRepo.createPhieuDone(client, { lenhId, chuyenId: lenh.chuyen_id, maPhieu, soLuong: qty }, actorId);
     const mt = await productionRepo.nextMaTemTx(client);
     await productionRepo.createTemGiaCongOqc(client, { phieuId, maTem: mt, soLuong: qty }, actorId);
-    await productionRepo.setLenhTrangThai(client, lenhId, 'HOAN_TAT', actorId);
+    // Chưa đủ SL → GIỮ trạng thái GIA_CONG để lệnh còn ở màn Gia công mà nhận nốt.
+    if (xong) await productionRepo.setLenhTrangThai(client, lenhId, 'HOAN_TAT', actorId);
     await client.query(
       `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
        VALUES ('lenh_san_xuat', $1, 'GIA_CONG_CHUYEN_OQC', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`.replace(/\s+/g, ' '),
-      [String(lenhId), JSON.stringify({ ma_lenh: lenh.ma_lenh_san_xuat, so_luong: qty, ma_tem: mt }), actorId]
+      [String(lenhId), JSON.stringify({
+        ma_lenh: lenh.ma_lenh_san_xuat, so_luong: qty, ma_tem: mt,
+        da_chuyen: daChuyen + qty, con_lai: tong - (daChuyen + qty), hoan_tat: xong,
+      }), actorId]
     );
     return mt;
   });
-  await tracking.moveByLenh(lenhId, 'OQC', actorId);
-  await qaRepo.resolveReturnsMany('TEST_RUN', lenh.dot_vai_ids || []);
-  sockets.emit('workflow:updated', { lenhId, stage: 'OQC', giaCong: true });
+  // Chỉ đẩy dòng chảy sang OQC khi đã nhận đủ; tem của các lần trước vẫn vào màn OQC bình thường
+  // (danh sách OQC lọc theo SỔ CÁI tem `con_oqc > 0`, không phụ thuộc trạng thái lệnh).
+  if (xong) {
+    await tracking.moveByLenh(lenhId, 'OQC', actorId);
+    await qaRepo.resolveReturnsMany('TEST_RUN', lenh.dot_vai_ids || []);
+  }
+  sockets.emit('workflow:updated', { lenhId, stage: xong ? 'OQC' : 'GIA_CONG', giaCong: true });
   sockets.emit('dashboard:refresh', {});
-  return { id: lenhId, ma_tem: maTem, stage: 'OQC' };
+  return {
+    id: lenhId, ma_tem: maTem, stage: xong ? 'OQC' : 'GIA_CONG',
+    so_luong: qty, da_chuyen: daChuyen + qty, con_lai: tong - (daChuyen + qty), hoan_tat: xong,
+  };
+}
+
+// ----- HỦY TEM GIA CÔNG (tab "Hủy lệnh xác nhận") -----
+// Bấm "Chuyển OQC" nhầm / nhập sai SL → hủy tem đó. SL của tem quay lại phần CHƯA chuyển của lệnh
+// (KHÔNG cộng thêm vào `so_luong_release`), lệnh hiện lại ở màn Gia công để nhận tiếp.
+async function listGiaCongTemCancelable({ search, page, limit, offset }) {
+  const { rows, total } = await repo.listGiaCongTemCancelable({ search: search || '', offset, limit });
+  return { items: rows, meta: buildMeta(page, limit, total) };
+}
+
+async function cancelGiaCongTem(temId, { lyDo } = {}, actorId) {
+  const t = await repo.getGiaCongTem(temId);
+  if (!t) throw new AppError('Tem không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  if (t.ma_loai_chuyen !== 'GIA_CONG') {
+    throw new AppError('Tem này không thuộc lệnh gia công', { status: 409, errorCode: 'NOT_GIA_CONG' });
+  }
+  if (t.trang_thai === 'HUY') throw new AppError('Tem đã bị hủy', { status: 409, errorCode: 'DA_HUY' });
+  if (Number(t.sl_oqc_dat) > 0 || Number(t.sl_da_giao) > 0) {
+    throw new AppError('Tem đã qua OQC hoặc đã giao — không hủy được', { status: 409, errorCode: 'DA_XU_LY' });
+  }
+  const ly = String(lyDo || '').trim();
+  if (!ly) throw new AppError('Nhập lý do hủy tem gia công', { status: 422, errorCode: 'NO_LY_DO' });
+
+  await withTransaction(async (client) => {
+    await repo.cancelGiaCongTemTx(client, {
+      temId, phieuId: t.phieu_id, lenhId: t.lenh_id, lenhTrangThai: t.lenh_trang_thai,
+    }, actorId);
+    await client.query(
+      `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+       VALUES ('tem', $1, 'HUY_TEM_GIA_CONG', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`.replace(/\s+/g, ' '),
+      [String(temId), JSON.stringify({
+        ma_tem: t.ma_tem, ma_lenh: t.ma_lenh_san_xuat, so_luong: t.so_luong, ly_do: ly,
+        lenh_trang_thai_cu: t.lenh_trang_thai,
+      }), actorId]
+    );
+  });
+  // Lệnh quay lại chờ gia công ⇒ kéo dòng chảy về theo (best-effort, giống lúc tạo lệnh gia công).
+  sockets.emit('workflow:updated', { lenhId: t.lenh_id, stage: 'GIA_CONG', giaCong: true });
+  sockets.emit('dashboard:refresh', {});
+  const sau = await repo.getGiaCongLenh(t.lenh_id);
+  return {
+    tem_id: temId, ma_tem: t.ma_tem, lenh_id: t.lenh_id, ma_lenh: t.ma_lenh_san_xuat,
+    so_luong: t.so_luong,
+    da_chuyen: sau ? Number(sau.da_chuyen) || 0 : null,
+    con_lai: sau ? (Number(sau.so_luong_release) || 0) - (Number(sau.da_chuyen) || 0) : null,
+  };
 }
 
 async function replan(lenhId, { chuyenId, ngayKeHoach, lyDo }, actorId) {
@@ -1165,7 +1240,7 @@ module.exports = {
   returnTestRunToReady,
   listRelease2Candidates, approveRelease2, approveRelease2Batch, skipTestRun, testRunHistory,
   listReplanCandidates, replan, replanBatch, planHistory,
-  listGiaCong, confirmGiaCongToOqc, giaCongHistory,
+  listGiaCong, confirmGiaCongToOqc, giaCongHistory, listGiaCongTemCancelable, cancelGiaCongTem,
   listKeHoachTam, keHoachTamSet, confirmKeHoachTam, updateKeHoachTam, deleteKeHoachTam, keHoachTamHistory, keHoachTamDone,
   listCancelableLenh, rollbackLenh,
   release1Done, release2Done, replanDone, testCnspDone, testQaDone,

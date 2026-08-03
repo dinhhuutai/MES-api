@@ -5,9 +5,15 @@ const asyncHandler = require('../../utils/asyncHandler');
 const { ok } = require('../../utils/response');
 const { getPaging } = require('../../utils/pagination');
 
+// Lọc chạy ở SERVER (danh sách phân trang server-side) — xem `hskt.repository.HSKT_FILTER_COLS`.
+const FILTER_KEYS = ['khach', 'don', 'maHang', 'mauVai', 'kichVai', 'kichPhim', 'codePhan', 'loaiDotVai',
+  'phuongAnIn', 'gomSet', 'suaTay'];
+
 const list = asyncHandler(async (req, res) => {
   const { page, limit, offset } = getPaging(req.query);
-  return ok(res, await service.list({ search: req.query.search || '', page, limit, offset }));
+  const filters = {};
+  FILTER_KEYS.forEach((k) => { if (req.query[k]) filters[k] = req.query[k]; });
+  return ok(res, await service.list({ search: req.query.search || '', filters, page, limit, offset }));
 });
 
 const byPhanIn = asyncHandler(async (req, res) => ok(res, await service.byPhanIn(req.params.phanInId)));

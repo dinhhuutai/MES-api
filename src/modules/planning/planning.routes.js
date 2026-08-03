@@ -70,7 +70,11 @@ router.post('/replan/:lenhId', rbac('RELEASE1', 'RELEASE2'), c.replan);
 
 // Gia công: Kế hoạch nhận lại hàng gia công → chuyển OQC
 router.get('/gia-cong', rbac('RELEASE1', 'RELEASE2'), c.giaCongList);
+// ĐẶT TRƯỚC route có tham số để 'history'/'tem' không bị hiểu thành :lenhId.
 router.get('/gia-cong/history', rbac('RELEASE1', 'RELEASE2'), c.giaCongHistory);
+// Hủy tem gia công (tab ở trang "Hủy lệnh xác nhận") — SL quay lại phần chờ nhận của lệnh.
+router.get('/gia-cong/tem/cancelable', rbac('RELEASE1', 'RELEASE2'), c.giaCongTemCancelable);
+router.post('/gia-cong/tem/:temId/huy', rbac('RELEASE1', 'RELEASE2'), c.giaCongTemHuy);
 router.post('/gia-cong/:lenhId/chuyen-oqc', rbac('RELEASE1', 'RELEASE2'), c.giaCongToOqc);
 
 // Kế hoạch tạm: xác nhận lại Release 1 khi phần in Ready xong

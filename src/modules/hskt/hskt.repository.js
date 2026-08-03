@@ -14,7 +14,44 @@ const PIN_JOIN = `JOIN phan_in pin ON pin.id = hp.phan_in_id AND pin.dang_hoat_d
 // Danh sách HSKT MỚI NHẤT (dang_hoat_dong) + số phần in + code phần gộp + thông tin đơn hàng
 // (khách/đơn/mã hàng/màu/kích/loại đợt vải) GỘP DISTINCT theo các phần in trong HSKT — 1 HSKT có thể nhiều phần in.
 // Tìm theo barcode HSKT / code phần.
-async function listHskt({ search = '', offset = 0, limit = 20 }) {
+// Lọc NHIỀU TRƯỜNG chạy ở SERVER (không lọc client): danh sách phân trang server-side nên lọc ở client
+// chỉ lọc được đúng trang đang xem ⇒ sai. Các trường khách/đơn/mã hàng/màu/kích lọc trên GIÁ TRỊ ĐÃ GỘP
+// (`string_agg` của LATERAL `info`) — 1 HSKT nhiều phần in thì khớp nếu BẤT KỲ phần in nào khớp.
+const HSKT_FILTER_COLS = {
+  khach: 'info.ten_khach_hang',
+  don: 'info.ma_don_hang',
+  maHang: 'info.ma_hang',
+  mauVai: 'info.mau_vai',
+  kichVai: 'info.kich_vai',
+  kichPhim: 'info.kich_phim',
+  codePhan: 'info.code_phan_list',
+  loaiDotVai: 'info.loai_dot_vai',
+};
+
+async function listHskt({ search = '', filters = {}, offset = 0, limit = 20 }) {
+  const f = filters || {};
+  const params = [search];
+  const conds = [];
+  Object.entries(HSKT_FILTER_COLS).forEach(([key, col]) => {
+    if (!f[key]) return;
+    params.push(f[key]);
+    conds.push(`${col} ILIKE '%'||$${params.length}||'%'`);
+  });
+  // Phương án in: khớp CHÍNH XÁC (0 chưa xác định · 1 Bàn · 2 Máy · 3 Robot).
+  if (f.phuongAnIn !== undefined && f.phuongAnIn !== null && f.phuongAnIn !== '') {
+    params.push(Number(f.phuongAnIn));
+    conds.push(`h.phuong_an_in = $${params.length}`);
+  }
+  // Gom set: 'co' = inset ≠ 0 · 'khong' = inset 0/NULL.
+  if (f.gomSet === 'co') conds.push('(h.inset IS NOT NULL AND h.inset <> 0)');
+  if (f.gomSet === 'khong') conds.push('(h.inset IS NULL OR h.inset = 0)');
+  // Đã sửa tay phương án in.
+  if (f.suaTay === 'co') conds.push('h.pa_in_sua_tay = true');
+  if (f.suaTay === 'khong') conds.push('COALESCE(h.pa_in_sua_tay, false) = false');
+  const extra = conds.length ? `AND ${conds.join(' AND ')}` : '';
+  const pLimit = params.length + 1;
+  const pOffset = params.length + 2;
+
   const sql = `
     SELECT h.id, h.barcode_hskt, h.barcode_hskt_goc, h.pa_in_sua_tay,
            h.ma_hskt, h.phuong_an_in, h.phien_ban, h.inset, h.ma_don_ready,
@@ -46,9 +83,10 @@ async function listHskt({ search = '', offset = 0, limit = 20 }) {
       AND ($1 = '' OR h.barcode_hskt ILIKE '%'||$1||'%' OR h.ma_hskt ILIKE '%'||$1||'%'
            OR EXISTS (SELECT 1 FROM hskt_phan_in hp JOIN phan_in pin ON pin.id = hp.phan_in_id
                       WHERE hp.hskt_id = h.id AND hp.dang_hoat_dong AND pin.ma_phan ILIKE '%'||$1||'%'))
+      ${extra}
     ORDER BY h.updated_date DESC NULLS LAST, h.created_date DESC
-    LIMIT $2 OFFSET $3`;
-  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [search, limit, offset]);
+    LIMIT $${pLimit} OFFSET $${pOffset}`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [...params, limit, offset]);
   const total = rows[0] ? rows[0].total : 0;
   return { rows, total };
 }
@@ -110,7 +148,8 @@ async function historyByBarcode(barcode) {
 }
 
 // Đổi phương án in → TẠO PHIÊN BẢN MỚI (giữ bản cũ), relink phần in, ghi lịch sử. Trả về id HSKT mới.
-// ĐỔI LUÔN SỐ CUỐI `barcode_hskt` theo phương án in (1 Bàn · 2 Máy · 3 Robot) — xem `utils/hskt.js`.
+// ĐỔI LUÔN SỐ CUỐI `barcode_hskt` theo phương án in (1 Bàn · 2 Máy · 3 Robot; 0 = chưa xác định, do
+// ERP gửi — đổi từ 0 sang 1/2/3 VẪN đổi được mã) — xem `utils/hskt.js`.
 // Đồng thời: giữ `barcode_hskt_goc` (barcode ERP, để đồng bộ ERP còn tra ra) + bật `pa_in_sua_tay`
 // (khóa không cho ERP ghi đè lại phương án in).
 // Trả `{ id, barcode_cu, barcode_moi }`, hoặc `{ error: 'BARCODE_TRUNG' }` khi barcode mới đã có chủ.
@@ -153,7 +192,7 @@ async function changePhuongAnIn(hsktId, pain, actorId) {
     await client.query('UPDATE hskt_phan_in SET dang_hoat_dong=false WHERE hskt_id=$1', [hsktId]);
     const doiMa = barcodeMoi && barcodeMoi !== h.barcode_hskt
       ? ` · mã vạch ${h.barcode_hskt} → ${barcodeMoi}`
-      : (h.barcode_hskt ? ' · mã vạch giữ nguyên (không đúng định dạng 11 số + 1..3)' : '');
+      : (h.barcode_hskt ? ' · mã vạch giữ nguyên (không đúng định dạng 11 số + 0..3)' : '');
     await client.query(
       `INSERT INTO lich_su_hskt (hskt_id, hanh_dong, chi_tiet, phien_ban, nguoi_id)
        VALUES ($1,'DOI_PHUONG_AN_IN',$2,$3,$4)`,

@@ -58,7 +58,11 @@ const TEM_CTX = `
 async function listCandByCon(condExpr, { search = '', filters = {} } = {}) {
   const f = filters || {};
   const params = [];
-  const conds = [condExpr];
+  // ⚠⚠ LOẠI TEM ĐÃ HỦY — bắt buộc, không bỏ: các danh sách này lọc theo SỔ CÁI (`con_X > 0`), mà nhiều
+  // đường đặt tem `HUY` KHÔNG xóa sổ cái (rõ nhất: `softDeletePhanInTx` — hủy phần in set tem HUY nhưng
+  // giữ nguyên sl_kcs_dat/sl_sua_dat). Không có điều kiện này thì tem của phần in đã hủy vẫn nằm chình
+  // ình ở màn Sửa/OQC/Giao. (KCS vô tình thoát nhờ đòi thêm `trang_thai='DA_KHO'`.)
+  const conds = ["t.trang_thai <> 'HUY'", condExpr];
   // Ô tìm kiếm chung (chỉ thêm ILIKE vào SQL khi CÓ nhập — giữ query gọn cho IPS khi không lọc).
   if (search) {
     params.push(search);

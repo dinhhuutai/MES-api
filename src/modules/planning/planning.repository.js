@@ -370,7 +370,10 @@ async function getSetForRelease(setId) {
 
 async function getSetMembersForRelease(setId) {
   const { rows } = await query(
-    `SELECT dv.id AS dot_vai_id, COALESCE(dv.so_luong_vai_ve,0)::int AS so_luong,
+    // ⚠ PHẢI trả `phan_in_id`: `keHoachTamSet` (set chưa đủ Ready → lưu kế hoạch tạm) đổ thẳng vào
+    // `ke_hoach_tam.phan_in_id` — cột NOT NULL. Thiếu cột này thì MỌI lần lập kế hoạch sớm cho gom set
+    // đều 500 "Lỗi hệ thống" (đợt vải LẺ không dính vì đi qua `createRelease1`).
+    `SELECT dv.id AS dot_vai_id, dv.phan_in_id, COALESCE(dv.so_luong_vai_ve,0)::int AS so_luong,
             EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
                     WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT') AS qc_done,
             EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
@@ -543,6 +546,8 @@ async function listGiaCongLenh({ search = '', offset = 0, limit = 50 }) {
            info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan, info.tinh_chat_in,
            info.phuong_an_in, info.barcode_hskt, info.hskt_id, info.hskt_inset,
            info.so_luong_don_hang, info.so_luong_vai_ve, info.ngay_vai_ve, info.han_giao_hang, info.loai_dot_vai,
+           ${GIA_CONG_DA_CHUYEN} AS da_chuyen,
+           (ls.so_luong_release - ${GIA_CONG_DA_CHUYEN})::int AS con_lai,
            (SELECT count(*) FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id)::int AS so_dot_vai
     ${FROM}
     ORDER BY ls.ngay_ke_hoach NULLS LAST, ls.created_date
@@ -557,11 +562,18 @@ async function listGiaCongLenh({ search = '', offset = 0, limit = 50 }) {
 
 // Lịch sử "hàng về" gia công đã chuyển OQC trong ngày (từ audit_log GIA_CONG_CHUYEN_OQC).
 // Trả đủ trường để in tem "TH VỀ".
+// `so_luong_lan_nay`/`con_lai` = SL của ĐÚNG lần nhận đó (hàng gia công về nhiều lần) — tem "TH VỀ" phải
+// in số này chứ không phải `so_luong_release` của cả lệnh. Lần chuyển CŨ không có 2 khóa này trong
+// payload → NULL, FE lùi về SL release như trước.
+// ⚠ KHÔNG đặt comment `--` trong chuỗi SQL bên dưới: nó bị `.replace(/\s+/g,' ')` gộp 1 dòng (IPS-safe)
+// nên mọi thứ sau `--` sẽ thành comment → syntax error.
 async function listGiaCongHistory(date) {
   const sql = `
     SELECT a.thoi_gian AS tg, nd.ho_ten AS nguoi,
            ls.id AS lenh_id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.created_date,
            a.gia_tri_moi->>'ma_tem' AS ma_tem,
+           (a.gia_tri_moi->>'so_luong')::int AS so_luong_lan_nay,
+           (a.gia_tri_moi->>'con_lai')::int AS con_lai,
            cs.ma_chuyen, cs.ten_chuyen,
            info.ten_khach_hang, info.ma_don_hang, info.ma_hang,
            info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan, info.tinh_chat_in,
@@ -578,15 +590,99 @@ async function listGiaCongHistory(date) {
   return rows;
 }
 
-// Lệnh gia công (để chuyển OQC): SL + đợt vải junction.
+// SL gia công ĐÃ chuyển xuống OQC của 1 lệnh = Σ SL tem non-HUY (hàng gia công có thể về NHIỀU LẦN,
+// mỗi lần 1 tem riêng). Hủy tem ⇒ tem thành HUY ⇒ SL đó tự quay lại phần "còn lại" của lệnh.
+const GIA_CONG_DA_CHUYEN = `(SELECT COALESCE(SUM(t.so_luong),0)::int FROM phieu_san_xuat ps
+  JOIN tem t ON t.phieu_san_xuat_id = ps.id AND t.trang_thai <> 'HUY'
+  WHERE ps.lenh_san_xuat_id = ls.id)`;
+
+// Lệnh gia công (để chuyển OQC): SL + đợt vải junction + SL đã chuyển/còn lại.
 async function getGiaCongLenh(lenhId) {
   const { rows } = await query(
     `SELECT ls.id, ls.ma_lenh_san_xuat, ls.trang_thai, ls.chuyen_id, ls.so_luong_release,
+            ${GIA_CONG_DA_CHUYEN} AS da_chuyen,
             ARRAY(SELECT lsd.dot_vai_ve_id FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id) AS dot_vai_ids
      FROM lenh_san_xuat ls WHERE ls.id = $1`,
     [lenhId]
   );
   return rows[0] || null;
+}
+
+// ----- HỦY TEM GIA CÔNG (tab "Hủy lệnh xác nhận") -----
+// Hàng gia công về nhiều lần; lỡ bấm "Chuyển OQC" sai SL thì hủy tem đó ⇒ SL quay lại phần CHƯA chuyển
+// của lệnh, lệnh hiện lại ở màn Gia công để nhận tiếp. KHÔNG cộng thêm vào `so_luong_release`.
+// Chỉ hủy được tem CHƯA OQC và CHƯA giao (sổ cái còn nguyên).
+async function listGiaCongTemCancelable({ search = '', offset = 0, limit = 50 }) {
+  const FROM = `
+    FROM tem t
+    JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+    JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+    JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+    JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id AND lc.ma_loai = 'GIA_CONG'
+    LEFT JOIN nguoi_dung nd ON nd.id = t.created_by
+    ${PHAN_INFO_LATERAL}
+    WHERE t.trang_thai <> 'HUY' AND t.sl_oqc_dat = 0 AND t.sl_da_giao = 0
+      AND ($1 = '' OR t.ma_tem ILIKE '%'||$1||'%' OR ls.ma_lenh_san_xuat ILIKE '%'||$1||'%'
+           OR ${lenhPhanInMatch('ls.id', '$1')})`;
+  const dataSql = `
+    SELECT t.id AS tem_id, t.ma_tem, t.so_luong, t.created_date AS tg_chuyen,
+           ls.id AS lenh_id, ls.ma_lenh_san_xuat, ls.trang_thai AS lenh_trang_thai, ls.so_luong_release,
+           ${GIA_CONG_DA_CHUYEN} AS da_chuyen,
+           cs.ma_chuyen, cs.ten_chuyen, nd.ho_ten AS nguoi_chuyen,
+           info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan,
+           info.mau_vai, info.kich_vai, info.kich_phim, info.tinh_chat_in, info.han_giao_hang
+    ${FROM}
+    ORDER BY t.created_date DESC
+    LIMIT $2 OFFSET $3`;
+  const countSql = `SELECT count(*)::int AS total ${FROM}`;
+  const [data, count] = await Promise.all([
+    query(dataSql.replace(/\s+/g, ' '), [search, limit, offset]),
+    query(countSql.replace(/\s+/g, ' '), [search]),
+  ]);
+  return { rows: data.rows, total: count.rows[0].total };
+}
+
+// 1 tem gia công + bối cảnh lệnh (để guard trước khi hủy).
+async function getGiaCongTem(temId) {
+  const { rows } = await query(
+    `SELECT t.id AS tem_id, t.ma_tem, t.so_luong, t.trang_thai, t.sl_oqc_dat, t.sl_da_giao,
+            ps.id AS phieu_id, ls.id AS lenh_id, ls.ma_lenh_san_xuat, ls.trang_thai AS lenh_trang_thai,
+            ls.so_luong_release, lc.ma_loai AS ma_loai_chuyen,
+            ARRAY(SELECT lsd.dot_vai_ve_id FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id) AS dot_vai_ids
+     FROM tem t
+     JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+     JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+     LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+     LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
+     WHERE t.id = $1`.replace(/\s+/g, ' '),
+    [temId]
+  );
+  return rows[0] || null;
+}
+
+// Hủy 1 tem gia công trong transaction.
+// ⚠⚠ PHẢI xóa cả `sl_kcs_dat` chứ không chỉ đặt trang_thai='HUY': danh sách OQC lọc theo SỔ CÁI
+// (`con_oqc = (sl_kcs_dat + sl_sua_dat) - sl_oqc_dat > 0`) và **KHÔNG lọc tem HUY** (`TEM_CTX`),
+// nên tem gia công bị hủy mà còn `sl_kcs_dat` sẽ vẫn nằm chình ình ở màn OQC.
+async function cancelGiaCongTemTx(client, { temId, phieuId, lenhId, lenhTrangThai }, actorId) {
+  await client.query(
+    `UPDATE tem SET trang_thai='HUY', sl_kcs_dat=0, updated_by=$2, updated_date=CURRENT_TIMESTAMP WHERE id=$1`,
+    [temId, actorId]
+  );
+  await client.query('DELETE FROM tem_xe_phoi WHERE tem_id = $1', [temId]);
+  // Mỗi lần nhận hàng = 1 phiếu + 1 tem ⇒ phiếu không còn tem sống thì hủy luôn cho khỏi phiếu rỗng.
+  await client.query(
+    `UPDATE phieu_san_xuat SET trang_thai='HUY', updated_by=$2, updated_date=CURRENT_TIMESTAMP
+      WHERE id=$1 AND NOT EXISTS (SELECT 1 FROM tem t WHERE t.phieu_san_xuat_id=$1 AND t.trang_thai <> 'HUY')`,
+    [phieuId, actorId]
+  );
+  // Lệnh đã HOÀN TẤT (đã chuyển đủ) → trả về GIA_CONG để hiện lại ở màn Gia công mà nhận tiếp.
+  if (lenhTrangThai === 'HOAN_TAT') {
+    await client.query(
+      `UPDATE lenh_san_xuat SET trang_thai='GIA_CONG', updated_by=$2, updated_date=CURRENT_TIMESTAMP WHERE id=$1`,
+      [lenhId, actorId]
+    );
+  }
 }
 
 // ----- KẾ HOẠCH TẠM (mig 058): lập kế hoạch sớm cho đợt vải CHƯA QC -----
@@ -1220,6 +1316,7 @@ module.exports = {
   testRunHistoryByDate, testRunsByLenh,
   listReplanCandidates, getLenhForReplan, updateLenhPlan, logPlanChange, planHistoryByDate,
   listGiaCongLenh, getGiaCongLenh, listGiaCongHistory,
+  listGiaCongTemCancelable, getGiaCongTem, cancelGiaCongTemTx,
   upsertKeHoachTam, listKeHoachTamRows, getKeHoachTam, getOpenSetOfDotVai, updateKeHoachTam, deleteKeHoachTam, deleteKeHoachTamByDotVai,
   logKeHoachTam, keHoachTamHistoryByDate, keHoachTamDoneByDate,
   listCancelableLenh, getLenhForCancel, cancelLenhOrder, cancelReadyQcForDotVai, logLenhCancel,

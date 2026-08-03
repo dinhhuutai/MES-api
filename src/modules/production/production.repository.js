@@ -36,12 +36,22 @@ const SLA_LATERAL = `
 const SLA_COLS = 'sla.tg_vao, sla.sla_phut, sla.canh_bao_truoc_phut,';
 
 // ----- XÁC NHẬN CHẠY -----
+// Loại chuyền KHÔNG hiện ở danh sách "Chờ chạy" (chốt nghiệp vụ 2026-08-03: màn Sản xuất chỉ điều hành
+// chuyền MÁY; Bàn/Robot không xác nhận chạy trên MES). Cố ý loại trừ theo DANH SÁCH ĐEN chứ không lọc
+// `ma_loai='MAY'`: lệnh ÉP ỦI của phần in in kiếng (giai_doan='EP_UI') nằm trên chuyền loại `EP` và
+// PHẢI còn hiện, nếu whitelist theo MAY thì luồng in kiếng đứt giữa chừng.
+// ⚠ CHỈ lọc danh sách CHỜ CHẠY — lệnh ĐANG CHẠY (monitorRunning) giữ nguyên để hàng lỡ chạy còn
+// in nốt tem / bấm "Chạy hoàn tất".
+const AN_LOAI_CHUYEN_CHO_CHAY = ['BAN', 'ROBOT'];
+
 async function listProductionCandidates({ search = '', offset = 0, limit = 20 }) {
   const FROM = `
     FROM lenh_san_xuat ls
     JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+    LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
     ${PHAN_INFO_LATERAL}
     WHERE ls.trang_thai = 'RELEASE_2'
+      AND (lc.ma_loai IS NULL OR lc.ma_loai <> ALL($2::text[]))
       AND ($1 = '' OR ls.ma_lenh_san_xuat ILIKE '%'||$1||'%' OR ${lenhPhanInMatch('ls.id', '$1')})`;
   const dataSql = `
     SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.chuyen_id, ls.ngay_ke_hoach, ls.giai_doan,
@@ -59,11 +69,11 @@ async function listProductionCandidates({ search = '', offset = 0, limit = 20 })
            ${PHAN_AGG} AS phan_list
     ${FROM}
     ORDER BY ls.ngay_ke_hoach NULLS LAST, ls.created_date
-    LIMIT $2 OFFSET $3`;
+    LIMIT $3 OFFSET $4`;
   const countSql = `SELECT count(*)::int AS total ${FROM}`;
   const [data, count] = await Promise.all([
-    query(dataSql, [search, limit, offset]),
-    query(countSql, [search]),
+    query(dataSql, [search, AN_LOAI_CHUYEN_CHO_CHAY, limit, offset]),
+    query(countSql, [search, AN_LOAI_CHUYEN_CHO_CHAY]),
   ]);
   return { rows: data.rows, total: count.rows[0].total };
 }
