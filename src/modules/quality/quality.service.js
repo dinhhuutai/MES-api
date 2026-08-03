@@ -49,10 +49,52 @@ async function attachPrevConfirmer(rows, key) {
 //   nguồn KCS (tem 15-) → phần chờ OQC quay lại CHƯA KIỂM (con_kcs) → tem về màn KCS.
 //   nguồn SỬA (tem 17-) → phần chờ OQC quay lại CHỜ SỬA  (con_sua) → tem về màn Sửa.
 // (Trả nguồn Sửa mà giảm sl_kcs_dat thì sổ cái không đổi ⇒ tem nằm lại OQC — lỗi cũ.)
+// HÀNG GIA CÔNG bị OQC đánh không đạt → KHÔNG trả về KCS (gia công không hề qua KCS — tem được seed
+// `sl_kcs_dat` chỉ để lọt vào OQC) mà **trả về KẾ HOẠCH**: hủy tem đó ⇒ SL quay lại phần "Còn lại" của
+// lệnh, lệnh `HOAN_TAT → GIA_CONG` để hiện lại ở màn Kế hoạch > Gia công với badge "OQC trả về".
+// Kế hoạch bấm "Trả lại nhà gia công" (planning.service.traLaiNhaGiaCong) rồi nhận về lại như thường.
+async function returnOqcGiaCong(t, lyDo, actorId) {
+  await withTransaction(async (client) => {
+    await planningRepo.cancelGiaCongTemTx(client, {
+      temId: t.tem_id, phieuId: t.phieu_id, lenhId: t.lenh_id, lenhTrangThai: t.lenh_trang_thai,
+    }, actorId);
+    await client.query(
+      `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+       VALUES ('lenh_san_xuat', $1, 'OQC_TRA_VE_GIA_CONG', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`.replace(/\s+/g, ' '),
+      [String(t.lenh_id), JSON.stringify({
+        ma_lenh: t.ma_lenh_san_xuat, ma_tem: t.ma_tem, so_luong: t.so_luong, ly_do: lyDo,
+      }), actorId]
+    );
+  });
+  // Cờ sống trên LỆNH (tem đã hủy) → màn Gia công hiện badge + biết đang chờ trả lại nhà gia công.
+  await repo.insertQcTraVe({ loai: 'OQC_GIA_CONG', lenhId: t.lenh_id, temId: t.tem_id, lyDo }, actorId);
+  sockets.emit('quality:updated', { temId: t.tem_id, stage: 'OQC', next: 'TRA_VE_GIA_CONG' });
+  sockets.emit('workflow:updated', { lenhId: t.lenh_id, stage: 'GIA_CONG', giaCong: true });
+  sockets.emit('dashboard:refresh', {});
+  return {
+    tem_id: t.tem_id, nguon: 'GIA_CONG', so_luong: t.so_luong, next: 'TRA_VE_GIA_CONG',
+    lenh_id: t.lenh_id, ma_lenh: t.ma_lenh_san_xuat, tem_sua_huy: null,
+  };
+}
+
 async function returnOqcToKcs(temId, body, actorId) {
   const nguon = body.nguon === 'SUA' ? 'SUA' : 'KCS';
   const tram = nguon === 'SUA' ? 'Sửa' : 'KCS';
   const lyDo = (body.lyDo || '').trim();
+
+  // Tem GIA CÔNG rẽ nhánh riêng — kiểm TRƯỚC vì thông báo lý do khác trạm đích.
+  const gc = await planningRepo.getGiaCongTem(temId);
+  if (gc && gc.ma_loai_chuyen === 'GIA_CONG') {
+    if (!lyDo) throw new AppError('Nhập lý do trả hàng gia công về Kế hoạch', { status: 422, errorCode: 'NO_LY_DO' });
+    if (gc.trang_thai === 'HUY') throw new AppError('Tem đã bị hủy', { status: 409, errorCode: 'DA_HUY' });
+    // Cùng điều kiện với `listGiaCongTemCancelable`: OQC đã ĐẠT thì SL đã sang Giao — hủy tem lúc này
+    // sẽ làm sổ cái âm (`con_oqc = sl_kcs_dat − sl_oqc_dat`).
+    if (Number(gc.sl_oqc_dat) > 0 || Number(gc.sl_da_giao) > 0) {
+      throw new AppError('Tem đã qua OQC đạt hoặc đã giao — không trả về được', { status: 409, errorCode: 'DA_XU_LY' });
+    }
+    return returnOqcGiaCong(gc, lyDo, actorId);
+  }
+
   if (!lyDo) throw new AppError(`Nhập lý do trả về ${tram}`, { status: 422, errorCode: 'NO_LY_DO' });
   const tem = await repo.getTemLedger(temId);
   if (!tem) throw new AppError('Tem không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });

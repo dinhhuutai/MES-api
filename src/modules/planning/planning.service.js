@@ -993,7 +993,35 @@ async function keHoachTamDone(date) { return repo.keHoachTamDoneByDate(date); }
 // ----- GIA CÔNG: màn Kế hoạch nhận lại hàng gia công rồi chuyển OQC -----
 async function listGiaCong({ search, page, limit, offset }) {
   const { rows, total } = await repo.listGiaCongLenh({ search, offset, limit });
-  return { items: rows, meta: buildMeta(page, limit, total) };
+  // Gắn cờ "bị OQC trả về" (mức LỆNH — tem đã hủy khi trả nên cờ phải sống trên lệnh) để FE hiện badge đỏ
+  // + biết lệnh đang CHỜ TRẢ LẠI nhà gia công (chưa bấm "Trả lại nhà gia công").
+  const rm = await qaRepo.activeReturnsMap('OQC_GIA_CONG', rows.map((r) => r.id));
+  const items = rows.map((r) => ({ ...r, tra_ve: rm[r.id] || null, cho_tra_lai: !!rm[r.id] }));
+  return { items, meta: buildMeta(page, limit, total) };
+}
+
+// Kế hoạch đã mang hàng trả lại cho nhà gia công → tắt cờ trả về, lệnh về trạng thái "đang gia công"
+// bình thường, chờ nhận về bằng nút "Nhận hàng → OQC".
+async function traLaiNhaGiaCong(lenhId, { ghiChu } = {}, actorId) {
+  const lenh = await repo.getGiaCongLenh(lenhId);
+  if (!lenh) throw new AppError('Lệnh sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  if (lenh.trang_thai !== 'GIA_CONG') {
+    throw new AppError('Lệnh không ở màn Gia công', { status: 409, errorCode: 'NOT_GIA_CONG' });
+  }
+  const rm = await qaRepo.activeReturnsMap('OQC_GIA_CONG', [lenhId]);
+  if (!rm[lenhId]) {
+    throw new AppError('Lệnh không có hàng bị OQC trả về', { status: 409, errorCode: 'KHONG_CO_TRA_VE' });
+  }
+  await repo.logGiaCongTraLai(lenhId, {
+    ma_lenh: lenh.ma_lenh_san_xuat,
+    con_lai: (Number(lenh.so_luong_release) || 0) - (Number(lenh.da_chuyen) || 0),
+    ly_do_oqc: rm[lenhId].ly_do || null,
+    ghi_chu: (ghiChu || '').trim() || null,
+  }, actorId);
+  await qaRepo.resolveReturns('OQC_GIA_CONG', lenhId);
+  sockets.emit('workflow:updated', { lenhId, stage: 'GIA_CONG', giaCong: true });
+  sockets.emit('dashboard:refresh', {});
+  return { id: lenhId, ma_lenh: lenh.ma_lenh_san_xuat, cho_tra_lai: false };
 }
 
 // Lịch sử "hàng về" gia công đã chuyển OQC theo ngày (cho SidePanel + in tem TH VỀ).
@@ -1013,6 +1041,13 @@ async function confirmGiaCongToOqc(lenhId, { soLuong } = {}, actorId) {
   if (!lenh) throw new AppError('Lệnh sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   if (lenh.trang_thai !== 'GIA_CONG') {
     throw new AppError('Lệnh không ở trạng thái chờ gia công (đã chuyển OQC?)', { status: 409, errorCode: 'NOT_GIA_CONG' });
+  }
+  // Đang chờ trả lại nhà gia công (hàng bị OQC đánh không đạt) thì CHƯA được nhận về lượt mới —
+  // phải bấm "Trả lại nhà gia công" trước. Chặn ở BE vì nút hàng loạt/API có thể lách nút từng dòng.
+  const rmGc = await qaRepo.activeReturnsMap('OQC_GIA_CONG', [lenhId]);
+  if (rmGc[lenhId]) {
+    throw new AppError('Lệnh đang chờ trả lại nhà gia công (OQC trả về) — bấm "Trả lại nhà gia công" trước',
+      { status: 409, errorCode: 'CHO_TRA_LAI' });
   }
   const tong = Number(lenh.so_luong_release) || 0;
   const daChuyen = Number(lenh.da_chuyen) || 0;
@@ -1240,7 +1275,7 @@ module.exports = {
   returnTestRunToReady,
   listRelease2Candidates, approveRelease2, approveRelease2Batch, skipTestRun, testRunHistory,
   listReplanCandidates, replan, replanBatch, planHistory,
-  listGiaCong, confirmGiaCongToOqc, giaCongHistory, listGiaCongTemCancelable, cancelGiaCongTem,
+  listGiaCong, confirmGiaCongToOqc, giaCongHistory, listGiaCongTemCancelable, cancelGiaCongTem, traLaiNhaGiaCong,
   listKeHoachTam, keHoachTamSet, confirmKeHoachTam, updateKeHoachTam, deleteKeHoachTam, keHoachTamHistory, keHoachTamDone,
   listCancelableLenh, rollbackLenh,
   release1Done, release2Done, replanDone, testCnspDone, testQaDone,

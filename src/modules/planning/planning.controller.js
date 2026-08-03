@@ -135,6 +135,11 @@ const giaCongTemCancelable = asyncHandler(async (req, res) => {
   return ok(res, await service.listGiaCongTemCancelable({ search: req.query.search || '', page, limit, offset }));
 });
 
+// Kế hoạch đã mang hàng bị OQC trả về giao lại cho nhà gia công.
+const giaCongTraLai = asyncHandler(async (req, res) =>
+  ok(res, await service.traLaiNhaGiaCong(req.params.lenhId, req.body, req.user.id),
+    'Đã ghi nhận trả lại nhà gia công'));
+
 const giaCongTemHuy = asyncHandler(async (req, res) =>
   ok(res, await service.cancelGiaCongTem(req.params.temId, req.body, req.user.id),
     'Đã hủy tem gia công — số lượng quay lại phần chờ nhận'));
@@ -205,7 +210,7 @@ module.exports = {
   confirmCNSP, confirmQA, cancelCNSP, cancelQA, confirmCNSPBatch, confirmQABatch,
   release2Candidates, approveRelease2, approveRelease2Batch, skipTestRun, testRunHistory,
   replanCandidates, replan, replanBatch, planHistory,
-  giaCongList, giaCongToOqc, giaCongHistory, giaCongTemCancelable, giaCongTemHuy,
+  giaCongList, giaCongToOqc, giaCongHistory, giaCongTemCancelable, giaCongTemHuy, giaCongTraLai,
   keHoachTamList, keHoachTamSet, keHoachTamConfirm, keHoachTamUpdate, keHoachTamDelete, keHoachTamHistory, keHoachTamDone,
   cancelableLenh, cancelLenh, returnTestRunToReady,
   release1Done, release2Done, replanDone, testCnspDone, testQaDone,

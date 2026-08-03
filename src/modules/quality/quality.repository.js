@@ -612,9 +612,13 @@ async function inlineDoneByDate(date) {
 // 'RELEASE1' = Kế hoạch (Release 1) trả đợt vải NGƯỢC về Kỹ thuật → hiện lý do ở màn READY (mức phần in).
 // 'TEST_RUN_KT' = Test Run không đạt → QA trả về KỸ THUẬT (mức phần in, kèm checklist_list mục rớt)
 // → hiện badge + lý do ở màn READY / QC READY. Cặp với 'TEST_RUN' (mức đợt vải) cho màn Test Run.
+// `qc_tra_ve.loai` là VARCHAR tự do ⇒ thêm loại mới KHÔNG cần migration; chỉ cần khai cột đối tượng ở đây.
+// OQC_GIA_CONG gắn ở mức LỆNH (không phải tem) vì tem gia công bị HỦY khi trả về — cờ phải sống tiếp
+// trên lệnh để màn Kế hoạch > Gia công biết "đang chờ trả lại nhà gia công".
 const RETURN_COL = {
   READY: 'phan_in_id', RELEASE1: 'phan_in_id', TEST_RUN_KT: 'phan_in_id',
   TEST_RUN: 'dot_vai_ve_id', OQC: 'tem_id', OQC_SUA: 'tem_id',
+  OQC_GIA_CONG: 'lenh_san_xuat_id',
 };
 
 // Ghi 1 lần QC trả về (không transaction — gọi sau khi commit nghiệp vụ chính).

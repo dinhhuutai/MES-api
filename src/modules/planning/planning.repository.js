@@ -454,7 +454,7 @@ const CHO_KY_THUAT_SQL = (lenhCol) => `EXISTS (
 function lenhListSql(extraWhere) {
   return `
     SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.trang_thai, ls.ngay_ke_hoach,
-           cs.ma_chuyen, cs.ten_chuyen,
+           cs.ma_chuyen, cs.ten_chuyen, lc.ma_loai AS ma_loai_chuyen, lc.ten_loai AS ten_loai_chuyen,
            info.ten_khach_hang, info.ma_don_hang, info.ma_hang,
            info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan, info.tinh_chat_in,
            info.phuong_an_in, info.barcode_hskt, info.hskt_id, info.hskt_inset,
@@ -469,6 +469,7 @@ function lenhListSql(extraWhere) {
            ${CHO_KY_THUAT_SQL('ls.id')} AS cho_ky_thuat
     FROM lenh_san_xuat ls
     LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+    LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
     ${PHAN_INFO_LATERAL}
     WHERE ls.trang_thai = 'RELEASE_1'
       AND ($3 = '' OR ls.ma_lenh_san_xuat ILIKE '%'||$3||'%' OR ${lenhPhanInMatch('ls.id', '$3')})
@@ -571,6 +572,8 @@ async function listGiaCongHistory(date) {
   const sql = `
     SELECT a.thoi_gian AS tg, nd.ho_ten AS nguoi,
            ls.id AS lenh_id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.created_date,
+           a.hanh_dong AS loai,
+           COALESCE(a.gia_tri_moi->>'ly_do', a.gia_tri_moi->>'ghi_chu') AS ly_do,
            a.gia_tri_moi->>'ma_tem' AS ma_tem,
            (a.gia_tri_moi->>'so_luong')::int AS so_luong_lan_nay,
            (a.gia_tri_moi->>'con_lai')::int AS con_lai,
@@ -583,7 +586,8 @@ async function listGiaCongHistory(date) {
     LEFT JOIN nguoi_dung nd ON nd.id = a.nguoi_thuc_hien_id
     LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
     ${PHAN_INFO_LATERAL}
-    WHERE a.ten_bang = 'lenh_san_xuat' AND a.hanh_dong = 'GIA_CONG_CHUYEN_OQC'
+    WHERE a.ten_bang = 'lenh_san_xuat'
+      AND a.hanh_dong IN ('GIA_CONG_CHUYEN_OQC','OQC_TRA_VE_GIA_CONG','GIA_CONG_TRA_LAI')
       AND (a.thoi_gian AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
     ORDER BY a.thoi_gian DESC`;
   const { rows } = await query(sql.replace(/\s+/g, ' '), [date]);
@@ -606,6 +610,15 @@ async function getGiaCongLenh(lenhId) {
     [lenhId]
   );
   return rows[0] || null;
+}
+
+// Ghi audit "Kế hoạch đã trả hàng lại cho nhà gia công" (người + giờ) — mốc để truy ai trả, lúc nào.
+async function logGiaCongTraLai(lenhId, payload, actorId) {
+  await query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('lenh_san_xuat', $1, 'GIA_CONG_TRA_LAI', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`.replace(/\s+/g, ' '),
+    [String(lenhId), JSON.stringify(payload || {}), actorId]
+  );
 }
 
 // ----- HỦY TEM GIA CÔNG (tab "Hủy lệnh xác nhận") -----
@@ -1316,7 +1329,7 @@ module.exports = {
   testRunHistoryByDate, testRunsByLenh,
   listReplanCandidates, getLenhForReplan, updateLenhPlan, logPlanChange, planHistoryByDate,
   listGiaCongLenh, getGiaCongLenh, listGiaCongHistory,
-  listGiaCongTemCancelable, getGiaCongTem, cancelGiaCongTemTx,
+  listGiaCongTemCancelable, getGiaCongTem, cancelGiaCongTemTx, logGiaCongTraLai,
   upsertKeHoachTam, listKeHoachTamRows, getKeHoachTam, getOpenSetOfDotVai, updateKeHoachTam, deleteKeHoachTam, deleteKeHoachTamByDotVai,
   logKeHoachTam, keHoachTamHistoryByDate, keHoachTamDoneByDate,
   listCancelableLenh, getLenhForCancel, cancelLenhOrder, cancelReadyQcForDotVai, logLenhCancel,

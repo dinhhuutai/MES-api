@@ -76,6 +76,8 @@ router.get('/gia-cong/history', rbac('RELEASE1', 'RELEASE2'), c.giaCongHistory);
 router.get('/gia-cong/tem/cancelable', rbac('RELEASE1', 'RELEASE2'), c.giaCongTemCancelable);
 router.post('/gia-cong/tem/:temId/huy', rbac('RELEASE1', 'RELEASE2'), c.giaCongTemHuy);
 router.post('/gia-cong/:lenhId/chuyen-oqc', rbac('RELEASE1', 'RELEASE2'), c.giaCongToOqc);
+// Hàng bị OQC trả về → Kế hoạch mang trả lại nhà gia công (tắt cờ, ghi người + giờ).
+router.post('/gia-cong/:lenhId/tra-lai', rbac('RELEASE1', 'RELEASE2'), c.giaCongTraLai);
 
 // Kế hoạch tạm: xác nhận lại Release 1 khi phần in Ready xong
 router.get('/ke-hoach-tam', rbac('RELEASE1', 'RELEASE2'), c.keHoachTamList);
