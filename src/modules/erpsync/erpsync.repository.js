@@ -262,10 +262,13 @@ async function simulateReadyDone(pinId) {
 }
 
 // Phần in đã từng release (có lệnh ≠ HUY)?
-async function isPhanInReleased(pinId) {
+// `boQuaDotVaiIds` = đợt vải VỪA nhận ở lần sync này — loại ra để không tự coi "đã release" bằng chính
+// lệnh của mình (luật KTCankiemtra=1 hỏi: các ĐỢT TRƯỚC đã release chưa?).
+async function isPhanInReleased(pinId, boQuaDotVaiIds = []) {
+  const ids = (boQuaDotVaiIds || []).filter(Boolean);
   const { rows } = await query(
-    `SELECT EXISTS(SELECT 1 FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id JOIN dot_vai_ve dv ON dv.id=lsd.dot_vai_ve_id WHERE dv.phan_in_id=$1 AND ls.trang_thai<>'HUY') AS e`,
-    [pinId]
+    `SELECT EXISTS(SELECT 1 FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id JOIN dot_vai_ve dv ON dv.id=lsd.dot_vai_ve_id WHERE dv.phan_in_id=$1 AND ls.trang_thai<>'HUY' AND ($2::uuid[] IS NULL OR NOT (dv.id = ANY($2::uuid[])))) AS e`,
+    [pinId, ids.length ? ids : null]
   );
   return !!rows[0].e;
 }

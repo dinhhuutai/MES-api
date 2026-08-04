@@ -849,6 +849,19 @@ async function deleteKeHoachTamByDotVai(dotVaiIds) {
   await query('DELETE FROM ke_hoach_tam WHERE dot_vai_ve_id = ANY($1::uuid[])', [dotVaiIds]);
 }
 
+// Lệnh (≠HUY) mới nhất của 1 đợt vải — để báo lỗi RÕ khi dòng kế hoạch tạm còn sót lại sau khi đợt
+// đã được release ở đường khác (điển hình: release theo gom set).
+async function lenhMoiNhatCuaDotVai(dotVaiId) {
+  const { rows } = await query(
+    `SELECT ls.ma_lenh_san_xuat, ls.trang_thai FROM lenh_sx_dot_vai lsd
+       JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
+      WHERE lsd.dot_vai_ve_id = $1 AND ls.trang_thai <> 'HUY'
+      ORDER BY ls.created_date DESC LIMIT 1`.replace(/\s+/g, ' '),
+    [dotVaiId]
+  );
+  return rows[0] || null;
+}
+
 // ----- HỦY LỆNH / HOÀN TÁC RELEASE (lệnh RELEASE_1/RELEASE_2/GIA_CONG chưa bắt đầu sản xuất) -----
 // GIA_CONG = lệnh trên chuyền loại "Gia công" đang đậu ở màn Kế hoạch > Gia công (chưa "Chuyển OQC" nên
 // CHƯA có phiếu/tem) ⇒ hủy được y như Release 1/2. Thiếu mã này thì Release 1 lỡ chọn chuyền gia công
@@ -1370,6 +1383,7 @@ module.exports = {
   listGiaCongLenh, getGiaCongLenh, listGiaCongHistory,
   listGiaCongTemCancelable, getGiaCongTem, cancelGiaCongTemTx, logGiaCongTraLai,
   upsertKeHoachTam, listKeHoachTamRows, getKeHoachTam, getOpenSetOfDotVai, updateKeHoachTam, deleteKeHoachTam, deleteKeHoachTamByDotVai,
+  lenhMoiNhatCuaDotVai,
   logKeHoachTam, keHoachTamHistoryByDate, keHoachTamDoneByDate,
   listCancelableLenh, getLenhForCancel, cancelLenhOrder, cancelReadyQcForDotVai, logLenhCancel,
   cancelPhieuTemByLenhTx,

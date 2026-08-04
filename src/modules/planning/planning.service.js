@@ -545,6 +545,11 @@ async function releaseSet(setId, { chuyenId, soLuongRelease, ngayKeHoach }, acto
     return id;
   });
 
+  // ⚠ DỌN KẾ HOẠCH TẠM của MỌI đợt trong set — release set là một đường release THẬT, đợt vải đã có
+  // lệnh nên dòng kế hoạch tạm không còn nghĩa. Thiếu bước này thì các dòng đó ở lại màn "Kế hoạch tạm"
+  // (danh sách set KHÔNG lọc `ke_hoach_tam` như `listRelease1Candidates`), bấm "Xác nhận Release 1"
+  // sẽ báo `SL release (N) vượt SL còn lại (0)` — lỗi đã gặp thật 04/08/2026 (16 dòng / 6 set).
+  await repo.deleteKeHoachTamByDotVai(dotVaiIds);
   await tracking.moveDotVaiTo(dotVaiIds, 'RELEASE_1', actorId); // theo dõi dòng chảy (cả set)
   await qaRepo.resolveReturnsMany('TEST_RUN', dotVaiIds); // release lại → tắt cờ "bị Test Run trả về"
   sockets.emit('workflow:updated', { lenhId, stage: 'RELEASE_1', fromSet: setId });
@@ -952,6 +957,21 @@ async function confirmKeHoachTam(id, actorId) {
     }, actorId);
     return { ...res, ke_hoach_tam_id: id, ma_set: gs.ma_set };
   }
+  // Đợt ĐÃ được release ở đường khác (điển hình: release theo GOM SET từ màn Release 1) mà dòng kế hoạch
+  // tạm còn sót → `createRelease1` sẽ ném "SL release (N) vượt SL còn lại (0)", người dùng không hiểu gì.
+  // Dọn dòng chết rồi trả `da_don` — CỐ Ý KHÔNG ném lỗi: đây không phải người dùng làm sai, và ném lỗi
+  // thì xác nhận hàng loạt đếm thành "N lỗi" (toast đỏ) dù dòng đã được dọn xong.
+  // (Nguyên nhân gốc đã vá ở `releaseSet`; nhánh này để tự lành dữ liệu cũ.)
+  const [con] = await repo.getDotVaiRemaining([kt.dot_vai_ve_id]);
+  if (!con || con.con_release <= 0) {
+    const l = await repo.lenhMoiNhatCuaDotVai(kt.dot_vai_ve_id);
+    await repo.deleteKeHoachTam(id);
+    return {
+      ke_hoach_tam_id: id, da_don: true, ma_lenh: (l && l.ma_lenh_san_xuat) || null,
+      created_count: 0, created_summary: [],
+    };
+  }
+
   // Tái dùng createRelease1 với chuyền/giờ/ngày đã lưu (giờ phần in đã QC → đi đường release thật).
   const res = await createRelease1({
     dotVaiIds: [kt.dot_vai_ve_id], chuyenId: kt.chuyen_id,

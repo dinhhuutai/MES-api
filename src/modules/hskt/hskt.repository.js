@@ -48,6 +48,11 @@ async function listHskt({ search = '', filters = {}, offset = 0, limit = 20 }) {
   // Đã sửa tay phương án in.
   if (f.suaTay === 'co') conds.push('h.pa_in_sua_tay = true');
   if (f.suaTay === 'khong') conds.push('COALESCE(h.pa_in_sua_tay, false) = false');
+  // Khoảng NGÀY LÊN MES (giờ VN) — lọc trên `g.tg_len_mes` = created_date của PHIÊN BẢN ĐẦU TIÊN,
+  // KHÔNG phải `h.created_date`: đổi phương án in (sửa tay hoặc post-pass sản lượng) sinh bản ghi MỚI
+  // nên `h.created_date` của bản active là ngày SỬA, lọc theo đó sẽ mất hồ sơ khỏi đúng ngày nó lên MES.
+  if (f.tuNgay) { params.push(f.tuNgay); conds.push(`(g.tg_len_mes AT TIME ZONE 'Asia/Ho_Chi_Minh')::date >= $${params.length}::date`); }
+  if (f.denNgay) { params.push(f.denNgay); conds.push(`(g.tg_len_mes AT TIME ZONE 'Asia/Ho_Chi_Minh')::date <= $${params.length}::date`); }
   const extra = conds.length ? `AND ${conds.join(' AND ')}` : '';
   const pLimit = params.length + 1;
   const pOffset = params.length + 2;
@@ -58,8 +63,14 @@ async function listHskt({ search = '', filters = {}, offset = 0, limit = 20 }) {
            h.created_date, h.updated_date,
            info.so_phan_in, info.code_phan_list, info.ten_khach_hang, info.ma_don_hang, info.ma_hang,
            info.mau_vai, info.kich_vai, info.kich_phim, info.loai_dot_vai,
+           g.tg_len_mes,
            count(*) OVER()::int AS total
     FROM ho_so_ky_thuat h
+    LEFT JOIN LATERAL (
+      SELECT min(h2.created_date) AS tg_len_mes FROM ho_so_ky_thuat h2
+       WHERE COALESCE(h2.barcode_hskt_goc, h2.barcode_hskt, h2.id::text)
+           = COALESCE(h.barcode_hskt_goc, h.barcode_hskt, h.id::text)
+    ) g ON true
     LEFT JOIN LATERAL (
       SELECT count(DISTINCT pin.id)::int AS so_phan_in,
              string_agg(DISTINCT pin.ma_phan, ', ') AS code_phan_list,

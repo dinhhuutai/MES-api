@@ -7,7 +7,7 @@ const { getPaging } = require('../../utils/pagination');
 
 // Lọc chạy ở SERVER (danh sách phân trang server-side) — xem `hskt.repository.HSKT_FILTER_COLS`.
 const FILTER_KEYS = ['khach', 'don', 'maHang', 'mauVai', 'kichVai', 'kichPhim', 'codePhan', 'loaiDotVai',
-  'phuongAnIn', 'gomSet', 'suaTay'];
+  'phuongAnIn', 'gomSet', 'suaTay', 'tuNgay', 'denNgay'];
 
 const list = asyncHandler(async (req, res) => {
   const { page, limit, offset } = getPaging(req.query);

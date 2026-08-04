@@ -289,7 +289,9 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
         if (p.noCode) soKhongCode += 1; else if (p.isBoLoai) soBoLoai += 1; else if (p.isBoTcin) soBoTcin += 1;
         continue;
       }
-      let pinId = null; let affectedDotVaiIds = []; let intoReady = false;
+      // `laDotMoi` = lần sync NÀY có đợt vải MỚI vào READY (insert mới, hoặc promote đợt cũ còn kẹt).
+      // Tách khỏi `intoReady` (chỉ nghĩa "dòng xử lý xong") vì luật KTCankiemtra chỉ áp cho ĐỢT MỚI.
+      let pinId = null; let affectedDotVaiIds = []; let intoReady = false; let laDotMoi = false;
       try {
         const tgPhoi = Number(p.r.tgphoi);
         // Upsert theo `ma_dot_vai` (idempotent): đợt mới thì tạo, đợt đã có thì cập nhật —
@@ -297,7 +299,7 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
         const loaiDotVaiId = await resolveLoai(p.r.loaikd);
         const { inserted, dotVaiId, pinId: pid } = await processRow(p.r, p.maPhan, p.maDotVai, loaiDotVaiId, new Date());
         if (inserted) { soMoi += 1; newDotVaiIds.push(dotVaiId); } else soCapNhat += 1;
-        pinId = pid; affectedDotVaiIds = [dotVaiId]; intoReady = true;
+        pinId = pid; affectedDotVaiIds = [dotVaiId]; intoReady = true; laDotMoi = !!inserted;
         if (Number.isFinite(tgPhoi) && tgPhoi > 0) await repo.setPhanInDryMin(pid, Math.round(tgPhoi));
         // Dọn dữ liệu CŨ thời 2 API: đợt của phần in này còn kẹt "chờ chuyển" (tg_chuyen_ready NULL)
         // → đưa nốt vào READY. Dữ liệu mới không bao giờ rơi vào nhánh này.
@@ -305,6 +307,7 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
           barcode: erpBarcode(p.r), tinhChatIn: erpTinhChatIn(p.r),
         });
         promoted.forEach((id) => { newDotVaiIds.push(id); affectedDotVaiIds.push(id); });
+        if (promoted.length) laDotMoi = true;
       } catch (e) { errors.push(e.message); }
 
       // Xử lý phụ (HSKT / KTCankiemtra / gom set) — BEST-EFFORT, không chặn đồng bộ đợt.
@@ -320,11 +323,23 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
         } catch (e) { console.error(`[erp-sync] ✗ HSKT lỗi (${p.maPhan}): ${e.message}`); }
         try { if (ktCan != null) await repo.setDotVaiKtCanKiemTra(affectedDotVaiIds, ktCan); }
         catch (e) { console.error(`[erp-sync] ✗ kt_can_kiem_tra lỗi: ${e.message}`); }
-        if (intoReady) {
+        // ⚠⚠ CHỈ áp luật KTCankiemtra cho ĐỢT VẢI MỚI (`laDotMoi`), KHÔNG áp mỗi lần sync.
+        // ERP trả lại CÙNG dòng ở mọi lần chạy (job 5 phút/lần) và upsert là idempotent theo `ma_dot_vai`,
+        // nên nếu chạy theo `intoReady` thì:
+        //   · KTCankiemtra=1: phần in VỪA được Kế hoạch Release 1 xong sẽ khớp `isPhanInReleased` ở lần
+        //     sync kế tiếp ⇒ `reopenReadyForPhanIn` XÓA SẠCH xác nhận Khuôn/Film/Mực/QC của chính nó,
+        //     trong khi LỆNH vẫn còn ⇒ phần in "chưa Ready mà đã nằm ở Test Run".
+        //     (Đã xảy ra thật 03/08/2026: 3 phần in release lúc 13:46–13:47 bị hủy READY lúc 13:48.)
+        //   · KTCankiemtra=0: `simulateReadyDone` tự xác nhận lại READY sau mỗi lần sync, đè lên thao tác
+        //     hủy xác nhận / trả về kỹ thuật của người dùng.
+        // Đợt vải MỚI mới là lúc câu hỏi "kỹ thuật có cần kiểm tra lại không?" có nghĩa.
+        if (laDotMoi) {
           try {
             if (ktCan === 0) await repo.simulateReadyDone(pinId);              // giả lập KT xong → Release 1
-            else if (await repo.isPhanInReleased(pinId)) await repo.reopenReadyForPhanIn(pinId); // KTCankiemtra=1 & đã release → làm lại READY
+            else if (await repo.isPhanInReleased(pinId, affectedDotVaiIds)) await repo.reopenReadyForPhanIn(pinId); // KTCankiemtra=1 & ĐỢT KHÁC đã release → làm lại READY
           } catch (e) { console.error(`[erp-sync] ✗ KTCankiemtra lỗi (${p.maPhan}): ${e.message}`); }
+        }
+        if (intoReady) {
           // Gom set: Inset ≠ 0 (có gom set) + CÙNG BarcodeHKT (ERP dùng chung 1 HSKT cho cả nhóm).
           if (inset != null && inset !== 0 && barcodeHskt) {
             const key = `${barcodeHskt}#${inset}`;
