@@ -407,10 +407,12 @@ async function cancelItem(phanInId, ma, actorId) {
   const cp = byMa[ma];
   if (!cp) throw new AppError(`Checkpoint ${ma} không còn hiệu lực`, { status: 404, errorCode: 'NO_CHECKPOINT' });
 
-  // Không cho hủy xác nhận READY khi phần in ĐÃ RELEASE (đã rời trạm READY, đang ở Release/Test/Sản xuất...).
-  // Muốn hủy thì phải hủy release/test trước (theo thứ tự ngược lại) — tránh phần in vừa ở READY vừa ở trạm sau.
-  if (await repo.isPhanInReleased(phanInId)) {
-    throw new AppError('Phần in đã release — hãy hủy xác nhận ở trạm sau (Release/Test Run) trước khi hủy READY', { status: 409, errorCode: 'ALREADY_RELEASED' });
+  // Chỉ chặn khi phần in ĐÃ RELEASE HẾT các đợt vải (không còn đợt nào ở READY để mà sửa).
+  // Còn ít nhất 1 đợt CHƯA release ⇒ phần in vẫn đang ở READY cho đợt đó ⇒ CHO hủy xác nhận
+  // (chốt 2026-08-03 — trước đây chặn ngay khi có 1 đợt CŨ đã release, kể cả đã sản xuất xong).
+  const rel = await repo.readyCancelState(phanInId);
+  if (rel.da_release && !rel.con_cho) {
+    throw new AppError('Mọi đợt vải của phần in đã release — hãy hủy lệnh ở trạm sau (Release/Test Run) trước khi hủy READY', { status: 409, errorCode: 'ALREADY_RELEASED' });
   }
 
   const results = await repo.getResults(tram.id, phanInId);

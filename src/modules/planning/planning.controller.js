@@ -177,13 +177,29 @@ const planHistory = asyncHandler(async (req, res) => {
   return ok(res, await service.planHistory(date));
 });
 
+// HỦY TÙY CHỌN (mọi trạng thái, kể cả lệnh đã in tem) — chỉ mở cho quyền `LENH_CANCEL_ANY` (mig 065).
+// ⚠ Kiểm quyền Ở SERVER: FE gửi `moRong`/`force` gì cũng vô nghĩa nếu user không có quyền.
+const HUY_TUY_CHON = 'LENH_CANCEL_ANY';
+const coQuyenHuyTuyChon = (req) => {
+  const perms = (req.user && req.user.permissions) || [];
+  return perms.includes('*') || perms.includes(HUY_TUY_CHON);
+};
+
 const cancelableLenh = asyncHandler(async (req, res) => {
   const { page, limit, offset } = getPaging(req.query);
-  return ok(res, await service.listCancelableLenh({ search: req.query.search || '', page, limit, offset }));
+  const moRong = String(req.query.moRong || '') === 'true' && coQuyenHuyTuyChon(req);
+  const data = await service.listCancelableLenh({ search: req.query.search || '', page, limit, offset, moRong });
+  // Trả cờ quyền để FE biết có nên hiện ô "Hủy tùy chọn" hay không (khỏi đoán từ danh sách permission).
+  return ok(res, { ...data, mo_rong: moRong, cho_phep_tuy_chon: coQuyenHuyTuyChon(req) });
 });
 
-const cancelLenh = asyncHandler(async (req, res) =>
-  ok(res, await service.rollbackLenh(req.params.lenhId, req.body, req.user.id), 'Đã hoàn tác chuyển trạm'));
+const cancelLenh = asyncHandler(async (req, res) => {
+  const force = !!req.body?.force && coQuyenHuyTuyChon(req);
+  const r = await service.rollbackLenh(req.params.lenhId, { ...req.body, force }, req.user.id);
+  return ok(res, r, force
+    ? `Đã hủy lệnh (tùy chọn, từ trạng thái ${r.trang_thai_cu}${r.so_tem_huy ? ` — hủy kèm ${r.so_tem_huy} tem` : ''})`
+    : 'Đã hoàn tác chuyển trạm');
+});
 
 // Test Run không đạt → trả về KỸ THUẬT (READY): chọn mục rớt (Khuôn/Film/Mực) + lý do. GIỮ NGUYÊN lệnh
 // → QC xác nhận READY xong là đợt vải nhảy thẳng lại Test Run, không phải Release 1 lại.

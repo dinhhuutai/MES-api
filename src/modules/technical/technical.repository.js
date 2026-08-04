@@ -262,6 +262,32 @@ async function doneByDate(date, scope = 'tech') {
 }
 
 // Phần in đã release chưa? (có đợt vải nằm trong 1 lệnh ≠ HUY). Lệnh 'HUY' coi như chưa release.
+// HỦY XÁC NHẬN READY — chỉ chặn khi phần in ĐÃ RELEASE HẾT (chốt 2026-08-03).
+// Trước đây chặn ngay khi có BẤT KỲ đợt vải nào đã release, kể cả đợt CŨ đã sản xuất xong từ lâu ⇒
+// đợt vải MỚI đang nằm ở READY cũng không sửa được xác nhận Khuôn/Film/Mực. Nay: còn ít nhất 1 đợt
+// CHƯA release thì vẫn hủy được (phần in thật sự vẫn đang ở READY cho đợt đó).
+//   `da_release` = có đợt đã vào lệnh non-HUY · `con_cho` = còn đợt CHƯA vào lệnh nào.
+// ⚠ "Chưa release" = đợt KHÔNG có lệnh non-HUY NÀO. Đợt release TỪNG PHẦN (còn `con_release` nhưng
+// đã có lệnh) KHÔNG tính là chưa release — phần đã release có thể đang chạy máy.
+// ⚠ Phần in CHƯA có đợt vải nào (kỹ thuật làm trước khi vải về) ⇒ `da_release=false` ⇒ vẫn hủy được.
+async function readyCancelState(phanInId) {
+  const { rows } = await query(
+    `SELECT
+       EXISTS (SELECT 1 FROM dot_vai_ve dv JOIN lenh_sx_dot_vai lsd ON lsd.dot_vai_ve_id = dv.id
+               JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
+               WHERE dv.phan_in_id = $1 AND ls.trang_thai <> 'HUY') AS da_release,
+       EXISTS (SELECT 1 FROM dot_vai_ve dv
+               WHERE dv.phan_in_id = $1 AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY')
+                 AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd2
+                                 JOIN lenh_san_xuat ls2 ON ls2.id = lsd2.lenh_san_xuat_id
+                                 WHERE lsd2.dot_vai_ve_id = dv.id AND ls2.trang_thai <> 'HUY')) AS con_cho`
+      .replace(/\s+/g, ' '),
+    [phanInId]
+  );
+  const r = rows[0] || {};
+  return { da_release: r.da_release === true, con_cho: r.con_cho === true };
+}
+
 async function isPhanInReleased(phanInId) {
   const { rows } = await query(
     `SELECT EXISTS (SELECT 1 FROM dot_vai_ve dv JOIN lenh_sx_dot_vai lsd ON lsd.dot_vai_ve_id = dv.id
@@ -523,7 +549,7 @@ async function logReopenReady(phanInId, payload, actorId) {
 }
 
 module.exports = {
-  loadReadyConfig, listCandidates, countReadyItems, confirmInfoByPins, historyByDate, doneByDate, listConfirmHistory, isPhanInReleased, getPhanInBasic, getResults, getBulkStates,
+  loadReadyConfig, listCandidates, countReadyItems, confirmInfoByPins, historyByDate, doneByDate, listConfirmHistory, isPhanInReleased, readyCancelState, getPhanInBasic, getResults, getBulkStates,
   getReadyEntryTime, findResultId, upsertResult, cancelResult, logCancel, insertStatusLog,
   listReopenCandidates, reopenReadyResults, flagUnreleasedDotLamLai, logReopenReady,
   isPhanInProducing, reopenReadyFull, lenhChoKyThuatByPhanIn,

@@ -853,17 +853,34 @@ async function deleteKeHoachTamByDotVai(dotVaiIds) {
 // GIA_CONG = lệnh trên chuyền loại "Gia công" đang đậu ở màn Kế hoạch > Gia công (chưa "Chuyển OQC" nên
 // CHƯA có phiếu/tem) ⇒ hủy được y như Release 1/2. Thiếu mã này thì Release 1 lỡ chọn chuyền gia công
 // sẽ KHÔNG hiện ở tab "Hủy lệnh sản xuất" (lỗi đã báo).
-async function listCancelableLenh({ search = '', offset = 0, limit = 50 }) {
+// Tem của lệnh ĐÃ ĐI TIẾP (có bất kỳ số nào trong sổ cái KCS/Sửa/OQC/Giao) ⇒ KHÔNG được hủy lệnh,
+// vì hủy sẽ làm hỏng sổ cái số lượng (§11.4). Tem gia công seed sẵn `sl_kcs_dat` nên cũng rơi vào đây —
+// muốn bỏ thì dùng tab "Hủy tem gia công".
+const LENH_TEM_DA_XU_LY = `EXISTS (SELECT 1 FROM phieu_san_xuat ps2 JOIN tem t2 ON t2.phieu_san_xuat_id = ps2.id
+  WHERE ps2.lenh_san_xuat_id = ls.id AND t2.trang_thai <> 'HUY'
+    AND (t2.sl_kcs_dat + t2.sl_kcs_sua + t2.sl_kcs_huy + t2.sl_sua_dat + t2.sl_sua_huy
+         + t2.sl_oqc_dat + t2.sl_da_giao) > 0)`;
+
+// `moRong` = chế độ HỦY TÙY CHỌN (quyền `LENH_CANCEL_ANY`): bỏ giới hạn trạng thái + bỏ điều kiện
+// "chưa có phiếu SX" ⇒ liệt kê MỌI lệnh chưa hủy, kể cả đang sản xuất / đã hoàn tất.
+async function listCancelableLenh({ search = '', offset = 0, limit = 50, moRong = false }) {
+  const dieuKien = moRong
+    ? `ls.trang_thai <> 'HUY'`
+    : `ls.trang_thai IN ('RELEASE_1','RELEASE_2','GIA_CONG')
+       AND NOT EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = ls.id)`;
   const FROM = `
     FROM lenh_san_xuat ls
     LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
     ${PHAN_INFO_LATERAL}
-    WHERE ls.trang_thai IN ('RELEASE_1','RELEASE_2','GIA_CONG')
-      AND NOT EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = ls.id)
+    WHERE ${dieuKien}
       AND ($1 = '' OR ls.ma_lenh_san_xuat ILIKE '%'||$1||'%' OR ${lenhPhanInMatch('ls.id', '$1')})`;
   const dataSql = `
     SELECT ls.id, ls.ma_lenh_san_xuat, ls.trang_thai, ls.so_luong_release, ls.ngay_ke_hoach, ls.created_date,
            cs.ma_chuyen, cs.ten_chuyen,
+           EXISTS (SELECT 1 FROM phieu_san_xuat ps3 WHERE ps3.lenh_san_xuat_id = ls.id) AS co_phieu,
+           (SELECT count(*) FROM phieu_san_xuat ps4 JOIN tem t4 ON t4.phieu_san_xuat_id = ps4.id
+             WHERE ps4.lenh_san_xuat_id = ls.id AND t4.trang_thai <> 'HUY')::int AS so_tem,
+           ${LENH_TEM_DA_XU_LY} AS tem_da_xu_ly,
            info.ten_khach_hang, info.ma_don_hang, info.ma_hang,
            info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan,
            info.so_luong_don_hang, info.so_luong_vai_ve,
@@ -888,11 +905,33 @@ async function getLenhForCancel(lenhId) {
   const { rows } = await query(
     `SELECT ls.id, ls.ma_lenh_san_xuat, ls.trang_thai,
             EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = ls.id) AS co_phieu,
-            EXISTS (SELECT 1 FROM gom_set gs WHERE gs.lenh_san_xuat_id = ls.id) AS tu_set
-     FROM lenh_san_xuat ls WHERE ls.id = $1`,
+            EXISTS (SELECT 1 FROM gom_set gs WHERE gs.lenh_san_xuat_id = ls.id) AS tu_set,
+            (SELECT count(*) FROM phieu_san_xuat ps4 JOIN tem t4 ON t4.phieu_san_xuat_id = ps4.id
+              WHERE ps4.lenh_san_xuat_id = ls.id AND t4.trang_thai <> 'HUY')::int AS so_tem,
+            ${LENH_TEM_DA_XU_LY} AS tem_da_xu_ly
+     FROM lenh_san_xuat ls WHERE ls.id = $1`.replace(/\s+/g, ' '),
     [lenhId]
   );
   return rows[0] || null;
+}
+
+// HỦY TÙY CHỌN (quyền `LENH_CANCEL_ANY`): lệnh đã có phiếu/tem thì phải dọn tem + phiếu trước khi
+// hủy lệnh. CHỈ gọi sau khi đã kiểm `tem_da_xu_ly = false` (tem chưa đi tiếp ⇒ sổ cái toàn 0,
+// không cần đảo gì). Gỡ tem khỏi xe phơi để xe không còn giữ tem ma.
+async function cancelPhieuTemByLenhTx(client, lenhId, actorId) {
+  await client.query(
+    `DELETE FROM tem_xe_phoi WHERE tem_id IN (
+       SELECT t.id FROM tem t JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+       WHERE ps.lenh_san_xuat_id = $1)`.replace(/\s+/g, ' '), [lenhId]);
+  await client.query(
+    `UPDATE tem SET trang_thai='HUY', updated_by=$2, updated_date=CURRENT_TIMESTAMP
+      WHERE trang_thai <> 'HUY' AND phieu_san_xuat_id IN
+        (SELECT id FROM phieu_san_xuat WHERE lenh_san_xuat_id = $1)`.replace(/\s+/g, ' '),
+    [lenhId, actorId]);
+  await client.query(
+    `UPDATE phieu_san_xuat SET trang_thai='HUY', updated_by=$2, updated_date=CURRENT_TIMESTAMP
+      WHERE lenh_san_xuat_id = $1 AND trang_thai <> 'HUY'`.replace(/\s+/g, ' '),
+    [lenhId, actorId]);
 }
 
 // Xóa mềm lệnh: trang_thai → HUY (đợt vải quay lại pool Release 1). Test ket_qua của lệnh cũng HUY.
@@ -1333,6 +1372,7 @@ module.exports = {
   upsertKeHoachTam, listKeHoachTamRows, getKeHoachTam, getOpenSetOfDotVai, updateKeHoachTam, deleteKeHoachTam, deleteKeHoachTamByDotVai,
   logKeHoachTam, keHoachTamHistoryByDate, keHoachTamDoneByDate,
   listCancelableLenh, getLenhForCancel, cancelLenhOrder, cancelReadyQcForDotVai, logLenhCancel,
+  cancelPhieuTemByLenhTx,
   cancelReadyItemsByPhanIn, cancelTestResults, phanInIdsByLenh, lenhChoKyThuat,
   listReleasableSets, getOpenSetMembers, getSetForRelease, getSetMembersForRelease, markSetReleased, logGomSetReleased,
 };

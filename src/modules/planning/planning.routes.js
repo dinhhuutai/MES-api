@@ -91,7 +91,9 @@ router.patch('/ke-hoach-tam/:id', rbac('RELEASE1', 'RELEASE2'), c.keHoachTamUpda
 router.delete('/ke-hoach-tam/:id', rbac('RELEASE1', 'RELEASE2'), c.keHoachTamDelete);
 
 // Hủy lệnh / hoàn tác release (đưa đợt vải về lại Release 1)
-router.get('/huy-lenh/candidates', rbac('RELEASE1', 'RELEASE2'), c.cancelableLenh);
-router.post('/huy-lenh/:lenhId', rbac('RELEASE1', 'RELEASE2'), c.cancelLenh);
+// `LENH_CANCEL_ANY` (mig 065) = hủy TÙY CHỌN mọi trạng thái — vào được tab dù không có RELEASE1/2;
+// chế độ mở rộng vẫn được kiểm lại trong controller (`coQuyenHuyTuyChon`).
+router.get('/huy-lenh/candidates', rbac('RELEASE1', 'RELEASE2', 'LENH_CANCEL_ANY'), c.cancelableLenh);
+router.post('/huy-lenh/:lenhId', rbac('RELEASE1', 'RELEASE2', 'LENH_CANCEL_ANY'), c.cancelLenh);
 
 module.exports = router;

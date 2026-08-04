@@ -334,6 +334,69 @@ async function upsertHsktNoBarcode(client, { pinId, maPhan, pain, inset, actorId
   return id;
 }
 
+// ─── LUẬT SẢN LƯỢNG → PHƯƠNG ÁN IN (chốt 2026-08-03) ─────────────────────────
+// Tổng SL VẢI VỀ của CẢ HSKT (mọi đợt vải của mọi phần in trong HSKT — đúng nghĩa "set" khi gom set):
+//   ≥ 2000 → in MÁY (Pain 2) · < 2000 → in BÀN (Pain 1).
+// ⚠ Luật này ĐÈ `Pain` mà ERP gửi (ERP chỉ còn là giá trị khởi tạo), nhưng VẪN TÔN TRỌNG
+// `pa_in_sua_tay` — kỹ thuật đã sửa tay ở trang Hồ sơ kỹ thuật thì không ai ghi đè.
+// KHÔNG đụng `barcode_hskt`: barcode do ERP cấp, MES chỉ đổi số cuối khi NGƯỜI DÙNG sửa tay (mig 064).
+const NGUONG_VAI_IN_MAY = 2000;
+const PAIN_MAY = 2;
+const PAIN_BAN = 1;
+
+// Tạo PHIÊN BẢN MỚI khi đổi phương án in (dùng chung cho nhánh ERP `Pain` và luật sản lượng).
+async function taoPhienBanPain(client, { hsktId, phienBan, curPain, pain, pinId, chiTiet, actorId }) {
+  await client.query('UPDATE ho_so_ky_thuat SET dang_hoat_dong=false, updated_date=now() WHERE id=$1', [hsktId]);
+  const ins = await client.query(
+    `INSERT INTO ho_so_ky_thuat (barcode_hskt, barcode_hskt_goc, pa_in_sua_tay, ma_hskt, phuong_an_in, inset, phien_ban, ma_don_ready, so_luong_vai_pass, so_lan_in, so_pass_bo, thong_so_json, ghi_chu, dang_hoat_dong, created_by) SELECT barcode_hskt, COALESCE(barcode_hskt_goc, barcode_hskt), false, ma_hskt, $2, inset, $3, ma_don_ready, so_luong_vai_pass, so_lan_in, so_pass_bo, thong_so_json, ghi_chu, true, $4 FROM ho_so_ky_thuat WHERE id=$1 RETURNING id`,
+    [hsktId, pain, phienBan + 1, actorId]
+  );
+  const newId = ins.rows[0].id;
+  await client.query(
+    `INSERT INTO hskt_phan_in (hskt_id, phan_in_id, created_by) SELECT $2, phan_in_id, $3 FROM hskt_phan_in WHERE hskt_id=$1 AND dang_hoat_dong ON CONFLICT (hskt_id, phan_in_id) DO NOTHING`,
+    [hsktId, newId, actorId]
+  );
+  await client.query('UPDATE hskt_phan_in SET dang_hoat_dong=false WHERE hskt_id=$1', [hsktId]);
+  await client.query(
+    `INSERT INTO lich_su_hskt (hskt_id, phan_in_id, hanh_dong, chi_tiet, phien_ban, nguoi_id) VALUES ($1,$2,'DOI_PHUONG_AN_IN',$3,$4,$5)`,
+    [newId, pinId || null, chiTiet || `Đổi phương án in ${curPain ?? '—'}→${pain}`, phienBan + 1, actorId]
+  );
+  return newId;
+}
+
+// Áp luật sản lượng cho 1 HSKT. Gọi SAU KHI đã upsert xong đợt vải của cả lần sync (post-pass) để
+// tổng SL là số CUỐI CÙNG — nếu gọi giữa vòng lặp thì tổng còn thiếu, sinh phiên bản rác.
+// Trả `{ doi: bool, tong, pain }` (best-effort, lỗi thì ném để caller log).
+async function applyPainTheoSanLuong(hsktId, actorId = null) {
+  return withTransaction(async (client) => {
+    const { rows: cur } = await client.query(
+      `SELECT id, phuong_an_in, phien_ban, pa_in_sua_tay FROM ho_so_ky_thuat
+        WHERE id = $1 AND dang_hoat_dong = true`, [hsktId]);
+    if (!cur.length) return { doi: false, tong: null, pain: null };
+    const h = cur[0];
+    const { rows: [sl] } = await client.query(
+      `SELECT COALESCE(SUM(dv.so_luong_vai_ve),0)::int AS tong
+         FROM hskt_phan_in hp
+         JOIN phan_in pin ON pin.id = hp.phan_in_id AND pin.dang_hoat_dong
+         JOIN dot_vai_ve dv ON dv.phan_in_id = pin.id AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY')
+        WHERE hp.hskt_id = $1 AND hp.dang_hoat_dong`.replace(/\s+/g, ' '), [hsktId]);
+    const tong = Number(sl.tong) || 0;
+    const pain = tong >= NGUONG_VAI_IN_MAY ? PAIN_MAY : PAIN_BAN;
+    if (h.pa_in_sua_tay === true) return { doi: false, tong, pain, bo_qua: 'sua_tay' };
+    if (Number(h.phuong_an_in) === pain) return { doi: false, tong, pain };
+    const { rows: [pin0] } = await client.query(
+      'SELECT phan_in_id FROM hskt_phan_in WHERE hskt_id=$1 AND dang_hoat_dong LIMIT 1', [hsktId]);
+    const newId = await taoPhienBanPain(client, {
+      hsktId, phienBan: h.phien_ban || 1, curPain: h.phuong_an_in, pain,
+      pinId: pin0 ? pin0.phan_in_id : null, actorId,
+      chiTiet: `Đổi phương án in ${h.phuong_an_in ?? '—'}→${pain} (tự động theo sản lượng: `
+        + `${tong} m vải ${tong >= NGUONG_VAI_IN_MAY ? '≥' : '<'} ${NGUONG_VAI_IN_MAY} ⇒ `
+        + `${pain === PAIN_MAY ? 'in Máy' : 'in Bàn'})`,
+    });
+    return { doi: true, tong, pain, hskt_id: newId };
+  });
+}
+
 async function upsertHsktForPin({ pinId, barcodeHskt, pain, inset, maDonReady, maPhan, actorId = null }) {
   if (!barcodeHskt) {
     if (pain == null) return null; // không có gì để lưu
@@ -367,22 +430,10 @@ async function upsertHsktForPin({ pinId, barcodeHskt, pain, inset, maDonReady, m
       // thay bằng badge "Đã sửa tay" ở trang Hồ sơ kỹ thuật.
       const suaTay = act[0].pa_in_sua_tay === true;
       if (!suaTay && pain != null && Number(pain) !== Number(curPain)) {
-        await client.query('UPDATE ho_so_ky_thuat SET dang_hoat_dong=false, updated_date=now() WHERE id=$1', [hsktId]);
-        const ins = await client.query(
-          `INSERT INTO ho_so_ky_thuat (barcode_hskt, barcode_hskt_goc, pa_in_sua_tay, ma_hskt, phuong_an_in, inset, phien_ban, ma_don_ready, so_luong_vai_pass, so_lan_in, so_pass_bo, thong_so_json, ghi_chu, dang_hoat_dong, created_by) SELECT barcode_hskt, COALESCE(barcode_hskt_goc, barcode_hskt), false, ma_hskt, $2, inset, $3, ma_don_ready, so_luong_vai_pass, so_lan_in, so_pass_bo, thong_so_json, ghi_chu, true, $4 FROM ho_so_ky_thuat WHERE id=$1 RETURNING id`,
-          [hsktId, pain, phienBan + 1, actorId]
-        );
-        const newId = ins.rows[0].id;
-        await client.query(
-          `INSERT INTO hskt_phan_in (hskt_id, phan_in_id, created_by) SELECT $2, phan_in_id, $3 FROM hskt_phan_in WHERE hskt_id=$1 AND dang_hoat_dong ON CONFLICT (hskt_id, phan_in_id) DO NOTHING`,
-          [hsktId, newId, actorId]
-        );
-        await client.query('UPDATE hskt_phan_in SET dang_hoat_dong=false WHERE hskt_id=$1', [hsktId]);
-        await client.query(
-          `INSERT INTO lich_su_hskt (hskt_id, phan_in_id, hanh_dong, chi_tiet, phien_ban, nguoi_id) VALUES ($1,$2,'DOI_PHUONG_AN_IN',$3,$4,$5)`,
-          [newId, pinId, `Đổi phương án in ${curPain ?? '—'}→${pain} (ERP)`, phienBan + 1, actorId]
-        );
-        hsktId = newId;
+        hsktId = await taoPhienBanPain(client, {
+          hsktId, phienBan, curPain, pain, pinId, actorId,
+          chiTiet: `Đổi phương án in ${curPain ?? '—'}→${pain} (ERP)`,
+        });
       }
       // Số nhóm gom set + đợt ready THEO LẦN ĐỒNG BỘ MỚI NHẤT (phần in có thể sang đợt ready khác
       // với số nhóm khác) — giữ bản active khớp ERP để trang Hồ sơ kỹ thuật hiển thị đúng.
@@ -431,4 +482,5 @@ module.exports = {
   findPhanInIdByMaPhan, promotePhanInToReady,
   readyCheckpointIds, simulateReadyDone, isPhanInReleased, reopenReadyForPhanIn, setDotVaiKtCanKiemTra,
   upsertHsktForPin, eligibleDotVaiByIds, openSetByGhiChu,
+  applyPainTheoSanLuong, NGUONG_VAI_IN_MAY,
 };

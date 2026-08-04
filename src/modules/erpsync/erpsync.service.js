@@ -279,6 +279,9 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
     const newDotVaiIds = [];
     // Nhóm gom set: khóa = "<BarcodeHKT>#<Inset>" (Inset≠0) → { barcodeHskt, inset, dotVaiIds, pinIds }.
     const insetGroups = new Map();
+    // HSKT bị đụng trong lần sync này → chạy POST-PASS áp luật sản lượng (≥2000 = in Máy) sau khi
+    // đã upsert xong MỌI đợt vải, để tổng SL là số cuối cùng (chạy giữa vòng lặp sẽ sinh phiên bản rác).
+    const hsktTouched = new Set();
     const resolveLoai = makeLoaiResolver();
     for (const p of prepared) {
       if (p.skip) {
@@ -311,8 +314,10 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
         const inset = erpInset(p.r);
         const ktCan = erpKtCanKiemTra(p.r);
         // `maPhan` để đặt tên HSKT khi ERP thiếu BarcodeHKT (vẫn giữ được phương án in).
-        try { await repo.upsertHsktForPin({ pinId, barcodeHskt, pain, inset, maDonReady: erpBarcode(p.r), maPhan: p.maPhan, actorId }); }
-        catch (e) { console.error(`[erp-sync] ✗ HSKT lỗi (${p.maPhan}): ${e.message}`); }
+        try {
+          const hid = await repo.upsertHsktForPin({ pinId, barcodeHskt, pain, inset, maDonReady: erpBarcode(p.r), maPhan: p.maPhan, actorId });
+          if (hid) hsktTouched.add(hid);
+        } catch (e) { console.error(`[erp-sync] ✗ HSKT lỗi (${p.maPhan}): ${e.message}`); }
         try { if (ktCan != null) await repo.setDotVaiKtCanKiemTra(affectedDotVaiIds, ktCan); }
         catch (e) { console.error(`[erp-sync] ✗ kt_can_kiem_tra lỗi: ${e.message}`); }
         if (intoReady) {
@@ -339,11 +344,21 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
       try { await autoGomSetByHskt(g.barcodeHskt, g.inset, [...g.dotVaiIds], actorId); }
       catch (e) { console.error(`[erp-sync] ✗ Auto gom set lỗi (${key}): ${e.message}`); }
     }
+    // POST-PASS: phương án in theo TỔNG SL VẢI VỀ của cả HSKT (≥2000 → Máy, <2000 → Bàn).
+    // Chạy SAU gom set để nhóm set đã đủ thành viên ⇒ tổng cộng đúng cả set. Best-effort.
+    let soDoiPain = 0;
+    for (const hid of hsktTouched) {
+      try {
+        const r = await repo.applyPainTheoSanLuong(hid, actorId);
+        if (r && r.doi) soDoiPain += 1;
+      } catch (e) { console.error(`[erp-sync] ✗ Áp phương án in theo sản lượng lỗi (${hid}): ${e.message}`); }
+    }
     const trangThai = errors.length && soMoi + soCapNhat === 0 ? 'LOI' : 'THANH_CONG';
     const notes = [];
     if (soKhongCode) notes.push(`bỏ qua ${soKhongCode} dòng không có code_part`);
     if (soBoLoai) notes.push(`bỏ qua ${soBoLoai} dòng loaikd ngoài ${[...LAY_LOAIKD].join('/')}`);
     if (soBoTcin) notes.push(`bỏ qua ${soBoTcin} dòng tính chất in ngoài phạm vi`);
+    if (soDoiPain) notes.push(`đổi phương án in theo sản lượng: ${soDoiPain} HSKT`);
     if (errors.length) notes.push(`lỗi ${errors.length}/${rows.length}: ${errors.slice(0, 3).join(' | ')}`);
     await repo.finishSyncLog(logId, {
       tong: rows.length, soMoi, soCapNhat, soLoi: errors.length, trangThai,

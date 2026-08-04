@@ -748,8 +748,8 @@ async function approveRelease2Batch(lenhIds, actorId) {
 }
 
 // ----- HỦY LỆNH / HOÀN TÁC RELEASE (đưa đợt vải về lại Release 1) -----
-async function listCancelableLenh({ search, page, limit, offset }) {
-  const { rows, total } = await repo.listCancelableLenh({ search, offset, limit });
+async function listCancelableLenh({ search, page, limit, offset, moRong }) {
+  const { rows, total } = await repo.listCancelableLenh({ search, offset, limit, moRong });
   return { items: rows, meta: buildMeta(page, limit, total) };
 }
 
@@ -757,18 +757,33 @@ async function listCancelableLenh({ search, page, limit, offset }) {
 //  - TEST_RUN : chỉ bỏ duyệt Release 2 (RELEASE_2 → RELEASE_1); đợt vải vẫn ở Test Run.
 //  - RELEASE_1: hủy lệnh → đợt vải về "chờ release" (Release 1 candidate), giữ QC.
 //  - READY    : hủy lệnh + hủy QC ready → phần in về màn READY (làm lại từ kỹ thuật/QC).
-async function rollbackLenh(lenhId, { target, lyDo }, actorId) {
+// `force` = HỦY TÙY CHỌN (chỉ bật khi user có quyền `LENH_CANCEL_ANY` — controller kiểm, service
+// KHÔNG tự tin FE). Bỏ giới hạn trạng thái + cho hủy cả lệnh đã in tem: tem/phiếu của lệnh bị HỦY kèm.
+// ⚠ VẪN CHẶN khi tem đã đi tiếp (KCS/Sửa/OQC/giao) — hủy lúc đó làm hỏng SỔ CÁI SỐ LƯỢNG (§11.4);
+// muốn gỡ thì đảo từng công đoạn ở tab "Hủy xác nhận KCS/Sửa/OQC" trước.
+async function rollbackLenh(lenhId, { target, lyDo, force = false }, actorId) {
   const TARGET = ['READY', 'RELEASE_1', 'TEST_RUN'].includes(target) ? target : 'RELEASE_1';
   const lenh = await repo.getLenhForCancel(lenhId);
   if (!lenh) throw new AppError('Lệnh sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   if (lenh.trang_thai === 'HUY') throw new AppError('Lệnh đã hủy', { status: 409, errorCode: 'ALREADY' });
   // GIA_CONG = lệnh gia công còn đậu ở màn Kế hoạch > Gia công (chưa "Chuyển OQC" nên chưa có phiếu/tem)
   // ⇒ hoàn tác được như Release 1/2 (đích hợp lệ: RELEASE_1 / READY — không có Test Run).
-  if (!['RELEASE_1', 'RELEASE_2', 'GIA_CONG'].includes(lenh.trang_thai)) {
+  if (!force && !['RELEASE_1', 'RELEASE_2', 'GIA_CONG'].includes(lenh.trang_thai)) {
     throw new AppError('Chỉ hoàn tác lệnh đang ở Release 1 / Release 2 / Gia công (chưa vào sản xuất)', { status: 409, errorCode: 'WRONG_STAGE' });
   }
-  if (lenh.co_phieu) {
+  if (!force && lenh.co_phieu) {
     throw new AppError('Lệnh đã bắt đầu sản xuất (đã in tem) — không thể hoàn tác tự động', { status: 409, errorCode: 'HAS_PHIEU' });
+  }
+  if (force) {
+    if (!String(lyDo || '').trim()) {
+      throw new AppError('Hủy tùy chọn phải nhập lý do', { status: 422, errorCode: 'NO_LY_DO' });
+    }
+    if (lenh.tem_da_xu_ly) {
+      throw new AppError(
+        'Lệnh có tem đã qua KCS/Sửa/OQC hoặc đã giao — hủy sẽ làm sai sổ cái số lượng. '
+        + 'Hãy hủy xác nhận từng công đoạn ở các tab KCS/Sửa/OQC trước.',
+        { status: 409, errorCode: 'TEM_DA_XU_LY' });
+    }
   }
   const dotVaiIds = await tracking.dotVaiFromLenh(lenhId);
 
@@ -790,14 +805,23 @@ async function rollbackLenh(lenhId, { target, lyDo }, actorId) {
 
   // RELEASE_1 / READY: hủy lệnh (đợt vải rời lệnh) + (READY) hủy QC.
   await withTransaction(async (client) => {
+    // Hủy tùy chọn trên lệnh ĐÃ IN TEM: dọn tem + phiếu TRƯỚC (tem chưa đi tiếp nên sổ cái toàn 0,
+    // không phải đảo gì) rồi mới hủy lệnh — cùng 1 transaction để không áp dụng nửa vời.
+    if (force && lenh.co_phieu) await repo.cancelPhieuTemByLenhTx(client, lenhId, actorId);
     await repo.cancelLenhOrder(client, lenhId, actorId);
     if (TARGET === 'READY') await repo.cancelReadyQcForDotVai(client, dotVaiIds, actorId);
   });
-  await repo.logLenhCancel(lenhId, lenh.ma_lenh_san_xuat, `[${TARGET}] ${lyDo || ''}`.trim(), actorId);
+  const ghiChu = force
+    ? `[${TARGET}] (HỦY TÙY CHỌN từ ${lenh.trang_thai}${lenh.so_tem ? `, hủy ${lenh.so_tem} tem` : ''}) ${lyDo || ''}`.trim()
+    : `[${TARGET}] ${lyDo || ''}`.trim();
+  await repo.logLenhCancel(lenhId, lenh.ma_lenh_san_xuat, ghiChu, actorId);
   await tracking.revertToReady(dotVaiIds, actorId);
   sockets.emit('workflow:updated', { lenhId, stage: 'HUY' });
   sockets.emit('dashboard:refresh', {});
-  return { id: lenhId, target: TARGET, dot_vai: dotVaiIds.length, tu_set: lenh.tu_set === true };
+  return {
+    id: lenhId, target: TARGET, dot_vai: dotVaiIds.length, tu_set: lenh.tu_set === true,
+    force: !!force, trang_thai_cu: lenh.trang_thai, so_tem_huy: force ? (lenh.so_tem || 0) : 0,
+  };
 }
 
 // ─── TEST RUN KHÔNG ĐẠT → TRẢ VỀ KỸ THUẬT (READY) ────────────────────────────
