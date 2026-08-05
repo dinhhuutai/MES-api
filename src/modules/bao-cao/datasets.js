@@ -474,11 +474,26 @@ async function runHoanThanhTram({ loc = {}, gioi_han }) {
 // 2 danh sách này CỐ Ý dùng ĐÚNG nguồn của màn "Chuẩn bị kỹ thuật" & "QC READY" để số liệu KHỚP MÀN
 // (không lệch như DS_PHAN_IN — cái đó đếm ĐỢT VẢI ở flowRows). Đơn vị = PHẦN IN (1 dòng = 1 phần in).
 
-// Điều kiện "phần in đang ở READY" — trích y hệt technical.listCandidates: còn đợt vải CHƯA release
-// (đã chuyển READY) HOẶC chưa có đợt vải nào, và phần in đang hoạt động.
+// Điều kiện "phần in đang ở READY" — PHẢI trích y hệt `technical.repository.listCandidates` (màn Chuẩn bị
+// kỹ thuật), 3 nhánh OR:
+//   1) còn đợt vải CHƯA release (đã chuyển READY, không thuộc lệnh ≠ HUY nào)
+//   2) chưa có đợt vải nào (kỹ thuật làm trước khi vải về)
+//   3) đợt vải thuộc lệnh RELEASE_1 CHƯA có phiếu SX
+// ⚠⚠ NHÁNH 3 = TEST RUN KHÔNG ĐẠT → QA TRẢ VỀ KỸ THUẬT (và mọi đường hủy xác nhận READY khác khi lệnh
+// còn sống): lệnh được GIỮ NGUYÊN để QC xong nhảy THẲNG lại Test Run, nên đợt vải VẪN thuộc lệnh ⇒ 2 nhánh
+// đầu đều trượt. Thiếu nhánh này thì khối danh sách "Đang ở READY" TRẢ THIẾU đúng số phần in đang chờ làm
+// lại, trong khi metric `CP_READY_DANG_O` và màn READY vẫn đếm đủ ⇒ 2 con số trong CÙNG 1 báo cáo đá nhau
+// (đã xảy ra thật 05/08/2026: ô "Phần OPEN" 69 vs danh sách 63 — thiếu đúng 6 phần in bị hủy READY).
+// Bất biến nhận diện: release luôn đòi QC xong ⇒ QC bị hủy + chưa in tem = đang làm lại READY.
+// ⇒ ĐIỀU KIỆN NÀY NẰM Ở 3 NƠI, đổi luật phải sửa CẢ 3: `technical.listCandidates` ·
+//   `utils/stage.js` (dotStageCase nhánh 2) · hằng này.
 const READY_MEMBER = `(EXISTS (SELECT 1 FROM dot_vai_ve dvu WHERE dvu.phan_in_id = pin.id AND dvu.trang_thai <> 'DA_GOP' AND dvu.tg_chuyen_ready IS NOT NULL
         AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsu JOIN lenh_san_xuat lu ON lu.id = lsu.lenh_san_xuat_id WHERE lsu.dot_vai_ve_id = dvu.id AND lu.trang_thai <> 'HUY'))
-    OR NOT EXISTS (SELECT 1 FROM dot_vai_ve dvz WHERE dvz.phan_in_id = pin.id AND dvz.trang_thai <> 'DA_GOP'))`;
+    OR NOT EXISTS (SELECT 1 FROM dot_vai_ve dvz WHERE dvz.phan_in_id = pin.id AND dvz.trang_thai <> 'DA_GOP')
+    OR EXISTS (SELECT 1 FROM dot_vai_ve dvt JOIN lenh_sx_dot_vai lst ON lst.dot_vai_ve_id = dvt.id
+                 JOIN lenh_san_xuat lt ON lt.id = lst.lenh_san_xuat_id AND lt.trang_thai = 'RELEASE_1'
+                WHERE dvt.phan_in_id = pin.id AND dvt.trang_thai <> 'DA_GOP' AND dvt.tg_chuyen_ready IS NOT NULL
+                  AND NOT EXISTS (SELECT 1 FROM phieu_san_xuat pst WHERE pst.lenh_san_xuat_id = lt.id)))`;
 const QC_DONE_EXISTS = `EXISTS (SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint cp ON cp.id = k.checkpoint_id
     WHERE k.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND k.trang_thai = 'DAT')`;
 const readyMark = (maCp) => `(CASE WHEN EXISTS (SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint cp ON cp.id = k.checkpoint_id
