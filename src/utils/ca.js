@@ -26,4 +26,35 @@ function caFromParts(gio, phut, nam, tuan, modeMap) {
   return caFromHour(gio, phut, mode);
 }
 
-module.exports = { caFromHour, caFromParts };
+// ----- MÃ NGÀY CA (mig 068) — chuỗi gợi ý sẵn ở màn Sản xuất, người dùng sửa được -----
+// Dạng: YYMMDD + mã ca → `260805D2` (05/08/2026, ca Dài 2) · `260805C2` (ca Ngắn 2) · `260805HC`.
+// Mốc giờ của từng ca lấy CHUNG từ `caFromHour` (đừng chép lại boundary ở đây — lệch là sai ca).
+const CA_SO = { 'Ca 1': '1', 'Ca 2': '2', 'Ca 3': '3' };
+function maCa(gio, phut, loaiCa) {
+  const label = caFromHour(gio, phut, loaiCa);
+  if (!label) return '';
+  if (label.startsWith('Hành chính')) return 'HC'; // gộp cả ca tăng ca 16:30–20:00
+  const so = CA_SO[label];
+  return so ? (loaiCa === 'DAI' ? 'D' : 'C') + so : '';
+}
+
+// `ymd` = 'YYMMDD' (backend lấy sẵn từ SQL theo giờ VN — đừng tự new Date() ở JS vì server có thể
+// không chạy múi giờ VN). Trả '' nếu thiếu ngày.
+function maNgayCa(ymd, gio, phut, loaiCa) {
+  if (!ymd) return '';
+  return `${ymd}${maCa(gio, phut, loaiCa)}`;
+}
+
+// Tách phần NGÀY của mã ngày ca → 'YYYY-MM-DD' để ghi vào cột `tem.ngay_ca` (DATE, mig 066).
+// Người dùng gõ sai định dạng → null (vẫn lưu nguyên chuỗi vào `ma_ngay_ca`, KHÔNG bịa ngày).
+function ngayTuMaNgayCa(ma) {
+  const s = String(ma || '').trim();
+  const m = /^(\d{2})(\d{2})(\d{2})/.exec(s);
+  if (!m) return null;
+  const [, yy, mm, dd] = m;
+  const thang = Number(mm); const ngay = Number(dd);
+  if (thang < 1 || thang > 12 || ngay < 1 || ngay > 31) return null;
+  return `20${yy}-${mm}-${dd}`;
+}
+
+module.exports = { caFromHour, caFromParts, maCa, maNgayCa, ngayTuMaNgayCa };

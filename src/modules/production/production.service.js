@@ -7,7 +7,7 @@ const { buildMeta } = require('../../utils/pagination');
 const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
 const planningRepo = require('../planning/planning.repository');
-const { caFromParts } = require('../../utils/ca');
+const { caFromParts, maNgayCa, ngayTuMaNgayCa } = require('../../utils/ca');
 
 // Gắn `phan_in_list` (1 dòng / phần in) cho các lệnh GOM SET — màn Xác nhận chạy tách dòng theo phần in,
 // hợp nhất ô ở STT + nút thao tác. Lệnh 1 phần in KHÔNG gắn (FE render như cũ, khỏi phình payload).
@@ -41,7 +41,22 @@ async function getRun(lenhId) {
   const soPhanIn = new Set(dotVai.map((d) => d.phan_in_id)).size;
   return { lenh, phieu, tems, printed, ngung_list: ngungList, ngung_active: ngungActive,
            dot_vai: dotVai, vai_huy: vaiHuy, phan_cong: phanCong,
+           goi_y_tem: await goiYTemMeta(lenhId, phieu?.id),
            so_phan_in: soPhanIn, co_gom_set: soPhanIn > 1 };
+}
+
+// Gợi ý sẵn "ngày ca · từ giờ · đến giờ" cho lượt in kế tiếp (FE điền vào ô, người dùng sửa được).
+// Ngày ca = YYMMDD của NGÀY KẾ HOẠCH + mã ca suy từ giờ bắt đầu kế hoạch & loại ca của TUẦN đó
+// (`cai_dat_ca_tuan`; tuần chưa cài → ca Ngắn). Lỗi gì cũng trả null — không được chặn màn Sản xuất.
+async function goiYTemMeta(lenhId, phieuId) {
+  try {
+    const [g, modeMap] = await Promise.all([repo.goiYTemMeta(lenhId, phieuId), planningRepo.caModeMap()]);
+    if (!g) return null;
+    const mode = modeMap.get(`${g.nam}-${g.tuan}`) || 'NGAN';
+    return { ngay_ca: maNgayCa(g.ymd, g.gio, g.phut, mode), gio_bd: g.gio_bd || '', gio_kt: g.gio_kt || '' };
+  } catch (e) {
+    return null;
+  }
 }
 
 // Ghi 1 lần vải hủy (= vải hư) hoặc vải THIẾU trong lúc sản xuất, theo đợt vải / phần in của lệnh.
@@ -73,15 +88,21 @@ async function addVaiHuy(phieuId, { dotVaiId, soLuong, lyDo, loai }, actorId) {
 }
 
 // ----- PHÂN CÔNG SẢN XUẤT (mig 063) -----
-// 1 lần lưu: ca trưởng (tài khoản) + chuyền trưởng (chữ) ở mức phiếu; mỗi phần in 1 dòng THỢ IN.
+// 1 lần lưu: ca trưởng (tài khoản) + chuyền trưởng (chữ) ở mức phiếu + THỢ IN.
 // ⚠ SL vải hủy / vải thiếu ĐÃ CHUYỂN sang modal IN TEM (2026-08-04) — ghi cùng lúc với lúc in tem
 // (`printTemBatch`), không còn nhập ở đây nữa.
-async function savePhanCong(phieuId, { caTruongId, chuyenTruong, items }, actorId) {
+// ⚠ THỢ IN nay là 1 Ô TEXT "danh sách thợ in trên chuyền" ở mức PHIẾU (2026-08-05, KHÔNG migration):
+// body gửi `thoIn` (chuỗi) → ghi CÙNG chuỗi đó cho MỌI đợt vải của phiếu, vì `phan_cong_san_xuat`
+// khóa theo (phiếu, đợt vải). Giữ nguyên bảng để sau này muốn tách lại theo từng phần in vẫn được;
+// `items` (mỗi đợt vải 1 thợ) vẫn nhận được nếu có — dùng khi cần phân công lẻ.
+async function savePhanCong(phieuId, { caTruongId, chuyenTruong, thoIn, items }, actorId) {
   const phieu = await repo.getPhieuById(phieuId);
   if (!phieu) throw new AppError('Phiếu sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   const dotVaiList = await repo.getLenhDotVaiList(phieu.lenh_san_xuat_id);
   const byId = new Map(dotVaiList.map((d) => [d.dot_vai_ve_id, d]));
-  const rows = Array.isArray(items) ? items : [];
+  const rows = Array.isArray(items) && items.length
+    ? items
+    : (thoIn !== undefined ? dotVaiList.map((d) => ({ dotVaiId: d.dot_vai_ve_id, thoIn })) : []);
   for (const it of rows) {
     if (it && it.dotVaiId && !byId.has(it.dotVaiId)) {
       throw new AppError('Đợt vải không thuộc đợt sản xuất này', { status: 422, errorCode: 'BAD_DOT_VAI' });
@@ -179,13 +200,20 @@ const DEFAULT_DRY_MIN = 60; // thời gian phơi mặc định (phút) — chỉ
 
 // Ngày ca / giờ SX (từ → đến) / cờ BTP của 1 LƯỢT IN — nhập ở màn Sản xuất, lưu vào từng tem (mig 066).
 // Chuỗi rỗng → null để không đẩy '' xuống cột DATE/TIME.
-const temMeta = (b = {}) => ({
-  ngayCa: b.ngayCa || null,
-  gioBd: b.gioBd || null,
-  gioKt: b.gioKt || null,
-  btpTruoc: !!b.btpTruoc,
-  btpCuoi: !!b.btpCuoi,
-});
+// `ngayCa` từ FE nay là MÃ NGÀY CA (mig 068, vd `260805D2`) → lưu nguyên chuỗi vào `ma_ngay_ca`,
+// đồng thời tách 6 số đầu ra cột `ngay_ca` DATE để lọc/thống kê theo ngày vẫn chạy. Gõ sai định dạng
+// thì vẫn giữ chuỗi, `ngay_ca` để NULL (không bịa ngày).
+const temMeta = (b = {}) => {
+  const ma = (b.ngayCa || '').trim();
+  return {
+    maNgayCa: ma || null,
+    ngayCa: ngayTuMaNgayCa(ma),
+    gioBd: b.gioBd || null,
+    gioKt: b.gioKt || null,
+    btpTruoc: !!b.btpTruoc,
+    btpCuoi: !!b.btpCuoi,
+  };
+};
 
 async function printTem(phieuId, soLuong, actorId, body) {
   const meta = temMeta(body);

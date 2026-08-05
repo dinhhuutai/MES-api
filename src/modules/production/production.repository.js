@@ -313,7 +313,11 @@ async function getPhanCongByPhieu(phieuId) {
         [phieuId]
       ),
     ]);
-    return { ...(head.rows[0] || {}), items: items.rows };
+    // `tho_in` mức PHIẾU: từ 2026-08-05 màn Sản xuất nhập 1 ô "danh sách thợ in trên chuyền" và BE ghi
+    // CÙNG chuỗi cho mọi đợt vải ⇒ lấy giá trị đầu tiên khác rỗng. (Dữ liệu cũ phân công lẻ từng phần in
+    // thì `items` vẫn còn đủ để tra.)
+    const thoIn = (items.rows.find((r) => (r.tho_in || '').trim()) || {}).tho_in || null;
+    return { ...(head.rows[0] || {}), tho_in: thoIn, items: items.rows };
   } catch (e) {
     return { items: [] };
   }
@@ -630,26 +634,31 @@ async function nextMaTem() {
 // "thử lại" sau đó sẽ chết với 25P02 chứ không cứu được gì. Phải biết trước rồi mới chọn câu lệnh.
 // Cache khi ĐÃ có cột (khỏi hỏi lại mỗi lần in); chưa có thì dò lại — sau khi chạy mig 066 là nhận ngay,
 // không cần restart BE.
-let temCoCotCa = false;
-async function temCoCotNgayCa() {
-  if (temCoCotCa) return true;
+const coCot = {}; // { ten_cot: true } — chỉ cache khi ĐÃ có cột
+async function temCoCot(ten) {
+  if (coCot[ten]) return true;
   const { rows } = await query(
     `SELECT 1 FROM information_schema.columns
-      WHERE table_schema='public' AND table_name='tem' AND column_name='ngay_ca' LIMIT 1`.replace(/\s+/g, ' ')
+      WHERE table_schema='public' AND table_name='tem' AND column_name=$1 LIMIT 1`.replace(/\s+/g, ' '),
+    [ten]
   );
-  temCoCotCa = rows.length > 0;
-  return temCoCotCa;
+  coCot[ten] = rows.length > 0;
+  return coCot[ten];
 }
+const temCoCotNgayCa = () => temCoCot('ngay_ca');       // mig 066
+const temCoCotMaNgayCa = () => temCoCot('ma_ngay_ca');  // mig 068
 
-// Tạo tem + (mig 066) ngày ca · giờ SX từ→đến · cờ BTP trước/cuối của LƯỢT IN này.
-async function createTem(client, { phieuId, maTem, soLuong, ngayCa, gioBd, gioKt, btpTruoc, btpCuoi }, actorId) {
+// Tạo tem + (mig 066) ngày ca · giờ SX từ→đến · cờ BTP trước/cuối + (mig 068) mã ngày ca của LƯỢT IN này.
+async function createTem(client, { phieuId, maTem, soLuong, ngayCa, maNgayCa, gioBd, gioKt, btpTruoc, btpCuoi }, actorId) {
   const base = [phieuId, maTem, soLuong, actorId];
   if (await temCoCotNgayCa()) {
+    const coMa = await temCoCotMaNgayCa();
     const { rows } = await client.query(
       `INSERT INTO tem (phieu_san_xuat_id, ma_tem, so_luong, trang_thai, created_by,
-         ngay_ca, gio_sx_bd, gio_sx_kt, btp_truoc, btp_cuoi)
-       VALUES ($1,$2,$3,'IN',$4,$5,$6,$7,$8,$9) RETURNING id`,
-      [...base, ngayCa || null, gioBd || null, gioKt || null, !!btpTruoc, !!btpCuoi]
+         ngay_ca, gio_sx_bd, gio_sx_kt, btp_truoc, btp_cuoi${coMa ? ', ma_ngay_ca' : ''})
+       VALUES ($1,$2,$3,'IN',$4,$5,$6,$7,$8,$9${coMa ? ',$10' : ''}) RETURNING id`,
+      [...base, ngayCa || null, gioBd || null, gioKt || null, !!btpTruoc, !!btpCuoi,
+        ...(coMa ? [maNgayCa || null] : [])]
     );
     return rows[0].id;
   }
@@ -659,6 +668,38 @@ async function createTem(client, { phieuId, maTem, soLuong, ngayCa, gioBd, gioKt
     base
   );
   return rows[0].id;
+}
+
+// GỢI Ý "ngày ca · giờ SX" cho LƯỢT IN kế tiếp của 1 lệnh (FE điền sẵn, người dùng sửa được).
+//   · Ngày ca  ← KẾ HOẠCH của đợt SX (`ngay_ke_hoach` + `tg_bd_kh`); thiếu → giờ bắt đầu chạy thật
+//                của phiếu; cuối cùng → bây giờ. Ca suy từ giờ đó + loại ca của tuần (service ghép).
+//   · Giờ BĐ   ← mốc KẾT THÚC của lượt in TRƯỚC (ưu tiên `gio_sx_kt` người nhập, không có thì lấy
+//                giờ in tem gần nhất); chưa in tem nào → giờ bắt đầu chạy phiếu.
+//   · Giờ KT   ← bây giờ.
+// Mọi mốc quy về giờ VN ngay trong SQL (server có thể chạy múi giờ khác).
+async function goiYTemMeta(lenhId, phieuId) {
+  const VN = "AT TIME ZONE 'Asia/Ho_Chi_Minh'";
+  const gioKtTem = (await temCoCotNgayCa()) ? "to_char(t.gio_sx_kt,'HH24:MI')" : 'NULL';
+  const sql = `WITH l AS (SELECT ngay_ke_hoach, tg_bd_kh FROM lenh_san_xuat WHERE id=$1),
+      p AS (SELECT tg_bd FROM phieu_san_xuat WHERE id=$2::uuid),
+      t AS (SELECT ${gioKtTem} AS gio_kt_nhap, to_char(t.created_date ${VN},'HH24:MI') AS gio_in
+              FROM tem t JOIN phieu_san_xuat ps ON ps.id=t.phieu_san_xuat_id
+             WHERE ps.lenh_san_xuat_id=$1 AND t.trang_thai<>'HUY'
+             ORDER BY t.created_date DESC LIMIT 1),
+      b AS (SELECT COALESCE(l.ngay_ke_hoach, (p.tg_bd ${VN})::date, (now() ${VN})::date) AS ngay,
+                   COALESCE(l.tg_bd_kh ${VN}, p.tg_bd ${VN}, now() ${VN}) AS tg
+              FROM l LEFT JOIN p ON true)
+    SELECT to_char(b.ngay,'YYMMDD') AS ymd,
+           EXTRACT(HOUR    FROM b.tg)::int    AS gio,
+           EXTRACT(MINUTE  FROM b.tg)::int    AS phut,
+           EXTRACT(ISOYEAR FROM b.ngay)::int  AS nam,
+           EXTRACT(WEEK    FROM b.ngay)::int  AS tuan,
+           COALESCE(t.gio_kt_nhap, t.gio_in, to_char(p.tg_bd ${VN},'HH24:MI'),
+                    to_char(now() ${VN},'HH24:MI')) AS gio_bd,
+           to_char(now() ${VN},'HH24:MI') AS gio_kt
+      FROM b LEFT JOIN t ON true LEFT JOIN p ON true`;
+  const { rows } = await query(sql.replace(/\s+/g, ' '), [lenhId, phieuId || null]);
+  return rows[0] || null;
 }
 
 async function logTemPrint(client, { temId, maTem, actorId, lyDo = null }) {
@@ -1006,7 +1047,7 @@ module.exports = {
   listReopenCandidates, getPhieuFull, reopenPhieuTx, logReopenProduction, logPauseLenhChay,
   cancelPhieuStart, logUndoStart, logChayDacBiet,
   listTemLogByPhieu, nextReprint, logReprint,
-  nextMaTem, createTem, logTemPrint, finishPhieu,
+  nextMaTem, createTem, goiYTemMeta, logTemPrint, finishPhieu,
   nextMaPhieuTx, nextMaTemTx, createPhieuDone, createTemGiaCongOqc,
   setPhieuTruong, upsertPhanCong, getPhanCongByPhieu,
   monitorRunning, monitorQueue, downstreamSlaAfterProduction, listXePhoi, listCurrentPhoi, listTemChoPhoi, addTemToXe, adjustPhoi,
