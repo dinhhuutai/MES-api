@@ -1,8 +1,8 @@
 'use strict';
 
 const { query } = require('../../config/db');
-// CHỈ HIỆN HÀNG IN MÁY từ Release 1 trở đi — xem `utils/phuongAnIn.js`.
-const { laMayTheoPhieu } = require('../../utils/phuongAnIn');
+// Hiển thị theo PHƯƠNG ÁN IN — cấu hình động từng trang (mig 067), mặc định BẬT HẾT = không lọc.
+const { dkTrang } = require('../../utils/phuongAnIn');
 const { lenhPhanInMatch } = require('../../utils/search');
 
 // SỔ CÁI SỐ LƯỢNG tem (migration 043): SL còn lại từng công đoạn (dùng cho lọc + hiển thị).
@@ -57,15 +57,16 @@ const TEM_CTX = `
 
 // Danh sách tem cho 1 công đoạn — lọc theo SL CÒN LẠI (con_X > 0), cho phép 1 tem xuất hiện đồng thời
 // ở nhiều công đoạn nếu còn phần chưa xử lý (kiểm/giao nhiều lần).
-async function listCandByCon(condExpr, { search = '', filters = {} } = {}) {
+// `maTrang` = khóa trang cấu hình hiển thị theo phương án in (CL_KCS / CL_SUA / CL_OQC — mig 067).
+async function listCandByCon(condExpr, { search = '', filters = {} } = {}, maTrang = 'CL_KCS') {
   const f = filters || {};
+  const dkPain = await dkTrang(maTrang, 'phieu', 't.phieu_san_xuat_id');
   const params = [];
   // ⚠⚠ LOẠI TEM ĐÃ HỦY — bắt buộc, không bỏ: các danh sách này lọc theo SỔ CÁI (`con_X > 0`), mà nhiều
   // đường đặt tem `HUY` KHÔNG xóa sổ cái (rõ nhất: `softDeletePhanInTx` — hủy phần in set tem HUY nhưng
   // giữ nguyên sl_kcs_dat/sl_sua_dat). Không có điều kiện này thì tem của phần in đã hủy vẫn nằm chình
   // ình ở màn Sửa/OQC/Giao. (KCS vô tình thoát nhờ đòi thêm `trang_thai='DA_KHO'`.)
-  // CHỈ HÀNG IN MÁY (chốt 2026-08-04) — KCS/Sửa/OQC chỉ nhận tem của lệnh in Máy.
-  const conds = ["t.trang_thai <> 'HUY'", laMayTheoPhieu('t.phieu_san_xuat_id'), condExpr];
+  const conds = ["t.trang_thai <> 'HUY'", dkPain, condExpr];
   // Ô tìm kiếm chung (chỉ thêm ILIKE vào SQL khi CÓ nhập — giữ query gọn cho IPS khi không lọc).
   if (search) {
     params.push(search);
@@ -104,10 +105,10 @@ async function listCandByCon(condExpr, { search = '', filters = {} } = {}) {
 }
 // KCS: tem đã khô, còn phần chưa kiểm. Sửa: còn phần chờ sửa. OQC: còn phần chờ kiểm cuối.
 // (con_sua/con_oqc > 0 ⟹ đã qua KCS ⟹ đã khô — không cần lọc thêm da_qua_phoi.)
-const listKcsCand = (opt) => listCandByCon(`t.trang_thai = 'DA_KHO' AND ${CON_KCS} > 0`, opt);
+const listKcsCand = (opt) => listCandByCon(`t.trang_thai = 'DA_KHO' AND ${CON_KCS} > 0`, opt, 'CL_KCS');
 // Sửa: hủy tem sửa = xóa SL sửa khỏi sổ cái ⇒ con_sua về 0 ⇒ tem tự rời hàng đợi (không cần cờ ẩn).
-const listSuaCand = (opt) => listCandByCon(`${CON_SUA} > 0`, opt);
-const listOqcCand = (opt) => listCandByCon(`${CON_OQC} > 0`, opt);
+const listSuaCand = (opt) => listCandByCon(`${CON_SUA} > 0`, opt, 'CL_SUA');
+const listOqcCand = (opt) => listCandByCon(`${CON_OQC} > 0`, opt, 'CL_OQC');
 
 async function getTemBasic(temId) {
   const { rows } = await query('SELECT id, ma_tem, so_luong, trang_thai FROM tem WHERE id = $1', [temId]);

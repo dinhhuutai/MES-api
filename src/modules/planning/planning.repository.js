@@ -2,8 +2,8 @@
 
 const { query } = require('../../config/db');
 const { lenhPhanInMatch } = require('../../utils/search');
-// CHỈ HIỆN HÀNG IN MÁY từ Release 1 trở đi (chốt 2026-08-04) — xem `utils/phuongAnIn.js`.
-const { laMayTheoPhanIn, laMayTheoLenh } = require('../../utils/phuongAnIn');
+// Hiển thị theo PHƯƠNG ÁN IN — cấu hình động từng trang (mig 067), mặc định BẬT HẾT = không lọc.
+const { dkTrang } = require('../../utils/phuongAnIn');
 
 // SL vải đã ĐƯA VÀO đợt SX của 1 đợt vải = Σ lenh_sx_dot_vai.so_luong các lệnh non-HUY gắn đợt đó
 // (mig 052: SL đưa vào theo TỪNG đợt nằm ở junction — đúng cả khi 1 lệnh gồm nhiều đợt).
@@ -26,6 +26,7 @@ const hsktCols = (pinCol) => `
 // ----- RELEASE 1: đợt vải của phần in đã READY, CÒN phần chưa release (SL vải về − đã release > 0) -----
 // Release theo số lượng: 1 đợt có thể release nhiều lần → nhiều lệnh; đợt ở lại pool tới khi release đủ.
 async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
+  const dkPain = await dkTrang('KH_RELEASE1', 'pin', 'pin.id');
   const SEARCH = `($1 = '' OR pin.ma_phan ILIKE '%'||$1||'%' OR kh.ten_khach_hang ILIKE '%'||$1||'%'
                   OR mh.ma_hang ILIKE '%'||$1||'%' OR pin.mau_vai ILIKE '%'||$1||'%'
                   OR pin.kich_vai ILIKE '%'||$1||'%' OR pin.kich_phim ILIKE '%'||$1||'%'
@@ -38,7 +39,7 @@ async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
     JOIN khach_hang kh ON kh.id = dh.khach_hang_id
     LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id
     WHERE pin.dang_hoat_dong AND dv.trang_thai <> 'DA_HUY'
-      AND ${laMayTheoPhanIn('pin.id')}
+      AND ${dkPain}
       AND dv.tg_chuyen_ready IS NOT NULL
       AND (COALESCE(dv.so_luong_vai_ve,0) - ${DA_REL}) > 0
       AND NOT EXISTS (SELECT 1 FROM gom_set_dot_vai gsd JOIN gom_set gs ON gs.id = gsd.gom_set_id
@@ -318,6 +319,7 @@ async function dotVaiAlreadyReleased(dotVaiIds) {
 // màn Release 1 (chỉ đợt lẻ mới biến mất) ⇒ hàng nằm 2 nơi, và release set từ đây còn để lại dòng
 // kế hoạch tạm mồ côi (xem `releaseSet`). Xóa KH tạm / xác nhận Release 1 thì set quay lại.
 async function listReleasableSets(search = '') {
+  const dkPain = await dkTrang('KH_RELEASE1', 'pin', 'dvm.phan_in_id');
   const { rows } = await query(
     `SELECT gs.id, gs.ma_set, gs.ghi_chu, gs.created_date,
             (SELECT count(*) FROM gom_set_dot_vai d WHERE d.gom_set_id = gs.id)::int AS so_dot_vai,
@@ -340,7 +342,7 @@ async function listReleasableSets(search = '') {
      FROM gom_set gs
      WHERE gs.trang_thai = 'MO'
        AND EXISTS (SELECT 1 FROM gom_set_dot_vai d JOIN dot_vai_ve dvm ON dvm.id = d.dot_vai_ve_id
-                    WHERE d.gom_set_id = gs.id AND ${laMayTheoPhanIn('dvm.phan_in_id')})
+                    WHERE d.gom_set_id = gs.id AND ${dkPain})
        AND NOT EXISTS (SELECT 1 FROM gom_set_dot_vai d JOIN ke_hoach_tam kht
                          ON kht.dot_vai_ve_id = d.dot_vai_ve_id AND kht.trang_thai = 'CHO'
                         WHERE d.gom_set_id = gs.id)
@@ -353,11 +355,13 @@ async function listReleasableSets(search = '') {
 
 // Thành viên (đợt vải) của các set đang mở — đủ cột để render chung bảng Release 1.
 async function getOpenSetMembers() {
+  const dkPain = await dkTrang('KH_RELEASE1', 'pin', 'pin.id');
   const { rows } = await query(
     `SELECT gs.id AS set_id, dv.id AS dot_vai_id, dv.ma_dot_vai,
             dv.so_luong_vai_ve, dv.ngay_vai_ve, dv.han_giao_hang,
             pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.so_luong_don_hang, pin.tinh_chat_in,
             ldv.ten_loai AS loai_dot_vai,
+            ${hsktCols('pin.id')},
             mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
             EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
                     WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT') AS qc_done
@@ -369,7 +373,7 @@ async function getOpenSetMembers() {
      JOIN ma_hang mh ON mh.id = pin.ma_hang_id
      JOIN don_hang dh ON dh.id = mh.don_hang_id
      JOIN khach_hang kh ON kh.id = dh.khach_hang_id
-     WHERE gs.trang_thai = 'MO' AND ${laMayTheoPhanIn('pin.id')}
+     WHERE gs.trang_thai = 'MO' AND ${dkPain}
      ORDER BY gs.created_date DESC, pin.mau_vai, pin.ma_phan, dv.ma_dot_vai`
   );
   return rows;
@@ -463,7 +467,7 @@ const CHO_KY_THUAT_SQL = (lenhCol) => `EXISTS (
      AND NOT EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cq ON cq.id = kq.checkpoint_id
                       WHERE kq.phan_in_id = dk.phan_in_id AND cq.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT'))`;
 
-function lenhListSql(extraWhere) {
+function lenhListSql(extraWhere, dkPain = 'TRUE') {
   return `
     SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.trang_thai, ls.ngay_ke_hoach,
            cs.ma_chuyen, cs.ten_chuyen, lc.ma_loai AS ma_loai_chuyen, lc.ten_loai AS ten_loai_chuyen,
@@ -484,7 +488,7 @@ function lenhListSql(extraWhere) {
     LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
     ${PHAN_INFO_LATERAL}
     WHERE ls.trang_thai = 'RELEASE_1'
-      AND ${laMayTheoLenh('ls.id')}
+      AND ${dkPain}
       AND ($3 = '' OR ls.ma_lenh_san_xuat ILIKE '%'||$3||'%' OR ${lenhPhanInMatch('ls.id', '$3')})
       ${extraWhere}
     ORDER BY ls.created_date DESC
@@ -492,7 +496,8 @@ function lenhListSql(extraWhere) {
 }
 
 async function listTestRunCandidates({ cnspId, qaId, search = '', offset = 0, limit = 20 }) {
-  const { rows } = await query(lenhListSql(''), [cnspId, qaId, search, limit, offset]);
+  const dkPain = await dkTrang('KH_TEST_RUN', 'lenh', 'ls.id');
+  const { rows } = await query(lenhListSql('', dkPain), [cnspId, qaId, search, limit, offset]);
   return rows;
 }
 
@@ -500,7 +505,8 @@ async function listRelease2Candidates({ cnspId, qaId, search = '', offset = 0, l
   const extra = `
     AND EXISTS (SELECT 1 FROM ket_qua_checkpoint k WHERE k.lenh_san_xuat_id = ls.id AND k.checkpoint_id = $1 AND k.trang_thai='DAT')
     AND EXISTS (SELECT 1 FROM ket_qua_checkpoint k WHERE k.lenh_san_xuat_id = ls.id AND k.checkpoint_id = $2 AND k.trang_thai='DAT')`;
-  const { rows } = await query(lenhListSql(extra), [cnspId, qaId, search, limit, offset]);
+  const dkPain = await dkTrang('KH_RELEASE2', 'lenh', 'ls.id');
+  const { rows } = await query(lenhListSql(extra, dkPain), [cnspId, qaId, search, limit, offset]);
   return rows;
 }
 
@@ -517,12 +523,13 @@ async function getLenhBasic(lenhId) {
 
 // ----- LẬP KẾ HOẠCH LẠI (lệnh đang Test Run (RELEASE_1) hoặc đã RELEASE_2, chưa bắt đầu sản xuất) -----
 async function listReplanCandidates({ search = '', offset = 0, limit = 50 }) {
+  const dkPain = await dkTrang('KH_REPLAN', 'lenh', 'ls.id');
   const FROM = `
     FROM lenh_san_xuat ls
     LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
     ${PHAN_INFO_LATERAL}
     WHERE ls.trang_thai IN ('RELEASE_1','RELEASE_2')
-      AND ${laMayTheoLenh('ls.id')}
+      AND ${dkPain}
       AND NOT EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = ls.id)
       AND ($1 = '' OR ls.ma_lenh_san_xuat ILIKE '%'||$1||'%' OR ${lenhPhanInMatch('ls.id', '$1')})`;
   const dataSql = `
@@ -547,13 +554,14 @@ async function listReplanCandidates({ search = '', offset = 0, limit = 50 }) {
 
 // ----- GIA CÔNG: lệnh đang đậu chờ Kế hoạch chuyển OQC (trang_thai='GIA_CONG') -----
 async function listGiaCongLenh({ search = '', offset = 0, limit = 50 }) {
+  const dkPain = await dkTrang('KH_GIA_CONG', 'lenh', 'ls.id');
   const FROM = `
     FROM lenh_san_xuat ls
     LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
     LEFT JOIN nguoi_dung nr ON nr.id = ls.created_by
     ${PHAN_INFO_LATERAL}
     WHERE ls.trang_thai = 'GIA_CONG'
-      AND ${laMayTheoLenh('ls.id')}
+      AND ${dkPain}
       AND ($1 = '' OR ls.ma_lenh_san_xuat ILIKE '%'||$1||'%' OR ${lenhPhanInMatch('ls.id', '$1')})`;
   const dataSql = `
     SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.ngay_ke_hoach, ls.created_date,
@@ -782,6 +790,7 @@ async function keHoachTamDoneByDate(date) {
 }
 
 async function listKeHoachTamRows({ search = '', offset = 0, limit = 200 }) {
+  const dkPain = await dkTrang('KH_TAM', 'pin', 'pin.id');
   const SEARCH = `($1 = '' OR pin.ma_phan ILIKE '%'||$1||'%' OR kh.ten_khach_hang ILIKE '%'||$1||'%'
                   OR mh.ma_hang ILIKE '%'||$1||'%' OR pin.mau_vai ILIKE '%'||$1||'%' OR dv.ma_dot_vai ILIKE '%'||$1||'%')`;
   const FROM = `
@@ -794,7 +803,7 @@ async function listKeHoachTamRows({ search = '', offset = 0, limit = 200 }) {
     LEFT JOIN chuyen_san_xuat cs ON cs.id = kt.chuyen_id
     LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id
     WHERE kt.trang_thai = 'CHO' AND pin.dang_hoat_dong AND dv.trang_thai <> 'DA_HUY'
-      AND ${laMayTheoPhanIn('pin.id')} AND ${SEARCH}`;
+      AND ${dkPain} AND ${SEARCH}`;
   const dataSql = `
     SELECT kt.id, kt.dot_vai_ve_id, kt.phan_in_id, kt.chuyen_id, kt.ngay_ke_hoach, kt.tg_bd_kh, kt.tg_kt_kh, kt.so_luong,
            dv.ma_dot_vai, dv.han_giao_hang, dv.so_luong_vai_ve, cs.ten_chuyen, ldv.ten_loai AS loai_dot_vai,

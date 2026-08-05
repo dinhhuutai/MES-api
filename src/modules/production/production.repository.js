@@ -2,8 +2,8 @@
 
 const { query } = require('../../config/db');
 const { lenhPhanInMatch } = require('../../utils/search');
-// CHỈ HIỆN HÀNG IN MÁY từ Release 1 trở đi (chốt 2026-08-04) — xem `utils/phuongAnIn.js`.
-const { laMayTheoLenh } = require('../../utils/phuongAnIn');
+// Hiển thị theo PHƯƠNG ÁN IN — cấu hình động từng trang (mig 067), mặc định BẬT HẾT = không lọc.
+const { dkTrang } = require('../../utils/phuongAnIn');
 
 const PHAN_AGG = `(SELECT string_agg(DISTINCT pin.ma_phan, ', ')
     FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
@@ -44,17 +44,19 @@ const SLA_COLS = 'sla.tg_vao, sla.sla_phut, sla.canh_bao_truoc_phut,';
 // PHẢI còn hiện, nếu whitelist theo MAY thì luồng in kiếng đứt giữa chừng.
 // ⚠ CHỈ lọc danh sách CHỜ CHẠY — lệnh ĐANG CHẠY (monitorRunning) giữ nguyên để hàng lỡ chạy còn
 // in nốt tem / bấm "Chạy hoàn tất".
-const AN_LOAI_CHUYEN_CHO_CHAY = ['BAN', 'ROBOT'];
+// (ĐÃ GỠ 2026-08-04 theo yêu cầu "mở lại hết") Trước đây danh sách "Chờ chạy" ẩn lệnh trên chuyền
+// loại BAN/ROBOT. Nay việc ẩn/hiện làm bằng cấu hình **Hệ thống > Hiển thị theo phương án in**
+// (mig 067) — theo PHƯƠNG ÁN IN của phần in, không theo loại chuyền.
 
 async function listProductionCandidates({ search = '', offset = 0, limit = 20 }) {
+  const dkPain = await dkTrang('SX_CHO_CHAY', 'lenh', 'ls.id');
   const FROM = `
     FROM lenh_san_xuat ls
     JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
     LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
     ${PHAN_INFO_LATERAL}
     WHERE ls.trang_thai = 'RELEASE_2'
-      AND ${laMayTheoLenh('ls.id')}
-      AND (lc.ma_loai IS NULL OR lc.ma_loai <> ALL($2::text[]))
+      AND ${dkPain}
       AND ($1 = '' OR ls.ma_lenh_san_xuat ILIKE '%'||$1||'%' OR ${lenhPhanInMatch('ls.id', '$1')})`;
   const dataSql = `
     SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.chuyen_id, ls.ngay_ke_hoach, ls.giai_doan,
@@ -72,11 +74,11 @@ async function listProductionCandidates({ search = '', offset = 0, limit = 20 })
            ${PHAN_AGG} AS phan_list
     ${FROM}
     ORDER BY ls.ngay_ke_hoach NULLS LAST, ls.created_date
-    LIMIT $3 OFFSET $4`;
+    LIMIT $2 OFFSET $3`;
   const countSql = `SELECT count(*)::int AS total ${FROM}`;
   const [data, count] = await Promise.all([
-    query(dataSql, [search, AN_LOAI_CHUYEN_CHO_CHAY, limit, offset]),
-    query(countSql, [search, AN_LOAI_CHUYEN_CHO_CHAY]),
+    query(dataSql, [search, limit, offset]),
+    query(countSql, [search]),
   ]);
   return { rows: data.rows, total: count.rows[0].total };
 }
@@ -678,6 +680,7 @@ async function finishPhieu(phieuId, actorId) {
 
 // ----- THEO DÕI CHUYỀN -----
 async function monitorRunning() {
+  const dkPain = await dkTrang('SX_DANG_CHAY', 'lenh', 'ls.id');
   const { rows } = await query(
     `SELECT ps.id AS phieu_id, ls.id AS lenh_id, cs.id AS chuyen_id, cs.ma_chuyen, cs.ten_chuyen,
             lc.ma_loai AS ma_loai_chuyen, lc.ten_loai AS ten_loai_chuyen,
@@ -699,7 +702,7 @@ async function monitorRunning() {
      JOIN chuyen_san_xuat cs ON cs.id = ps.chuyen_id
      LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
      ${PHAN_INFO_LATERAL}
-     WHERE ps.trang_thai='DANG_CHAY' AND ${laMayTheoLenh('ls.id')}
+     WHERE ps.trang_thai='DANG_CHAY' AND ${dkPain}
      ORDER BY cs.ma_chuyen`
   );
   return rows;
@@ -721,6 +724,7 @@ async function downstreamSlaAfterProduction() {
 }
 
 async function monitorQueue() {
+  const dkPain = await dkTrang('SX_THEO_DOI', 'lenh', 'ls.id');
   const { rows } = await query(
     `SELECT ls.ma_lenh_san_xuat, ls.so_luong_release AS target, ls.ngay_ke_hoach,
             cs.ma_chuyen, cs.ten_chuyen, lc.ma_loai AS ma_loai_chuyen, lc.ten_loai AS ten_loai_chuyen,
@@ -729,7 +733,7 @@ async function monitorQueue() {
      JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
      LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
      ${PHAN_INFO_LATERAL}
-     WHERE ls.trang_thai='RELEASE_2' AND ${laMayTheoLenh('ls.id')}
+     WHERE ls.trang_thai='RELEASE_2' AND ${dkPain}
      ORDER BY cs.ma_chuyen, ls.ngay_ke_hoach NULLS LAST, ls.created_date`
   );
   return rows;

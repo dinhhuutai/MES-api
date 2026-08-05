@@ -23,6 +23,7 @@ const deliveryRoutes = require('./modules/delivery/delivery.routes');
 const wfconfigRoutes = require('./modules/wfconfig/wfconfig.routes');
 const dashboardRoutes = require('./modules/dashboard/dashboard.routes');
 const erpsyncRoutes = require('./modules/erpsync/erpsync.routes');
+const hienThiPainRoutes = require('./modules/hienthipain/hienthipain.routes');
 const presenceRoutes = require('./modules/presence/presence.routes');
 const financeRoutes = require('./modules/finance/finance.routes');
 const chuyenRoutes = require('./modules/chuyen/chuyen.routes');
@@ -60,6 +61,8 @@ app.use('/api/giao-hang', deliveryRoutes);
 app.use('/api/wf', wfconfigRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/erp', erpsyncRoutes);
+// Hệ thống > Hiển thị theo phương án in (bật/tắt Máy/Bàn/Robot/Khác cho từng trang — mig 067)
+app.use('/api/hien-thi-pain', hienThiPainRoutes);
 app.use('/api/presence', presenceRoutes);
 app.use('/api/tai-chinh', financeRoutes);
 app.use('/api/chuyen', chuyenRoutes);

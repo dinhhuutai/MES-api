@@ -1,8 +1,8 @@
 'use strict';
 
 const { query } = require('../../config/db');
-// CHỈ HIỆN HÀNG IN MÁY từ Release 1 trở đi — xem `utils/phuongAnIn.js`.
-const { laMayTheoPhieu } = require('../../utils/phuongAnIn');
+// Hiển thị theo PHƯƠNG ÁN IN — cấu hình động từng trang (mig 067), mặc định BẬT HẾT = không lọc.
+const { dkTrang } = require('../../utils/phuongAnIn');
 const { lenhPhanInMatch } = require('../../utils/search');
 
 const DON_SUB = (col, alias) => `(SELECT string_agg(DISTINCT ${col}, ', ')
@@ -20,9 +20,8 @@ async function listTemSanSang({ search = '', filters = {}, ngayTu = '', ngayDen 
   const params = [];
   // ⚠ LOẠI TEM ĐÃ HỦY (cùng lý do như `quality.repository.listCandByCon`): danh sách lọc theo sổ cái,
   // mà `softDeletePhanInTx` set tem HUY nhưng KHÔNG xóa sổ cái ⇒ tem của phần in đã hủy vẫn chờ giao.
-  // CHỈ HÀNG IN MÁY (chốt 2026-08-04).
-  const conds = ["t.trang_thai <> 'HUY'", laMayTheoPhieu('t.phieu_san_xuat_id'),
-    '(t.sl_oqc_dat - t.sl_da_giao) > 0'];
+  const dkPain = await dkTrang('GH_TEM', 'phieu', 't.phieu_san_xuat_id');
+  const conds = ["t.trang_thai <> 'HUY'", dkPain, '(t.sl_oqc_dat - t.sl_da_giao) > 0'];
   if (search) {
     params.push(search); const i = params.length;
     conds.push(`(t.ma_tem ILIKE '%'||$${i}||'%' OR ls.ma_lenh_san_xuat ILIKE '%'||$${i}||'%' OR ${lenhPhanInMatch('ls.id', `$${i}`)})`);

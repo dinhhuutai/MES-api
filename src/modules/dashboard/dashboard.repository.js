@@ -4,8 +4,8 @@ const { query } = require('../../config/db');
 const ordersRepo = require('../orders/orders.repository');
 const { dotStageCase, readyFallback, ORDER_SQL_ARRAY } = require('../../utils/stage');
 const { techDoneSql } = require('../../utils/tech');
-// CHỈ HIỆN HÀNG IN MÁY từ Release 1 trở đi (chốt 2026-08-04) — xem `utils/phuongAnIn.js`.
-const { laMayTheoPhanIn } = require('../../utils/phuongAnIn');
+// Hiển thị theo PHƯƠNG ÁN IN — cấu hình động từng trang (mig 067), mặc định BẬT HẾT = không lọc.
+const { dkTrang } = require('../../utils/phuongAnIn');
 
 // "Đủ mục KT" (READY) trong flowRows: dùng cờ hk/hf/hm của CTE `kt` + tên khách của đợt (b.ten_khach_hang).
 // Khách II/AD: Khuôn không bắt buộc (chỉ cần Film + Mực). Xem utils/tech.js.
@@ -204,6 +204,7 @@ async function confirmTodayDetail() {
 // KHÔNG phụ thuộc ton_tram (029) để tránh lệch khi ton_tram chưa đồng bộ. Nhất quán với màn Đơn hàng.
 // Một phần in có thể ở nhiều giai đoạn (nhiều đợt vải rải rác) → đếm distinct phần in / mã hàng theo từng giai đoạn.
 async function stageCounts() {
+  const dkPain = await dkTrang('DB_TONG_QUAN', 'pin', 'dom0.phan_in_id');
   // GIAI ĐOẠN DOMINANT mỗi phần in ("mỗi phần in 1 trạm" — utils/stage.js), dùng CHUNG logic với
   // orders.stageCondition ⇒ Σ(phần in mỗi stage) = tổng phần in, khớp mọi danh sách + đường vàng.
   const lenh = (col) => `(SELECT ls.${col} FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id WHERE lsd.dot_vai_ve_id=d.id AND ls.trang_thai<>'HUY' ORDER BY ls.created_date DESC LIMIT 1)`;
@@ -234,7 +235,7 @@ async function stageCounts() {
     -- mọi giai đoạn từ Release 1 về sau để khớp đúng những gì màn thao tác đang hiện.
     dom AS (
       SELECT * FROM dom0
-       WHERE stage IN ('CHO_CHUYEN','READY_KT','READY_QA') OR ${laMayTheoPhanIn('dom0.phan_in_id')}
+       WHERE stage IN ('CHO_CHUYEN','READY_KT','READY_QA') OR ${dkPain}
     )`;
   const stageSql = `${DOM_CTE}
     SELECT stage, count(*)::int AS n_phan_in, count(DISTINCT ma_hang_id)::int AS n_ma
@@ -316,6 +317,7 @@ async function stageCounts() {
 
 // Chi tiết biểu đồ: OQC (pcs sổ cái tem theo nguồn KCS/Sửa) + READY (phần in chưa release, đã xác nhận từng mục).
 async function chartDetail() {
+  const dkPain = await dkTrang('DB_TONG_QUAN', 'pin', 'pin.id');
   // OQC: chờ = tem đã tới OQC chưa kiểm (con_oqc); đã xác nhận = đã qua OQC (sổ cái sl_oqc_dat) — tách nguồn KCS(15-)/Sửa(17-).
   const oqcSql = `SELECT
       COALESCE(SUM(GREATEST(COALESCE(t.sl_kcs_dat,0) - (COALESCE(t.sl_oqc_dat,0) - COALESCE(t.sl_oqc_dat_sua,0)),0)),0)::int AS kcs_cho,
@@ -384,7 +386,7 @@ async function chartDetail() {
       SELECT ${pReady} AS ready, ${pRel1} AS release_1, ${pTest} AS test, ${pRel2} AS release_2,
              ${pSanXuat} AS san_xuat, ${pOqc} AS oqc, ${pGiao} AS giao
       FROM phan_in pin WHERE pin.dang_hoat_dong AND ${notDelivered}
-        AND ${laMayTheoPhanIn('pin.id')}
+        AND ${dkPain}
     ) q`;
   let station_confirmed = { ready: 0, release_1: 0, test: 0, release_2: 0, san_xuat: 0, oqc: 0, giao: 0 };
   try {
@@ -616,6 +618,7 @@ async function tinhTrangDetail(phanInId) {
 // Trạm HIỆN TẠI của mỗi đợt vải suy TRỰC TIẾP từ trạng thái runtime (KHÔNG dùng ton_tram — hay bị kẹt).
 // tg_vao = mốc vào trạm hiện tại (xấp xỉ theo nguồn tin cậy nhất của từng giai đoạn) để tính SLA.
 async function flowRows(tramMa = '') {
+  const dkPain = await dkTrang('DB_NGHEN', 'pin', 'b.phan_in_id');
   const sql = `
     WITH dvbase AS (
       SELECT dv.id AS dot_vai_ve_id, dv.phan_in_id, dv.ma_dot_vai, dv.han_giao_hang,
@@ -746,7 +749,7 @@ async function flowRows(tramMa = '') {
     WHERE cur.ma_tram <> 'DONE_DELIVERY'
       -- CHỈ HÀNG IN MÁY từ Release 1 trở đi (chốt 2026-08-04): READY vẫn tính đủ (màn READY/QC READY
       -- không lọc vì đứng TRƯỚC Release 1); các trạm sau chỉ còn phần in in Máy.
-      AND (cur.ma_tram = 'READY' OR ${laMayTheoPhanIn('b.phan_in_id')})
+      AND (cur.ma_tram = 'READY' OR ${dkPain})
       AND ($1 = '' OR cur.ma_tram = $1)
     ORDER BY tr.thu_tu NULLS LAST, phut_da_o DESC`;
   const { rows } = await query(sql.replace(/\s+/g, ' '), [tramMa]);
