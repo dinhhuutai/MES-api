@@ -4,6 +4,8 @@ const { query } = require('../../config/db');
 const ordersRepo = require('../orders/orders.repository');
 const { dotStageCase, readyFallback, ORDER_SQL_ARRAY } = require('../../utils/stage');
 const { techDoneSql } = require('../../utils/tech');
+// CHỈ HIỆN HÀNG IN MÁY từ Release 1 trở đi (chốt 2026-08-04) — xem `utils/phuongAnIn.js`.
+const { laMayTheoPhanIn } = require('../../utils/phuongAnIn');
 
 // "Đủ mục KT" (READY) trong flowRows: dùng cờ hk/hf/hm của CTE `kt` + tên khách của đợt (b.ten_khach_hang).
 // Khách II/AD: Khuôn không bắt buộc (chỉ cần Film + Mực). Xem utils/tech.js.
@@ -221,11 +223,18 @@ async function stageCounts() {
     ),
     st AS (SELECT phan_in_id, (${dotStageCase('dvs')}) AS stage FROM dvs),
     rk AS (SELECT phan_in_id, stage, array_position(${ORDER_SQL_ARRAY}, stage) AS rnk FROM st),
-    dom AS (
+    dom0 AS (
       SELECT DISTINCT ON (p.phan_in_id) p.phan_in_id, p.ma_hang_id,
              COALESCE(r.stage, ${readyFallback('p.phan_in_id')}) AS stage
       FROM pin_active p LEFT JOIN rk r ON r.phan_in_id = p.phan_in_id
       ORDER BY p.phan_in_id, r.rnk ASC NULLS LAST
+    ),
+    -- CHỈ HÀNG IN MÁY TỪ RELEASE 1 TRỞ ĐI (chốt 2026-08-04): phần in Bàn/Robot/chưa xác định vẫn được
+    -- đếm ở READY (các màn READY/QC READY không lọc — chúng đứng TRƯỚC Release 1), nhưng bị loại khỏi
+    -- mọi giai đoạn từ Release 1 về sau để khớp đúng những gì màn thao tác đang hiện.
+    dom AS (
+      SELECT * FROM dom0
+       WHERE stage IN ('CHO_CHUYEN','READY_KT','READY_QA') OR ${laMayTheoPhanIn('dom0.phan_in_id')}
     )`;
   const stageSql = `${DOM_CTE}
     SELECT stage, count(*)::int AS n_phan_in, count(DISTINCT ma_hang_id)::int AS n_ma
@@ -375,6 +384,7 @@ async function chartDetail() {
       SELECT ${pReady} AS ready, ${pRel1} AS release_1, ${pTest} AS test, ${pRel2} AS release_2,
              ${pSanXuat} AS san_xuat, ${pOqc} AS oqc, ${pGiao} AS giao
       FROM phan_in pin WHERE pin.dang_hoat_dong AND ${notDelivered}
+        AND ${laMayTheoPhanIn('pin.id')}
     ) q`;
   let station_confirmed = { ready: 0, release_1: 0, test: 0, release_2: 0, san_xuat: 0, oqc: 0, giao: 0 };
   try {
@@ -734,6 +744,9 @@ async function flowRows(tramMa = '') {
     JOIN tram tr ON tr.ma_tram = cur.ma_tram
     JOIN workflow_version wv ON wv.id = tr.workflow_version_id AND wv.la_hien_hanh = true
     WHERE cur.ma_tram <> 'DONE_DELIVERY'
+      -- CHỈ HÀNG IN MÁY từ Release 1 trở đi (chốt 2026-08-04): READY vẫn tính đủ (màn READY/QC READY
+      -- không lọc vì đứng TRƯỚC Release 1); các trạm sau chỉ còn phần in in Máy.
+      AND (cur.ma_tram = 'READY' OR ${laMayTheoPhanIn('b.phan_in_id')})
       AND ($1 = '' OR cur.ma_tram = $1)
     ORDER BY tr.thu_tu NULLS LAST, phut_da_o DESC`;
   const { rows } = await query(sql.replace(/\s+/g, ' '), [tramMa]);

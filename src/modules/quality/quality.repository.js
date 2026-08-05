@@ -1,6 +1,8 @@
 'use strict';
 
 const { query } = require('../../config/db');
+// CHỈ HIỆN HÀNG IN MÁY từ Release 1 trở đi — xem `utils/phuongAnIn.js`.
+const { laMayTheoPhieu } = require('../../utils/phuongAnIn');
 const { lenhPhanInMatch } = require('../../utils/search');
 
 // SỔ CÁI SỐ LƯỢNG tem (migration 043): SL còn lại từng công đoạn (dùng cho lọc + hiển thị).
@@ -62,7 +64,8 @@ async function listCandByCon(condExpr, { search = '', filters = {} } = {}) {
   // đường đặt tem `HUY` KHÔNG xóa sổ cái (rõ nhất: `softDeletePhanInTx` — hủy phần in set tem HUY nhưng
   // giữ nguyên sl_kcs_dat/sl_sua_dat). Không có điều kiện này thì tem của phần in đã hủy vẫn nằm chình
   // ình ở màn Sửa/OQC/Giao. (KCS vô tình thoát nhờ đòi thêm `trang_thai='DA_KHO'`.)
-  const conds = ["t.trang_thai <> 'HUY'", condExpr];
+  // CHỈ HÀNG IN MÁY (chốt 2026-08-04) — KCS/Sửa/OQC chỉ nhận tem của lệnh in Máy.
+  const conds = ["t.trang_thai <> 'HUY'", laMayTheoPhieu('t.phieu_san_xuat_id'), condExpr];
   // Ô tìm kiếm chung (chỉ thêm ILIKE vào SQL khi CÓ nhập — giữ query gọn cho IPS khi không lọc).
   if (search) {
     params.push(search);

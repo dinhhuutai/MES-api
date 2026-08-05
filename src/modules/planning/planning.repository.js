@@ -2,6 +2,8 @@
 
 const { query } = require('../../config/db');
 const { lenhPhanInMatch } = require('../../utils/search');
+// CHỈ HIỆN HÀNG IN MÁY từ Release 1 trở đi (chốt 2026-08-04) — xem `utils/phuongAnIn.js`.
+const { laMayTheoPhanIn, laMayTheoLenh } = require('../../utils/phuongAnIn');
 
 // SL vải đã ĐƯA VÀO đợt SX của 1 đợt vải = Σ lenh_sx_dot_vai.so_luong các lệnh non-HUY gắn đợt đó
 // (mig 052: SL đưa vào theo TỪNG đợt nằm ở junction — đúng cả khi 1 lệnh gồm nhiều đợt).
@@ -36,6 +38,7 @@ async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
     JOIN khach_hang kh ON kh.id = dh.khach_hang_id
     LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id
     WHERE pin.dang_hoat_dong AND dv.trang_thai <> 'DA_HUY'
+      AND ${laMayTheoPhanIn('pin.id')}
       AND dv.tg_chuyen_ready IS NOT NULL
       AND (COALESCE(dv.so_luong_vai_ve,0) - ${DA_REL}) > 0
       AND NOT EXISTS (SELECT 1 FROM gom_set_dot_vai gsd JOIN gom_set gs ON gs.id = gsd.gom_set_id
@@ -336,6 +339,8 @@ async function listReleasableSets(search = '') {
                  WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT'))::int AS so_chua_ready
      FROM gom_set gs
      WHERE gs.trang_thai = 'MO'
+       AND EXISTS (SELECT 1 FROM gom_set_dot_vai d JOIN dot_vai_ve dvm ON dvm.id = d.dot_vai_ve_id
+                    WHERE d.gom_set_id = gs.id AND ${laMayTheoPhanIn('dvm.phan_in_id')})
        AND NOT EXISTS (SELECT 1 FROM gom_set_dot_vai d JOIN ke_hoach_tam kht
                          ON kht.dot_vai_ve_id = d.dot_vai_ve_id AND kht.trang_thai = 'CHO'
                         WHERE d.gom_set_id = gs.id)
@@ -364,7 +369,7 @@ async function getOpenSetMembers() {
      JOIN ma_hang mh ON mh.id = pin.ma_hang_id
      JOIN don_hang dh ON dh.id = mh.don_hang_id
      JOIN khach_hang kh ON kh.id = dh.khach_hang_id
-     WHERE gs.trang_thai = 'MO'
+     WHERE gs.trang_thai = 'MO' AND ${laMayTheoPhanIn('pin.id')}
      ORDER BY gs.created_date DESC, pin.mau_vai, pin.ma_phan, dv.ma_dot_vai`
   );
   return rows;
@@ -479,6 +484,7 @@ function lenhListSql(extraWhere) {
     LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
     ${PHAN_INFO_LATERAL}
     WHERE ls.trang_thai = 'RELEASE_1'
+      AND ${laMayTheoLenh('ls.id')}
       AND ($3 = '' OR ls.ma_lenh_san_xuat ILIKE '%'||$3||'%' OR ${lenhPhanInMatch('ls.id', '$3')})
       ${extraWhere}
     ORDER BY ls.created_date DESC
@@ -516,6 +522,7 @@ async function listReplanCandidates({ search = '', offset = 0, limit = 50 }) {
     LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
     ${PHAN_INFO_LATERAL}
     WHERE ls.trang_thai IN ('RELEASE_1','RELEASE_2')
+      AND ${laMayTheoLenh('ls.id')}
       AND NOT EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = ls.id)
       AND ($1 = '' OR ls.ma_lenh_san_xuat ILIKE '%'||$1||'%' OR ${lenhPhanInMatch('ls.id', '$1')})`;
   const dataSql = `
@@ -546,6 +553,7 @@ async function listGiaCongLenh({ search = '', offset = 0, limit = 50 }) {
     LEFT JOIN nguoi_dung nr ON nr.id = ls.created_by
     ${PHAN_INFO_LATERAL}
     WHERE ls.trang_thai = 'GIA_CONG'
+      AND ${laMayTheoLenh('ls.id')}
       AND ($1 = '' OR ls.ma_lenh_san_xuat ILIKE '%'||$1||'%' OR ${lenhPhanInMatch('ls.id', '$1')})`;
   const dataSql = `
     SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.ngay_ke_hoach, ls.created_date,
@@ -785,7 +793,8 @@ async function listKeHoachTamRows({ search = '', offset = 0, limit = 200 }) {
     JOIN khach_hang kh ON kh.id = dh.khach_hang_id
     LEFT JOIN chuyen_san_xuat cs ON cs.id = kt.chuyen_id
     LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id
-    WHERE kt.trang_thai = 'CHO' AND pin.dang_hoat_dong AND dv.trang_thai <> 'DA_HUY' AND ${SEARCH}`;
+    WHERE kt.trang_thai = 'CHO' AND pin.dang_hoat_dong AND dv.trang_thai <> 'DA_HUY'
+      AND ${laMayTheoPhanIn('pin.id')} AND ${SEARCH}`;
   const dataSql = `
     SELECT kt.id, kt.dot_vai_ve_id, kt.phan_in_id, kt.chuyen_id, kt.ngay_ke_hoach, kt.tg_bd_kh, kt.tg_kt_kh, kt.so_luong,
            dv.ma_dot_vai, dv.han_giao_hang, dv.so_luong_vai_ve, cs.ten_chuyen, ldv.ten_loai AS loai_dot_vai,

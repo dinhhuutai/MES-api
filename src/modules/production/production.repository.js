@@ -2,6 +2,8 @@
 
 const { query } = require('../../config/db');
 const { lenhPhanInMatch } = require('../../utils/search');
+// CHỈ HIỆN HÀNG IN MÁY từ Release 1 trở đi (chốt 2026-08-04) — xem `utils/phuongAnIn.js`.
+const { laMayTheoLenh } = require('../../utils/phuongAnIn');
 
 const PHAN_AGG = `(SELECT string_agg(DISTINCT pin.ma_phan, ', ')
     FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
@@ -51,6 +53,7 @@ async function listProductionCandidates({ search = '', offset = 0, limit = 20 })
     LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
     ${PHAN_INFO_LATERAL}
     WHERE ls.trang_thai = 'RELEASE_2'
+      AND ${laMayTheoLenh('ls.id')}
       AND (lc.ma_loai IS NULL OR lc.ma_loai <> ALL($2::text[]))
       AND ($1 = '' OR ls.ma_lenh_san_xuat ILIKE '%'||$1||'%' OR ${lenhPhanInMatch('ls.id', '$1')})`;
   const dataSql = `
@@ -696,7 +699,7 @@ async function monitorRunning() {
      JOIN chuyen_san_xuat cs ON cs.id = ps.chuyen_id
      LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
      ${PHAN_INFO_LATERAL}
-     WHERE ps.trang_thai='DANG_CHAY'
+     WHERE ps.trang_thai='DANG_CHAY' AND ${laMayTheoLenh('ls.id')}
      ORDER BY cs.ma_chuyen`
   );
   return rows;
@@ -726,7 +729,7 @@ async function monitorQueue() {
      JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
      LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
      ${PHAN_INFO_LATERAL}
-     WHERE ls.trang_thai='RELEASE_2'
+     WHERE ls.trang_thai='RELEASE_2' AND ${laMayTheoLenh('ls.id')}
      ORDER BY cs.ma_chuyen, ls.ngay_ke_hoach NULLS LAST, ls.created_date`
   );
   return rows;
