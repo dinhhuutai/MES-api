@@ -532,11 +532,16 @@ async function releaseSet(setId, { chuyenId, soLuongRelease, ngayKeHoach }, acto
   const version = await wf.getActiveVersion();
   const dotVaiIds = members.map((m) => m.dot_vai_id);
   const soLuong = soLuongRelease != null ? soLuongRelease : members.reduce((s, m) => s + (m.so_luong || 0), 0);
+  // ⚠ GIA CÔNG: release SET lên chuyền loại `GIA_CONG` phải ra lệnh `trang_thai='GIA_CONG'` để ĐẬU Ở
+  // màn Kế hoạch > Gia công — giống hệt đường release ĐỢT LẺ (`createRelease1`). Thiếu nhánh này thì
+  // lệnh ra 'RELEASE_1' và hàng gia công của gom set KHÔNG BAO GIỜ hiện ở trang Gia công (lỗi 04/08/2026).
+  const laGiaCong = (await repo.getChuyenLoai(chuyenId)) === 'GIA_CONG';
 
   const lenhId = await withTransaction(async (client) => {
     const maLenh = await repo.nextMaLenhTx(client);
     const id = await repo.createLenh(client, {
-      versionId: version.id, maLenh, chuyenId, soLuongRelease: soLuong, ngayKeHoach, trangThai: 'RELEASE_1',
+      versionId: version.id, maLenh, chuyenId, soLuongRelease: soLuong, ngayKeHoach,
+      trangThai: laGiaCong ? 'GIA_CONG' : 'RELEASE_1',
     }, actorId);
     // Gom set = mỗi đợt vào trọn SL vải về (all-or-nothing) → so_luong junction = SL đợt.
     for (const m of members) await repo.addLenhDotVai(client, id, m.dot_vai_id, actorId, m.so_luong);
@@ -550,9 +555,12 @@ async function releaseSet(setId, { chuyenId, soLuongRelease, ngayKeHoach }, acto
   // (danh sách set KHÔNG lọc `ke_hoach_tam` như `listRelease1Candidates`), bấm "Xác nhận Release 1"
   // sẽ báo `SL release (N) vượt SL còn lại (0)` — lỗi đã gặp thật 04/08/2026 (16 dòng / 6 set).
   await repo.deleteKeHoachTamByDotVai(dotVaiIds);
-  await tracking.moveDotVaiTo(dotVaiIds, 'RELEASE_1', actorId); // theo dõi dòng chảy (cả set)
+  // Gia công KHÔNG đi Release 1 → không ghi tracking RELEASE_1 (giống nhánh gia công ở `createRelease1`).
+  if (!laGiaCong) await tracking.moveDotVaiTo(dotVaiIds, 'RELEASE_1', actorId); // theo dõi dòng chảy (cả set)
   await qaRepo.resolveReturnsMany('TEST_RUN', dotVaiIds); // release lại → tắt cờ "bị Test Run trả về"
-  sockets.emit('workflow:updated', { lenhId, stage: 'RELEASE_1', fromSet: setId });
+  sockets.emit('workflow:updated', {
+    lenhId, stage: laGiaCong ? 'GIA_CONG' : 'RELEASE_1', fromSet: setId, giaCong: laGiaCong || undefined,
+  });
   sockets.emit('dashboard:refresh', {});
   return getLenhDetail(lenhId);
 }

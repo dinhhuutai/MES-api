@@ -1,6 +1,8 @@
 'use strict';
 
 const { query, withTransaction } = require('../../config/db');
+// Số cuối `barcode_hskt` = phương án in (mig 064) — dùng chung với trang Hồ sơ kỹ thuật.
+const { applyPainToBarcode } = require('../../utils/hskt');
 
 // ----- Log đồng bộ -----
 async function createSyncLog({ nguon, fromDate, tuDong }, actorId) {
@@ -348,11 +350,22 @@ const PAIN_MAY = 2;
 const PAIN_BAN = 1;
 
 // Tạo PHIÊN BẢN MỚI khi đổi phương án in (dùng chung cho nhánh ERP `Pain` và luật sản lượng).
+// Đổi phương án in → tạo PHIÊN BẢN MỚI. **ĐỔI LUÔN SỐ CUỐI `barcode_hskt`** theo phương án in
+// (quy tắc mig 064: 11 số đầu = định danh, số cuối = 1 Bàn / 2 Máy / 3 Robot) — giống hệt khi sửa tay ở
+// trang Hồ sơ kỹ thuật, để mã vạch luôn khớp phương án in đang hiệu lực. `barcode_hskt_goc` GIỮ NGUYÊN
+// (mã ERP cấp) và mọi đường tra cứu so **11 SỐ ĐẦU** nên đổi đuôi KHÔNG làm mất dấu hồ sơ.
+// Barcode sai định dạng (không phải 12 số) → giữ nguyên, không bịa mã.
 async function taoPhienBanPain(client, { hsktId, phienBan, curPain, pain, pinId, chiTiet, actorId }) {
+  const { rows: old } = await client.query(
+    'SELECT barcode_hskt, ma_hskt FROM ho_so_ky_thuat WHERE id=$1', [hsktId]);
+  const bcCu = old.length ? old[0].barcode_hskt : null;
+  const bcMoi = applyPainToBarcode(bcCu, pain) || bcCu;
+  // `ma_hskt` được set = barcode lúc tạo ⇒ chỉ đổi theo khi nó đang ĐÚNG BẰNG barcode cũ.
+  const maMoi = old.length && old[0].ma_hskt && old[0].ma_hskt === bcCu ? bcMoi : (old.length ? old[0].ma_hskt : null);
   await client.query('UPDATE ho_so_ky_thuat SET dang_hoat_dong=false, updated_date=now() WHERE id=$1', [hsktId]);
   const ins = await client.query(
-    `INSERT INTO ho_so_ky_thuat (barcode_hskt, barcode_hskt_goc, pa_in_sua_tay, ma_hskt, phuong_an_in, inset, phien_ban, ma_don_ready, so_luong_vai_pass, so_lan_in, so_pass_bo, thong_so_json, ghi_chu, dang_hoat_dong, created_by) SELECT barcode_hskt, COALESCE(barcode_hskt_goc, barcode_hskt), false, ma_hskt, $2, inset, $3, ma_don_ready, so_luong_vai_pass, so_lan_in, so_pass_bo, thong_so_json, ghi_chu, true, $4 FROM ho_so_ky_thuat WHERE id=$1 RETURNING id`,
-    [hsktId, pain, phienBan + 1, actorId]
+    `INSERT INTO ho_so_ky_thuat (barcode_hskt, barcode_hskt_goc, pa_in_sua_tay, ma_hskt, phuong_an_in, inset, phien_ban, ma_don_ready, so_luong_vai_pass, so_lan_in, so_pass_bo, thong_so_json, ghi_chu, dang_hoat_dong, created_by) SELECT $5, COALESCE(barcode_hskt_goc, barcode_hskt), false, $6, $2, inset, $3, ma_don_ready, so_luong_vai_pass, so_lan_in, so_pass_bo, thong_so_json, ghi_chu, true, $4 FROM ho_so_ky_thuat WHERE id=$1 RETURNING id`,
+    [hsktId, pain, phienBan + 1, actorId, bcMoi, maMoi]
   );
   const newId = ins.rows[0].id;
   await client.query(
@@ -362,7 +375,10 @@ async function taoPhienBanPain(client, { hsktId, phienBan, curPain, pain, pinId,
   await client.query('UPDATE hskt_phan_in SET dang_hoat_dong=false WHERE hskt_id=$1', [hsktId]);
   await client.query(
     `INSERT INTO lich_su_hskt (hskt_id, phan_in_id, hanh_dong, chi_tiet, phien_ban, nguoi_id) VALUES ($1,$2,'DOI_PHUONG_AN_IN',$3,$4,$5)`,
-    [newId, pinId || null, chiTiet || `Đổi phương án in ${curPain ?? '—'}→${pain}`, phienBan + 1, actorId]
+    [newId, pinId || null,
+     (chiTiet || `Đổi phương án in ${curPain ?? '—'}→${pain}`)
+       + (bcMoi && bcCu && bcMoi !== bcCu ? ` · mã vạch ${bcCu} → ${bcMoi}` : ''),
+     phienBan + 1, actorId]
   );
   return newId;
 }
@@ -406,12 +422,19 @@ async function upsertHsktForPin({ pinId, barcodeHskt, pain, inset, maDonReady, m
     return withTransaction((client) => upsertHsktNoBarcode(client, { pinId, maPhan, pain, inset, actorId }));
   }
   return withTransaction(async (client) => {
-    // ⚠⚠ TRA THEO CẢ `barcode_hskt_goc` (mig 064): MES cho phép đổi SỐ CUỐI barcode theo phương án in,
-    // nhưng ERP **giữ nguyên** barcode ⇒ ERP vẫn gửi mã CŨ. Nếu chỉ khớp `barcode_hskt` thì không tìm
-    // thấy ⇒ TẠO HSKT TRÙNG LẶP (2 bản active cho cùng phần in) và thay đổi thủ công coi như bị hủy.
+    // ⚠⚠ TRA BỎ SỐ CUỐI — SO **11 SỐ ĐẦU** (chốt 2026-08-04): số cuối barcode = phương án in, mà MES
+    // đổi phương án in (sửa tay hoặc luật sản lượng) là đổi luôn số cuối, còn ERP **giữ nguyên** mã cũ.
+    // So đủ 12 số thì không tìm thấy ⇒ TẠO HSKT TRÙNG LẶP (2 bản active/phần in). So 11 số đầu là cách
+    // chắc nhất, không phụ thuộc `barcode_hskt_goc` có được set hay không.
+    // An toàn vì 11 số đầu DUY NHẤT (đối chiếu prod: 252/252 HSKT active, 0 va chạm — xem DATABASE.md §3).
+    // Vẫn giữ 2 vế khớp chính xác cho barcode KHÔNG đúng dạng 12 số.
     const { rows: act } = await client.query(
       `SELECT id, phuong_an_in, phien_ban, pa_in_sua_tay FROM ho_so_ky_thuat
-        WHERE (barcode_hskt=$1 OR barcode_hskt_goc=$1) AND dang_hoat_dong=true LIMIT 1`,
+        WHERE dang_hoat_dong=true
+          AND (barcode_hskt=$1 OR barcode_hskt_goc=$1
+               OR (barcode_hskt ~ '^[0-9]{12}$' AND $1 ~ '^[0-9]{12}$'
+                   AND left(barcode_hskt,11) = left($1,11)))
+        ORDER BY phien_ban DESC LIMIT 1`.replace(/\s+/g, ' '),
       [barcodeHskt]
     );
     let hsktId; let phienBan; let curPain;
@@ -431,13 +454,15 @@ async function upsertHsktForPin({ pinId, barcodeHskt, pain, inset, maDonReady, m
       // (cũng không đụng barcode). Vẫn cập nhật inset/ma_don_ready ở dưới.
       // CỐ Ý không ghi `lich_su_hskt` cho lần bỏ qua: job ERP chạy 5 PHÚT/LẦN sẽ spam lịch sử —
       // thay bằng badge "Đã sửa tay" ở trang Hồ sơ kỹ thuật.
-      const suaTay = act[0].pa_in_sua_tay === true;
-      if (!suaTay && pain != null && Number(pain) !== Number(curPain)) {
-        hsktId = await taoPhienBanPain(client, {
-          hsktId, phienBan, curPain, pain, pinId, actorId,
-          chiTiet: `Đổi phương án in ${curPain ?? '—'}→${pain} (ERP)`,
-        });
-      }
+      // ⚠⚠ KHÔNG ghi đè `phuong_an_in` bằng Pain của ERP cho HSKT ĐÃ TỒN TẠI — `Pain` chỉ là giá trị
+      // KHỞI TẠO (nhánh tạo mới ở trên). Từ 2026-08-03 phương án in do **LUẬT SẢN LƯỢNG** quyết định
+      // (`applyPainTheoSanLuong`, ≥2000 → Máy), nên nếu ở đây vẫn kéo về Pain của ERP thì 2 bên đá nhau:
+      //   sync N   : ERP ghi Pain=2 → phiên bản mới
+      //   post-pass: sản lượng 100 m < 2000 → đổi về 1 → phiên bản mới
+      //   sync N+1 : ERP lại ghi Pain=2 …  ⇒ **+2 phiên bản mỗi 5 PHÚT, vô hạn**.
+      // Đã xảy ra thật (04/08/2026): 1 HSKT lên `phien_ban=134`, 1101/1434 bản ghi là phiên bản rác,
+      // 525 dòng lịch sử "(ERP)" ↔ 555 dòng "theo sản lượng". Giữ nguyên bản active, chỉ cập nhật
+      // inset/ma_don_ready ở dưới. (`pa_in_sua_tay` vẫn giữ ý nghĩa: chặn cả luật sản lượng.)
       // Số nhóm gom set + đợt ready THEO LẦN ĐỒNG BỘ MỚI NHẤT (phần in có thể sang đợt ready khác
       // với số nhóm khác) — giữ bản active khớp ERP để trang Hồ sơ kỹ thuật hiển thị đúng.
       await client.query(

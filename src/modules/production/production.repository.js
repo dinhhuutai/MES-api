@@ -200,6 +200,28 @@ async function getLenhDotVaiList(lenhId) {
   return rows;
 }
 
+// Danh sách phần in của NHIỀU lệnh trong 1 lượt (cho màn Xác nhận chạy tách dòng theo phần in khi
+// lệnh là GOM SET). Gộp 1 query thay vì gọi `getLenhDotVaiList` cho từng lệnh (N+1 → IPS reset).
+async function phanInRowsByLenh(lenhIds = []) {
+  if (!lenhIds.length) return [];
+  const { rows } = await query(
+    `SELECT lsd.lenh_san_xuat_id, dv.id AS dot_vai_ve_id, dv.ma_dot_vai, dv.han_giao_hang,
+            COALESCE(lsd.so_luong, dv.so_luong_vai_ve)::int AS sl_vao_sx,
+            pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim,
+            kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang
+     FROM lenh_sx_dot_vai lsd
+     JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+     JOIN phan_in pin ON pin.id = dv.phan_in_id
+     JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+     JOIN don_hang dh ON dh.id = mh.don_hang_id
+     JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+     WHERE lsd.lenh_san_xuat_id = ANY($1::uuid[])
+     ORDER BY pin.ma_phan, dv.ma_dot_vai`.replace(/\s+/g, ' '),
+    [lenhIds]
+  );
+  return rows;
+}
+
 // Ghi 1 lần vải hủy / vải thiếu (cùng sổ `vai_huy`, phân biệt bằng cột `loai` — mig 063).
 // Best-effort: bảng/cột chưa có (migration 039/063 chưa chạy) → ném lỗi để service báo.
 async function insertVaiHuy({ phieuId, lenhId, dotVaiId, phanInId, soLuong, lyDo, loai }, actorId) {
@@ -598,11 +620,38 @@ async function nextMaTem() {
   return rows[0].ma;
 }
 
-async function createTem(client, { phieuId, maTem, soLuong }, actorId) {
+// Đường dự phòng khi CHƯA chạy mig 066: DÒ CỘT TRƯỚC, không try/catch quanh INSERT.
+// ⚠ `createTem` chạy TRONG transaction — một lỗi SQL (42703) làm ABORT cả transaction, câu INSERT
+// "thử lại" sau đó sẽ chết với 25P02 chứ không cứu được gì. Phải biết trước rồi mới chọn câu lệnh.
+// Cache khi ĐÃ có cột (khỏi hỏi lại mỗi lần in); chưa có thì dò lại — sau khi chạy mig 066 là nhận ngay,
+// không cần restart BE.
+let temCoCotCa = false;
+async function temCoCotNgayCa() {
+  if (temCoCotCa) return true;
+  const { rows } = await query(
+    `SELECT 1 FROM information_schema.columns
+      WHERE table_schema='public' AND table_name='tem' AND column_name='ngay_ca' LIMIT 1`.replace(/\s+/g, ' ')
+  );
+  temCoCotCa = rows.length > 0;
+  return temCoCotCa;
+}
+
+// Tạo tem + (mig 066) ngày ca · giờ SX từ→đến · cờ BTP trước/cuối của LƯỢT IN này.
+async function createTem(client, { phieuId, maTem, soLuong, ngayCa, gioBd, gioKt, btpTruoc, btpCuoi }, actorId) {
+  const base = [phieuId, maTem, soLuong, actorId];
+  if (await temCoCotNgayCa()) {
+    const { rows } = await client.query(
+      `INSERT INTO tem (phieu_san_xuat_id, ma_tem, so_luong, trang_thai, created_by,
+         ngay_ca, gio_sx_bd, gio_sx_kt, btp_truoc, btp_cuoi)
+       VALUES ($1,$2,$3,'IN',$4,$5,$6,$7,$8,$9) RETURNING id`,
+      [...base, ngayCa || null, gioBd || null, gioKt || null, !!btpTruoc, !!btpCuoi]
+    );
+    return rows[0].id;
+  }
   const { rows } = await client.query(
     `INSERT INTO tem (phieu_san_xuat_id, ma_tem, so_luong, trang_thai, created_by)
      VALUES ($1,$2,$3,'IN',$4) RETURNING id`,
-    [phieuId, maTem, soLuong, actorId]
+    base
   );
   return rows[0].id;
 }
@@ -631,6 +680,8 @@ async function monitorRunning() {
             lc.ma_loai AS ma_loai_chuyen, lc.ten_loai AS ten_loai_chuyen,
             cs.dinh_muc_gio, ps.tg_bd, ls.ma_lenh_san_xuat, ls.ngay_ke_hoach,
             ls.so_luong_release AS target, ${PHAN_AGG} AS phan_list,
+            (SELECT count(*) FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id)::int AS so_dot_vai,
+            (SELECT count(DISTINCT dv2.phan_in_id) FROM lenh_sx_dot_vai lsd2 JOIN dot_vai_ve dv2 ON dv2.id = lsd2.dot_vai_ve_id WHERE lsd2.lenh_san_xuat_id = ls.id)::int AS so_phan_in,
             info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan, info.mau_vai, info.kich_vai, info.kich_phim,
             info.han_giao_hang,
             (SELECT COALESCE(SUM(t.so_luong),0)::int FROM tem t WHERE t.phieu_san_xuat_id=ps.id AND t.trang_thai <> 'HUY') AS printed,
@@ -942,7 +993,7 @@ async function insertVuotHistory(client, h, actorId) {
 module.exports = {
   getVuotContext, listUnreleasedDotVaiForPhanIn, incLenhRelease, insertVuotHistory,
   listProductionCandidates, getPrintedTotal, getDefaultXePhoi, nextMaPhieu, createPhieu, setLenhChuyen, setLenhTrangThai, getLenhBasic,
-  getLenhDotVaiList, insertVaiHuy, listVaiHuyByLenh,
+  getLenhDotVaiList, phanInRowsByLenh, insertVaiHuy, listVaiHuyByLenh,
   getActivePhieu, getPhieuById, getTemsByPhieu, getTemContext, cancelTem, getTemLabelData, caPartsForTem,
   listCancelableTem, getTemForCancel, logTemCancel, logCloseProduction,
   listReopenCandidates, getPhieuFull, reopenPhieuTx, logReopenProduction, logPauseLenhChay,

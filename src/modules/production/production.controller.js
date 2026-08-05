@@ -25,12 +25,13 @@ const chayDacBiet = asyncHandler(async (req, res) =>
   ok(res, await service.startProductionSpecial(req.params.lenhId, req.user.id, req.body.chuyenId || null, req.body.lyDo || null),
     'Đã chạy đặc biệt (bỏ Test Run)'));
 
+// `req.body` mang thêm ngày ca / giờ SX từ→đến / cờ BTP của LƯỢT IN này (mig 066).
 const printTem = asyncHandler(async (req, res) =>
-  ok(res, await service.printTem(req.params.phieuId, req.body.soLuong, req.user.id), 'Đã in tem'));
+  ok(res, await service.printTem(req.params.phieuId, req.body.soLuong, req.user.id, req.body), 'Đã in tem'));
 
 // In tem NHIỀU phần in 1 lượt (lệnh gom set): body { items: [{ dotVaiId, soLuong }] }.
 const printTemBatch = asyncHandler(async (req, res) => {
-  const data = await service.printTemBatch(req.params.phieuId, req.body?.items, req.user.id);
+  const data = await service.printTemBatch(req.params.phieuId, req.body?.items, req.user.id, req.body);
   return ok(res, data, `Đã in ${data.tems_in.length} tem`);
 });
 

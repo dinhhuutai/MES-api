@@ -310,6 +310,10 @@ async function dotVaiAlreadyReleased(dotVaiIds) {
 }
 
 // ----- RELEASE SET (gom set → 1 lệnh chung) -----
+// ⚠ ẨN SET ĐÃ CÓ KẾ HOẠCH TẠM — đối xứng với đợt vải LẺ (`listRelease1Candidates` cũng loại
+// `ke_hoach_tam` 'CHO'). Thiếu điều kiện này thì lập kế hoạch sớm cho gom set xong, set VẪN nằm ở
+// màn Release 1 (chỉ đợt lẻ mới biến mất) ⇒ hàng nằm 2 nơi, và release set từ đây còn để lại dòng
+// kế hoạch tạm mồ côi (xem `releaseSet`). Xóa KH tạm / xác nhận Release 1 thì set quay lại.
 async function listReleasableSets(search = '') {
   const { rows } = await query(
     `SELECT gs.id, gs.ma_set, gs.ghi_chu, gs.created_date,
@@ -332,6 +336,9 @@ async function listReleasableSets(search = '') {
                  WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT'))::int AS so_chua_ready
      FROM gom_set gs
      WHERE gs.trang_thai = 'MO'
+       AND NOT EXISTS (SELECT 1 FROM gom_set_dot_vai d JOIN ke_hoach_tam kht
+                         ON kht.dot_vai_ve_id = d.dot_vai_ve_id AND kht.trang_thai = 'CHO'
+                        WHERE d.gom_set_id = gs.id)
        AND ($1 = '' OR gs.ma_set ILIKE '%'||$1||'%' OR gs.ghi_chu ILIKE '%'||$1||'%')
      ORDER BY gs.created_date DESC`,
     [search]
