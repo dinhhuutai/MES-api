@@ -560,7 +560,7 @@ async function oqcHistoryByDate(date) {
 // Trả hình dạng đối tượng cho DonePanel: ma (mã tem) + ngữ cảnh phần in + SL + giờ + người.
 const TEM_INFO_LATERAL = `
   LEFT JOIN LATERAL (
-    SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim,
+    SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim,
            pin.tinh_chat_in, dv.han_giao_hang
     FROM phieu_san_xuat ps JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
     JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
@@ -582,7 +582,7 @@ async function temDoneByDate(table, date) {
   const sql = `
     SELECT x.created_date AS tg, nd.ho_ten AS nguoi, t.ma_tem AS ma, t.id AS tem_id,
            x.${qtyCol} AS so_luong, x.${kiemCol} AS so_luong_kiem${oqcCols}${suaCols},
-           info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.mau_vai, info.kich_vai, info.kich_phim,
+           info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan, info.mau_vai, info.kich_vai, info.kich_phim,
            info.tinh_chat_in, info.han_giao_hang
     FROM ${table} x JOIN tem t ON t.id = x.tem_id
     LEFT JOIN nguoi_dung nd ON nd.id = x.created_by
@@ -598,7 +598,7 @@ async function inlineDoneByDate(date) {
   const sql = `
     SELECT q.created_date AS tg, nd.ho_ten AS nguoi, ps.ma_phieu_san_xuat AS ma,
            q.so_luong_mau AS so_luong, q.ket_qua,
-           info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.mau_vai, info.kich_vai, info.kich_phim,
+           info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan, info.mau_vai, info.kich_vai, info.kich_phim,
            info.tinh_chat_in, info.han_giao_hang
     FROM qc_in_line q
     JOIN phieu_san_xuat ps ON ps.id = q.phieu_san_xuat_id

@@ -1247,7 +1247,7 @@ async function testRunHistoryByDate(date) {
 }
 
 // ===== Danh sách "đã hoàn thành" theo ngày (giờ VN) cho DonePanel — hình dạng đối tượng =====
-const DONE_INFO = `info.ten_khach_hang, info.ma_don_hang, info.ma_hang,
+const DONE_INFO = `info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan,
                    info.mau_vai, info.kich_vai, info.kich_phim, info.tinh_chat_in, info.han_giao_hang`;
 
 // Release 1: lệnh sản xuất được tạo trong ngày (mỗi đợt vải 1 lệnh).
