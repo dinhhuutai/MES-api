@@ -229,24 +229,48 @@ async function createGiaCongLenh(client, { versionId, chuyenId, junctions, tongS
 
 // Trả 1 đợt vải ở Release 1 NGƯỢC về Kỹ thuật: mở lại READY cho phần in (hủy xác nhận Khuôn/Film/Mực/QC
 // + gắn cờ can_lam_lai_ready cho đợt chưa release). Chỉ khi đợt CHƯA release (chưa có lệnh ≠ HUY).
+// ⚠⚠ GOM SET → TRẢ VỀ NGUYÊN CẢ SET: các phần in trong set in CHUNG (release ra 1 lệnh, all-or-nothing)
+// nên trả lẻ 1 phần in sẽ để set nửa Ready nửa không — set vẫn không release được mà kỹ thuật cũng
+// không biết mấy phần còn lại phải làm lại. Chốt: bấm trả về 1 đợt trong set = mở lại READY cho MỌI
+// phần in của set đó (mỗi phần in 1 dòng audit + 1 cờ qc_tra_ve để badge/lý do hiện ở màn READY).
 async function traVeKyThuat({ dotVaiId, lyDo }, actorId) {
   if (!dotVaiId) throw new AppError('Thiếu đợt vải', { status: 400, errorCode: 'EMPTY' });
   const reason = (lyDo || '').trim();
   if (!reason) throw new AppError('Nhập lý do trả về Kỹ thuật', { status: 422, errorCode: 'NO_LY_DO' });
   const pinId = await repo.phanInIdByDotVai(dotVaiId);
   if (!pinId) throw new AppError('Không tìm thấy đợt vải', { status: 404, errorCode: 'NOT_FOUND' });
-  if (await repo.dotVaiReleasedOne(dotVaiId)) {
-    throw new AppError('Đợt vải đã release — hãy hủy lệnh trước khi trả về Kỹ thuật', { status: 409, errorCode: 'RELEASED' });
+
+  const set = await repo.getOpenSetOfDotVai(dotVaiId);
+  const members = set ? await repo.getSetMembersForRelease(set.id) : [];
+  const laSet = !!set && members.length > 0;
+  // 1 phần in có thể có NHIỀU đợt vải trong set ⇒ gom theo phan_in_id (reopenReadyForPhanIn đã gắn cờ
+  // can_lam_lai_ready cho mọi đợt chưa release của phần in đó, chạy 2 lần là thừa).
+  const targets = laSet
+    ? [...new Map(members.map((m) => [m.phan_in_id, m])).values()].map((m) => ({ pinId: m.phan_in_id, dotVaiId: m.dot_vai_id }))
+    : [{ pinId, dotVaiId }];
+
+  const daRelease = laSet ? members.some((m) => m.da_release) : await repo.dotVaiReleasedOne(dotVaiId);
+  if (daRelease) {
+    throw new AppError(
+      laSet
+        ? `Set ${set.ma_set} đã có đợt vải release — hãy hủy lệnh trước khi trả về Kỹ thuật`
+        : 'Đợt vải đã release — hãy hủy lệnh trước khi trả về Kỹ thuật',
+      { status: 409, errorCode: 'RELEASED' }
+    );
   }
-  await erpRepo.reopenReadyForPhanIn(pinId);
-  await repo.auditTraVeKyThuat(pinId, dotVaiId, reason, actorId);
-  // Ghi qc_tra_ve loai='RELEASE1' (mức phần in) → màn READY/QC READY hiện badge + LÝ DO trả về;
-  // cờ tự tắt khi QC xác nhận READY lại (technical.confirmQC → resolveReturns('RELEASE1')).
-  await qaRepo.insertQcTraVe({ loai: 'RELEASE1', phanInId: pinId, dotVaiId, lyDo: reason }, actorId);
-  await tracking.moveByPhanIn(pinId, 'READY', actorId);
+
+  for (const t of targets) {
+    await erpRepo.reopenReadyForPhanIn(t.pinId);
+    await repo.auditTraVeKyThuat(t.pinId, t.dotVaiId, reason, actorId);
+    // Ghi qc_tra_ve loai='RELEASE1' (mức phần in) → màn READY/QC READY hiện badge + LÝ DO trả về;
+    // cờ tự tắt khi QC xác nhận READY lại (technical.confirmQC → resolveReturns('RELEASE1')).
+    await qaRepo.insertQcTraVe({ loai: 'RELEASE1', phanInId: t.pinId, dotVaiId: t.dotVaiId, lyDo: reason }, actorId);
+    await tracking.moveByPhanIn(t.pinId, 'READY', actorId);
+  }
   sockets.emit('workflow:updated', { stage: 'READY', traVe: true });
+  sockets.emit('ready:confirmed', { traVe: true }); // READY & QC READY nghe event này để tải lại ngầm
   sockets.emit('dashboard:refresh', {});
-  return { phan_in_id: pinId };
+  return { phan_in_id: pinId, so_phan_in: targets.length, ma_set: laSet ? set.ma_set : null };
 }
 
 async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach, tgBdKh, tgKtKh }, actorId) {
