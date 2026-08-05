@@ -1,9 +1,12 @@
 'use strict';
 
 const { query } = require('../../config/db');
+// Hiển thị theo PHƯƠNG ÁN IN — cấu hình động (mig 067), mặc định BẬT HẾT = không lọc.
+const { dkTrang } = require('../../utils/phuongAnIn');
 
 // Đợt vải gom được: chưa release (không nằm trong lệnh) và chưa thuộc set đang mở.
 async function listCandidates({ search = '', offset = 0, limit = 50 }) {
+  const dkPain = await dkTrang('KT_GOM_SET', 'pin', 'pin.id');
   const SEARCH = `($1 = '' OR pin.ma_phan ILIKE '%'||$1||'%' OR kh.ten_khach_hang ILIKE '%'||$1||'%'
                   OR mh.ma_hang ILIKE '%'||$1||'%' OR pin.mau_vai ILIKE '%'||$1||'%'
                   OR pin.kich_vai ILIKE '%'||$1||'%' OR pin.kich_phim ILIKE '%'||$1||'%'
@@ -24,6 +27,7 @@ async function listCandidates({ search = '', offset = 0, limit = 50 }) {
       AND NOT EXISTS (SELECT 1 FROM gom_set_dot_vai gsd JOIN gom_set gs ON gs.id = gsd.gom_set_id
                       WHERE gsd.dot_vai_ve_id = dv.id AND gs.trang_thai = 'MO')
       AND dv.tg_chuyen_ready IS NOT NULL
+      AND ${dkPain}
       AND NOT EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
                       WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT')
       AND ${SEARCH}`;

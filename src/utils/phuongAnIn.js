@@ -15,22 +15,36 @@ const PAIN_ROBOT = 3;
 
 // Danh mục TRANG có dòng chảy phần in — nguồn duy nhất cho cả API lẫn giao diện cấu hình.
 // Thêm trang mới: khai ở đây + truyền `maTrang` vào query tương ứng (không cần migration).
+// Danh mục TRANG có dòng chảy phần in — **GOM ĐÚNG THEO MODULE THẬT của app**
+// (`frontend/src/constants/modules.js`), KHÔNG tự đặt nhóm: KCS/Sửa nằm ở **Sản xuất**,
+// QC chuẩn bị kỹ thuật + Test Run QA nằm ở **Chất lượng**, READY/Gom set ở **Chuẩn bị kỹ thuật**.
+// Thứ tự dòng = thứ tự dòng chảy. Thêm trang mới: khai ở đây + truyền `maTrang` vào query (KHÔNG cần migration).
 const TRANG_PAIN = [
-  { ma: 'KH_RELEASE1', module: 'Kế hoạch', ten: 'Release 1' },
-  { ma: 'KH_TAM', module: 'Kế hoạch', ten: 'Kế hoạch tạm' },
+  { ma: 'DH_PHAN_IN', module: 'Đơn hàng', ten: 'Danh sách phần in vải về' },
+
+  { ma: 'KT_READY', module: 'Chuẩn bị kỹ thuật', ten: 'Xác nhận READY' },
+  { ma: 'KT_GOM_SET', module: 'Chuẩn bị kỹ thuật', ten: 'Gom set' },
+
   { ma: 'KH_TAO_DOT_SX', module: 'Kế hoạch', ten: 'Tạo đợt sản xuất' },
-  { ma: 'KH_TEST_RUN', module: 'Kế hoạch', ten: 'Test Run - QA' },
+  { ma: 'KH_RELEASE1', module: 'Kế hoạch', ten: 'Release 1' },
   { ma: 'KH_RELEASE2', module: 'Kế hoạch', ten: 'Release 2' },
-  { ma: 'KH_REPLAN', module: 'Kế hoạch', ten: 'Lập kế hoạch lại' },
   { ma: 'KH_GIA_CONG', module: 'Kế hoạch', ten: 'Gia công' },
+  { ma: 'KH_TAM', module: 'Kế hoạch', ten: 'Kế hoạch tạm' },
+  { ma: 'KH_REPLAN', module: 'Kế hoạch', ten: 'Lập kế hoạch lại' },
+
   { ma: 'SX_CHO_CHAY', module: 'Sản xuất', ten: 'Xác nhận chạy — Chờ chạy' },
   { ma: 'SX_DANG_CHAY', module: 'Sản xuất', ten: 'Xác nhận chạy — Đang chạy' },
   { ma: 'SX_THEO_DOI', module: 'Sản xuất', ten: 'Theo dõi chuyền' },
-  { ma: 'CL_KCS', module: 'Chất lượng', ten: 'KCS' },
-  { ma: 'CL_SUA', module: 'Chất lượng', ten: 'Sửa' },
+  { ma: 'SX_KCS', module: 'Sản xuất', ten: 'KCS' },
+  { ma: 'SX_SUA', module: 'Sản xuất', ten: 'Sửa' },
+
+  { ma: 'CL_QC_READY', module: 'Chất lượng', ten: 'QC chuẩn bị kỹ thuật' },
+  { ma: 'CL_TEST_RUN', module: 'Chất lượng', ten: 'Test Run - QA' },
   { ma: 'CL_OQC', module: 'Chất lượng', ten: 'OQC' },
-  { ma: 'GH_TEM', module: 'Giao hàng', ten: 'Tem chờ giao' },
-  { ma: 'DB_TONG_QUAN', module: 'Dashboard', ten: 'Ô giai đoạn / biểu đồ' },
+
+  { ma: 'GH_TEM', module: 'Giao hàng', ten: 'Phiếu giao — tem chờ giao' },
+
+  { ma: 'DB_TONG_QUAN', module: 'Dashboard', ten: 'Tổng quan (ô giai đoạn / biểu đồ)' },
   { ma: 'DB_NGHEN', module: 'Dashboard', ten: 'Bản đồ nghẽn / Điều phối' },
 ];
 const MA_TRANG = TRANG_PAIN.map((t) => t.ma);

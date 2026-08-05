@@ -496,7 +496,7 @@ function lenhListSql(extraWhere, dkPain = 'TRUE') {
 }
 
 async function listTestRunCandidates({ cnspId, qaId, search = '', offset = 0, limit = 20 }) {
-  const dkPain = await dkTrang('KH_TEST_RUN', 'lenh', 'ls.id');
+  const dkPain = await dkTrang('CL_TEST_RUN', 'lenh', 'ls.id');
   const { rows } = await query(lenhListSql('', dkPain), [cnspId, qaId, search, limit, offset]);
   return rows;
 }

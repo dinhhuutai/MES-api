@@ -57,8 +57,9 @@ const TEM_CTX = `
 
 // Danh sách tem cho 1 công đoạn — lọc theo SL CÒN LẠI (con_X > 0), cho phép 1 tem xuất hiện đồng thời
 // ở nhiều công đoạn nếu còn phần chưa xử lý (kiểm/giao nhiều lần).
-// `maTrang` = khóa trang cấu hình hiển thị theo phương án in (CL_KCS / CL_SUA / CL_OQC — mig 067).
-async function listCandByCon(condExpr, { search = '', filters = {} } = {}, maTrang = 'CL_KCS') {
+// `maTrang` = khóa trang cấu hình hiển thị theo phương án in (mig 067). ⚠ KCS/Sửa thuộc module
+// **Sản xuất** (SX_KCS/SX_SUA), OQC thuộc **Chất lượng** (CL_OQC) — bám menu thật của app.
+async function listCandByCon(condExpr, { search = '', filters = {} } = {}, maTrang = 'SX_KCS') {
   const f = filters || {};
   const dkPain = await dkTrang(maTrang, 'phieu', 't.phieu_san_xuat_id');
   const params = [];
@@ -105,9 +106,9 @@ async function listCandByCon(condExpr, { search = '', filters = {} } = {}, maTra
 }
 // KCS: tem đã khô, còn phần chưa kiểm. Sửa: còn phần chờ sửa. OQC: còn phần chờ kiểm cuối.
 // (con_sua/con_oqc > 0 ⟹ đã qua KCS ⟹ đã khô — không cần lọc thêm da_qua_phoi.)
-const listKcsCand = (opt) => listCandByCon(`t.trang_thai = 'DA_KHO' AND ${CON_KCS} > 0`, opt, 'CL_KCS');
+const listKcsCand = (opt) => listCandByCon(`t.trang_thai = 'DA_KHO' AND ${CON_KCS} > 0`, opt, 'SX_KCS');
 // Sửa: hủy tem sửa = xóa SL sửa khỏi sổ cái ⇒ con_sua về 0 ⇒ tem tự rời hàng đợi (không cần cờ ẩn).
-const listSuaCand = (opt) => listCandByCon(`${CON_SUA} > 0`, opt, 'CL_SUA');
+const listSuaCand = (opt) => listCandByCon(`${CON_SUA} > 0`, opt, 'SX_SUA');
 const listOqcCand = (opt) => listCandByCon(`${CON_OQC} > 0`, opt, 'CL_OQC');
 
 async function getTemBasic(temId) {

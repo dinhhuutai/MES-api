@@ -1,6 +1,8 @@
 'use strict';
 
 const { query } = require('../../config/db');
+// Hiển thị theo PHƯƠNG ÁN IN — cấu hình động (mig 067), mặc định BẬT HẾT = không lọc.
+const { dkTrang } = require('../../utils/phuongAnIn');
 const { chipCondition, dominantStageScalar } = require('../../utils/stage');
 
 const BASE_JOINS = `
@@ -67,6 +69,8 @@ async function listVaiVe({ search = '', filters = {}, stage = '', offset = 0, li
   const params = [];
   const add = (v) => { params.push(v); return `$${params.length}`; };
   const cond = [];
+  // Hiển thị theo phương án in (mig 067) — 'TRUE' khi bật hết nên không ảnh hưởng gì.
+  cond.push(await dkTrang('DH_PHAN_IN', 'pin', 'pin.id'));
 
   if (search) {
     const p = add(search);
@@ -106,7 +110,6 @@ async function listVaiVe({ search = '', filters = {}, stage = '', offset = 0, li
            (SELECT string_agg(DISTINCT dvb.barcode, ', ') FROM dot_vai_ve dvb WHERE dvb.phan_in_id = pin.id AND dvb.barcode IS NOT NULL) AS barcode,
            pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
            pin.so_luong_don_hang, pin.loi_nhuan,
-           -- Phương án in (HSKT đang hoạt động) — cột "Phương án in" ở chế độ tổng hợp (chip "Tất cả").
            (SELECT h.phuong_an_in FROM hskt_phan_in hp JOIN ho_so_ky_thuat h ON h.id = hp.hskt_id
              AND h.dang_hoat_dong WHERE hp.phan_in_id = pin.id AND hp.dang_hoat_dong LIMIT 1) AS phuong_an_in,
            mh.ma_hang, mh.ten_ma_hang, dh.ma_don_hang, dh.so_po,

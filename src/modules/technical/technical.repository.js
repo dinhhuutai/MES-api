@@ -1,6 +1,8 @@
 'use strict';
 
 const { query } = require('../../config/db');
+// Hiển thị theo PHƯƠNG ÁN IN — cấu hình động (mig 067), mặc định BẬT HẾT = không lọc.
+const { dkTrang } = require('../../utils/phuongAnIn');
 const { techDoneSql, KHUON_OPT_SQL_LIST } = require('../../utils/tech');
 
 // Đọc cấu hình READY (version + trạm + checkpoint) trong 1 query (giảm round-trip tới DB ở xa).
@@ -33,6 +35,8 @@ async function listCandidates({
   onlyQcReady = false, offset = 0, limit = 20, readySla = null, readyCanhBao = null,
   qcSla = null, qcCanhBao = null, techTotal = 3,
 }) {
+  // Cùng 1 hàm phục vụ 2 màn: READY (Chuẩn bị kỹ thuật) và QC READY (Chất lượng) ⇒ 2 khóa cấu hình khác nhau.
+  const dkPain = await dkTrang(onlyQcReady ? 'CL_QC_READY' : 'KT_READY', 'pin', 'pin.id');
   const SEARCH = `($1 = '' OR pin.ma_phan ILIKE '%'||$1||'%' OR kh.ten_khach_hang ILIKE '%'||$1||'%'
                   OR dh.ma_don_hang ILIKE '%'||$1||'%' OR mh.ma_hang ILIKE '%'||$1||'%'
                   OR pin.mau_vai ILIKE '%'||$1||'%' OR pin.kich_vai ILIKE '%'||$1||'%'
@@ -105,6 +109,7 @@ async function listCandidates({
                          WHERE dvt.phan_in_id = pin.id AND dvt.trang_thai <> 'DA_GOP' AND dvt.tg_chuyen_ready IS NOT NULL
                            AND NOT EXISTS (SELECT 1 FROM phieu_san_xuat pst WHERE pst.lenh_san_xuat_id = lt.id)))
       AND pin.dang_hoat_dong
+      AND ${dkPain}
       AND ${SEARCH}`;
 
   // CẢ 2 màn (Kỹ thuật & QC) hiển thị CÙNG danh sách READY chưa QC xong — khác nhau ở SLA nghẽn:

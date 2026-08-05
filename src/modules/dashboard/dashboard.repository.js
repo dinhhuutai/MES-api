@@ -208,6 +208,10 @@ async function stageCounts() {
   // GIAI ĐOẠN DOMINANT mỗi phần in ("mỗi phần in 1 trạm" — utils/stage.js), dùng CHUNG logic với
   // orders.stageCondition ⇒ Σ(phần in mỗi stage) = tổng phần in, khớp mọi danh sách + đường vàng.
   const lenh = (col) => `(SELECT ls.${col} FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id WHERE lsd.dot_vai_ve_id=d.id AND ls.trang_thai<>'HUY' ORDER BY ls.created_date DESC LIMIT 1)`;
+  // `dom` lọc theo cấu hình HIỂN THỊ THEO PHƯƠNG ÁN IN (mig 067) nhưng CHỪA giai đoạn READY:
+  // READY đã có khóa cấu hình riêng ở màn của nó (KT_READY / CL_QC_READY), lọc thêm ở đây sẽ lệch số.
+  // ⚠ KHÔNG viết chú thích dạng `-- …` bên trong chuỗi SQL: nhiều query gộp về 1 dòng (IPS-safe)
+  //    ⇒ dấu `--` nuốt sạch phần còn lại → `42601 syntax error at end of input` (đã mắc thật).
   const DOM_CTE = `
     WITH pin_active AS (
       SELECT pi.id AS phan_in_id, pi.ma_hang_id
@@ -230,9 +234,6 @@ async function stageCounts() {
       FROM pin_active p LEFT JOIN rk r ON r.phan_in_id = p.phan_in_id
       ORDER BY p.phan_in_id, r.rnk ASC NULLS LAST
     ),
-    -- CHỈ HÀNG IN MÁY TỪ RELEASE 1 TRỞ ĐI (chốt 2026-08-04): phần in Bàn/Robot/chưa xác định vẫn được
-    -- đếm ở READY (các màn READY/QC READY không lọc — chúng đứng TRƯỚC Release 1), nhưng bị loại khỏi
-    -- mọi giai đoạn từ Release 1 về sau để khớp đúng những gì màn thao tác đang hiện.
     dom AS (
       SELECT * FROM dom0
        WHERE stage IN ('CHO_CHUYEN','READY_KT','READY_QA') OR ${dkPain}
@@ -747,8 +748,6 @@ async function flowRows(tramMa = '') {
     JOIN tram tr ON tr.ma_tram = cur.ma_tram
     JOIN workflow_version wv ON wv.id = tr.workflow_version_id AND wv.la_hien_hanh = true
     WHERE cur.ma_tram <> 'DONE_DELIVERY'
-      -- CHỈ HÀNG IN MÁY từ Release 1 trở đi (chốt 2026-08-04): READY vẫn tính đủ (màn READY/QC READY
-      -- không lọc vì đứng TRƯỚC Release 1); các trạm sau chỉ còn phần in in Máy.
       AND (cur.ma_tram = 'READY' OR ${dkPain})
       AND ($1 = '' OR cur.ma_tram = $1)
     ORDER BY tr.thu_tu NULLS LAST, phut_da_o DESC`;
