@@ -753,6 +753,118 @@ async function logRestorePhanIn(phanInId, maPhan, actorId) {
   [String(phanInId), JSON.stringify({ ma_phan: maPhan }), actorId]);
 }
 
+// ─── Hủy / Mở ĐỢT VẢI (xóa mềm ở mức đợt, không đụng phần in) ────────────────
+// ⚠ Vì sao cần tách khỏi "Hủy phần in": ERP hay đẩy lên đợt vải LỖI (vd đợt BỔ SUNG bị tính SL = 0 do
+// luật delta lũy kế) — lúc đó chỉ cần bỏ ĐÚNG đợt đó, giữ nguyên phần in + các đợt còn lại. Hủy cả phần
+// in là quá tay: kéo theo mọi đợt/lệnh/tem của nó.
+// Đợt vải chỉ hủy được khi CHƯA release (không thuộc lệnh nào ≠ HUY) — đã release thì phải hủy lệnh trước.
+async function searchDotVaiForCancel(q, stage = '') {
+  const stageCond = chipCondition(stage, 'pin.id');
+  const sql = `
+    SELECT dv.id AS dot_vai_id, dv.ma_dot_vai, dv.so_luong_vai_ve, dv.ngay_vai_ve, dv.han_giao_hang,
+           dv.created_date AS tg_len_mes, ldv.ten_loai AS loai_dot_vai,
+           pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim,
+           mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
+           (${dominantStageScalar('pin.id')}) AS giai_doan,
+           (SELECT count(*) FROM dot_vai_ve d2 WHERE d2.phan_in_id=pin.id AND d2.trang_thai <> 'DA_HUY')::int AS so_dot_cua_phan_in,
+           EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id
+                    WHERE lsd.dot_vai_ve_id=dv.id AND ls.trang_thai <> 'HUY') AS da_release
+    FROM dot_vai_ve dv
+    JOIN phan_in pin ON pin.id=dv.phan_in_id
+    JOIN ma_hang mh ON mh.id=pin.ma_hang_id
+    JOIN don_hang dh ON dh.id=mh.don_hang_id
+    JOIN khach_hang kh ON kh.id=dh.khach_hang_id
+    LEFT JOIN loai_dot_vai ldv ON ldv.id=dv.loai_dot_vai_id
+    WHERE pin.dang_hoat_dong AND dv.trang_thai NOT IN ('DA_HUY','DA_GOP')
+      AND ($1='' OR pin.ma_phan ILIKE '%'||$1||'%' OR dv.ma_dot_vai ILIKE '%'||$1||'%'
+           OR mh.ma_hang ILIKE '%'||$1||'%' OR pin.mau_vai ILIKE '%'||$1||'%' OR kh.ten_khach_hang ILIKE '%'||$1||'%')
+      ${stageCond ? `AND (${stageCond})` : ''}
+    ORDER BY pin.ma_phan, dv.created_date LIMIT 100`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [q || '']);
+  return rows;
+}
+
+// Xóa mềm 1 đợt vải: chỉ đổi `trang_thai` → 'DA_HUY'. Trả null nếu không tồn tại / đã hủy / ĐÃ RELEASE
+// (đợt đã nằm trong lệnh ≠ HUY thì chặn — hủy lệnh trước, tránh làm sai SL release của lệnh đang chạy).
+async function softDeleteDotVaiTx(client, dotVaiId, actorId) {
+  const { rows } = await client.query(
+    `SELECT dv.id, dv.ma_dot_vai, dv.trang_thai, pin.ma_phan,
+            EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id
+                     WHERE lsd.dot_vai_ve_id=dv.id AND ls.trang_thai <> 'HUY') AS da_release
+       FROM dot_vai_ve dv JOIN phan_in pin ON pin.id=dv.phan_in_id
+      WHERE dv.id=$1`.replace(/\s+/g, ' '), [dotVaiId]);
+  const dv = rows[0];
+  if (!dv || dv.trang_thai === 'DA_HUY') return { ok: false, ly_do: 'Đợt vải không tồn tại hoặc đã hủy' };
+  if (dv.da_release) return { ok: false, ma: dv.ma_dot_vai, ly_do: 'Đợt vải đã release — hủy lệnh sản xuất trước' };
+  await client.query(
+    "UPDATE dot_vai_ve SET trang_thai='DA_HUY', updated_by=$2, updated_date=CURRENT_TIMESTAMP WHERE id=$1",
+    [dotVaiId, actorId]
+  );
+  return { ok: true, ma: dv.ma_dot_vai, ma_phan: dv.ma_phan, trang_thai_cu: dv.trang_thai };
+}
+
+async function logSoftDeleteDotVai(dotVaiId, info, lyDo, actorId) {
+  await query(`INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('dot_vai_ve', $1, 'HUY_DOT_VAI', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`,
+  [String(dotVaiId), JSON.stringify({ ...info, ly_do: lyDo || null }), actorId]);
+}
+
+// Danh sách đợt vải ĐÃ hủy mềm (có audit HUY_DOT_VAI) — để "Mở đợt vải".
+async function listDeletedDotVai(q) {
+  const sql = `
+    SELECT DISTINCT ON (dv.id) dv.id AS dot_vai_id, dv.ma_dot_vai, dv.so_luong_vai_ve, dv.ngay_vai_ve,
+           ldv.ten_loai AS loai_dot_vai, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim,
+           mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang, pin.dang_hoat_dong AS phan_in_con_hoat_dong,
+           a.thoi_gian AS tg_huy, nd.ho_ten AS nguoi_huy, a.gia_tri_moi->>'ly_do' AS ly_do,
+           COALESCE(a.gia_tri_moi->>'trang_thai_cu', 'NHAN_VAI') AS trang_thai_cu
+    FROM dot_vai_ve dv
+    JOIN phan_in pin ON pin.id=dv.phan_in_id
+    JOIN ma_hang mh ON mh.id=pin.ma_hang_id
+    JOIN don_hang dh ON dh.id=mh.don_hang_id
+    JOIN khach_hang kh ON kh.id=dh.khach_hang_id
+    LEFT JOIN loai_dot_vai ldv ON ldv.id=dv.loai_dot_vai_id
+    JOIN audit_log a ON a.ten_bang='dot_vai_ve' AND a.hanh_dong='HUY_DOT_VAI' AND a.id_ban_ghi=dv.id::text
+    LEFT JOIN nguoi_dung nd ON nd.id=a.nguoi_thuc_hien_id
+    WHERE dv.trang_thai='DA_HUY'
+      AND ($1='' OR pin.ma_phan ILIKE '%'||$1||'%' OR dv.ma_dot_vai ILIKE '%'||$1||'%'
+           OR mh.ma_hang ILIKE '%'||$1||'%' OR pin.mau_vai ILIKE '%'||$1||'%' OR kh.ten_khach_hang ILIKE '%'||$1||'%')
+    ORDER BY dv.id, a.thoi_gian DESC`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [q || '']);
+  return rows.sort((a, b) => new Date(b.tg_huy) - new Date(a.tg_huy)).slice(0, 100);
+}
+
+// Mở lại đợt vải: trả về trạng thái TRƯỚC khi hủy (lấy từ audit; dữ liệu cũ → 'NHAN_VAI').
+// ⚠ Chỉ mở được khi PHẦN IN còn hoạt động — phần in đang bị xóa mềm thì phải "Mở phần in" trước,
+// nếu không đợt vải sẽ sống lại trong một phần in đã hủy (dữ liệu mồ côi).
+async function restoreDotVaiTx(client, dotVaiId, actorId) {
+  const { rows } = await client.query(
+    `SELECT dv.id, dv.ma_dot_vai, dv.trang_thai, pin.ma_phan, pin.dang_hoat_dong,
+            (SELECT a.gia_tri_moi->>'trang_thai_cu' FROM audit_log a
+              WHERE a.ten_bang='dot_vai_ve' AND a.hanh_dong='HUY_DOT_VAI' AND a.id_ban_ghi=dv.id::text
+              ORDER BY a.thoi_gian DESC LIMIT 1) AS trang_thai_cu
+       FROM dot_vai_ve dv JOIN phan_in pin ON pin.id=dv.phan_in_id
+      WHERE dv.id=$1`.replace(/\s+/g, ' '), [dotVaiId]);
+  const dv = rows[0];
+  if (!dv || dv.trang_thai !== 'DA_HUY') return { ok: false, ly_do: 'Đợt vải không ở trạng thái đã hủy' };
+  if (!dv.dang_hoat_dong) {
+    return { ok: false, ma: dv.ma_dot_vai, ly_do: `Phần in ${dv.ma_phan} đang bị hủy — mở phần in trước` };
+  }
+  const tt = dv.trang_thai_cu || 'NHAN_VAI';
+  await client.query(
+    'UPDATE dot_vai_ve SET trang_thai=$2, updated_by=$3, updated_date=CURRENT_TIMESTAMP WHERE id=$1',
+    [dotVaiId, tt, actorId]
+  );
+  return { ok: true, ma: dv.ma_dot_vai, ma_phan: dv.ma_phan, trang_thai: tt };
+}
+
+async function logRestoreDotVai(dotVaiId, info, actorId) {
+  await query(`INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('dot_vai_ve', $1, 'MO_DOT_VAI', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`,
+  [String(dotVaiId), JSON.stringify(info), actorId]);
+}
+
 module.exports = { list, listVaiVe, dotSanXuatLedger, findById, listDotVai, getPhanInTimeline, getPhanInTemSummary, getPhanInKcsByDot, getPhanInStagePcs, getDryMin, setDryMin, setLoiNhuan, logProfitChange, profitHistoryByDate,
   searchPhanInForCancel, softDeletePhanInTx, logSoftDeletePhanIn,
-  listDeletedPhanIn, getDeleteSnapshot, restorePhanInTx, logRestorePhanIn };
+  listDeletedPhanIn, getDeleteSnapshot, restorePhanInTx, logRestorePhanIn,
+  searchDotVaiForCancel, softDeleteDotVaiTx, logSoftDeleteDotVai,
+  listDeletedDotVai, restoreDotVaiTx, logRestoreDotVai };

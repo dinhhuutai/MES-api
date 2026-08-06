@@ -67,4 +67,23 @@ const moPhanIn = asyncHandler(async (req, res) => {
   return ok(res, data, `Đã mở lại ${data.count} phần in`);
 });
 
-module.exports = { list, listVaiVe, getOne, setChoKho, setLoiNhuan, profitHistory, searchCancel, huyPhanIn, listDeleted, moPhanIn };
+// Hủy / Mở ĐỢT VẢI (mức đợt — không đụng phần in). `loi[]` = đợt bị chặn kèm lý do.
+const searchCancelDotVai = asyncHandler(async (req, res) =>
+  ok(res, await service.searchDotVaiForCancel(req.query.q || '', req.query.stage || '')));
+const huyDotVai = asyncHandler(async (req, res) => {
+  const ids = Array.isArray(req.body.dotVaiIds) ? req.body.dotVaiIds : [];
+  const data = await service.softDeleteDotVai(ids, req.body.lyDo || null, req.user.id);
+  const them = data.loi.length ? ` · ${data.loi.length} đợt không hủy được` : '';
+  return ok(res, data, `Đã hủy ${data.count} đợt vải${them}`);
+});
+const listDeletedDotVai = asyncHandler(async (req, res) =>
+  ok(res, await service.listDeletedDotVai(req.query.q || '')));
+const moDotVai = asyncHandler(async (req, res) => {
+  const ids = Array.isArray(req.body.dotVaiIds) ? req.body.dotVaiIds : [];
+  const data = await service.reopenDotVai(ids, req.user.id);
+  const them = data.loi.length ? ` · ${data.loi.length} đợt không mở được` : '';
+  return ok(res, data, `Đã mở lại ${data.count} đợt vải${them}`);
+});
+
+module.exports = { list, listVaiVe, getOne, setChoKho, setLoiNhuan, profitHistory, searchCancel, huyPhanIn, listDeleted, moPhanIn,
+  searchCancelDotVai, huyDotVai, listDeletedDotVai, moDotVai };

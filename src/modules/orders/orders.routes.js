@@ -19,6 +19,12 @@ router.post('/huy', rbac('READY_CANCEL'), c.huyPhanIn);
 // Mở phần in (khôi phục xóa mềm).
 router.get('/mo/deleted', rbac('READY_CANCEL'), c.listDeleted);
 router.post('/mo', rbac('READY_CANCEL'), c.moPhanIn);
+// Hủy / Mở ĐỢT VẢI (mức đợt — ERP đẩy lên đợt sai thì bỏ đúng đợt đó, giữ nguyên phần in).
+// Route 3 đoạn nên KHÔNG đụng '/:id'.
+router.get('/dot-vai/huy/search', rbac('READY_CANCEL'), c.searchCancelDotVai);
+router.post('/dot-vai/huy', rbac('READY_CANCEL'), c.huyDotVai);
+router.get('/dot-vai/mo/deleted', rbac('READY_CANCEL'), c.listDeletedDotVai);
+router.post('/dot-vai/mo', rbac('READY_CANCEL'), c.moDotVai);
 router.get('/:id', rbac('ORDER_VIEW'), c.getOne);
 router.patch(
   '/:id/loi-nhuan',

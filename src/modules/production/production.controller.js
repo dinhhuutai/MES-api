@@ -56,10 +56,10 @@ const savePhanCong = asyncHandler(async (req, res) =>
   ok(res, await service.savePhanCong(req.params.phieuId, req.body || {}, req.user.id), 'Đã lưu phân công'));
 
 const stopLine = asyncHandler(async (req, res) =>
-  ok(res, await service.stopLine(req.params.phieuId, req.body.lyDo, req.user.id), 'Đã ngừng chuyền'));
+  ok(res, await service.stopLine(req.params.phieuId, req.body.lyDo, req.user.id, req.body.gioBd || null), 'Đã ngừng chuyền'));
 
 const resumeLine = asyncHandler(async (req, res) =>
-  ok(res, await service.resumeLine(req.params.phieuId, req.user.id), 'Chuyền hoạt động lại'));
+  ok(res, await service.resumeLine(req.params.phieuId, req.user.id, req.body?.gioKt || null), 'Chuyền hoạt động lại'));
 
 const monitor = asyncHandler(async (req, res) => ok(res, await service.monitor()));
 

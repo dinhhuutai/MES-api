@@ -13,10 +13,10 @@ const gomRepo = require('../gomset/gomset.repository');
 
 const NGUON = 'phieu_nhan_vai_60';          // API DUY NHẤT → đợt vải vào thẳng READY
 
-// Loại kinh doanh (`loaikd`) CHỈ LẤY khi đồng bộ: 3I = số lượng (SO_LUONG), 5I = bổ sung (BO_SUNG).
-// Mọi loại khác → BỎ QUA. (Trước đây lọc theo khách hàng 'SL' + blacklist 8I/2I; nay bỏ lọc khách,
-// chuyển sang whitelist loaikd cho rõ ràng.) Thêm/bớt mã ở đây.
-const LAY_LOAIKD = new Set(['3I', '5I']);
+// Loại kinh doanh (`loaikd`) CHỈ LẤY khi đồng bộ: 3I = số lượng (SO_LUONG) · 5I = bổ sung (BO_SUNG)
+// · 6I = mẫu số lượng (MAU_SO_LUONG, mig 070). Mọi loại khác → BỎ QUA. (Trước đây lọc theo khách hàng
+// 'SL' + blacklist 8I/2I; nay bỏ lọc khách, chuyển sang whitelist loaikd cho rõ ràng.) Thêm/bớt mã ở đây.
+const LAY_LOAIKD = new Set(['3I', '5I', '6I']);
 
 // TÍNH CHẤT IN (`Tinhchatin`) BỎ QUA — các công đoạn ép/ủi/lụa... không thuộc phạm vi MES này.
 // So khớp sau khi chuẩn hóa (bỏ hết khoảng trắng + viết hoa) nên "C + EP DECAL" == "C+EP DECAL".
@@ -183,6 +183,7 @@ async function fetchErpAttempt(baseUrl, fromDate) {
 }
 
 // `tgChuyenReady`: Date = đợt vào READY ngay; null = CHỜ chuyển (pending, ẩn khỏi READY).
+// `nguyenSoLuong` (loaikd 6I — Mẫu số lượng): lấy nguyên `received_qty`, KHÔNG trừ lũy kế đợt trước.
 async function processRow(r, maPhan, maDotVai, loaiDotVaiId, tgChuyenReady) {
   return withTransaction(async (client) => {
     const khId = await repo.upsertKhachHang(client, { ma: clean(r.customer_name), ten: clean(r.customer_name) });
@@ -199,14 +200,20 @@ async function processRow(r, maPhan, maDotVai, loaiDotVaiId, tgChuyenReady) {
       maDotVai, phanInId: pinId, loaiDotVaiId,
       ngayVaiVe: erpNgayVaiVe(r), hanGiao: toDate(r.due_date), soLuong: r.received_qty ?? null,
       tgChuyenReady: tgChuyenReady || null, barcode: erpBarcode(r), inset: erpInset(r),
+      nguyenSoLuong: laNguyenSoLuong(r.loaikd),
     });
     return { inserted, dotVaiId, pinId };
   });
 }
 
-// Map trường ERP `loaikd` → loại đợt vải CHUẨN đã seed: 3I = SO_LUONG, 5I = BO_SUNG.
+// Map trường ERP `loaikd` → loại đợt vải CHUẨN đã seed: 3I = SO_LUONG · 5I = BO_SUNG · 6I = MAU_SO_LUONG.
 // Thiếu / mã khác → mặc định SO_LUONG. Chỉ TRA id loại có sẵn (không tạo loại rác kiểu '3I').
-const LOAIKD_MAP = { '3I': 'SO_LUONG', '5I': 'BO_SUNG' };
+const LOAIKD_MAP = { '3I': 'SO_LUONG', '5I': 'BO_SUNG', '6I': 'MAU_SO_LUONG' };
+
+// ⚠ Loại đợt KHÔNG áp luật DELTA lũy kế — SL nhận độc lập từng đợt, ERP trả bao nhiêu lấy bấy nhiêu.
+// Hiện chỉ có MẪU SỐ LƯỢNG (6I): đợt mẫu SL nhỏ, nếu trừ lũy kế sẽ bị clamp về 0 (lỗi đã gặp ở 5I).
+const LOAIKD_NGUYEN_SL = new Set(['6I']);
+const laNguyenSoLuong = (loaikd) => LOAIKD_NGUYEN_SL.has(clean(loaikd).toUpperCase());
 function makeLoaiResolver() {
   const cache = new Map();
   return async (loaikd) => {

@@ -180,8 +180,11 @@ async function getLoaiDotVaiId(maLoai) {
 //  - phần in ĐÃ có đợt → SL đợt lần này = phần chênh (received_qty lũy kế − đã nhận trước đó). Clamp ≥ 0.
 // Đợt đã tồn tại (re-sync idempotent theo ma_dot_vai) → GIỮ NGUYÊN so_luong_vai_ve đã tính lúc tạo,
 //  chỉ cập nhật ngày/hạn/loại (tránh cộng dồn sai khi ERP trả lại dòng cũ).
+// ⚠⚠ `nguyenSoLuong = true` (loại đợt **MẪU SỐ LƯỢNG**, ERP `loaikd = 6I`): BỎ HẲN luật delta —
+//  SL nhận của đợt mẫu KHÔNG liên quan đợt trước/đợt sau, ERP trả bao nhiêu thì LẤY BẤY NHIÊU.
+//  Nếu vẫn trừ lũy kế thì đợt mẫu (SL nhỏ) sẽ bị clamp về 0 y như lỗi đã gặp ở đợt BỔ SUNG.
 // `tgChuyenReady`: Date = đợt vào READY ngay (mig 056); null = CHỜ chuyển (pending). Re-sync GIỮ NGUYÊN mốc cũ.
-async function upsertDotVai(client, { maDotVai, phanInId, loaiDotVaiId, ngayVaiVe, hanGiao, soLuong, tgChuyenReady, barcode, inset }) {
+async function upsertDotVai(client, { maDotVai, phanInId, loaiDotVaiId, ngayVaiVe, hanGiao, soLuong, tgChuyenReady, barcode, inset, nguyenSoLuong = false }) {
   const existing = await client.query('SELECT id FROM dot_vai_ve WHERE ma_dot_vai = $1', [maDotVai]);
   if (existing.rows.length) {
     await client.query(
@@ -194,7 +197,7 @@ async function upsertDotVai(client, { maDotVai, phanInId, loaiDotVaiId, ngayVaiV
     return { id: existing.rows[0].id, inserted: false };
   }
   let sl = soLuong == null ? null : Number(soLuong);
-  if (sl != null) {
+  if (sl != null && !nguyenSoLuong) {
     const prev = await client.query(
       'SELECT COALESCE(sum(so_luong_vai_ve),0)::int AS s FROM dot_vai_ve WHERE phan_in_id = $1', [phanInId]);
     sl -= (prev.rows[0].s || 0);

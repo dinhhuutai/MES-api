@@ -647,18 +647,26 @@ async function temCoCot(ten) {
 }
 const temCoCotNgayCa = () => temCoCot('ngay_ca');       // mig 066
 const temCoCotMaNgayCa = () => temCoCot('ma_ngay_ca');  // mig 068
+const temCoCotGcMauVai = () => temCoCot('gc_mau_vai');  // mig 071
 
-// Tạo tem + (mig 066) ngày ca · giờ SX từ→đến · cờ BTP trước/cuối + (mig 068) mã ngày ca của LƯỢT IN này.
-async function createTem(client, { phieuId, maTem, soLuong, ngayCa, maNgayCa, gioBd, gioKt, btpTruoc, btpCuoi }, actorId) {
+// Tạo tem + (mig 066) ngày ca · giờ SX từ→đến · cờ BTP trước/cuối + (mig 068) mã ngày ca
+// + (mig 071) GC màu vải — tất cả của LƯỢT IN này.
+async function createTem(client, { phieuId, maTem, soLuong, ngayCa, maNgayCa, gioBd, gioKt, btpTruoc, btpCuoi, gcMauVai }, actorId) {
   const base = [phieuId, maTem, soLuong, actorId];
   if (await temCoCotNgayCa()) {
     const coMa = await temCoCotMaNgayCa();
+    const coGc = await temCoCotGcMauVai();
+    // Dựng danh sách cột/tham số động theo migration đã chạy (dò cột TRƯỚC, không try/catch quanh INSERT).
+    const cot = []; const val = [];
+    if (coMa) { cot.push('ma_ngay_ca'); val.push(maNgayCa || null); }
+    if (coGc) { cot.push('gc_mau_vai'); val.push((gcMauVai || '').trim() || null); }
+    const themCot = cot.length ? `, ${cot.join(', ')}` : '';
+    const themTham = cot.map((_, i) => `,$${10 + i}`).join('');
     const { rows } = await client.query(
       `INSERT INTO tem (phieu_san_xuat_id, ma_tem, so_luong, trang_thai, created_by,
-         ngay_ca, gio_sx_bd, gio_sx_kt, btp_truoc, btp_cuoi${coMa ? ', ma_ngay_ca' : ''})
-       VALUES ($1,$2,$3,'IN',$4,$5,$6,$7,$8,$9${coMa ? ',$10' : ''}) RETURNING id`,
-      [...base, ngayCa || null, gioBd || null, gioKt || null, !!btpTruoc, !!btpCuoi,
-        ...(coMa ? [maNgayCa || null] : [])]
+         ngay_ca, gio_sx_bd, gio_sx_kt, btp_truoc, btp_cuoi${themCot})
+       VALUES ($1,$2,$3,'IN',$4,$5,$6,$7,$8,$9${themTham}) RETURNING id`,
+      [...base, ngayCa || null, gioBd || null, gioKt || null, !!btpTruoc, !!btpCuoi, ...val]
     );
     return rows[0].id;
   }
@@ -671,24 +679,23 @@ async function createTem(client, { phieuId, maTem, soLuong, ngayCa, maNgayCa, gi
 }
 
 // GỢI Ý "ngày ca · giờ SX" cho LƯỢT IN kế tiếp của 1 lệnh (FE điền sẵn, người dùng sửa được).
-//   · Ngày ca  ← KẾ HOẠCH của đợt SX (`ngay_ke_hoach` + `tg_bd_kh`); thiếu → giờ bắt đầu chạy thật
-//                của phiếu; cuối cùng → bây giờ. Ca suy từ giờ đó + loại ca của tuần (service ghép).
+//   · Ngày ca  ← **BÂY GIỜ** (lúc mở sidebar Sản xuất): ngày hôm nay + ca suy từ giờ hiện tại & loại ca
+//                của tuần ISO đó (service ghép). ⚠ CỐ Ý KHÔNG lấy theo `ngay_ke_hoach`/`tg_bd_kh` của
+//                lệnh (bản đầu 05/08 lấy theo kế hoạch — SAI): tem in lúc nào thì thuộc ngày ca lúc đó,
+//                kế hoạch có thể lệch ngày/ca so với lúc chạy thật.
 //   · Giờ BĐ   ← mốc KẾT THÚC của lượt in TRƯỚC (ưu tiên `gio_sx_kt` người nhập, không có thì lấy
 //                giờ in tem gần nhất); chưa in tem nào → giờ bắt đầu chạy phiếu.
 //   · Giờ KT   ← bây giờ.
-// Mọi mốc quy về giờ VN ngay trong SQL (server có thể chạy múi giờ khác).
+// Mọi mốc quy về giờ VN ngay trong SQL (server có thể chạy múi giờ khác — đừng new Date() ở JS).
 async function goiYTemMeta(lenhId, phieuId) {
   const VN = "AT TIME ZONE 'Asia/Ho_Chi_Minh'";
   const gioKtTem = (await temCoCotNgayCa()) ? "to_char(t.gio_sx_kt,'HH24:MI')" : 'NULL';
-  const sql = `WITH l AS (SELECT ngay_ke_hoach, tg_bd_kh FROM lenh_san_xuat WHERE id=$1),
-      p AS (SELECT tg_bd FROM phieu_san_xuat WHERE id=$2::uuid),
+  const sql = `WITH p AS (SELECT tg_bd FROM phieu_san_xuat WHERE id=$2::uuid),
       t AS (SELECT ${gioKtTem} AS gio_kt_nhap, to_char(t.created_date ${VN},'HH24:MI') AS gio_in
               FROM tem t JOIN phieu_san_xuat ps ON ps.id=t.phieu_san_xuat_id
              WHERE ps.lenh_san_xuat_id=$1 AND t.trang_thai<>'HUY'
              ORDER BY t.created_date DESC LIMIT 1),
-      b AS (SELECT COALESCE(l.ngay_ke_hoach, (p.tg_bd ${VN})::date, (now() ${VN})::date) AS ngay,
-                   COALESCE(l.tg_bd_kh ${VN}, p.tg_bd ${VN}, now() ${VN}) AS tg
-              FROM l LEFT JOIN p ON true)
+      b AS (SELECT (now() ${VN})::date AS ngay, (now() ${VN}) AS tg)
     SELECT to_char(b.ngay,'YYMMDD') AS ymd,
            EXTRACT(HOUR    FROM b.tg)::int    AS gio,
            EXTRACT(MINUTE  FROM b.tg)::int    AS phut,
@@ -955,24 +962,43 @@ async function getActiveNgung(phieuId) {
   return rows[0] || null;
 }
 
-async function startNgung({ phieuId, lenhId, chuyenId, lyDo }, actorId) {
-  const { rows } = await query(
-    `INSERT INTO ngung_chuyen (phieu_san_xuat_id, lenh_san_xuat_id, chuyen_id, ly_do, tg_bd_ngung, trang_thai, created_by)
-     VALUES ($1,$2,$3,$4,CURRENT_TIMESTAMP,'DANG_NGUNG',$5) RETURNING id`,
-    [phieuId, lenhId || null, chuyenId || null, lyDo || null, actorId]
-  );
+// ─── NGỪNG CHUYỀN — giờ bắt đầu / kết thúc NHẬP TAY (2026-08-06) ─────────────
+// Người dùng nhập dạng 'HH:MM' (TimeSelect 24h). Luồng giữ nguyên 2 bước như cũ (Ngừng → Hoạt động
+// lại); 2 ô giờ chỉ để sửa mốc cho khớp thực tế, bỏ trống → lấy giờ hệ thống.
+// ⚠ Ghép NGÀY ngay trong SQL theo giờ VN (server có thể chạy múi giờ khác — đừng dựng Date ở JS).
+const VN_TZ = "AT TIME ZONE 'Asia/Ho_Chi_Minh'";
+
+// Giờ BẮT ĐẦU: ghép với ngày HÔM NAY; nếu ra mốc TƯƠNG LAI thì lùi 1 ngày — ca đêm ngừng lúc 23:00
+// mà tới 01:00 sáng hôm sau mới ghi nhận thì phải hiểu là 23:00 HÔM QUA.
+const BD_TU_GIO = `(CASE
+    WHEN $6::text IS NULL THEN CURRENT_TIMESTAMP
+    WHEN (((now() ${VN_TZ})::date + $6::time) ${VN_TZ}) > CURRENT_TIMESTAMP
+      THEN (((now() ${VN_TZ})::date - 1 + $6::time) ${VN_TZ})
+    ELSE (((now() ${VN_TZ})::date + $6::time) ${VN_TZ}) END)`;
+
+async function startNgung({ phieuId, lenhId, chuyenId, lyDo, gioBd }, actorId) {
+  const sql = `INSERT INTO ngung_chuyen (phieu_san_xuat_id, lenh_san_xuat_id, chuyen_id, ly_do, tg_bd_ngung, trang_thai, created_by)
+     VALUES ($1,$2,$3,$4,${BD_TU_GIO},'DANG_NGUNG',$5) RETURNING id`;
+  const { rows } = await query(sql.replace(/\s+/g, ' '),
+    [phieuId, lenhId || null, chuyenId || null, lyDo || null, actorId, gioBd || null]);
   return rows[0].id;
 }
 
-async function resumeNgung(ngungId, actorId) {
-  const { rowCount } = await query(
-    `UPDATE ngung_chuyen
-     SET tg_kt_ngung = CURRENT_TIMESTAMP,
-         so_phut = GREATEST(0, ROUND(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - tg_bd_ngung)) / 60.0))::int,
+// Giờ KẾT THÚC: ghép với ngày của MỐC BẮT ĐẦU; nếu ra sớm hơn mốc bắt đầu thì +1 ngày (ngừng qua đêm).
+// `so_phut` luôn tính lại từ 2 mốc THẬT trong bản ghi ⇒ sửa giờ thì số phút ngừng cũng đúng theo.
+const KT_TU_GIO = `(CASE
+    WHEN $3::text IS NULL THEN CURRENT_TIMESTAMP
+    WHEN (((tg_bd_ngung ${VN_TZ})::date + $3::time) ${VN_TZ}) < tg_bd_ngung
+      THEN (((tg_bd_ngung ${VN_TZ})::date + 1 + $3::time) ${VN_TZ})
+    ELSE (((tg_bd_ngung ${VN_TZ})::date + $3::time) ${VN_TZ}) END)`;
+
+async function resumeNgung(ngungId, actorId, gioKt = null) {
+  const sql = `UPDATE ngung_chuyen
+     SET tg_kt_ngung = ${KT_TU_GIO},
+         so_phut = GREATEST(0, ROUND(EXTRACT(EPOCH FROM (${KT_TU_GIO} - tg_bd_ngung)) / 60.0))::int,
          trang_thai = 'DA_HOAT_DONG_LAI', updated_by = $2, updated_date = CURRENT_TIMESTAMP
-     WHERE id = $1 AND trang_thai = 'DANG_NGUNG'`,
-    [ngungId, actorId]
-  );
+     WHERE id = $1 AND trang_thai = 'DANG_NGUNG'`;
+  const { rowCount } = await query(sql.replace(/\s+/g, ' '), [ngungId, actorId, gioKt || null]);
   return rowCount > 0;
 }
 

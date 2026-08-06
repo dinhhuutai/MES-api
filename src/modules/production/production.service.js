@@ -46,8 +46,8 @@ async function getRun(lenhId) {
 }
 
 // Gợi ý sẵn "ngày ca · từ giờ · đến giờ" cho lượt in kế tiếp (FE điền vào ô, người dùng sửa được).
-// Ngày ca = YYMMDD của NGÀY KẾ HOẠCH + mã ca suy từ giờ bắt đầu kế hoạch & loại ca của TUẦN đó
-// (`cai_dat_ca_tuan`; tuần chưa cài → ca Ngắn). Lỗi gì cũng trả null — không được chặn màn Sản xuất.
+// Ngày ca = YYMMDD của HÔM NAY + mã ca suy từ GIỜ HIỆN TẠI (lúc mở sidebar Sản xuất) & loại ca của
+// TUẦN ISO đó (`cai_dat_ca_tuan`; tuần chưa cài → ca Ngắn). Lỗi gì cũng trả null — không chặn màn Sản xuất.
 async function goiYTemMeta(lenhId, phieuId) {
   try {
     const [g, modeMap] = await Promise.all([repo.goiYTemMeta(lenhId, phieuId), planningRepo.caModeMap()]);
@@ -128,7 +128,8 @@ async function savePhanCong(phieuId, { caTruongId, chuyenTruong, thoIn, items },
 }
 
 // Ngừng chuyền (đang sản xuất) — kèm lý do; cho ngừng nhiều lần/phiếu.
-async function stopLine(phieuId, lyDo, actorId) {
+// `gioBd` (tùy chọn, 'HH:MM') = giờ bắt đầu ngừng nhập tay; bỏ trống → giờ hệ thống.
+async function stopLine(phieuId, lyDo, actorId, gioBd = null) {
   const phieu = await repo.getPhieuById(phieuId);
   if (!phieu) throw new AppError('Phiếu sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   if (phieu.trang_thai !== 'DANG_CHAY') throw new AppError('Phiếu không ở trạng thái đang chạy', { status: 409, errorCode: 'WRONG_STAGE' });
@@ -136,19 +137,19 @@ async function stopLine(phieuId, lyDo, actorId) {
   const active = await repo.getActiveNgung(phieuId);
   if (active) throw new AppError('Chuyền đang ngừng — hãy cho hoạt động lại trước', { status: 409, errorCode: 'ALREADY_STOPPED' });
   const lenh = await repo.getLenhBasic(phieu.lenh_san_xuat_id);
-  await repo.startNgung({ phieuId, lenhId: phieu.lenh_san_xuat_id, chuyenId: lenh?.chuyen_id, lyDo: lyDo.trim() }, actorId);
+  await repo.startNgung({ phieuId, lenhId: phieu.lenh_san_xuat_id, chuyenId: lenh?.chuyen_id, lyDo: lyDo.trim(), gioBd }, actorId);
   sockets.emit('production:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'ngung' });
   sockets.emit('dashboard:refresh', {});
   return getRun(phieu.lenh_san_xuat_id);
 }
 
-// Chuyền hoạt động lại — lưu thời gian ngừng.
-async function resumeLine(phieuId, actorId) {
+// Chuyền hoạt động lại — lưu thời gian ngừng. `gioKt` (tùy chọn, 'HH:MM') = giờ kết thúc nhập tay.
+async function resumeLine(phieuId, actorId, gioKt = null) {
   const phieu = await repo.getPhieuById(phieuId);
   if (!phieu) throw new AppError('Phiếu sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   const active = await repo.getActiveNgung(phieuId);
   if (!active) throw new AppError('Chuyền không trong trạng thái ngừng', { status: 409, errorCode: 'NOT_STOPPED' });
-  await repo.resumeNgung(active.id, actorId);
+  await repo.resumeNgung(active.id, actorId, gioKt);
   sockets.emit('production:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'hoat-dong-lai' });
   sockets.emit('dashboard:refresh', {});
   return getRun(phieu.lenh_san_xuat_id);
@@ -212,6 +213,9 @@ const temMeta = (b = {}) => {
     gioKt: b.gioKt || null,
     btpTruoc: !!b.btpTruoc,
     btpCuoi: !!b.btpCuoi,
+    // GC màu vải (mig 071) — lệnh THƯỜNG nhập 1 ô chung; lệnh GOM SET nhập RIÊNG từng dòng nên
+    // `printTemBatch` sẽ ghi đè bằng `it.gcMauVai` của dòng đó.
+    gcMauVai: (b.gcMauVai || '').trim() || null,
   };
 };
 
@@ -273,7 +277,7 @@ async function printTemBatch(phieuId, items, actorId, body) {
   const meta = temMeta(body);
   const raw = Array.isArray(items) ? items : [];
   const list = raw
-    .map((it) => ({ dotVaiId: it.dotVaiId || null, soLuong: Number(it.soLuong) }))
+    .map((it) => ({ dotVaiId: it.dotVaiId || null, soLuong: Number(it.soLuong), gcMauVai: it.gcMauVai || null }))
     .filter((it) => it.soLuong > 0);
   // Vải hủy / vải thiếu nhập NGAY TRONG modal In tem (chuyển từ modal Phân công): ghi kể cả khi dòng
   // đó KHÔNG in tem (SL in = 0 nhưng vẫn phát sinh vải hư/thiếu) ⇒ lọc riêng, không dùng `list`.
@@ -329,7 +333,11 @@ async function printTemBatch(phieuId, items, actorId, body) {
   await withTransaction(async (client) => {
     for (const it of list) {
       const maTem = await repo.nextMaTemTx(client); // trong TX: mã tem không trùng giữa các dòng
-      const temId = await repo.createTem(client, { phieuId, maTem, soLuong: it.soLuong, ...meta }, actorId);
+      // GC màu vải nhập RIÊNG từng dòng ở modal gom set → ưu tiên `it.gcMauVai`; không có thì dùng ô chung.
+      const temId = await repo.createTem(client, {
+        phieuId, maTem, soLuong: it.soLuong, ...meta,
+        gcMauVai: (it.gcMauVai || '').trim() || meta.gcMauVai,
+      }, actorId);
       await repo.logTemPrint(client, { temId, maTem, actorId });
       await repo.addTemToXe(client, { temId, xeId: xe.id, soLuongPhoi: it.soLuong, phut: dryMin }, actorId);
       const d = it.dotVaiId ? byId.get(it.dotVaiId) : null;

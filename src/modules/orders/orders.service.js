@@ -107,4 +107,53 @@ async function reopenPhanIn(phanInIds, actorId) {
   return { count: done.length, items: done };
 }
 
-module.exports = { listPhanIn, listVaiVe, getPhanIn, setChoKho, setLoiNhuan, profitHistory, searchForCancel, softDeletePhanIn, listDeleted, reopenPhanIn };
+// ─── Hủy / Mở ĐỢT VẢI (mức đợt, không đụng phần in) ──────────────────────────
+// Dùng khi ERP đẩy lên đợt vải sai/thừa: bỏ đúng đợt đó, giữ nguyên phần in + các đợt còn lại.
+async function searchDotVaiForCancel(q, stage) {
+  return repo.searchDotVaiForCancel(q || '', stage || '');
+}
+
+// Trả `{count, items, loi[]}` — item nào chặn (đã release / phần in đang hủy) thì gom vào `loi`
+// để FE báo rõ lý do thay vì im lặng bỏ qua.
+async function softDeleteDotVai(dotVaiIds, lyDo, actorId) {
+  if (!Array.isArray(dotVaiIds) || dotVaiIds.length === 0) {
+    throw new AppError('Chưa chọn đợt vải nào để hủy', { status: 422, errorCode: 'EMPTY' });
+  }
+  const done = []; const loi = [];
+  await withTransaction(async (client) => {
+    for (const id of dotVaiIds) {
+      const r = await repo.softDeleteDotVaiTx(client, id, actorId);
+      if (r.ok) done.push({ id, ma: r.ma, ma_phan: r.ma_phan, trang_thai_cu: r.trang_thai_cu });
+      else loi.push({ id, ma: r.ma || null, ly_do: r.ly_do });
+    }
+  });
+  for (const d of done) {
+    await repo.logSoftDeleteDotVai(d.id, { ma_dot_vai: d.ma, ma_phan: d.ma_phan, trang_thai_cu: d.trang_thai_cu }, lyDo, actorId);
+  }
+  if (done.length) sockets.emit('dashboard:refresh', {});
+  return { count: done.length, items: done, loi };
+}
+
+async function listDeletedDotVai(q) {
+  return repo.listDeletedDotVai(q || '');
+}
+
+async function reopenDotVai(dotVaiIds, actorId) {
+  if (!Array.isArray(dotVaiIds) || dotVaiIds.length === 0) {
+    throw new AppError('Chưa chọn đợt vải nào để mở lại', { status: 422, errorCode: 'EMPTY' });
+  }
+  const done = []; const loi = [];
+  await withTransaction(async (client) => {
+    for (const id of dotVaiIds) {
+      const r = await repo.restoreDotVaiTx(client, id, actorId);
+      if (r.ok) done.push({ id, ma: r.ma, ma_phan: r.ma_phan, trang_thai: r.trang_thai });
+      else loi.push({ id, ma: r.ma || null, ly_do: r.ly_do });
+    }
+  });
+  for (const d of done) await repo.logRestoreDotVai(d.id, { ma_dot_vai: d.ma, ma_phan: d.ma_phan, trang_thai: d.trang_thai }, actorId);
+  if (done.length) sockets.emit('dashboard:refresh', {});
+  return { count: done.length, items: done, loi };
+}
+
+module.exports = { listPhanIn, listVaiVe, getPhanIn, setChoKho, setLoiNhuan, profitHistory, searchForCancel, softDeletePhanIn, listDeleted, reopenPhanIn,
+  searchDotVaiForCancel, softDeleteDotVai, listDeletedDotVai, reopenDotVai };
