@@ -1008,33 +1008,61 @@ async function tinhTrangGraph(phanInId) {
   const pending = dotVai.rows.filter((d) => !d.released);
 
   // ---- Nhóm đợt SX theo CHU KỲ READY (mỗi lần mở lại READY = 1 chu kỳ riêng, đợt SX bám chu kỳ của nó) ----
+  // ⚠⚠ Chu kỳ dựng TỪ LỊCH SỬ READY (`lich_su_trang_thai`), KHÔNG gom từ LỆNH (bản cũ, sửa 07/08/2026):
+  // chu kỳ ĐANG LÀM DỞ chưa release lệnh nào thì không có lệnh để gom ⇒ bản cũ **nuốt mất nhánh**, và
+  // đợt vải chưa release của nó bị dán ngược vào chu kỳ TRƯỚC. Ca thật `KN-2607-004-A02-F01-C02`:
+  // chu kỳ 1 (06/08) → LSX0357; job ERP mở lại READY 07/08 11:09 cho đợt vải mới (KTCankiemtra=1),
+  // FILM xác nhận lại 11:18 → phải ra 2 nhánh nhưng sơ đồ chỉ vẽ 1.
+  // ⚠⚠ MỐC CHIA CHU KỲ = mỗi lần **QC_XAC_NHAN** DAT (QC là bước ĐÓNG chu kỳ READY, xong mới release
+  // được). KHÔNG chia theo "mục xác nhận LẶP LẠI": `lich_su_trang_thai` trạm READY chỉ có dòng **DAT**
+  // (đo prod 07/08/2026: 3544/3544, việc HỦY chỉ sửa tại chỗ `ket_qua_checkpoint`, KHÔNG ghi lịch sử)
+  // ⇒ không phân biệt được "xác nhận lại sau khi mở lại READY" với "QUÉT TRÙNG" — mà READY quét là
+  // XÁC NHẬN NGAY nên quét trùng rất thường. Ca thật `GL-2606-006-A01-F01-C02`: 1 đợt vải, 0 lệnh,
+  // FILM xác nhận 6 lần ⇒ luật "lặp" đẻ ra 6 chu kỳ (sai), luật QC cho 2 chu kỳ (đúng).
+  // Dữ liệu prod ủng hộ: **0 ca QC nối ngay sau QC** ⇒ không sợ tách nhầm vì bấm QC 2 lần.
   const readyEvents = readyEv.rows; // đã ORDER BY tg
   const curChecklists = readyCp.rows.map((c) => ({ ma_checkpoint: c.ma_checkpoint, nguoi: c.nguoi, tg: c.tg }));
-  // READY của 1 lệnh = xác nhận DAT MỚI NHẤT ≤ thời điểm tạo lệnh, theo từng checklist.
-  const readyForLenh = (createdDate) => {
-    const T = new Date(createdDate).getTime();
+  const cycles = [];
+  let dangMo = null;
+  readyEvents.forEach((e) => {
+    if (!dangMo) { dangMo = { seen: new Set(), items: [], start: e.tg }; cycles.push(dangMo); }
+    dangMo.seen.add(e.ma_checkpoint);
+    dangMo.items.push(e);
+    if (e.ma_checkpoint === 'QC_XAC_NHAN') dangMo = null; // QC đóng chu kỳ; sự kiện sau = chu kỳ mới
+  });
+  // Chu kỳ đang làm lại mà CHƯA xác nhận lại mục nào (vừa bị hủy bớt, chưa có sự kiện DAT mới):
+  // nhận biết bằng "DAT hiện tại là TẬP CON THỰC SỰ của chu kỳ cuối".
+  // ⚠⚠ SO TẬP `ma_checkpoint`, TUYỆT ĐỐI KHÔNG SO TIMESTAMP giữa 2 nguồn: `ket_qua_checkpoint.tg_xac_nhan`
+  // bị GHI ĐÈ mỗi lần xác nhận lại nên KHÔNG BAO GIỜ bằng `lich_su_trang_thai.tg_thuc_hien` (đo prod
+  // 07/08/2026: 3193/3193 dòng lệch, trung vị 0,005s nhưng p90 ~16,8 GIỜ, max ~5,7 ngày) ⇒ so giờ sẽ
+  // đẻ ra chu kỳ thừa cho MỌI phần in.
+  const curSet = new Set(curChecklists.map((c) => c.ma_checkpoint));
+  const lastCy = cycles[cycles.length - 1];
+  if (lastCy && curSet.size < lastCy.seen.size && [...curSet].every((m) => lastCy.seen.has(m))) {
+    cycles.push({ seen: curSet, items: null, start: null });
+  }
+  // 1 mục có thể được xác nhận NHIỀU LẦN trong cùng chu kỳ (quét trùng) → giữ lần MỚI NHẤT, không lặp dòng.
+  const gomMuc = (items) => {
     const byCp = new Map();
-    for (const e of readyEvents) if (new Date(e.tg).getTime() <= T) byCp.set(e.ma_checkpoint, e);
+    items.forEach((e) => byCp.set(e.ma_checkpoint, e));
     return [...byCp.values()].sort((a, b) => a.cp_thu_tu - b.cp_thu_tu)
       .map((e) => ({ ma_checkpoint: e.ma_checkpoint, nguoi: e.nguoi, tg: e.tg }));
   };
-  const cycleKey = (cl) => {
-    const qc = cl.find((c) => c.ma_checkpoint === 'QC_XAC_NHAN');
-    if (qc) return `qc:${qc.tg}`;
-    if (cl.length) return `cl:${cl.map((c) => `${c.ma_checkpoint}@${c.tg}`).join('|')}`;
-    return 'cur';
-  };
-  const cyMap = new Map();
-  lenh.forEach((l) => {
-    let cl = readyForLenh(l.created_date);
-    if (!cl.length) cl = curChecklists; // dữ liệu cũ thiếu lịch sử → READY hiện tại
-    const key = cycleKey(cl);
-    let g = cyMap.get(key);
-    if (!g) { g = { checklists: cl, lenh: [], pending: [], first: l.created_date }; cyMap.set(key, g); }
-    g.lenh.push(l);
-  });
-  let ready_cycles = [...cyMap.values()].sort((a, b) => new Date(a.first) - new Date(b.first));
+  let ready_cycles = cycles.map((c) => ({
+    checklists: c.items ? gomMuc(c.items) : curChecklists,
+    start: c.start,
+    lenh: [],
+    pending: [],
+  }));
+  // Dữ liệu cũ thiếu lịch sử READY → 1 chu kỳ dựng từ trạng thái hiện tại (như trước).
   if (ready_cycles.length === 0) ready_cycles = [{ checklists: curChecklists, lenh: [], pending: [] }];
+  // Lệnh thuộc chu kỳ CUỐI có mốc bắt đầu ≤ lúc tạo lệnh (lệnh tạo trước mọi mốc → chu kỳ đầu).
+  lenh.forEach((l) => {
+    const T = new Date(l.created_date).getTime();
+    let idx = 0;
+    ready_cycles.forEach((cy, i) => { if (cy.start && new Date(cy.start).getTime() <= T) idx = i; });
+    ready_cycles[idx].lenh.push(l);
+  });
   // Đợt vải CHƯA release thuộc chu kỳ READY HIỆN TẠI (mới nhất).
   ready_cycles[ready_cycles.length - 1].pending = pending;
 

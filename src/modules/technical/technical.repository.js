@@ -61,8 +61,21 @@ async function listCandidates({
               WHERE dv3.phan_in_id = pin.id) AS loai_dot_vai,
            (SELECT min(dv4.han_giao_hang) FROM dot_vai_ve dv4
               WHERE dv4.phan_in_id = pin.id AND dv4.trang_thai NOT IN ('DA_GOP','DA_HUY')) AS han_giao_hang,
-           (SELECT min(dv5.tg_chuyen_ready) FROM dot_vai_ve dv5
-              WHERE dv5.phan_in_id = pin.id AND dv5.trang_thai NOT IN ('DA_GOP','DA_HUY') AND dv5.tg_chuyen_ready IS NOT NULL) AS tg_qua_ready,
+           -- "Thời gian ERP lên MES" = lúc đợt vải MỚI NHẤT lên (chốt 2026-08-07). Trước đây lấy MIN của
+           -- MỌI đợt ⇒ phần in mở lại READY vì đợt vải mới vẫn hiện giờ của đợt CŨ (ca thật
+           -- KN-2607-004-A02-F01-C02: đợt mới lên 07/08 11:09 nhưng cột hiện 06/08 13:05).
+           -- Ưu tiên đợt CHƯA RELEASE (đợt đang thực sự nằm ở READY); không còn đợt nào chưa release
+           -- (nhánh Test Run trả về — lệnh còn sống) thì lùi về đợt mới nhất trong các đợt còn hiệu lực.
+           COALESCE(
+             (SELECT max(dv5.tg_chuyen_ready) FROM dot_vai_ve dv5
+               WHERE dv5.phan_in_id = pin.id AND dv5.trang_thai NOT IN ('DA_GOP','DA_HUY')
+                 AND dv5.tg_chuyen_ready IS NOT NULL
+                 AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsr JOIN lenh_san_xuat lr ON lr.id = lsr.lenh_san_xuat_id
+                                 WHERE lsr.dot_vai_ve_id = dv5.id AND lr.trang_thai <> 'HUY')),
+             (SELECT max(dv6.tg_chuyen_ready) FROM dot_vai_ve dv6
+               WHERE dv6.phan_in_id = pin.id AND dv6.trang_thai NOT IN ('DA_GOP','DA_HUY')
+                 AND dv6.tg_chuyen_ready IS NOT NULL)
+           ) AS tg_qua_ready,
            (SELECT count(*) FROM ket_qua_checkpoint k
               WHERE k.phan_in_id = pin.id AND k.checkpoint_id = ANY($2::uuid[]) AND k.trang_thai = 'DAT')::int AS n_tech_done,
            ${doneExpr('$3')} AS qc_done${withItems ? `,

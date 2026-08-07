@@ -186,18 +186,18 @@ async function getLoaiDotVaiId(maLoai) {
 }
 
 // Trả về { id, inserted }. `soLuong` = ERP `received_qty` (≡ `SLnhanvai`, 2 trường luôn bằng nhau).
-// QUY TẮC SL đợt vải mới (sửa 2026-08-07 — ERP gửi TRỘN lũy kế ↔ số riêng):
-//  - phần in CHƯA có đợt nào → Σ = 0 → SL đợt = received_qty.
-//  - `received_qty >= Σ đã nhận` → hiểu là LŨY KẾ → SL đợt = received_qty − Σ.
-//  - `received_qty <  Σ đã nhận` → KHÔNG THỂ là lũy kế (lũy kế không giảm) → hiểu là SỐ RIÊNG → lấy nguyên.
-//  Đối chiếu prod 07/08/2026: 910 đợt ERP, luật mới đổi đúng 20 dòng (+2.826 m), 890 dòng giữ nguyên.
-// Đợt đã tồn tại (re-sync idempotent theo ma_dot_vai) → GIỮ NGUYÊN so_luong_vai_ve đã tính lúc tạo,
-//  chỉ cập nhật ngày/hạn/loại (tránh cộng dồn sai khi ERP trả lại dòng cũ).
-// ⚠⚠ `nguyenSoLuong = true` (loại đợt **MẪU SỐ LƯỢNG**, ERP `loaikd = 6I`): BỎ HẲN luật delta —
-//  SL nhận của đợt mẫu KHÔNG liên quan đợt trước/đợt sau, ERP trả bao nhiêu thì LẤY BẤY NHIÊU.
-//  Nếu vẫn trừ lũy kế thì đợt mẫu (SL nhỏ) sẽ bị clamp về 0 y như lỗi đã gặp ở đợt BỔ SUNG.
+// ⚠⚠⚠ QUY TẮC SL ĐỢT VẢI — **LẤY NGUYÊN SỐ ERP GỬI, KHÔNG LŨY KẾ, KHÔNG TRỪ GÌ HẾT**
+// (người dùng chốt 07/08/2026): `received_qty` là SL nhận của CHÍNH đợt đó.
+// **ĐỪNG khôi phục luật delta** — lịch sử đã 3 lần đi sai đường ở chỗ này:
+//   (1) bản gốc luôn trừ Σ đợt trước rồi clamp ≥ 0 ⇒ mọi đợt sau đợt 1 ra **0** ("từ đợt 2 toàn 0");
+//   (2) mig 070 phải mở ngoại lệ cho loại `6I` (MẪU SỐ LƯỢNG) vì đợt mẫu SL nhỏ bị clamp 0;
+//   (3) bản 07/08 đoán "received_qty < Σ ⇒ số riêng, ngược lại lũy kế" — vẫn sai với ca gửi số riêng
+//       mà LỚN HƠN Σ đã nhận (vd 198 → 204: thực tế nhận 204, luật đoán ra 6).
+// Nay bỏ HẲN mọi suy đoán ⇒ cờ `nguyenSoLuong`/`LOAIKD_NGUYEN_SL` không còn cần (mọi loại đều nguyên số).
+// Đợt đã tồn tại (re-sync idempotent theo ma_dot_vai) → GIỮ NGUYÊN `so_luong_vai_ve`, chỉ cập nhật
+//  ngày/hạn/loại/barcode/inset/NGC (ERP trả lại cùng dòng mỗi 5 phút; ghi đè SL sẽ xóa mất số đã sửa tay).
 // `tgChuyenReady`: Date = đợt vào READY ngay (mig 056); null = CHỜ chuyển (pending). Re-sync GIỮ NGUYÊN mốc cũ.
-async function upsertDotVai(client, { maDotVai, phanInId, loaiDotVaiId, ngayVaiVe, hanGiao, soLuong, tgChuyenReady, barcode, inset, nhaGiaCong, nguyenSoLuong = false }) {
+async function upsertDotVai(client, { maDotVai, phanInId, loaiDotVaiId, ngayVaiVe, hanGiao, soLuong, tgChuyenReady, barcode, inset, nhaGiaCong }) {
   // Cột `nha_gia_cong` (mig 072) — dò TRƯỚC khi dựng câu SQL. ⚠ KHÔNG try/catch quanh INSERT:
   // hàm chạy trong transaction, lỗi 42703 làm ABORT cả transaction (cùng bẫy đã ghi ở `createTem`).
   const coNGC = await hasNgcCol(client);
@@ -214,22 +214,9 @@ async function upsertDotVai(client, { maDotVai, phanInId, loaiDotVaiId, ngayVaiV
     );
     return { id: existing.rows[0].id, inserted: false };
   }
+  // LẤY NGUYÊN số ERP gửi (xem ghi chú ở đầu hàm). Chỉ chặn số âm do dữ liệu ERP lỗi.
   let sl = soLuong == null ? null : Number(soLuong);
-  if (sl != null && !nguyenSoLuong) {
-    const prev = await client.query(
-      'SELECT COALESCE(sum(so_luong_vai_ve),0)::int AS s FROM dot_vai_ve WHERE phan_in_id = $1', [phanInId]);
-    const daNhan = prev.rows[0].s || 0;
-    // ⚠⚠ ERP TRỘN 2 KIỂU GỬI trên cùng 1 API (đã đối chiếu dữ liệu thật, xem ghi chú ở đầu hàm):
-    //   · có dòng gửi LŨY KẾ  (vd 3 → 708: đợt 2 nhận thêm 705)
-    //   · có dòng gửi SỐ RIÊNG của chính đợt đó (vd 1600 → 200: đợt 2 nhận 200)
-    // Phân biệt bằng BẤT BIẾN: **lũy kế KHÔNG BAO GIỜ GIẢM**. Vậy `received_qty < Σ đã nhận` thì
-    // KHÔNG THỂ là lũy kế ⇒ chắc chắn là SỐ RIÊNG → lấy nguyên. Ngược lại mới trừ lũy kế.
-    // Bản cũ trừ vô điều kiện rồi clamp ⇒ mọi đợt gửi SỐ RIÊNG đều ra **0** (lỗi "từ đợt 2 toàn 0").
-    // ⚠ `sl === daNhan` CỐ Ý đi nhánh lũy kế (ra 0) — hai cách hiểu đều hợp lệ, giữ hành vi cũ cho
-    // an toàn thay vì đoán; nếu ERP thật sự gửi số riêng ở ca này thì sửa tay ở trang Cập nhật SL.
-    sl = sl >= daNhan ? sl - daNhan : sl;
-    if (sl < 0) sl = 0; // phòng ERP gửi số âm
-  }
+  if (sl != null && sl < 0) sl = 0;
   const { rows } = await client.query(
     `INSERT INTO dot_vai_ve (phan_in_id, loai_dot_vai_id, ma_dot_vai, ngay_vai_ve, han_giao_hang, so_luong_vai_ve, trang_thai, tg_chuyen_ready, barcode, inset${coNGC ? ', nha_gia_cong' : ''})
      VALUES ($1,$2,$3,$4,$5,$6,'NHAN_VAI',$7,$8,$9${coNGC ? ',$10' : ''}) RETURNING id`,

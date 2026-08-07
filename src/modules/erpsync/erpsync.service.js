@@ -192,7 +192,7 @@ async function fetchErpAttempt(baseUrl, fromDate) {
 }
 
 // `tgChuyenReady`: Date = đợt vào READY ngay; null = CHỜ chuyển (pending, ẩn khỏi READY).
-// `nguyenSoLuong` (loaikd 6I — Mẫu số lượng): lấy nguyên `received_qty`, KHÔNG trừ lũy kế đợt trước.
+// SL đợt vải: LẤY NGUYÊN `received_qty` cho MỌI loại đợt (chốt 07/08/2026) — xem `upsertDotVai`.
 async function processRow(r, maPhan, maDotVai, loaiDotVaiId, tgChuyenReady) {
   return withTransaction(async (client) => {
     const khId = await repo.upsertKhachHang(client, { ma: clean(r.customer_name), ten: clean(r.customer_name) });
@@ -213,7 +213,6 @@ async function processRow(r, maPhan, maDotVai, loaiDotVaiId, tgChuyenReady) {
       ngayVaiVe: erpNgayVaiVe(r), hanGiao: toDate(r.due_date), soLuong: r.received_qty ?? null,
       tgChuyenReady: tgChuyenReady || null, barcode: erpBarcode(r), inset: erpInset(r),
       nhaGiaCong: erpNhaGiaCong(r),
-      nguyenSoLuong: laNguyenSoLuong(r.loaikd),
     });
     return { inserted, dotVaiId, pinId };
   });
@@ -223,10 +222,9 @@ async function processRow(r, maPhan, maDotVai, loaiDotVaiId, tgChuyenReady) {
 // Thiếu / mã khác → mặc định SO_LUONG. Chỉ TRA id loại có sẵn (không tạo loại rác kiểu '3I').
 const LOAIKD_MAP = { '3I': 'SO_LUONG', '5I': 'BO_SUNG', '6I': 'MAU_SO_LUONG' };
 
-// ⚠ Loại đợt KHÔNG áp luật DELTA lũy kế — SL nhận độc lập từng đợt, ERP trả bao nhiêu lấy bấy nhiêu.
-// Hiện chỉ có MẪU SỐ LƯỢNG (6I): đợt mẫu SL nhỏ, nếu trừ lũy kế sẽ bị clamp về 0 (lỗi đã gặp ở 5I).
-const LOAIKD_NGUYEN_SL = new Set(['6I']);
-const laNguyenSoLuong = (loaikd) => LOAIKD_NGUYEN_SL.has(clean(loaikd).toUpperCase());
+// ⚠ ĐÃ GỠ `LOAIKD_NGUYEN_SL`/`laNguyenSoLuong` (chốt 07/08/2026): luật DELTA lũy kế bị bỏ HOÀN TOÀN
+// nên MỌI loại đợt đều lấy nguyên `received_qty` — không còn loại nào cần "ngoại lệ" nữa.
+// (Mig 070 vẫn giữ nguyên vai trò khác của `6I`: seed danh mục loại đợt "Mẫu số lượng" + whitelist `LAY_LOAIKD`.)
 function makeLoaiResolver() {
   const cache = new Map();
   return async (loaikd) => {
