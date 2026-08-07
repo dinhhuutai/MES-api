@@ -10,6 +10,13 @@ const PHAN_AGG = `(SELECT string_agg(DISTINCT pin.ma_phan, ', ')
     JOIN phan_in pin ON pin.id = dv.phan_in_id
     WHERE lsd.lenh_san_xuat_id = COALESCE(ls.lenh_lien_ket_id, ls.id))`;
 
+// NHÀ GIA CÔNG (mig 072) ở mức LỆNH — gộp DISTINCT vì 1 lệnh có thể gộp nhiều đợt vải khác nhà.
+// (Lệnh ép ủi in kiếng đọc theo lệnh IN gốc qua `lenh_lien_ket_id`, giống PHAN_AGG/PHAN_INFO_LATERAL.)
+const NGC_LENH = (lenhCol) => `(SELECT string_agg(DISTINCT dvg.nha_gia_cong, ', ')
+    FROM lenh_sx_dot_vai lsg JOIN dot_vai_ve dvg ON dvg.id = lsg.dot_vai_ve_id
+   WHERE lsg.lenh_san_xuat_id = COALESCE(ls.lenh_lien_ket_id, ${lenhCol}) AND dvg.nha_gia_cong IS NOT NULL)`
+  .replace(/\s+/g, ' ');
+
 // Thông tin phần in đại diện của 1 lệnh (mỗi đợt vải = 1 LSX → ánh xạ 1-1).
 const PHAN_INFO_LATERAL = `
   LEFT JOIN LATERAL (
@@ -64,6 +71,7 @@ async function listProductionCandidates({ search = '', offset = 0, limit = 20 })
            info.ten_khach_hang, info.ma_don_hang, info.ma_hang,
            info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan,
            info.han_giao_hang, info.so_luong_vai_ve,
+           ${NGC_LENH('ls.id')} AS nha_gia_cong,
            (SELECT count(*) FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id)::int AS so_dot_vai,
            (SELECT count(DISTINCT dv.phan_in_id) FROM lenh_sx_dot_vai lsd2 JOIN dot_vai_ve dv ON dv.id = lsd2.dot_vai_ve_id WHERE lsd2.lenh_san_xuat_id = ls.id)::int AS so_phan_in,
            (SELECT COALESCE(SUM(t.so_luong),0)::int FROM tem t JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
@@ -765,7 +773,7 @@ async function monitorRunning() {
             (SELECT count(*) FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id)::int AS so_dot_vai,
             (SELECT count(DISTINCT dv2.phan_in_id) FROM lenh_sx_dot_vai lsd2 JOIN dot_vai_ve dv2 ON dv2.id = lsd2.dot_vai_ve_id WHERE lsd2.lenh_san_xuat_id = ls.id)::int AS so_phan_in,
             info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan, info.mau_vai, info.kich_vai, info.kich_phim,
-            info.han_giao_hang,
+            info.han_giao_hang, ${NGC_LENH('ls.id')} AS nha_gia_cong,
             (SELECT COALESCE(SUM(t.so_luong),0)::int FROM tem t WHERE t.phieu_san_xuat_id=ps.id AND t.trang_thai <> 'HUY') AS printed,
             (SELECT count(*) FROM tem t WHERE t.phieu_san_xuat_id=ps.id AND t.trang_thai <> 'HUY')::int AS so_tem,
             EXISTS (SELECT 1 FROM ngung_chuyen n WHERE n.phieu_san_xuat_id=ps.id AND n.trang_thai='DANG_NGUNG') AS dang_ngung,

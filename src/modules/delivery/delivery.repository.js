@@ -44,6 +44,9 @@ async function listTemSanSang({ search = '', filters = {}, ngayTu = '', ngayDen 
             (SELECT string_agg(DISTINCT pin.ma_phan, ', ')
                FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
                JOIN phan_in pin ON pin.id = dv.phan_in_id WHERE lsd.lenh_san_xuat_id = ls.id) AS phan_list,
+            (SELECT string_agg(DISTINCT dvg.nha_gia_cong, ', ')
+               FROM lenh_sx_dot_vai lsg JOIN dot_vai_ve dvg ON dvg.id = lsg.dot_vai_ve_id
+              WHERE lsg.lenh_san_xuat_id = ls.id AND dvg.nha_gia_cong IS NOT NULL) AS nha_gia_cong,
             ${DON_SUB('dh.ma_don_hang', 'don_list')},
             ${DON_SUB('kh.ten_khach_hang', 'khach_list')},
             sla.tg_vao, sla.sla_phut, sla.canh_bao_truoc_phut,

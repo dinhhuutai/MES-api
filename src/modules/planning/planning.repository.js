@@ -50,7 +50,8 @@ async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
 
   const dataSql = `
     SELECT dv.id AS dot_vai_id, dv.ma_dot_vai, dv.so_luong_vai_ve, dv.ngay_vai_ve, dv.han_giao_hang,
-           pin.id AS phan_in_id, pin.ma_phan, dv.barcode, pin.barcode AS barcode_phan_in, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
+           pin.id AS phan_in_id, pin.ma_phan, dv.barcode, pin.barcode AS barcode_phan_in, dv.nha_gia_cong,
+           pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
            pin.so_luong_don_hang, ldv.ten_loai AS loai_dot_vai,
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
            EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
@@ -360,7 +361,7 @@ async function getOpenSetMembers() {
     `SELECT gs.id AS set_id, dv.id AS dot_vai_id, dv.ma_dot_vai,
             dv.so_luong_vai_ve, dv.ngay_vai_ve, dv.han_giao_hang,
             pin.ma_phan, pin.barcode AS barcode_phan_in, pin.mau_vai, pin.kich_vai, pin.kich_phim,
-            pin.so_luong_don_hang, pin.tinh_chat_in,
+            pin.so_luong_don_hang, pin.tinh_chat_in, dv.nha_gia_cong,
             ldv.ten_loai AS loai_dot_vai,
             ${hsktCols('pin.id')},
             mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
@@ -440,6 +441,12 @@ async function release1HistoryByDate(date) {
 }
 
 // ----- TEST RUN / RELEASE 2 -----
+// NHÀ GIA CÔNG (mig 072) ở mức LỆNH: 1 lệnh có thể gộp NHIỀU đợt vải, mỗi đợt một nhà gia công
+// ⇒ gộp DISTINCT thay vì lấy đợt đại diện (`PHAN_INFO_LATERAL` dùng LIMIT 1, sẽ giấu mất nhà thứ 2).
+const ngcLenh = (lenhCol) => `(SELECT string_agg(DISTINCT dvg.nha_gia_cong, ', ')
+    FROM lenh_sx_dot_vai lsg JOIN dot_vai_ve dvg ON dvg.id = lsg.dot_vai_ve_id
+   WHERE lsg.lenh_san_xuat_id = ${lenhCol} AND dvg.nha_gia_cong IS NOT NULL)`.replace(/\s+/g, ' ');
+
 // Thông tin phần in đại diện của 1 lệnh (mỗi đợt vải = 1 LSX nên ánh xạ 1-1). Dùng chung cho Test Run / Release 2 / Lập kế hoạch lại.
 const PHAN_INFO_LATERAL = `
   LEFT JOIN LATERAL (
@@ -447,6 +454,7 @@ const PHAN_INFO_LATERAL = `
            pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.ma_phan, dv.barcode, pin.barcode AS barcode_phan_in,
            pin.so_luong_don_hang, pin.tinh_chat_in,
            dv.so_luong_vai_ve, dv.ngay_vai_ve, dv.han_giao_hang, ldv.ten_loai AS loai_dot_vai,
+           ${ngcLenh('ls.id')} AS nha_gia_cong,
            ${hsktCols('pin.id')}
     FROM lenh_sx_dot_vai lsd
     JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
@@ -478,7 +486,7 @@ function lenhListSql(extraWhere, dkPain = 'TRUE') {
            info.phuong_an_in, info.barcode_hskt, info.hskt_id, info.hskt_inset,
            info.so_luong_don_hang, info.so_luong_vai_ve, info.ngay_vai_ve,
            (SELECT min(dvh.han_giao_hang) FROM lenh_sx_dot_vai lsh JOIN dot_vai_ve dvh ON dvh.id=lsh.dot_vai_ve_id WHERE lsh.lenh_san_xuat_id=ls.id) AS han_giao_hang,
-           info.loai_dot_vai,
+           info.loai_dot_vai, info.nha_gia_cong,
            EXISTS (SELECT 1 FROM ket_qua_checkpoint k WHERE k.lenh_san_xuat_id = ls.id AND k.checkpoint_id = $1 AND k.trang_thai='DAT') AS cnsp_done,
            EXISTS (SELECT 1 FROM ket_qua_checkpoint k WHERE k.lenh_san_xuat_id = ls.id AND k.checkpoint_id = $2 AND k.trang_thai='DAT') AS qa_done,
            (SELECT count(*) FROM test_run tr WHERE tr.lenh_san_xuat_id = ls.id)::int AS so_lan_test,
@@ -541,7 +549,7 @@ async function listReplanCandidates({ search = '', offset = 0, limit = 50 }) {
            info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan, info.tinh_chat_in,
            info.phuong_an_in, info.barcode_hskt, info.hskt_id, info.hskt_inset,
            info.so_luong_don_hang, info.so_luong_vai_ve, info.ngay_vai_ve, info.han_giao_hang,
-           info.loai_dot_vai,
+           info.loai_dot_vai, info.nha_gia_cong,
            (SELECT count(*) FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id)::int AS so_dot_vai
     ${FROM}
     ORDER BY ls.ngay_ke_hoach NULLS LAST, ls.created_date
@@ -572,6 +580,7 @@ async function listGiaCongLenh({ search = '', offset = 0, limit = 50 }) {
            info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan, info.tinh_chat_in,
            info.phuong_an_in, info.barcode_hskt, info.hskt_id, info.hskt_inset,
            info.so_luong_don_hang, info.so_luong_vai_ve, info.ngay_vai_ve, info.han_giao_hang, info.loai_dot_vai,
+           info.nha_gia_cong,
            ${GIA_CONG_DA_CHUYEN} AS da_chuyen,
            (ls.so_luong_release - ${GIA_CONG_DA_CHUYEN})::int AS con_lai,
            (SELECT count(*) FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id)::int AS so_dot_vai
@@ -605,7 +614,7 @@ async function listGiaCongHistory(date) {
            cs.ma_chuyen, cs.ten_chuyen,
            info.ten_khach_hang, info.ma_don_hang, info.ma_hang,
            info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan, info.tinh_chat_in,
-           info.so_luong_don_hang, info.han_giao_hang, info.loai_dot_vai
+           info.so_luong_don_hang, info.han_giao_hang, info.loai_dot_vai, info.nha_gia_cong
     FROM audit_log a
     JOIN lenh_san_xuat ls ON ls.id = a.id_ban_ghi::uuid
     LEFT JOIN nguoi_dung nd ON nd.id = a.nguoi_thuc_hien_id
@@ -809,7 +818,7 @@ async function listKeHoachTamRows({ search = '', offset = 0, limit = 200 }) {
   const dataSql = `
     SELECT kt.id, kt.dot_vai_ve_id, kt.phan_in_id, kt.chuyen_id, kt.ngay_ke_hoach, kt.tg_bd_kh, kt.tg_kt_kh, kt.so_luong,
            dv.ma_dot_vai, dv.han_giao_hang, dv.so_luong_vai_ve, cs.ten_chuyen, ldv.ten_loai AS loai_dot_vai,
-           pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in, dv.barcode, pin.barcode AS barcode_phan_in,
+           pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in, dv.barcode, pin.barcode AS barcode_phan_in, dv.nha_gia_cong,
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
            ${hsktCols('pin.id')},
            (SELECT gs.ma_set FROM gom_set_dot_vai gsd JOIN gom_set gs ON gs.id = gsd.gom_set_id

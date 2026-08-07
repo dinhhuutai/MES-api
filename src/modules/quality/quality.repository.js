@@ -558,10 +558,17 @@ async function oqcHistoryByDate(date) {
 
 // ----- Danh sách tem "đã hoàn thành" checkpoint (KCS/Sửa/OQC) theo ngày (giờ VN) -----
 // Trả hình dạng đối tượng cho DonePanel: ma (mã tem) + ngữ cảnh phần in + SL + giờ + người.
+// `nha_gia_cong` (mig 072) gộp DISTINCT theo CẢ LỆNH: 1 lệnh gộp nhiều đợt vải có thể khác nhà gia
+// công, mà LATERAL này chỉ lấy 1 đợt ĐẠI DIỆN (LIMIT 1) nên đọc thẳng `dv.nha_gia_cong` sẽ giấu mất nhà kia.
+// ⚠⚠ TUYỆT ĐỐI KHÔNG viết comment `--` BÊN TRONG chuỗi này: 6 query dùng nó đều
+// `.replace(/\s+/g,' ')` (IPS-safe) ⇒ `--` sẽ nuốt sạch phần SQL còn lại (§9).
 const TEM_INFO_LATERAL = `
   LEFT JOIN LATERAL (
     SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim,
-           pin.tinh_chat_in, dv.han_giao_hang
+           pin.tinh_chat_in, dv.han_giao_hang,
+           (SELECT string_agg(DISTINCT dvg.nha_gia_cong, ', ')
+              FROM lenh_sx_dot_vai lsg JOIN dot_vai_ve dvg ON dvg.id = lsg.dot_vai_ve_id
+             WHERE lsg.lenh_san_xuat_id = ls.id AND dvg.nha_gia_cong IS NOT NULL) AS nha_gia_cong
     FROM phieu_san_xuat ps JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
     JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
     JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id

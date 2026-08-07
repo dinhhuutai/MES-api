@@ -122,6 +122,17 @@ async function hasBarcodeCol(client) {
   return _hasBarcodeCol;
 }
 
+// Cột `dot_vai_ve.nha_gia_cong` (mig 072) có chưa — cache khi ĐÃ có ⇒ chạy migration xong nhận ngay,
+// khỏi restart BE. Cùng khuôn với `hasBarcodeCol`: KHÔNG try/catch trong transaction.
+let _hasNgcCol = null;
+async function hasNgcCol(client) {
+  if (_hasNgcCol) return true;
+  const { rows } = await client.query(
+    `SELECT 1 FROM information_schema.columns WHERE table_name='dot_vai_ve' AND column_name='nha_gia_cong' LIMIT 1`);
+  _hasNgcCol = rows.length > 0;
+  return _hasNgcCol;
+}
+
 // `tinhChatIn` = ERP `Tinhchatin`, `barcode` = ERP `barCode`. COALESCE khi update: ERP không gửi (null)
 // thì GIỮ giá trị cũ, tránh re-sync bằng payload cũ (chưa có trường này) xóa mất giá trị đã lưu.
 async function upsertPhanIn(client, { maHangId, maPhan, mauVai, kichVai, kichPhim, soLuongDonHang, tinhChatIn, barcode }) {
@@ -174,25 +185,32 @@ async function getLoaiDotVaiId(maLoai) {
   } catch (e) { return null; }
 }
 
-// Trả về { id, inserted }. `soLuong` = received_qty (LŨY KẾ của code phần từ ERP).
-// QUY TẮC SL đợt vải mới = received_qty − Σ(so_luong_vai_ve các đợt TRƯỚC của cùng phần in):
-//  - phần in CHƯA có đợt nào (mới) → Σ = 0 → SL đợt = received_qty.
-//  - phần in ĐÃ có đợt → SL đợt lần này = phần chênh (received_qty lũy kế − đã nhận trước đó). Clamp ≥ 0.
+// Trả về { id, inserted }. `soLuong` = ERP `received_qty` (≡ `SLnhanvai`, 2 trường luôn bằng nhau).
+// QUY TẮC SL đợt vải mới (sửa 2026-08-07 — ERP gửi TRỘN lũy kế ↔ số riêng):
+//  - phần in CHƯA có đợt nào → Σ = 0 → SL đợt = received_qty.
+//  - `received_qty >= Σ đã nhận` → hiểu là LŨY KẾ → SL đợt = received_qty − Σ.
+//  - `received_qty <  Σ đã nhận` → KHÔNG THỂ là lũy kế (lũy kế không giảm) → hiểu là SỐ RIÊNG → lấy nguyên.
+//  Đối chiếu prod 07/08/2026: 910 đợt ERP, luật mới đổi đúng 20 dòng (+2.826 m), 890 dòng giữ nguyên.
 // Đợt đã tồn tại (re-sync idempotent theo ma_dot_vai) → GIỮ NGUYÊN so_luong_vai_ve đã tính lúc tạo,
 //  chỉ cập nhật ngày/hạn/loại (tránh cộng dồn sai khi ERP trả lại dòng cũ).
 // ⚠⚠ `nguyenSoLuong = true` (loại đợt **MẪU SỐ LƯỢNG**, ERP `loaikd = 6I`): BỎ HẲN luật delta —
 //  SL nhận của đợt mẫu KHÔNG liên quan đợt trước/đợt sau, ERP trả bao nhiêu thì LẤY BẤY NHIÊU.
 //  Nếu vẫn trừ lũy kế thì đợt mẫu (SL nhỏ) sẽ bị clamp về 0 y như lỗi đã gặp ở đợt BỔ SUNG.
 // `tgChuyenReady`: Date = đợt vào READY ngay (mig 056); null = CHỜ chuyển (pending). Re-sync GIỮ NGUYÊN mốc cũ.
-async function upsertDotVai(client, { maDotVai, phanInId, loaiDotVaiId, ngayVaiVe, hanGiao, soLuong, tgChuyenReady, barcode, inset, nguyenSoLuong = false }) {
+async function upsertDotVai(client, { maDotVai, phanInId, loaiDotVaiId, ngayVaiVe, hanGiao, soLuong, tgChuyenReady, barcode, inset, nhaGiaCong, nguyenSoLuong = false }) {
+  // Cột `nha_gia_cong` (mig 072) — dò TRƯỚC khi dựng câu SQL. ⚠ KHÔNG try/catch quanh INSERT:
+  // hàm chạy trong transaction, lỗi 42703 làm ABORT cả transaction (cùng bẫy đã ghi ở `createTem`).
+  const coNGC = await hasNgcCol(client);
   const existing = await client.query('SELECT id FROM dot_vai_ve WHERE ma_dot_vai = $1', [maDotVai]);
   if (existing.rows.length) {
     await client.query(
       `UPDATE dot_vai_ve SET loai_dot_vai_id = COALESCE($2, loai_dot_vai_id),
          ngay_vai_ve = $3, han_giao_hang = $4, barcode = COALESCE($5, barcode),
-         inset = COALESCE($6, inset), updated_date = CURRENT_TIMESTAMP
+         inset = COALESCE($6, inset)${coNGC ? ', nha_gia_cong = COALESCE($7, nha_gia_cong)' : ''},
+         updated_date = CURRENT_TIMESTAMP
        WHERE ma_dot_vai = $1`,
-      [maDotVai, loaiDotVaiId || null, ngayVaiVe || null, hanGiao || null, barcode || null, inset ?? null]
+      [maDotVai, loaiDotVaiId || null, ngayVaiVe || null, hanGiao || null, barcode || null, inset ?? null,
+        ...(coNGC ? [nhaGiaCong || null] : [])]
     );
     return { id: existing.rows[0].id, inserted: false };
   }
@@ -200,13 +218,23 @@ async function upsertDotVai(client, { maDotVai, phanInId, loaiDotVaiId, ngayVaiV
   if (sl != null && !nguyenSoLuong) {
     const prev = await client.query(
       'SELECT COALESCE(sum(so_luong_vai_ve),0)::int AS s FROM dot_vai_ve WHERE phan_in_id = $1', [phanInId]);
-    sl -= (prev.rows[0].s || 0);
-    if (sl < 0) sl = 0;
+    const daNhan = prev.rows[0].s || 0;
+    // ⚠⚠ ERP TRỘN 2 KIỂU GỬI trên cùng 1 API (đã đối chiếu dữ liệu thật, xem ghi chú ở đầu hàm):
+    //   · có dòng gửi LŨY KẾ  (vd 3 → 708: đợt 2 nhận thêm 705)
+    //   · có dòng gửi SỐ RIÊNG của chính đợt đó (vd 1600 → 200: đợt 2 nhận 200)
+    // Phân biệt bằng BẤT BIẾN: **lũy kế KHÔNG BAO GIỜ GIẢM**. Vậy `received_qty < Σ đã nhận` thì
+    // KHÔNG THỂ là lũy kế ⇒ chắc chắn là SỐ RIÊNG → lấy nguyên. Ngược lại mới trừ lũy kế.
+    // Bản cũ trừ vô điều kiện rồi clamp ⇒ mọi đợt gửi SỐ RIÊNG đều ra **0** (lỗi "từ đợt 2 toàn 0").
+    // ⚠ `sl === daNhan` CỐ Ý đi nhánh lũy kế (ra 0) — hai cách hiểu đều hợp lệ, giữ hành vi cũ cho
+    // an toàn thay vì đoán; nếu ERP thật sự gửi số riêng ở ca này thì sửa tay ở trang Cập nhật SL.
+    sl = sl >= daNhan ? sl - daNhan : sl;
+    if (sl < 0) sl = 0; // phòng ERP gửi số âm
   }
   const { rows } = await client.query(
-    `INSERT INTO dot_vai_ve (phan_in_id, loai_dot_vai_id, ma_dot_vai, ngay_vai_ve, han_giao_hang, so_luong_vai_ve, trang_thai, tg_chuyen_ready, barcode, inset)
-     VALUES ($1,$2,$3,$4,$5,$6,'NHAN_VAI',$7,$8,$9) RETURNING id`,
-    [phanInId, loaiDotVaiId || null, maDotVai, ngayVaiVe || null, hanGiao || null, sl, tgChuyenReady || null, barcode || null, inset ?? null]
+    `INSERT INTO dot_vai_ve (phan_in_id, loai_dot_vai_id, ma_dot_vai, ngay_vai_ve, han_giao_hang, so_luong_vai_ve, trang_thai, tg_chuyen_ready, barcode, inset${coNGC ? ', nha_gia_cong' : ''})
+     VALUES ($1,$2,$3,$4,$5,$6,'NHAN_VAI',$7,$8,$9${coNGC ? ',$10' : ''}) RETURNING id`,
+    [phanInId, loaiDotVaiId || null, maDotVai, ngayVaiVe || null, hanGiao || null, sl, tgChuyenReady || null, barcode || null, inset ?? null,
+      ...(coNGC ? [nhaGiaCong || null] : [])]
   );
   return { id: rows[0].id, inserted: true };
 }

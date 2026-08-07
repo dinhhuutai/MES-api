@@ -67,6 +67,10 @@ const erpBarcodeHskt = (r) => clean(field(r, 'BarcodeHKT', 'barcode_hkt', 'barco
 // ⚠ Khác `erpBarcode` (IDDotReady, thuộc ĐỢT VẢI, dùng chung nhiều phần in) và khác `barcode_hskt`
 // (12 số, mức HỒ SƠ). Đối chiếu prod: 11 chữ số, 114/114 dòng duy nhất 1:1 với code_part.
 const erpBarcodePhanIn = (r) => clean(field(r, 'BarcodePTHDH', 'barcode_pt_hdh', 'barcodept')) || null;
+// NHÀ GIA CÔNG (ERP `NGC`, bật 07/08/2026) → `dot_vai_ve.nha_gia_cong` (mig 072).
+// Đi theo TỪNG DÒNG nhận vải ⇒ thuộc ĐỢT VẢI, không phải phần in (1 phần in nhiều đợt có thể khác nhà).
+// Giá trị thật: mã ngắn 'KK'/'VS'/'II'/'DK'/'SL3'/'KN6' hoặc tên 'E SANG'; có dòng ERP gửi rỗng.
+const erpNhaGiaCong = (r) => clean(field(r, 'NGC', 'nha_gia_cong', 'nhagiacong')) || null;
 const toIntOrNull = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
 // Pain = phương án in (1 Bàn / 2 Máy / 3 Robot).
 const erpPain = (r) => toIntOrNull(field(r, 'Pain', 'pain', 'phuong_an_in'));
@@ -208,6 +212,7 @@ async function processRow(r, maPhan, maDotVai, loaiDotVaiId, tgChuyenReady) {
       maDotVai, phanInId: pinId, loaiDotVaiId,
       ngayVaiVe: erpNgayVaiVe(r), hanGiao: toDate(r.due_date), soLuong: r.received_qty ?? null,
       tgChuyenReady: tgChuyenReady || null, barcode: erpBarcode(r), inset: erpInset(r),
+      nhaGiaCong: erpNhaGiaCong(r),
       nguyenSoLuong: laNguyenSoLuong(r.loaikd),
     });
     return { inserted, dotVaiId, pinId };
