@@ -108,6 +108,7 @@ async function listVaiVe({ search = '', filters = {}, stage = '', offset = 0, li
   const sql = `
     SELECT pin.id AS phan_in_id, pin.ma_phan,
            (SELECT string_agg(DISTINCT dvb.barcode, ', ') FROM dot_vai_ve dvb WHERE dvb.phan_in_id = pin.id AND dvb.barcode IS NOT NULL) AS barcode,
+           pin.barcode AS barcode_phan_in,
            pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
            pin.so_luong_don_hang, pin.loi_nhuan,
            (SELECT h.phuong_an_in FROM hskt_phan_in hp JOIN ho_so_ky_thuat h ON h.id = hp.hskt_id
@@ -213,6 +214,7 @@ async function findById(id) {
   const sql = `
     SELECT pin.id, pin.ma_phan,
            (SELECT string_agg(DISTINCT dvb.barcode, ', ') FROM dot_vai_ve dvb WHERE dvb.phan_in_id = pin.id AND dvb.barcode IS NOT NULL) AS barcode,
+           pin.barcode AS barcode_phan_in,
            pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
            pin.do_in, pin.mau_in, pin.so_luong_don_hang, pin.loi_nhuan, pin.ghi_chu,
            mh.ma_hang, mh.ten_ma_hang,
