@@ -89,6 +89,50 @@ async function getConfig() {
   return { tram, checkpoints: checkpoints.map((c) => ({ ...c, options: optionsFor(c.ma_checkpoint, c.cau_hinh_json) })) };
 }
 
+// Giờ VN gọn cho câu giải thích khi quét ("14:22 06/08").
+// ⚠ Dựng bằng `formatToParts` chứ KHÔNG `toLocaleString`: dấu phân cách ngày do ICU của từng máy quyết
+// định (máy này ra "06/08", máy kia ra "06-08") — ghép tay mới chắc chắn giống nhau ở mọi môi trường.
+function gioVN(tg) {
+  if (!tg) return '';
+  const d = new Date(tg);
+  if (Number.isNaN(d.getTime())) return '';
+  const p = {};
+  new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Ho_Chi_Minh', hour: '2-digit', minute: '2-digit',
+    day: '2-digit', month: '2-digit', hour12: false,
+  }).formatToParts(d).forEach((x) => { p[x.type] = x.value; });
+  return p.hour ? `${p.hour}:${p.minute} ${p.day}/${p.month}` : '';
+}
+
+// TRA CỨU MÃ QUÉT — trả lời "quét ra rồi mà sao không thấy trong danh sách?".
+// Chỉ dùng cho THÔNG BÁO ở màn READY / QC READY khi `matchRows` không khớp dòng nào; KHÔNG dùng để
+// quyết định nghiệp vụ. Phần in đang CÒN ở READY thì nằm sẵn trong danh sách nên không rơi vào đây
+// (trường hợp "chưa đủ mục kỹ thuật" đã có `canSelect` ở FE lo).
+async function traCuuMaQuet(code) {
+  const ma = String(code || '').trim();
+  if (!ma) return { tim_thay: false, ly_do: 'KHONG_TON_TAI', mo_ta: null };
+  const r = await repo.traCuuMaQuet(ma);
+  if (!r) return { tim_thay: false, ly_do: 'KHONG_TON_TAI', mo_ta: null };
+  const base = { tim_thay: true, ma_phan: r.ma_phan };
+  if (r.dang_hoat_dong === false) {
+    return { ...base, ly_do: 'DA_HUY', mo_ta: 'Phần in đã bị hủy (xóa mềm) — xem Hệ thống > Hủy lệnh xác nhận > Mở phần in' };
+  }
+  if (r.qc_done === true) {
+    const tg = gioVN(r.qc_tg);
+    const nguoi = r.qc_nguoi ? ` (${r.qc_nguoi})` : '';
+    return {
+      ...base,
+      ly_do: 'DA_QC',
+      mo_ta: `Đã QC xác nhận READY${tg ? ` lúc ${tg}` : ''}${nguoi} — xem nút "Đã hoàn thành"`,
+    };
+  }
+  if (r.so_dot_vai > 0 && r.con_dot_cho === false) {
+    return { ...base, ly_do: 'DA_RELEASE', mo_ta: 'Đã release hết đợt vải — phần in không còn ở READY' };
+  }
+  // Còn ở READY mà quét không thấy: dữ liệu trên máy đang cũ (đồng nghiệp vừa thao tác ở máy khác).
+  return { ...base, ly_do: 'CON_O_READY', mo_ta: 'Phần in vẫn đang ở READY — bấm đóng rồi mở lại "Quét / tích mã" để tải lại danh sách' };
+}
+
 // onlyQcReady=true: chỉ phần in đã đủ 3 mục kỹ thuật & chưa QC (cho màn QC bên Chất lượng).
 async function listCandidates({ search, page, limit, offset, onlyQcReady = false }) {
   const { tram, byMa } = await loadConfig();
@@ -506,6 +550,6 @@ async function reopenReady(phanInId, actorId) {
 
 module.exports = {
   getConfig, listCandidates, itemCounts, getDetail, confirmItem, confirmItemsBatch, confirmItemBulk,
-  confirmQC, confirmQcBatch, cancelItem, uncheckItem, history, done, confirmHistory, returnToTech,
+  confirmQC, confirmQcBatch, cancelItem, uncheckItem, history, done, confirmHistory, returnToTech, traCuuMaQuet,
   reopenCandidates, reopenReady,
 };

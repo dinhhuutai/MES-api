@@ -50,7 +50,7 @@ async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
 
   const dataSql = `
     SELECT dv.id AS dot_vai_id, dv.ma_dot_vai, dv.so_luong_vai_ve, dv.ngay_vai_ve, dv.han_giao_hang,
-           pin.id AS phan_in_id, pin.ma_phan, dv.barcode, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
+           pin.id AS phan_in_id, pin.ma_phan, dv.barcode, pin.barcode AS barcode_phan_in, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
            pin.so_luong_don_hang, ldv.ten_loai AS loai_dot_vai,
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
            EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
@@ -359,7 +359,8 @@ async function getOpenSetMembers() {
   const { rows } = await query(
     `SELECT gs.id AS set_id, dv.id AS dot_vai_id, dv.ma_dot_vai,
             dv.so_luong_vai_ve, dv.ngay_vai_ve, dv.han_giao_hang,
-            pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.so_luong_don_hang, pin.tinh_chat_in,
+            pin.ma_phan, pin.barcode AS barcode_phan_in, pin.mau_vai, pin.kich_vai, pin.kich_phim,
+            pin.so_luong_don_hang, pin.tinh_chat_in,
             ldv.ten_loai AS loai_dot_vai,
             ${hsktCols('pin.id')},
             mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
@@ -443,7 +444,8 @@ async function release1HistoryByDate(date) {
 const PHAN_INFO_LATERAL = `
   LEFT JOIN LATERAL (
     SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang,
-           pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.ma_phan, dv.barcode, pin.so_luong_don_hang, pin.tinh_chat_in,
+           pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.ma_phan, dv.barcode, pin.barcode AS barcode_phan_in,
+           pin.so_luong_don_hang, pin.tinh_chat_in,
            dv.so_luong_vai_ve, dv.ngay_vai_ve, dv.han_giao_hang, ldv.ten_loai AS loai_dot_vai,
            ${hsktCols('pin.id')}
     FROM lenh_sx_dot_vai lsd
@@ -807,7 +809,7 @@ async function listKeHoachTamRows({ search = '', offset = 0, limit = 200 }) {
   const dataSql = `
     SELECT kt.id, kt.dot_vai_ve_id, kt.phan_in_id, kt.chuyen_id, kt.ngay_ke_hoach, kt.tg_bd_kh, kt.tg_kt_kh, kt.so_luong,
            dv.ma_dot_vai, dv.han_giao_hang, dv.so_luong_vai_ve, cs.ten_chuyen, ldv.ten_loai AS loai_dot_vai,
-           pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in, dv.barcode,
+           pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in, dv.barcode, pin.barcode AS barcode_phan_in,
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
            ${hsktCols('pin.id')},
            (SELECT gs.ma_set FROM gom_set_dot_vai gsd JOIN gom_set gs ON gs.id = gsd.gom_set_id

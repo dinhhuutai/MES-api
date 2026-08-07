@@ -25,6 +25,10 @@ const qcCandidates = asyncHandler(async (req, res) => {
 
 const itemCounts = asyncHandler(async (req, res) => ok(res, await service.itemCounts()));
 
+// Tra cứu mã vừa quét khi KHÔNG khớp dòng nào trong danh sách READY — chỉ để BÁO LÝ DO cho người quét
+// (đã QC xong / đã release / đã hủy), không đổi dữ liệu.
+const traCuu = asyncHandler(async (req, res) => ok(res, await service.traCuuMaQuet(req.query.code || '')));
+
 const detail = asyncHandler(async (req, res) => ok(res, await service.getDetail(req.params.phanInId)));
 
 const history = asyncHandler(async (req, res) => {
@@ -118,7 +122,7 @@ const reopenReady = asyncHandler(async (req, res) =>
   ok(res, await service.reopenReady(req.params.phanInId, req.user.id), 'Đã mở lại READY cho phần in'));
 
 module.exports = {
-  config, candidates, qcCandidates, itemCounts, detail, history, done,
+  config, candidates, qcCandidates, itemCounts, traCuu, detail, history, done,
   confirmItem, confirmItemsBatch, confirmBulk, confirmQC, qcConfirmBatch, cancelItem, uncheckItem, confirmHistory,
   returnToTech, reopenCandidates, reopenReady,
 };

@@ -62,6 +62,11 @@ const erpTinhChatIn = (r) => clean(field(r, 'tinhchatin', 'tinh_chat_in')) || nu
 const erpBarcode = (r) => clean(field(r, 'IDDotReady', 'iddotready', 'maquet', 'ma_quet', 'barCode', 'barcode', 'ma_vach', 'mavach')) || null;
 // Mã vạch HSKT (ERP BarcodeHKT) → ho_so_ky_thuat.barcode_hskt (quét HSKT).
 const erpBarcodeHskt = (r) => clean(field(r, 'BarcodeHKT', 'barcode_hkt', 'barcodehkt', 'barcode_hskt')) || null;
+// Mã vạch PHẦN IN (ERP `BarcodePTHDH`, bật từ 06/08/2026) → `phan_in.barcode` — TƯƠNG ĐƯƠNG code phần,
+// 1 mã ↔ 1 phần in. Dùng cột `phan_in.barcode` sẵn có (mig 055, bỏ trống từ mig 061) ⇒ KHÔNG cần migration.
+// ⚠ Khác `erpBarcode` (IDDotReady, thuộc ĐỢT VẢI, dùng chung nhiều phần in) và khác `barcode_hskt`
+// (12 số, mức HỒ SƠ). Đối chiếu prod: 11 chữ số, 114/114 dòng duy nhất 1:1 với code_part.
+const erpBarcodePhanIn = (r) => clean(field(r, 'BarcodePTHDH', 'barcode_pt_hdh', 'barcodept')) || null;
 const toIntOrNull = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
 // Pain = phương án in (1 Bàn / 2 Máy / 3 Robot).
 const erpPain = (r) => toIntOrNull(field(r, 'Pain', 'pain', 'phuong_an_in'));
@@ -194,7 +199,10 @@ async function processRow(r, maPhan, maDotVai, loaiDotVaiId, tgChuyenReady) {
       mauVai: clean(r.fabric_color), kichVai: clean(r.fabric_size), kichPhim: clean(r.film_size),
       soLuongDonHang: r.order_qty ?? null,
       tinhChatIn: erpTinhChatIn(r),
-      barcode: null, // barcode (IDDotReady) thuộc ĐỢT VẢI, không ghi vào phan_in nữa (mig 061)
+      // `phan_in.barcode` = ERP `BarcodePTHDH` (mã vạch của CHÍNH phần in). Không phải IDDotReady —
+      // mã đó thuộc ĐỢT VẢI và đã chuyển sang `dot_vai_ve.barcode` từ mig 061.
+      // `upsertPhanIn` dùng COALESCE ⇒ lần sync mà ERP không gửi trường này thì GIỮ giá trị cũ.
+      barcode: erpBarcodePhanIn(r),
     });
     const { id: dotVaiId, inserted } = await repo.upsertDotVai(client, {
       maDotVai, phanInId: pinId, loaiDotVaiId,

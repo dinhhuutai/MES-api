@@ -46,6 +46,9 @@ async function listCandidates({
   // withItems=true: kèm cờ tình trạng từng mục (cho bảng); dùng $6..$9.
   const selectBase = (withItems) => `
     SELECT pin.id, pin.ma_phan,
+           -- 2 loại mã vạch KHÁC NHAU, đừng nhầm: barcode_phan_in = ERP BarcodePTHDH, 1 mã ↔ 1 PHẦN IN
+           -- (tương đương code phần) · barcode = mã ĐỢT VẢI (IDDotReady), dùng chung nhiều phần in.
+           pin.barcode AS barcode_phan_in,
            (SELECT string_agg(DISTINCT dvb.barcode, ',') FROM dot_vai_ve dvb WHERE dvb.phan_in_id = pin.id AND dvb.barcode IS NOT NULL) AS barcode,
            pin.mau_vai, pin.kich_vai, pin.kich_phim,
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
@@ -291,6 +294,43 @@ async function readyCancelState(phanInId) {
   );
   const r = rows[0] || {};
   return { da_release: r.da_release === true, con_cho: r.con_cho === true };
+}
+
+// TRA CỨU MÃ QUÉT — giải thích vì sao quét ra "Không thấy" ở màn READY / QC READY.
+// `listCandidates` chỉ trả phần in CÒN ở READY (`WHERE q.qc_done = false`) ⇒ phần in vừa QC xong,
+// đã release hết đợt, hoặc bị hủy sẽ biến mất khỏi danh sách và người quét không có manh mối nào
+// (ca thật 06/08/2026: SLGLOVIS-2604-008-A010-F03-C01 QC xác nhận lúc 14:22, người sau quét lúc
+// 14:48 chỉ thấy "Không thấy (QR)" nên tưởng máy quét hỏng, đi tìm nguyên nhân ở gom set).
+// Khớp CHÍNH XÁC theo `ma_phan`, `phan_in.barcode` (ERP BarcodePTHDH — mã vạch của chính phần in),
+// lùi về `dot_vai_ve.barcode` (đầu đọc quét mã vạch đợt vải).
+// Trả 1 dòng hoặc rỗng; service dựng câu mô tả.
+async function traCuuMaQuet(code) {
+  const sql = `
+    SELECT pin.ma_phan, pin.dang_hoat_dong,
+           kq.tg_xac_nhan AS qc_tg, nd.ho_ten AS qc_nguoi,
+           (kq.id IS NOT NULL) AS qc_done,
+           EXISTS (SELECT 1 FROM dot_vai_ve dv2
+                    WHERE dv2.phan_in_id = pin.id AND dv2.trang_thai NOT IN ('DA_GOP','DA_HUY')
+                      AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd
+                                      JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
+                                      WHERE lsd.dot_vai_ve_id = dv2.id AND ls.trang_thai <> 'HUY')) AS con_dot_cho,
+           (SELECT count(*) FROM dot_vai_ve dv3
+             WHERE dv3.phan_in_id = pin.id AND dv3.trang_thai NOT IN ('DA_GOP','DA_HUY'))::int AS so_dot_vai
+    FROM phan_in pin
+    LEFT JOIN LATERAL (
+      SELECT k.id, k.tg_xac_nhan, k.nguoi_xac_nhan_id
+        FROM ket_qua_checkpoint k
+        JOIN checkpoint cp ON cp.id = k.checkpoint_id
+        JOIN tram t ON t.id = cp.tram_id
+       WHERE k.phan_in_id = pin.id AND t.ma_tram = 'READY' AND cp.ma_checkpoint = 'QC_XAC_NHAN'
+         AND k.trang_thai = 'DAT' LIMIT 1
+    ) kq ON true
+    LEFT JOIN nguoi_dung nd ON nd.id = kq.nguoi_xac_nhan_id
+    WHERE pin.ma_phan = $1 OR pin.barcode = $1
+       OR EXISTS (SELECT 1 FROM dot_vai_ve dv WHERE dv.phan_in_id = pin.id AND dv.barcode = $1)
+    ORDER BY pin.dang_hoat_dong DESC LIMIT 1`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [code]);
+  return rows[0] || null;
 }
 
 async function isPhanInReleased(phanInId) {
@@ -554,7 +594,7 @@ async function logReopenReady(phanInId, payload, actorId) {
 }
 
 module.exports = {
-  loadReadyConfig, listCandidates, countReadyItems, confirmInfoByPins, historyByDate, doneByDate, listConfirmHistory, isPhanInReleased, readyCancelState, getPhanInBasic, getResults, getBulkStates,
+  loadReadyConfig, listCandidates, countReadyItems, confirmInfoByPins, historyByDate, doneByDate, listConfirmHistory, isPhanInReleased, readyCancelState, traCuuMaQuet, getPhanInBasic, getResults, getBulkStates,
   getReadyEntryTime, findResultId, upsertResult, cancelResult, logCancel, insertStatusLog,
   listReopenCandidates, reopenReadyResults, flagUnreleasedDotLamLai, logReopenReady,
   isPhanInProducing, reopenReadyFull, lenhChoKyThuatByPhanIn,
