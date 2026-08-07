@@ -44,6 +44,9 @@ router.post('/mo-lai/:phieuId', rbac('PROD_RUN'), c.reopenProduction);
 // Ngừng lệnh chạy (ngừng phần in đang chạy để in hàng gấp hơn) → lệnh về chờ chạy — màn Xác nhận chạy
 router.post('/phieu/:phieuId/ngung-lenh', rbac('PROD_RUN'), c.pauseLenhChay);
 
+// Đổi chuyền của lượt chạy — đổi cả phieu_san_xuat.chuyen_id lẫn lenh_san_xuat.chuyen_id.
+router.post('/phieu/:phieuId/doi-chuyen', rbac('PROD_RUN'), c.doiChuyen);
+
 // Vượt sản xuất: cộng SL vượt vào release + trừ đợt vải chưa release cùng phần in — sidebar Xác nhận chạy
 router.post('/phieu/:phieuId/vuot-san-xuat', rbac('PROD_RUN'), c.vuotSanXuat);
 

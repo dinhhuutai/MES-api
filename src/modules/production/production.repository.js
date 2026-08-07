@@ -60,7 +60,7 @@ async function listProductionCandidates({ search = '', offset = 0, limit = 20 })
       AND ($1 = '' OR ls.ma_lenh_san_xuat ILIKE '%'||$1||'%' OR ${lenhPhanInMatch('ls.id', '$1')})`;
   const dataSql = `
     SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.chuyen_id, ls.ngay_ke_hoach, ls.giai_doan,
-           cs.ma_chuyen, cs.ten_chuyen,
+           cs.ma_chuyen, cs.ten_chuyen, lc.ma_loai AS ma_loai_chuyen, lc.ten_loai AS ten_loai_chuyen,
            info.ten_khach_hang, info.ma_don_hang, info.ma_hang,
            info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan,
            info.han_giao_hang, info.so_luong_vai_ve,
@@ -160,6 +160,34 @@ async function setLenhChuyen(client, lenhId, chuyenId, actorId) {
   await client.query(
     'UPDATE lenh_san_xuat SET chuyen_id=$2, updated_by=$3, updated_date=CURRENT_TIMESTAMP WHERE id=$1',
     [lenhId, chuyenId, actorId]
+  );
+}
+
+// ĐỔI CHUYỀN của lượt chạy: phiếu đang chạy được chuyển sang chuyền khác (máy hỏng, dồn tải…).
+// Đổi cả `phieu_san_xuat.chuyen_id` (chuyền THỰC TẾ đang in) lẫn `lenh_san_xuat.chuyen_id` (để mọi màn
+// theo lệnh — Theo dõi chuyền, Excel, dashboard — cùng thấy chuyền mới, không lệch nhau).
+async function setPhieuChuyen(client, phieuId, chuyenId, actorId) {
+  await client.query(
+    'UPDATE phieu_san_xuat SET chuyen_id=$2, updated_by=$3, updated_date=CURRENT_TIMESTAMP WHERE id=$1',
+    [phieuId, chuyenId, actorId]
+  );
+}
+
+// Chuyền đích có tồn tại & còn hoạt động không (chặn gán vào chuyền đã ngừng).
+async function getChuyenById(chuyenId) {
+  const { rows } = await query(
+    'SELECT id, ma_chuyen, ten_chuyen, dang_hoat_dong FROM chuyen_san_xuat WHERE id = $1',
+    [chuyenId]
+  );
+  return rows[0] || null;
+}
+
+// Audit đổi chuyền — ghi ở mức PHIẾU, lưu cả chuyền cũ → mới để tra ngược được.
+async function logDoiChuyen(phieuId, payload, actorId) {
+  await query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('phieu_san_xuat', $1, 'DOI_CHUYEN', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`,
+    [String(phieuId), JSON.stringify(payload), actorId]
   );
 }
 
@@ -1067,6 +1095,7 @@ async function insertVuotHistory(client, h, actorId) {
 module.exports = {
   getVuotContext, listUnreleasedDotVaiForPhanIn, incLenhRelease, insertVuotHistory,
   listProductionCandidates, getPrintedTotal, getDefaultXePhoi, nextMaPhieu, createPhieu, setLenhChuyen, setLenhTrangThai, getLenhBasic,
+  setPhieuChuyen, getChuyenById, logDoiChuyen,
   getLenhDotVaiList, phanInRowsByLenh, insertVaiHuy, listVaiHuyByLenh,
   getActivePhieu, getPhieuById, getTemsByPhieu, getTemContext, cancelTem, getTemLabelData, caPartsForTem,
   listCancelableTem, getTemForCancel, logTemCancel, logCloseProduction,

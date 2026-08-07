@@ -106,6 +106,10 @@ const reopenProduction = asyncHandler(async (req, res) =>
 const pauseLenhChay = asyncHandler(async (req, res) =>
   ok(res, await service.pauseLenhChay(req.params.phieuId, req.user.id), 'Đã ngừng lệnh chạy — lệnh về chờ chạy'));
 
+// Đổi chuyền của lượt chạy (máy hỏng / dồn tải) — đổi cả phiếu lẫn lệnh.
+const doiChuyen = asyncHandler(async (req, res) =>
+  ok(res, await service.doiChuyen(req.params.phieuId, req.body || {}, req.user.id), 'Đã đổi chuyền'));
+
 // Hủy lệnh đang chạy (bấm nhầm Xác nhận chạy) → về chờ chạy
 const undoStartCandidates = asyncHandler(async (req, res) => ok(res, await service.listUndoStartCandidates()));
 
@@ -121,6 +125,6 @@ module.exports = {
   stopLine, resumeLine, addVaiHuy, savePhanCong, vuotSanXuat,
   cancelableTem, cancelPrintTem,
   closeCandidates, closeProduction,
-  reopenCandidates, reopenProduction, pauseLenhChay,
+  reopenCandidates, reopenProduction, pauseLenhChay, doiChuyen,
   undoStartCandidates, undoStartProduction,
 };

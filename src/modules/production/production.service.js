@@ -575,6 +575,49 @@ async function pauseLenhChay(phieuId, actorId) {
   return { lenh_id: phieu.lenh_san_xuat_id, ma_lenh_san_xuat: phieu.ma_lenh_san_xuat, printed };
 }
 
+// ----- ĐỔI CHUYỀN của lượt chạy (máy hỏng / dồn tải sang chuyền khác) -----
+// Đổi CẢ phiếu lẫn lệnh trong 1 transaction: `phieu_san_xuat.chuyen_id` là chuyền THỰC TẾ đang in,
+// còn `lenh_san_xuat.chuyen_id` là thứ mọi màn theo lệnh đọc (Theo dõi chuyền, Excel, dashboard,
+// chip lọc loại chuyền) — đổi lệch nhau sẽ ra 2 con số đá nhau.
+// ⚠ KHÔNG đụng tem/xe phơi: tem đã in xong thuộc về lượt in đó, đổi chuyền không làm chúng in lại.
+async function doiChuyen(phieuId, { chuyenId, ghiChu }, actorId) {
+  const phieu = await repo.getPhieuFull(phieuId);
+  if (!phieu) throw new AppError('Phiếu sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  if (phieu.trang_thai !== 'DANG_CHAY') {
+    throw new AppError('Chỉ đổi chuyền được khi lệnh đang chạy', { status: 409, errorCode: 'WRONG_STAGE' });
+  }
+  if (!chuyenId) throw new AppError('Chọn chuyền mới', { status: 422, errorCode: 'NO_CHUYEN' });
+  const moi = await repo.getChuyenById(chuyenId);
+  if (!moi) throw new AppError('Chuyền không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  if (moi.dang_hoat_dong === false) {
+    throw new AppError('Chuyền đã ngừng hoạt động — chọn chuyền khác', { status: 409, errorCode: 'CHUYEN_NGUNG' });
+  }
+  const lenh = await repo.getLenhBasic(phieu.lenh_san_xuat_id);
+  if (lenh && lenh.chuyen_id === chuyenId) {
+    throw new AppError('Lệnh đang ở đúng chuyền này rồi', { status: 409, errorCode: 'KHONG_DOI' });
+  }
+
+  await withTransaction(async (client) => {
+    await repo.setPhieuChuyen(client, phieuId, chuyenId, actorId);
+    await repo.setLenhChuyen(client, phieu.lenh_san_xuat_id, chuyenId, actorId);
+  });
+  await repo.logDoiChuyen(phieuId, {
+    ma_lenh: phieu.ma_lenh_san_xuat || null,
+    chuyen_cu: lenh ? { id: lenh.chuyen_id, ma: lenh.ma_chuyen, ten: lenh.ten_chuyen } : null,
+    chuyen_moi: { id: moi.id, ma: moi.ma_chuyen, ten: moi.ten_chuyen },
+    ghi_chu: (ghiChu || '').trim() || null,
+  }, actorId);
+
+  sockets.emit('production:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'doi-chuyen' });
+  sockets.emit('dashboard:refresh', {});
+  return {
+    phieu_id: phieuId,
+    lenh_id: phieu.lenh_san_xuat_id,
+    chuyen_cu: lenh ? (lenh.ten_chuyen || lenh.ma_chuyen) : null,
+    chuyen_moi: moi.ten_chuyen || moi.ma_chuyen,
+  };
+}
+
 // ----- HỦY LỆNH ĐANG CHẠY (bấm nhầm Xác nhận chạy) → đưa về danh sách chờ chạy -----
 async function listUndoStartCandidates() {
   const running = await repo.monitorRunning();
@@ -649,6 +692,6 @@ module.exports = {
   stopLine, resumeLine, addVaiHuy, savePhanCong,
   listCancelableTem, cancelPrintTem,
   listCloseCandidates, closeProduction,
-  listReopenCandidates, reopenProduction, pauseLenhChay,
+  listReopenCandidates, reopenProduction, pauseLenhChay, doiChuyen,
   listUndoStartCandidates, undoStartProduction,
 };
