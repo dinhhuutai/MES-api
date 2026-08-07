@@ -786,8 +786,21 @@ async function searchDotVaiForCancel(q, stage = '') {
   return rows;
 }
 
-// Xóa mềm 1 đợt vải: chỉ đổi `trang_thai` → 'DA_HUY'. Trả null nếu không tồn tại / đã hủy / ĐÃ RELEASE
-// (đợt đã nằm trong lệnh ≠ HUY thì chặn — hủy lệnh trước, tránh làm sai SL release của lệnh đang chạy).
+// Xóa mềm 1 đợt vải: đổi `trang_thai` → 'DA_HUY' VÀ dọn mọi thứ bám theo đợt đó. Trả `ok:false` kèm lý do
+// nếu không tồn tại / đã hủy / ĐÃ RELEASE (đợt nằm trong lệnh ≠ HUY thì chặn — hủy lệnh trước, tránh làm
+// sai SL release của lệnh đang chạy).
+//
+// ⚠⚠ VÌ SAO PHẢI DỌN (bổ sung 2026-08-07): trước đây chỉ đổi mỗi `trang_thai` ⇒ đợt đã hủy vẫn để lại rác
+// TIẾP TỤC HIỆN/TÍNH trên các màn khác, vì không phải query nào cũng lọc `DA_HUY`. Đo trên prod: **225 dòng
+// `ton_tram`** (đợt vẫn "đang ở trạm" ⇒ đồng hồ SLA chạy tiếp, vào bản đồ nghẽn/dashboard) · **44 dòng
+// `gom_set_dot_vai` của set đang MỞ** (`listSets`/`getSetMembers` KHÔNG lọc `DA_HUY` ⇒ đợt đã hủy vẫn là
+// thành viên set, còn bị đếm vào `so_dot_vai`/`so_chua_ready` nên set kẹt "Chờ Ready" vĩnh viễn) ·
+// **39 dòng `qc_tra_ve` chưa xử lý** (badge "trả về" còn treo).
+// Dọn ngay tại nguồn — trong CÙNG transaction — thay vì đi vá từng câu đọc (rất dễ sót thêm chỗ mới).
+//
+// Snapshot đủ để `restoreDotVaiTx` dựng lại nguyên trạng khi "Mở đợt vải".
+// ⚠ `ke_hoach_tam` CỐ Ý GIỮ NGUYÊN: `listKeHoachTamRows` đã lọc `dv.trang_thai <> 'DA_HUY'` nên nó không
+// hiện ở đâu cả, mà giữ lại thì mở đợt ra là kế hoạch của người lập còn nguyên (xóa đi phải nhập lại).
 async function softDeleteDotVaiTx(client, dotVaiId, actorId) {
   const { rows } = await client.query(
     `SELECT dv.id, dv.ma_dot_vai, dv.trang_thai, pin.ma_phan,
@@ -798,11 +811,53 @@ async function softDeleteDotVaiTx(client, dotVaiId, actorId) {
   const dv = rows[0];
   if (!dv || dv.trang_thai === 'DA_HUY') return { ok: false, ly_do: 'Đợt vải không tồn tại hoặc đã hủy' };
   if (dv.da_release) return { ok: false, ma: dv.ma_dot_vai, ly_do: 'Đợt vải đã release — hủy lệnh sản xuất trước' };
+
+  const donDep = await donDepDotVaiTx(client, dotVaiId, actorId);
+
   await client.query(
     "UPDATE dot_vai_ve SET trang_thai='DA_HUY', updated_by=$2, updated_date=CURRENT_TIMESTAMP WHERE id=$1",
     [dotVaiId, actorId]
   );
-  return { ok: true, ma: dv.ma_dot_vai, ma_phan: dv.ma_phan, trang_thai_cu: dv.trang_thai };
+  return { ok: true, ma: dv.ma_dot_vai, ma_phan: dv.ma_phan, trang_thai_cu: dv.trang_thai, don_dep: donDep };
+}
+
+// Gỡ mọi "xác nhận / hiển thị" bám theo 1 đợt vải + trả SNAPSHOT để mở lại được.
+// Quyền: `claude_agent_mes` CÓ DELETE trên ton_tram / gom_set_dot_vai; `qc_tra_ve` + `ket_qua_checkpoint`
+// chỉ có UPDATE nên dùng cờ (đúng tinh thần xóa mềm). ⇒ KHÔNG cần migration.
+async function donDepDotVaiTx(client, dotVaiId, actorId) {
+  const tonTram = await client.query(
+    'SELECT tram_id, so_luong, owner_id, tg_vao, ghi_chu FROM ton_tram WHERE dot_vai_ve_id=$1', [dotVaiId]);
+  await client.query('DELETE FROM ton_tram WHERE dot_vai_ve_id=$1', [dotVaiId]);
+
+  // Chỉ gỡ khỏi set ĐANG MỞ — set đã release/đóng là lịch sử, giữ nguyên.
+  const gomSet = await client.query(
+    `SELECT gsd.gom_set_id FROM gom_set_dot_vai gsd JOIN gom_set gs ON gs.id=gsd.gom_set_id AND gs.trang_thai='MO'
+      WHERE gsd.dot_vai_ve_id=$1`.replace(/\s+/g, ' '), [dotVaiId]);
+  if (gomSet.rows.length) {
+    await client.query(
+      `DELETE FROM gom_set_dot_vai WHERE dot_vai_ve_id=$1 AND gom_set_id = ANY($2::uuid[])`,
+      [dotVaiId, gomSet.rows.map((r) => r.gom_set_id)]
+    );
+  }
+
+  // Cờ QC trả về còn treo (badge trên màn READY/Test Run) → coi như đã xử lý.
+  const qcTraVe = await client.query(
+    "UPDATE qc_tra_ve SET da_xu_ly=true, updated_by=$2, updated_date=CURRENT_TIMESTAMP WHERE dot_vai_ve_id=$1 AND da_xu_ly=false RETURNING id",
+    [dotVaiId, actorId]
+  );
+
+  // Xác nhận checkpoint ghi Ở MỨC ĐỢT VẢI (READY ghi ở mức phần in nên thường rỗng — vẫn dọn cho chắc).
+  const ketQua = await client.query(
+    "UPDATE ket_qua_checkpoint SET trang_thai='HUY', updated_by=$2, updated_date=CURRENT_TIMESTAMP WHERE dot_vai_ve_id=$1 AND trang_thai='DAT' RETURNING id",
+    [dotVaiId, actorId]
+  );
+
+  return {
+    ton_tram: tonTram.rows,
+    gom_set: gomSet.rows.map((r) => r.gom_set_id),
+    qc_tra_ve: qcTraVe.rows.map((r) => r.id),
+    ket_qua_checkpoint: ketQua.rows.map((r) => r.id),
+  };
 }
 
 async function logSoftDeleteDotVai(dotVaiId, info, lyDo, actorId) {
@@ -841,9 +896,9 @@ async function listDeletedDotVai(q) {
 async function restoreDotVaiTx(client, dotVaiId, actorId) {
   const { rows } = await client.query(
     `SELECT dv.id, dv.ma_dot_vai, dv.trang_thai, pin.ma_phan, pin.dang_hoat_dong,
-            (SELECT a.gia_tri_moi->>'trang_thai_cu' FROM audit_log a
+            (SELECT a.gia_tri_moi FROM audit_log a
               WHERE a.ten_bang='dot_vai_ve' AND a.hanh_dong='HUY_DOT_VAI' AND a.id_ban_ghi=dv.id::text
-              ORDER BY a.thoi_gian DESC LIMIT 1) AS trang_thai_cu
+              ORDER BY a.thoi_gian DESC LIMIT 1) AS huy_log
        FROM dot_vai_ve dv JOIN phan_in pin ON pin.id=dv.phan_in_id
       WHERE dv.id=$1`.replace(/\s+/g, ' '), [dotVaiId]);
   const dv = rows[0];
@@ -851,12 +906,61 @@ async function restoreDotVaiTx(client, dotVaiId, actorId) {
   if (!dv.dang_hoat_dong) {
     return { ok: false, ma: dv.ma_dot_vai, ly_do: `Phần in ${dv.ma_phan} đang bị hủy — mở phần in trước` };
   }
-  const tt = dv.trang_thai_cu || 'NHAN_VAI';
+  const log = dv.huy_log || {};
+  const tt = log.trang_thai_cu || 'NHAN_VAI';
   await client.query(
     'UPDATE dot_vai_ve SET trang_thai=$2, updated_by=$3, updated_date=CURRENT_TIMESTAMP WHERE id=$1',
     [dotVaiId, tt, actorId]
   );
-  return { ok: true, ma: dv.ma_dot_vai, ma_phan: dv.ma_phan, trang_thai: tt };
+  // Dựng lại đúng những gì lúc hủy đã gỡ (snapshot trong audit). Dữ liệu hủy TRƯỚC bản này không có
+  // `don_dep` → bỏ qua, đợt vẫn mở lại bình thường (chỉ là không tự vào lại trạm/gom set).
+  const khoiPhuc = await khoiPhucDotVaiTx(client, dotVaiId, log.don_dep, actorId);
+  return { ok: true, ma: dv.ma_dot_vai, ma_phan: dv.ma_phan, trang_thai: tt, khoi_phuc: khoiPhuc };
+}
+
+// Đảo lại `donDepDotVaiTx` theo snapshot. Mọi bước đều idempotent / bỏ qua khi không còn hợp lệ.
+async function khoiPhucDotVaiTx(client, dotVaiId, donDep, actorId) {
+  if (!donDep) return null;
+  const kq = { ton_tram: 0, gom_set: 0, qc_tra_ve: 0, ket_qua_checkpoint: 0 };
+
+  for (const t of donDep.ton_tram || []) {
+    // Partial UNIQUE `ux_ton_tram_dot(dot_vai_ve_id)` ⇒ chỉ thêm khi chưa có dòng nào.
+    const r = await client.query(
+      `INSERT INTO ton_tram (dot_vai_ve_id, tram_id, so_luong, owner_id, tg_vao, ghi_chu, created_by)
+       SELECT $1,$2,$3,$4,$5,$6,$7 WHERE NOT EXISTS (SELECT 1 FROM ton_tram WHERE dot_vai_ve_id=$1) RETURNING id`,
+      [dotVaiId, t.tram_id, t.so_luong ?? null, t.owner_id ?? null, t.tg_vao ?? null, t.ghi_chu ?? null, actorId]
+    );
+    kq.ton_tram += r.rowCount;
+  }
+
+  for (const setId of donDep.gom_set || []) {
+    // Chỉ trả về set VẪN CÒN MỞ — set đã release/đóng trong lúc đợt bị hủy thì thôi, không phá lịch sử.
+    const r = await client.query(
+      `INSERT INTO gom_set_dot_vai (gom_set_id, dot_vai_ve_id, created_by)
+       SELECT $1,$2,$3 WHERE EXISTS (SELECT 1 FROM gom_set WHERE id=$1 AND trang_thai='MO')
+         AND NOT EXISTS (SELECT 1 FROM gom_set_dot_vai WHERE gom_set_id=$1 AND dot_vai_ve_id=$2) RETURNING id`,
+      [setId, dotVaiId, actorId]
+    );
+    kq.gom_set += r.rowCount;
+  }
+
+  const ids = donDep.qc_tra_ve || [];
+  if (ids.length) {
+    const r = await client.query(
+      'UPDATE qc_tra_ve SET da_xu_ly=false, updated_by=$2, updated_date=CURRENT_TIMESTAMP WHERE id = ANY($1::uuid[])',
+      [ids, actorId]
+    );
+    kq.qc_tra_ve = r.rowCount;
+  }
+  const kqIds = donDep.ket_qua_checkpoint || [];
+  if (kqIds.length) {
+    const r = await client.query(
+      "UPDATE ket_qua_checkpoint SET trang_thai='DAT', updated_by=$2, updated_date=CURRENT_TIMESTAMP WHERE id = ANY($1::uuid[])",
+      [kqIds, actorId]
+    );
+    kq.ket_qua_checkpoint = r.rowCount;
+  }
+  return kq;
 }
 
 async function logRestoreDotVai(dotVaiId, info, actorId) {

@@ -293,6 +293,26 @@ async function isPhanInReleased(pinId, boQuaDotVaiIds = []) {
   return !!rows[0].e;
 }
 
+// KTCankiemtra=1 + đợt vải MỚI → có phải MỞ LẠI READY không?
+// ĐÚNG khi phần in đã "xong READY một lần rồi" mà nay có vải về thêm, tức là:
+//   (a) đợt TRƯỚC đã release (có lệnh ≠ HUY) — điều kiện CŨ, giữ nguyên; HOẶC
+//   (b) phần in đã QC xác nhận READY (`QC_XAC_NHAN` = DAT) và CÓ đợt vải khác ngoài đợt vừa nhận.
+// Nhánh (b) là chỗ BỊ SÓT: đợt 1 làm READY xong nhưng Kế hoạch CHƯA bấm Release 1 thì phần in không có
+// lệnh nào ⇒ điều kiện cũ trả false ⇒ đợt 2 về "thừa hưởng" luôn READY của đợt 1 và KHÔNG hiện lại ở màn
+// READY (`listCandidates` lọc `qc_done = false`). Ca thật 07/08/2026: SL-2607-010-A04-F05-C01 (đợt 2 lên
+// 09:33, lệnh LSX0450 mãi 10:50 mới tạo) và GL-2606-005-A01-F01-C01.
+// ⚠ Bắt buộc có "đợt vải KHÁC" ở nhánh (b): phần in mà kỹ thuật làm READY TRƯỚC khi vải về (chưa có đợt
+// nào) thì đợt đầu tiên về KHÔNG được xóa công đã làm — đó không phải "vải về thêm".
+// (a) luôn kéo theo "có đợt khác" nên không cần kiểm lại.
+async function canLamLaiReady(pinId, boQuaDotVaiIds = []) {
+  const ids = (boQuaDotVaiIds || []).filter(Boolean);
+  const { rows } = await query(
+    `SELECT (EXISTS(SELECT 1 FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id JOIN dot_vai_ve dv ON dv.id=lsd.dot_vai_ve_id WHERE dv.phan_in_id=$1 AND ls.trang_thai<>'HUY' AND ($2::uuid[] IS NULL OR NOT (dv.id = ANY($2::uuid[])))) OR (EXISTS(SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint cp ON cp.id=k.checkpoint_id AND cp.ma_checkpoint='QC_XAC_NHAN' JOIN tram t ON t.id=cp.tram_id AND t.ma_tram='READY' JOIN workflow_version wv ON wv.id=t.workflow_version_id AND wv.la_hien_hanh WHERE k.phan_in_id=$1 AND k.trang_thai='DAT') AND EXISTS(SELECT 1 FROM dot_vai_ve dk WHERE dk.phan_in_id=$1 AND dk.trang_thai NOT IN ('DA_GOP','DA_HUY') AND ($2::uuid[] IS NULL OR NOT (dk.id = ANY($2::uuid[])))))) AS e`,
+    [pinId, ids.length ? ids : null]
+  );
+  return !!rows[0].e;
+}
+
 // KTCankiemtra=1 cho phần in ĐÃ release (đợt mới) → MỞ LẠI READY (port SQL trigger mig 054):
 // hủy xác nhận READY (Khuôn/Film/Mực/QC) + gắn cờ can_lam_lai_ready cho đợt chưa release.
 async function reopenReadyForPhanIn(pinId) {
@@ -526,7 +546,7 @@ module.exports = {
   createSyncLog, finishSyncLog, listSyncHistory, insertRawBatch, saveSyncRaw, getSyncRaw,
   upsertKhachHang, upsertDonHang, upsertMaHang, upsertPhanIn, setPhanInDryMin, getLoaiDotVaiId, upsertDotVai,
   findPhanInIdByMaPhan, promotePhanInToReady,
-  readyCheckpointIds, simulateReadyDone, isPhanInReleased, reopenReadyForPhanIn, setDotVaiKtCanKiemTra,
+  readyCheckpointIds, simulateReadyDone, isPhanInReleased, canLamLaiReady, reopenReadyForPhanIn, setDotVaiKtCanKiemTra,
   upsertHsktForPin, eligibleDotVaiByIds, openSetByGhiChu,
   applyPainTheoSanLuong, NGUONG_VAI_IN_MAY,
 };

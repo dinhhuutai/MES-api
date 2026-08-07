@@ -344,7 +344,7 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
         // ⚠⚠ CHỈ áp luật KTCankiemtra cho ĐỢT VẢI MỚI (`laDotMoi`), KHÔNG áp mỗi lần sync.
         // ERP trả lại CÙNG dòng ở mọi lần chạy (job 5 phút/lần) và upsert là idempotent theo `ma_dot_vai`,
         // nên nếu chạy theo `intoReady` thì:
-        //   · KTCankiemtra=1: phần in VỪA được Kế hoạch Release 1 xong sẽ khớp `isPhanInReleased` ở lần
+        //   · KTCankiemtra=1: phần in VỪA được Kế hoạch Release 1 xong sẽ khớp `canLamLaiReady` ở lần
         //     sync kế tiếp ⇒ `reopenReadyForPhanIn` XÓA SẠCH xác nhận Khuôn/Film/Mực/QC của chính nó,
         //     trong khi LỆNH vẫn còn ⇒ phần in "chưa Ready mà đã nằm ở Test Run".
         //     (Đã xảy ra thật 03/08/2026: 3 phần in release lúc 13:46–13:47 bị hủy READY lúc 13:48.)
@@ -354,7 +354,9 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
         if (laDotMoi) {
           try {
             if (ktCan === 0) await repo.simulateReadyDone(pinId);              // giả lập KT xong → Release 1
-            else if (await repo.isPhanInReleased(pinId, affectedDotVaiIds)) await repo.reopenReadyForPhanIn(pinId); // KTCankiemtra=1 & ĐỢT KHÁC đã release → làm lại READY
+            // KTCankiemtra=1 & phần in đã xong READY một lần rồi (đợt trước ĐÃ RELEASE **hoặc** đã QC
+            // xác nhận READY dù chưa release) → mở lại READY để kỹ thuật kiểm lại cho đợt vải mới.
+            else if (await repo.canLamLaiReady(pinId, affectedDotVaiIds)) await repo.reopenReadyForPhanIn(pinId);
           } catch (e) { console.error(`[erp-sync] ✗ KTCankiemtra lỗi (${p.maPhan}): ${e.message}`); }
         }
         if (intoReady) {
