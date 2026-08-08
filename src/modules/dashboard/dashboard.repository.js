@@ -6,6 +6,7 @@ const { dotStageCase, readyFallback, ORDER_SQL_ARRAY } = require('../../utils/st
 const { techDoneSql } = require('../../utils/tech');
 // Hiển thị theo PHƯƠNG ÁN IN — cấu hình động từng trang (mig 067), mặc định BẬT HẾT = không lọc.
 const { dkTrang } = require('../../utils/phuongAnIn');
+const { baseMaTem } = require('../../utils/temPrefix');
 
 // "Đủ mục KT" (READY) trong flowRows: dùng cờ hk/hf/hm của CTE `kt` + tên khách của đợt (b.ten_khach_hang).
 // Khách II/AD: Khuôn không bắt buộc (chỉ cần Film + Mực). Xem utils/tech.js.
@@ -448,7 +449,8 @@ async function tinhTrangActiveRows() {
 async function resolveScanCode(code) {
   const c = String(code || '').trim();
   if (!c) return { type: null };
-  const base = c.replace(/^\d+-/, '').replace(/-\d+$/, ''); // baseMaTem: bỏ tiền tố công đoạn + hậu tố lần giao
+  // Đưa về đúng `ma_tem` đang lưu: mã ERP 12 số thì quy 2 số đầu về `15`; mã cũ thì bỏ tiền tố `15-`.
+  const base = baseMaTem(c);
   const h = await query('SELECT barcode_hskt FROM ho_so_ky_thuat WHERE barcode_hskt=$1 AND dang_hoat_dong=true LIMIT 1', [c]);
   if (h.rows[0]) return { type: 'HSKT', barcode_hskt: h.rows[0].barcode_hskt };
   let p = await query('SELECT ma_phan FROM phan_in WHERE ma_phan=$1 AND dang_hoat_dong LIMIT 1', [c]);

@@ -4,6 +4,7 @@ const { query } = require('../../config/db');
 // Hiển thị theo PHƯƠNG ÁN IN — cấu hình động từng trang (mig 067), mặc định BẬT HẾT = không lọc.
 const { dkTrang } = require('../../utils/phuongAnIn');
 const { lenhPhanInMatch } = require('../../utils/search');
+const { timTem } = require('../../utils/temPrefix');
 
 // SỔ CÁI SỐ LƯỢNG tem (migration 043): SL còn lại từng công đoạn (dùng cho lọc + hiển thị).
 // con_kcs tính theo TỔNG CẦN KIỂM = so_luong + sl_chenh_lech (dư/thiếu — mig 044).
@@ -70,7 +71,7 @@ async function listCandByCon(condExpr, { search = '', filters = {} } = {}, maTra
   const conds = ["t.trang_thai <> 'HUY'", dkPain, condExpr];
   // Ô tìm kiếm chung (chỉ thêm ILIKE vào SQL khi CÓ nhập — giữ query gọn cho IPS khi không lọc).
   if (search) {
-    params.push(search);
+    params.push(timTem(search));
     const i = params.length;
     conds.push(`(t.ma_tem ILIKE '%'||$${i}||'%' OR ls.ma_lenh_san_xuat ILIKE '%'||$${i}||'%' OR ${lenhPhanInMatch('ls.id', `$${i}`)})`);
   }
@@ -807,7 +808,7 @@ async function listTemSua({ search = '' } = {}) {
   const params = [];
   const conds = [`${CON_SUA} > 0`];
   if (search) {
-    params.push(search);
+    params.push(timTem(search));
     const i = params.length;
     conds.push(`(t.ma_tem ILIKE '%'||$${i}||'%' OR ls.ma_lenh_san_xuat ILIKE '%'||$${i}||'%' OR ${lenhPhanInMatch('ls.id', `$${i}`)})`);
   }
@@ -834,7 +835,7 @@ async function listTemSuaDaHuy({ search = '' } = {}) {
   const params = [];
   const conds = ["last.hanh_dong = 'HUY_TEM_SUA'"];
   if (search) {
-    params.push(search);
+    params.push(timTem(search));
     const i = params.length;
     conds.push(`(t.ma_tem ILIKE '%'||$${i}||'%' OR ls.ma_lenh_san_xuat ILIKE '%'||$${i}||'%' OR ${lenhPhanInMatch('ls.id', `$${i}`)})`);
   }

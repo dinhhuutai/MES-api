@@ -8,6 +8,7 @@ const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
 const planningRepo = require('../planning/planning.repository');
 const { caFromParts, maNgayCa, ngayTuMaNgayCa } = require('../../utils/ca');
+const { layBarcodeTem, layNhieuBarcodeTem } = require('../../utils/erpTemBarcode');
 
 // Gắn `phan_in_list` (1 dòng / phần in) cho các lệnh GOM SET — màn Xác nhận chạy tách dòng theo phần in,
 // hợp nhất ô ở STT + nút thao tác. Lệnh 1 phần in KHÔNG gắn (FE render như cũ, khỏi phình payload).
@@ -251,7 +252,10 @@ async function printTem(phieuId, soLuong, actorId, body) {
   // Thời gian chờ khô = cấu hình của phần in (nếu có) hoặc mặc định 60'.
   const dryMin = (await repo.getDryMinForPhieu(phieuId)) ?? DEFAULT_DRY_MIN;
 
-  const maTem = await repo.nextMaTem();
+  // Mã tem lấy TỪ ERP (barcode 12 số, đã sẵn tiền tố `15`). Lấy TRƯỚC transaction: gọi HTTP bên trong
+  // sẽ giữ transaction hở suốt thời gian chờ, mà lỗi mạng còn abort cả transaction.
+  // Đặt SAU mọi guard ở trên (110% SL release, xe phơi…) để không tiêu số của ERP một cách vô ích.
+  const maTem = await layBarcodeTem();
   let newTemId;
   await withTransaction(async (client) => {
     newTemId = await repo.createTem(client, { phieuId, maTem, soLuong: qty, ...meta }, actorId);
@@ -329,10 +333,14 @@ async function printTemBatch(phieuId, items, actorId, body) {
   if (!xe) throw new AppError('Chưa cấu hình xe phơi để bắt đầu phơi', { status: 409, errorCode: 'NO_XE' });
   const dryMin = (await repo.getDryMinForPhieu(phieuId)) ?? DEFAULT_DRY_MIN;
 
+  // Lấy ĐỦ N mã tem từ ERP TRƯỚC khi mở transaction (mỗi dòng 1 mã). Lỗi giữa chừng thì ném luôn —
+  // chưa tem nào được tạo nên không phải dọn gì; số ERP đã lấy coi như bỏ.
+  const maTemList = await layNhieuBarcodeTem(list.length);
+
   const out = [];
   await withTransaction(async (client) => {
-    for (const it of list) {
-      const maTem = await repo.nextMaTemTx(client); // trong TX: mã tem không trùng giữa các dòng
+    for (const [i, it] of list.entries()) {
+      const maTem = maTemList[i];
       // GC màu vải nhập RIÊNG từng dòng ở modal gom set → ưu tiên `it.gcMauVai`; không có thì dùng ô chung.
       const temId = await repo.createTem(client, {
         phieuId, maTem, soLuong: it.soLuong, ...meta,

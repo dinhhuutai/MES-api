@@ -134,6 +134,8 @@ async function nextMaPhieuTx(client) {
   );
   return rows[0].ma;
 }
+// ⚠⚠ KHÔNG CÒN DÙNG từ 07/08/2026 — xem ghi chú ở `nextMaTem`. Mã tem lấy từ ERP, và phải lấy
+// TRƯỚC khi mở transaction (gọi HTTP trong transaction sẽ giữ khóa bảng `tem` suốt thời gian chờ).
 async function nextMaTemTx(client) {
   const { rows } = await client.query(
     `SELECT 'TEM' || LPAD((COALESCE(MAX(substring(ma_tem from 4)::int) FILTER (WHERE ma_tem ~ '^TEM[0-9]+$'),0)+1)::text, 5, '0') AS ma
@@ -655,6 +657,9 @@ async function logReprint(temId, maTem, lyDo, soLan, actorId) {
   );
 }
 
+// ⚠⚠ KHÔNG CÒN DÙNG từ 07/08/2026 — mã tem nay LẤY TỪ ERP (`utils/erpTemBarcode.layBarcodeTem`,
+// barcode 12 số đã sẵn tiền tố công đoạn `15`). Giữ hàm cho dữ liệu/tem cũ dạng `TEM00123` và làm
+// tham chiếu; ĐỪNG nối lại vào luồng in tem — 2 dãy mã song song sẽ loạn tiền tố công đoạn.
 async function nextMaTem() {
   // CHỈ tính mã chuẩn '^TEM<digits>$' và ép KIỂU SỐ TRƯỚC khi MAX (tránh so sánh chuỗi '2' > '00003'
   // → sinh mã trùng). Mã tem seed/khác định dạng bị bỏ qua để không làm lệch số.

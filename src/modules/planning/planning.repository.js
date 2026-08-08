@@ -347,7 +347,17 @@ async function listReleasableSets(search = '') {
        AND NOT EXISTS (SELECT 1 FROM gom_set_dot_vai d JOIN ke_hoach_tam kht
                          ON kht.dot_vai_ve_id = d.dot_vai_ve_id AND kht.trang_thai = 'CHO'
                         WHERE d.gom_set_id = gs.id)
-       AND ($1 = '' OR gs.ma_set ILIKE '%'||$1||'%' OR gs.ghi_chu ILIKE '%'||$1||'%')
+       AND ($1 = '' OR gs.ma_set ILIKE '%'||$1||'%' OR gs.ghi_chu ILIKE '%'||$1||'%'
+            OR EXISTS (SELECT 1 FROM gom_set_dot_vai ds JOIN dot_vai_ve dvs ON dvs.id = ds.dot_vai_ve_id
+                       JOIN phan_in pins ON pins.id = dvs.phan_in_id
+                       JOIN ma_hang mhs ON mhs.id = pins.ma_hang_id
+                       JOIN don_hang dhs ON dhs.id = mhs.don_hang_id
+                       JOIN khach_hang khs ON khs.id = dhs.khach_hang_id
+                        WHERE ds.gom_set_id = gs.id
+                          AND (pins.ma_phan ILIKE '%'||$1||'%' OR khs.ten_khach_hang ILIKE '%'||$1||'%'
+                               OR dhs.ma_don_hang ILIKE '%'||$1||'%' OR mhs.ma_hang ILIKE '%'||$1||'%'
+                               OR pins.mau_vai ILIKE '%'||$1||'%' OR pins.kich_vai ILIKE '%'||$1||'%'
+                               OR pins.kich_phim ILIKE '%'||$1||'%' OR dvs.ma_dot_vai ILIKE '%'||$1||'%')))
      ORDER BY gs.created_date DESC`,
     [search]
   );

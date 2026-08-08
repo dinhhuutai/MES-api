@@ -39,6 +39,14 @@ const env = {
     // API ERP lấy phiếu nhận vải CHÍNH THỨC (60 ngày) — dữ liệu này chuyển phần in qua READY. Override qua .env.
     phieuNhanVaiUrl: process.env.ERP_PHIEU_NHAN_VAI_URL
       || 'http://10.84.40.34:5000/api/server/backup/mes/phieu-nhan-vai-60',
+    // API lấy MÃ TEM (barcode 12 số, 2 số đầu = tiền tố công đoạn `15`) — thay mã tự sinh `TEM00001`.
+    // ⚠ Mỗi lần gọi TIÊU MỘT SỐ ⇒ chỉ gọi khi TẠO tem mới (in lại tem không gọi).
+    barcodeTemUrl: process.env.ERP_BARCODE_TEM_URL
+      || 'http://10.84.40.34:5000/api/server/backup/mes/barcode-tem',
+    // Timeout 1 lần gọi lấy mã tem (ms) — API này nhẹ, người dùng đang ĐỨNG CHỜ máy in nên để ngắn.
+    barcodeTemTimeoutMs: parseInt(process.env.ERP_BARCODE_TEM_TIMEOUT_MS || '10000', 10),
+    // Số lần thử lại khi lấy mã tem lỗi; hết lượt thì CHẶN in và báo rõ (không lùi về mã `TEM…` cũ).
+    barcodeTemRetry: parseInt(process.env.ERP_BARCODE_TEM_RETRY || '3', 10),
     // Bật/tắt job tự đồng bộ theo chu kỳ (mặc định 5 phút/lần).
     syncEnabled: String(process.env.ERP_SYNC_ENABLED || 'true').toLowerCase() === 'true',
     // Chu kỳ tự đồng bộ (phút). Mặc định 5 phút/lần (sàn tối thiểu 5 — xem jobs/erpSync.job.js).

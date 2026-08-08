@@ -4,6 +4,7 @@ const { query } = require('../../config/db');
 // Hiển thị theo PHƯƠNG ÁN IN — cấu hình động từng trang (mig 067), mặc định BẬT HẾT = không lọc.
 const { dkTrang } = require('../../utils/phuongAnIn');
 const { lenhPhanInMatch } = require('../../utils/search');
+const { timTem } = require('../../utils/temPrefix');
 
 const DON_SUB = (col, alias) => `(SELECT string_agg(DISTINCT ${col}, ', ')
     FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
@@ -23,7 +24,7 @@ async function listTemSanSang({ search = '', filters = {}, ngayTu = '', ngayDen 
   const dkPain = await dkTrang('GH_TEM', 'phieu', 't.phieu_san_xuat_id');
   const conds = ["t.trang_thai <> 'HUY'", dkPain, '(t.sl_oqc_dat - t.sl_da_giao) > 0'];
   if (search) {
-    params.push(search); const i = params.length;
+    params.push(timTem(search)); const i = params.length;
     conds.push(`(t.ma_tem ILIKE '%'||$${i}||'%' OR ls.ma_lenh_san_xuat ILIKE '%'||$${i}||'%' OR ${lenhPhanInMatch('ls.id', `$${i}`)})`);
   }
   const add = (val, col) => { if (!val) return; params.push(val); conds.push(`${col} ILIKE '%'||$${params.length}||'%'`); };

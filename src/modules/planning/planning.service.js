@@ -8,6 +8,7 @@ const chuyenRepo = require('../chuyen/chuyen.repository');
 const wf = require('../workflow/workflow.repository');
 const AppError = require('../../utils/AppError');
 const { buildMeta } = require('../../utils/pagination');
+const { layBarcodeTem } = require('../../utils/erpTemBarcode');
 const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
 const erpRepo = require('../erpsync/erpsync.repository'); // reopenReadyForPhanIn (mở lại READY)
@@ -1142,10 +1143,12 @@ async function confirmGiaCongToOqc(lenhId, { soLuong } = {}, actorId) {
   }
   const xong = daChuyen + qty >= tong;
 
+  // Mã tem lấy TỪ ERP (barcode 12 số) — lấy TRƯỚC transaction, SAU mọi guard ở trên để không tiêu số vô ích.
+  const mt = await layBarcodeTem();
+
   const maTem = await withTransaction(async (client) => {
     const maPhieu = await productionRepo.nextMaPhieuTx(client);
     const phieuId = await productionRepo.createPhieuDone(client, { lenhId, chuyenId: lenh.chuyen_id, maPhieu, soLuong: qty }, actorId);
-    const mt = await productionRepo.nextMaTemTx(client);
     await productionRepo.createTemGiaCongOqc(client, { phieuId, maTem: mt, soLuong: qty }, actorId);
     // Chưa đủ SL → GIỮ trạng thái GIA_CONG để lệnh còn ở màn Gia công mà nhận nốt.
     if (xong) await productionRepo.setLenhTrangThai(client, lenhId, 'HOAN_TAT', actorId);
