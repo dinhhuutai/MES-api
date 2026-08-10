@@ -1,6 +1,7 @@
 'use strict';
 
 const { query } = require('../../config/db');
+const { mauTim } = require('../../utils/timKiem');
 
 async function listChuyen({ search = '' }) {
   const { rows } = await query(
@@ -8,9 +9,9 @@ async function listChuyen({ search = '' }) {
             lc.ma_loai AS loai_ma, lc.ten_loai AS loai_ten
      FROM chuyen_san_xuat cs
      LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
-     WHERE ($1 = '' OR cs.ma_chuyen ILIKE '%'||$1||'%' OR cs.ten_chuyen ILIKE '%'||$1||'%' OR lc.ten_loai ILIKE '%'||$1||'%')
+     WHERE ($1 = '' OR cs.ma_chuyen ~* $1 OR cs.ten_chuyen ~* $1 OR lc.ten_loai ~* $1)
      ORDER BY cs.ma_chuyen`.replace(/\s+/g, ' '),
-    [search]
+    [mauTim(search)]
   );
   return rows;
 }

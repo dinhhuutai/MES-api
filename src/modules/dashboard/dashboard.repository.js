@@ -7,6 +7,7 @@ const { techDoneSql } = require('../../utils/tech');
 // Hiển thị theo PHƯƠNG ÁN IN — cấu hình động từng trang (mig 067), mặc định BẬT HẾT = không lọc.
 const { dkTrang } = require('../../utils/phuongAnIn');
 const { baseMaTem } = require('../../utils/temPrefix');
+const { mauTim } = require('../../utils/timKiem');
 
 // "Đủ mục KT" (READY) trong flowRows: dùng cờ hk/hf/hm của CTE `kt` + tên khách của đợt (b.ten_khach_hang).
 // Khách II/AD: Khuôn không bắt buộc (chỉ cần Film + Mực). Xem utils/tech.js.
@@ -503,12 +504,12 @@ async function tinhTrangPhanInList(search = '', limit = 30) {
      JOIN khach_hang kh ON kh.id = dh.khach_hang_id
      WHERE pi.dang_hoat_dong
        AND EXISTS (SELECT 1 FROM dot_vai_ve dv WHERE dv.phan_in_id = pi.id AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY'))
-       AND ($1 = '' OR pi.ma_phan ILIKE '%'||$1||'%' OR dh.ma_don_hang ILIKE '%'||$1||'%'
-            OR mh.ma_hang ILIKE '%'||$1||'%' OR pi.mau_vai ILIKE '%'||$1||'%'
-            OR pi.kich_vai ILIKE '%'||$1||'%' OR pi.kich_phim ILIKE '%'||$1||'%')
+       AND ($1 = '' OR pi.ma_phan ~* $1 OR dh.ma_don_hang ~* $1
+            OR mh.ma_hang ~* $1 OR pi.mau_vai ~* $1
+            OR pi.kich_vai ~* $1 OR pi.kich_phim ~* $1)
      ORDER BY recency DESC NULLS LAST, pi.ma_phan
      LIMIT ${lim}`.replace(/\s+/g, ' '),
-    [s]
+    [mauTim(s)]
   );
   return rows;
 }

@@ -1,6 +1,7 @@
 'use strict';
 
 const service = require('./quality.service');
+const plService = require('./phanloailoi.service');
 const asyncHandler = require('../../utils/asyncHandler');
 const { ok } = require('../../utils/response');
 
@@ -87,7 +88,22 @@ const giaoDacBietCreate = asyncHandler(async (req, res) => ok(res, await service
 const giaoDacBietUpdate = asyncHandler(async (req, res) => ok(res, await service.updateGiaoDacBiet(req.params.id, req.body, req.user.id), 'Đã cập nhật trường hợp'));
 const giaoDacBietToggle = asyncHandler(async (req, res) => ok(res, await service.toggleGiaoDacBiet(req.params.id, req.body.active, req.user.id), 'Đã đổi trạng thái'));
 
+// ─── PHÂN LOẠI LỖI (mig 075) ─────────────────────────────────────────────────
+const plList = asyncHandler(async (req, res) => {
+  const { ngay = '', search = '', page = 1, limit = 20 } = req.query;
+  ok(res, await plService.danhSach({ ngay, search, page: Number(page) || 1, limit: Math.min(Number(limit) || 20, 200) }));
+});
+const plTraTem = asyncHandler(async (req, res) => ok(res, await plService.traTem(req.query.code || '')));
+const plChiTiet = asyncHandler(async (req, res) => ok(res, await plService.chiTiet(req.params.temId)));
+const plLuu = asyncHandler(async (req, res) => ok(res, await plService.luu(req.params.temId, req.body, req.user.id), 'Đã lưu phân loại lỗi'));
+
+const bpList = asyncHandler(async (req, res) => ok(res, await plService.dsBienPhap({ search: req.query.search || '', all: req.query.all === '1' })));
+const bpCreate = asyncHandler(async (req, res) => ok(res, await plService.taoBienPhap(req.body, req.user.id), 'Đã thêm biện pháp'));
+const bpUpdate = asyncHandler(async (req, res) => { await plService.suaBienPhap(req.params.id, req.body, req.user.id); ok(res, null, 'Đã cập nhật'); });
+const bpToggle = asyncHandler(async (req, res) => { await plService.doiTrangThaiBienPhap(req.params.id, req.body.active !== false, req.user.id); ok(res, null, 'Đã cập nhật'); });
+
 module.exports = {
+  plList, plTraTem, plChiTiet, plLuu, bpList, bpCreate, bpUpdate, bpToggle,
   kcsCandidates, recordKcs, gopTem, suaCandidates, recordSua, oqcCandidates, recordOqc,
   kcsHistory, suaHistory, oqcHistory,
   kcsDone, suaDone, oqcDone, inlineDone,

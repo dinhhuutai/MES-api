@@ -67,4 +67,17 @@ router.post('/giao-dac-biet', rbac('GIAODB_MANAGE'), c.giaoDacBietCreate);
 router.patch('/giao-dac-biet/:id/active', rbac('GIAODB_MANAGE'), c.giaoDacBietToggle);
 router.patch('/giao-dac-biet/:id', rbac('GIAODB_MANAGE'), c.giaoDacBietUpdate);
 
+// ─── PHÂN LOẠI LỖI (mig 075) — trang trong module SẢN XUẤT, dưới KCS ────────
+// Route TĨNH `phan-loai-loi/tra-tem` đặt TRƯỚC `:temId` (nếu không Express nuốt mất).
+router.get('/phan-loai-loi', rbac('PHAN_LOAI_LOI', 'KCS'), c.plList);
+router.get('/phan-loai-loi/tra-tem', rbac('PHAN_LOAI_LOI', 'KCS'), c.plTraTem);
+router.get('/phan-loai-loi/:temId', rbac('PHAN_LOAI_LOI', 'KCS'), c.plChiTiet);
+router.post('/phan-loai-loi/:temId', rbac('PHAN_LOAI_LOI'), c.plLuu);
+
+// Danh mục biện pháp xử lý (dropdown khi nhập dùng quyền thao tác; quản lý dùng BIEN_PHAP_MANAGE)
+router.get('/bien-phap', rbac('PHAN_LOAI_LOI', 'KCS', 'BIEN_PHAP_MANAGE'), c.bpList);
+router.post('/bien-phap', rbac('BIEN_PHAP_MANAGE'), c.bpCreate);
+router.patch('/bien-phap/:id/active', rbac('BIEN_PHAP_MANAGE'), c.bpToggle);
+router.patch('/bien-phap/:id', rbac('BIEN_PHAP_MANAGE'), c.bpUpdate);
+
 module.exports = router;

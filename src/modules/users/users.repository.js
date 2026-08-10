@@ -1,6 +1,7 @@
 'use strict';
 
 const { query, withTransaction } = require('../../config/db');
+const { mauTim } = require('../../utils/timKiem');
 
 // Danh sách RÚT GỌN để CHỌN NGƯỜI (combobox owner...) — chỉ id/họ tên/username, KHÔNG kèm
 // email/SĐT/vai trò/phòng ban. Dùng cho màn nghiệp vụ (vd OQC chọn owner cho giao) nên chỉ cần
@@ -10,23 +11,24 @@ async function listOptions({ search = '', limit = 500 }) {
     `SELECT u.id, u.ho_ten, u.ten_dang_nhap
      FROM nguoi_dung u
      WHERE u.dang_hoat_dong = true
-       AND ($1 = '' OR u.ho_ten ILIKE '%'||$1||'%' OR u.ten_dang_nhap ILIKE '%'||$1||'%')
+       AND ($1 = '' OR u.ho_ten ~* $1 OR u.ten_dang_nhap ~* $1)
      ORDER BY u.ho_ten NULLS LAST, u.ten_dang_nhap
      LIMIT $2`.replace(/\s+/g, ' '),
-    [search, limit]
+    [mauTim(search), limit]
   );
   return rows;
 }
 
 async function list({ search = '', active = null, offset = 0, limit = 20 }) {
-  const params = [search, limit, offset];
+  const tim = mauTim(search);
+  const params = [tim, limit, offset];
   let activeCond = '';
   if (active === true || active === false) {
     params.push(active);
     activeCond = ` AND u.dang_hoat_dong = $${params.length}`;
   }
-  const where = `WHERE ($1 = '' OR u.ho_ten ILIKE '%'||$1||'%' OR u.ten_dang_nhap ILIKE '%'||$1||'%'
-                 OR u.ma_user ILIKE '%'||$1||'%')${activeCond}`;
+  const where = `WHERE ($1 = '' OR u.ho_ten ~* $1 OR u.ten_dang_nhap ~* $1
+                 OR u.ma_user ~* $1)${activeCond}`;
 
   const dataSql = `
     SELECT u.id, u.ma_user, u.ten_dang_nhap, u.ho_ten, u.email, u.so_dien_thoai, u.chuc_vu,
@@ -44,7 +46,7 @@ async function list({ search = '', active = null, offset = 0, limit = 20 }) {
 
   const [data, count] = await Promise.all([
     query(dataSql, params),
-    query(countSql, active === null ? [search] : [search, active]),
+    query(countSql, active === null ? [tim] : [tim, active]),
   ]);
   return { rows: data.rows, total: count.rows[0].total };
 }

@@ -71,6 +71,15 @@ const erpBarcodePhanIn = (r) => clean(field(r, 'BarcodePTHDH', 'barcode_pt_hdh',
 // Đi theo TỪNG DÒNG nhận vải ⇒ thuộc ĐỢT VẢI, không phải phần in (1 phần in nhiều đợt có thể khác nhà).
 // Giá trị thật: mã ngắn 'KK'/'VS'/'II'/'DK'/'SL3'/'KN6' hoặc tên 'E SANG'; có dòng ERP gửi rỗng.
 const erpNhaGiaCong = (r) => clean(field(r, 'NGC', 'nha_gia_cong', 'nhagiacong')) || null;
+
+// Mig 074 — 3 trường ERP bổ sung (đối chiếu 1318 dòng raw 10/08/2026, xem ghi chú trong migration):
+//   · DDHID    → 1:1 với ĐƠN HÀNG        → `don_hang.ddh_id`
+//   · DDHSUBID → số dòng chi tiết đơn; ⚠ KHÔNG duy nhất theo mã hàng (198 cặp lệch) → `dot_vai_ve.ddh_sub_id`
+//   · Duan     → duy nhất theo ĐỢT VẢI    → `dot_vai_ve.du_an`
+// (IDDotReady đã map sẵn vào `dot_vai_ve.barcode` từ mig 061 — `erpBarcode` ở trên, KHÔNG thêm cột.)
+const erpDdhId = (r) => clean(field(r, 'DDHID', 'ddh_id', 'ddhid')) || null;
+const erpDdhSubId = (r) => clean(field(r, 'DDHSUBID', 'ddh_sub_id', 'ddhsubid')) || null;
+const erpDuAn = (r) => clean(field(r, 'Duan', 'du_an', 'duan')) || null;
 const toIntOrNull = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
 // Pain = phương án in (1 Bàn / 2 Máy / 3 Robot).
 const erpPain = (r) => toIntOrNull(field(r, 'Pain', 'pain', 'phuong_an_in'));
@@ -196,7 +205,7 @@ async function fetchErpAttempt(baseUrl, fromDate) {
 async function processRow(r, maPhan, maDotVai, loaiDotVaiId, tgChuyenReady) {
   return withTransaction(async (client) => {
     const khId = await repo.upsertKhachHang(client, { ma: clean(r.customer_name), ten: clean(r.customer_name) });
-    const donId = await repo.upsertDonHang(client, { maDon: clean(r.order_name), khachHangId: khId });
+    const donId = await repo.upsertDonHang(client, { maDon: clean(r.order_name), khachHangId: khId, ddhId: erpDdhId(r) });
     const mhId = await repo.upsertMaHang(client, { donHangId: donId, maHang: clean(r.item_name), tenMaHang: clean(r.item_name) });
     const pinId = await repo.upsertPhanIn(client, {
       maHangId: mhId, maPhan,
@@ -212,7 +221,7 @@ async function processRow(r, maPhan, maDotVai, loaiDotVaiId, tgChuyenReady) {
       maDotVai, phanInId: pinId, loaiDotVaiId,
       ngayVaiVe: erpNgayVaiVe(r), hanGiao: toDate(r.due_date), soLuong: r.received_qty ?? null,
       tgChuyenReady: tgChuyenReady || null, barcode: erpBarcode(r), inset: erpInset(r),
-      nhaGiaCong: erpNhaGiaCong(r),
+      nhaGiaCong: erpNhaGiaCong(r), ddhSubId: erpDdhSubId(r), duAn: erpDuAn(r),
     });
     return { inserted, dotVaiId, pinId };
   });

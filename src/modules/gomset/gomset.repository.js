@@ -3,14 +3,15 @@
 const { query } = require('../../config/db');
 // Hiển thị theo PHƯƠNG ÁN IN — cấu hình động (mig 067), mặc định BẬT HẾT = không lọc.
 const { dkTrang } = require('../../utils/phuongAnIn');
+const { mauTim } = require('../../utils/timKiem');
 
 // Đợt vải gom được: chưa release (không nằm trong lệnh) và chưa thuộc set đang mở.
 async function listCandidates({ search = '', offset = 0, limit = 50 }) {
   const dkPain = await dkTrang('KT_GOM_SET', 'pin', 'pin.id');
-  const SEARCH = `($1 = '' OR pin.ma_phan ILIKE '%'||$1||'%' OR kh.ten_khach_hang ILIKE '%'||$1||'%'
-                  OR mh.ma_hang ILIKE '%'||$1||'%' OR pin.mau_vai ILIKE '%'||$1||'%'
-                  OR pin.kich_vai ILIKE '%'||$1||'%' OR pin.kich_phim ILIKE '%'||$1||'%'
-                  OR dv.ma_dot_vai ILIKE '%'||$1||'%' OR dv.barcode ILIKE '%'||$1||'%')`;
+  const SEARCH = `($1 = '' OR pin.ma_phan ~* $1 OR kh.ten_khach_hang ~* $1
+                  OR mh.ma_hang ~* $1 OR pin.mau_vai ~* $1
+                  OR pin.kich_vai ~* $1 OR pin.kich_phim ~* $1
+                  OR dv.ma_dot_vai ~* $1 OR dv.barcode ~* $1)`;
   const FROM = `
     FROM dot_vai_ve dv
     JOIN phan_in pin ON pin.id = dv.phan_in_id AND pin.dang_hoat_dong AND dv.trang_thai <> 'DA_HUY'
@@ -42,7 +43,7 @@ async function listCandidates({ search = '', offset = 0, limit = 50 }) {
     ${FROM}
     ORDER BY pin.mau_vai, pin.ma_phan, dv.ma_dot_vai
     LIMIT $2 OFFSET $3`;
-  const { rows } = await query(dataSql, [search, limit, offset]);
+  const { rows } = await query(dataSql, [mauTim(search), limit, offset]);
   const total = rows[0] ? rows[0].total : 0;
   return { rows, total };
 }
@@ -119,9 +120,9 @@ async function listSets({ search = '', trangThai = 'MO' }) {
                  WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT'))::int AS so_chua_ready
      FROM gom_set gs
      WHERE gs.trang_thai = $1
-       AND ($2 = '' OR gs.ma_set ILIKE '%'||$2||'%' OR gs.ghi_chu ILIKE '%'||$2||'%')
+       AND ($2 = '' OR gs.ma_set ~* $2 OR gs.ghi_chu ~* $2)
      ORDER BY gs.created_date DESC`,
-    [trangThai, search]
+    [trangThai, mauTim(search)]
   );
   return rows;
 }

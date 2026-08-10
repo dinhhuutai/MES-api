@@ -4,6 +4,7 @@ const { query } = require('../../config/db');
 const { lenhPhanInMatch } = require('../../utils/search');
 // Hiển thị theo PHƯƠNG ÁN IN — cấu hình động từng trang (mig 067), mặc định BẬT HẾT = không lọc.
 const { dkTrang } = require('../../utils/phuongAnIn');
+const { mauTim } = require('../../utils/timKiem');
 
 const PHAN_AGG = `(SELECT string_agg(DISTINCT pin.ma_phan, ', ')
     FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
@@ -22,7 +23,7 @@ const PHAN_INFO_LATERAL = `
   LEFT JOIN LATERAL (
     SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang,
            pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.ma_phan, pin.so_luong_don_hang,
-           dv.han_giao_hang, dv.so_luong_vai_ve
+           dv.han_giao_hang, dv.so_luong_vai_ve, dv.nha_gia_cong
     FROM lenh_sx_dot_vai lsd
     JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
     JOIN phan_in pin ON pin.id = dv.phan_in_id
@@ -56,6 +57,7 @@ const SLA_COLS = 'sla.tg_vao, sla.sla_phut, sla.canh_bao_truoc_phut,';
 // (mig 067) — theo PHƯƠNG ÁN IN của phần in, không theo loại chuyền.
 
 async function listProductionCandidates({ search = '', offset = 0, limit = 20 }) {
+  const tim = mauTim(search);
   const dkPain = await dkTrang('SX_CHO_CHAY', 'lenh', 'ls.id');
   const FROM = `
     FROM lenh_san_xuat ls
@@ -64,7 +66,7 @@ async function listProductionCandidates({ search = '', offset = 0, limit = 20 })
     ${PHAN_INFO_LATERAL}
     WHERE ls.trang_thai = 'RELEASE_2'
       AND ${dkPain}
-      AND ($1 = '' OR ls.ma_lenh_san_xuat ILIKE '%'||$1||'%' OR ${lenhPhanInMatch('ls.id', '$1')})`;
+      AND ($1 = '' OR ls.ma_lenh_san_xuat ~* $1 OR ${lenhPhanInMatch('ls.id', '$1')})`;
   const dataSql = `
     SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.chuyen_id, ls.ngay_ke_hoach, ls.giai_doan,
            cs.ma_chuyen, cs.ten_chuyen, lc.ma_loai AS ma_loai_chuyen, lc.ten_loai AS ten_loai_chuyen,
@@ -85,8 +87,8 @@ async function listProductionCandidates({ search = '', offset = 0, limit = 20 })
     LIMIT $2 OFFSET $3`;
   const countSql = `SELECT count(*)::int AS total ${FROM}`;
   const [data, count] = await Promise.all([
-    query(dataSql, [search, limit, offset]),
-    query(countSql, [search]),
+    query(dataSql, [tim, limit, offset]),
+    query(countSql, [tim]),
   ]);
   return { rows: data.rows, total: count.rows[0].total };
 }
@@ -411,6 +413,7 @@ async function cancelTem(client, temId, actorId) {
 // ----- HỦY LỆNH IN TEM (tem chưa kiểm) -----
 // Danh sách tem đã in còn hủy được: chưa HỦY, đang IN/phơi/khô, sổ cái KCS/OQC/giao = 0 (chưa kiểm).
 async function listCancelableTem({ search = '', offset = 0, limit = 50 }) {
+  const tim = mauTim(search);
   const FROM = `
     FROM tem t
     JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
@@ -420,7 +423,7 @@ async function listCancelableTem({ search = '', offset = 0, limit = 50 }) {
     WHERE t.trang_thai IN ('IN','DANG_PHOI','DA_KHO')
       AND COALESCE(t.sl_kcs_dat,0)=0 AND COALESCE(t.sl_kcs_sua,0)=0 AND COALESCE(t.sl_kcs_huy,0)=0
       AND COALESCE(t.sl_oqc_dat,0)=0 AND COALESCE(t.sl_da_giao,0)=0
-      AND ($1='' OR t.ma_tem ILIKE '%'||$1||'%' OR ls.ma_lenh_san_xuat ILIKE '%'||$1||'%'
+      AND ($1='' OR t.ma_tem ~* $1 OR ls.ma_lenh_san_xuat ~* $1
            OR ${lenhPhanInMatch('ls.id', '$1')})`;
   const dataSql = `
     SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.created_date,
@@ -435,8 +438,8 @@ async function listCancelableTem({ search = '', offset = 0, limit = 50 }) {
     LIMIT $2 OFFSET $3`;
   const countSql = `SELECT count(*)::int AS total ${FROM}`;
   const [data, count] = await Promise.all([
-    query(dataSql.replace(/\s+/g, ' '), [search, limit, offset]),
-    query(countSql.replace(/\s+/g, ' '), [search]),
+    query(dataSql.replace(/\s+/g, ' '), [tim, limit, offset]),
+    query(countSql.replace(/\s+/g, ' '), [tim]),
   ]);
   return { rows: data.rows, total: count.rows[0].total };
 }
@@ -586,7 +589,8 @@ async function getTemLabelData(temId, dotVaiId = null) {
     ? `
   LEFT JOIN LATERAL (
     SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang,
-           pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.ma_phan, pin.so_luong_don_hang
+           pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.ma_phan, pin.so_luong_don_hang,
+           dv.nha_gia_cong, dv.so_luong_vai_ve
     FROM lenh_sx_dot_vai lsd
     JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
     JOIN phan_in pin ON pin.id = dv.phan_in_id
@@ -603,6 +607,11 @@ async function getTemLabelData(temId, dotVaiId = null) {
             ls.ma_lenh_san_xuat, cs.ma_chuyen, cs.ten_chuyen, ps.tg_bd AS tg_bd_in,
             info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan,
             info.mau_vai, info.kich_vai, info.kich_phim, info.so_luong_don_hang,
+            info.nha_gia_cong, info.so_luong_vai_ve,
+            t.gc_mau_vai, t.ma_ngay_ca, t.ngay_ca, t.gio_sx_bd, t.gio_sx_kt,
+            ps.chuyen_truong, ndct.ho_ten AS ca_truong,
+            (SELECT string_agg(DISTINCT pc.tho_in, ', ') FROM phan_cong_san_xuat pc
+              WHERE pc.phieu_san_xuat_id = ps.id AND COALESCE(pc.tho_in,'') <> '') AS tho_in,
             (SELECT txp.tg_bd_phoi FROM tem_xe_phoi txp WHERE txp.tem_id = t.id ORDER BY txp.tg_bd_phoi DESC LIMIT 1) AS tg_bd_phoi,
             (SELECT txp.tg_kt_phoi FROM tem_xe_phoi txp WHERE txp.tem_id = t.id ORDER BY txp.tg_bd_phoi DESC LIMIT 1) AS tg_kt_phoi,
             (SELECT nd.ho_ten FROM log_tem lt LEFT JOIN nguoi_dung nd ON nd.id = lt.nguoi_in_id
@@ -611,6 +620,7 @@ async function getTemLabelData(temId, dotVaiId = null) {
      JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
      JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
      LEFT JOIN chuyen_san_xuat cs ON cs.id = ps.chuyen_id
+     LEFT JOIN nguoi_dung ndct ON ndct.id = ps.ca_truong_id
      ${INFO}
      WHERE t.id = $1`,
     params
@@ -863,10 +873,10 @@ async function listTemChoPhoi({ search = '' }) {
      LEFT JOIN chuyen_san_xuat cs ON cs.id = ps.chuyen_id
      ${PHAN_INFO_LATERAL}
      ${SLA_LATERAL}
-     WHERE t.trang_thai='IN' AND ($1='' OR t.ma_tem ILIKE '%'||$1||'%' OR ls.ma_lenh_san_xuat ILIKE '%'||$1||'%'
+     WHERE t.trang_thai='IN' AND ($1='' OR t.ma_tem ~* $1 OR ls.ma_lenh_san_xuat ~* $1
             OR ${lenhPhanInMatch('ls.id', '$1')})
      ORDER BY t.created_date`,
-    [search]
+    [mauTim(search)]
   );
   return rows;
 }
@@ -902,10 +912,10 @@ async function listDryingTems({ search = '' }) {
      LEFT JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
      ${PHAN_INFO_LATERAL}
      ${SLA_LATERAL}
-     WHERE t.trang_thai='DANG_PHOI' AND ($1='' OR t.ma_tem ILIKE '%'||$1||'%'
-            OR ls.ma_lenh_san_xuat ILIKE '%'||$1||'%' OR ${lenhPhanInMatch('ls.id', '$1')})
+     WHERE t.trang_thai='DANG_PHOI' AND ($1='' OR t.ma_tem ~* $1
+            OR ls.ma_lenh_san_xuat ~* $1 OR ${lenhPhanInMatch('ls.id', '$1')})
      ORDER BY txp.tg_kt_phoi`,
-    [search]
+    [mauTim(search)]
   );
   return rows;
 }

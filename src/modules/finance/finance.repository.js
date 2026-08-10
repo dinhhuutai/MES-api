@@ -1,6 +1,7 @@
 'use strict';
 
 const { query, withTransaction } = require('../../config/db');
+const { mauTim } = require('../../utils/timKiem');
 
 // Gửi SQL 1 dòng (tránh IPS/WAF reset query đa dòng tới DB public — xem note ở orders.repository).
 const oneLine = (s) => s.replace(/\s+/g, ' ').trim();
@@ -22,14 +23,14 @@ async function listDonHang({ search = '', status = '', offset = 0, limit = 20 })
     LEFT JOIN phan_in pin ON pin.ma_hang_id = mh.id
     LEFT JOIN cong_no cn ON cn.don_hang_id = dh.id
     LEFT JOIN nguoi_dung nd ON nd.id = cn.nguoi_xac_nhan_id
-    WHERE ($1 = '' OR kh.ten_khach_hang ILIKE '%'||$1||'%' OR dh.ma_don_hang ILIKE '%'||$1||'%'
-           OR dh.so_po ILIKE '%'||$1||'%' OR kh.ma_khach_hang ILIKE '%'||$1||'%' OR mh.ma_hang ILIKE '%'||$1||'%')
+    WHERE ($1 = '' OR kh.ten_khach_hang ~* $1 OR dh.ma_don_hang ~* $1
+           OR dh.so_po ~* $1 OR kh.ma_khach_hang ~* $1 OR mh.ma_hang ~* $1)
       AND ($2 = '' OR COALESCE(cn.trang_thai, 'CHUA') = $2)
     GROUP BY dh.id, kh.ma_khach_hang, kh.ten_khach_hang, cn.tong_tien, cn.da_thu, cn.ghi_chu,
              cn.trang_thai, cn.ngay_xac_nhan, nd.ho_ten
     ORDER BY (COALESCE(cn.trang_thai, 'CHUA') = 'CLOSED_FINANCE'), kh.ten_khach_hang, dh.ma_don_hang
     LIMIT $3 OFFSET $4`);
-  const { rows } = await query(sql, [search, status, limit, offset]);
+  const { rows } = await query(sql, [mauTim(search), status, limit, offset]);
   return { rows, total: rows.length ? rows[0].total_count : 0 };
 }
 

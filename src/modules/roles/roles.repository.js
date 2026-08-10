@@ -1,6 +1,7 @@
 'use strict';
 
 const { query, withTransaction } = require('../../config/db');
+const { mauTim } = require('../../utils/timKiem');
 
 async function list({ search = '' }) {
   const sql = `
@@ -10,10 +11,10 @@ async function list({ search = '' }) {
     FROM vai_tro r
     LEFT JOIN role_permission rp ON rp.role_id = r.id
     LEFT JOIN user_role ur ON ur.role_id = r.id
-    WHERE ($1 = '' OR r.ten_role ILIKE '%'||$1||'%' OR r.ma_role ILIKE '%'||$1||'%')
+    WHERE ($1 = '' OR r.ten_role ~* $1 OR r.ma_role ~* $1)
     GROUP BY r.id
     ORDER BY r.ma_role`;
-  const { rows } = await query(sql, [search]);
+  const { rows } = await query(sql, [mauTim(search)]);
   return rows;
 }
 

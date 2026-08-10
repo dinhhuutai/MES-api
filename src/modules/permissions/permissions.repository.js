@@ -1,15 +1,16 @@
 'use strict';
 
 const { query } = require('../../config/db');
+const { mauTim } = require('../../utils/timKiem');
 
 async function list({ search = '', module = '' }) {
   const sql = `
     SELECT id, ma_permission, ten_permission, module, action, mo_ta, dang_hoat_dong
     FROM permission
-    WHERE ($1 = '' OR ten_permission ILIKE '%'||$1||'%' OR ma_permission ILIKE '%'||$1||'%')
+    WHERE ($1 = '' OR ten_permission ~* $1 OR ma_permission ~* $1)
       AND ($2 = '' OR module = $2)
     ORDER BY module NULLS FIRST, ma_permission`;
-  const { rows } = await query(sql, [search, module]);
+  const { rows } = await query(sql, [mauTim(search), module]);
   return rows;
 }
 

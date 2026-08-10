@@ -1,6 +1,7 @@
 'use strict';
 
 const { query } = require('../../config/db');
+const { mauTim } = require('../../utils/timKiem');
 
 // ---- Báo cáo (bao_cao) ----
 async function nextMa() {
@@ -30,9 +31,9 @@ async function list({ search = '', userId, all = false }) {
      LEFT JOIN nguoi_dung u ON u.id = b.nguoi_dung_id
      WHERE b.dang_hoat_dong = true
        AND ($3 = true OR b.nguoi_dung_id = $2)
-       AND ($1 = '' OR b.ma_bao_cao ILIKE '%'||$1||'%' OR b.ten_bao_cao ILIKE '%'||$1||'%')
+       AND ($1 = '' OR b.ma_bao_cao ~* $1 OR b.ten_bao_cao ~* $1)
      ORDER BY b.updated_date DESC NULLS LAST, b.created_date DESC`.replace(/\s+/g, ' '),
-    [search, userId, all]
+    [mauTim(search), userId, all]
   );
   return rows;
 }

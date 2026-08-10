@@ -72,6 +72,11 @@ const TRUONG_TEM = Object.freeze([
   { ma: 'ma_ngay_ca', ten: 'Mã ngày ca (vd 260805D2)', kieu: 'chu', nhom: 'Sản xuất' },
   { ma: 'nguoi_in', ten: 'Người in tem', kieu: 'chu', nhom: 'Sản xuất' },
   { ma: 'nha_gia_cong', ten: 'Nhà gia công', kieu: 'chu', nhom: 'Sản xuất' },
+  { ma: 'so_luong_vai_ve', ten: 'SL vải về của đợt (m)', kieu: 'so', nhom: 'Sản xuất' },
+  // Nhập ở màn Sản xuất lúc PHÂN CÔNG (mig 063) — đi theo PHIẾU, mọi tem của phiếu dùng chung.
+  { ma: 'ca_truong', ten: 'Ca trưởng', kieu: 'chu', nhom: 'Phân công' },
+  { ma: 'chuyen_truong', ten: 'Chuyền trưởng', kieu: 'chu', nhom: 'Phân công' },
+  { ma: 'tho_in', ten: 'Thợ in trên chuyền', kieu: 'chu', nhom: 'Phân công' },
 
   { ma: 'created_date', ten: 'Ngày giờ in tem', kieu: 'ngay', nhom: 'Thời gian' },
   { ma: 'tg_bd_in', ten: 'Giờ bắt đầu in (phiếu)', kieu: 'ngay', nhom: 'Thời gian' },
@@ -89,6 +94,7 @@ const DINH_DANG_NGAY = Object.freeze([
   { ma: 'DD/MM HH:mm', ten: '31/12 14:05' },
   { ma: 'DD/MM/YYYY', ten: '31/12/2026' },
   { ma: 'DD/MM/YY', ten: '31/12/26' },
+  { ma: 'DD/MM', ten: '31/12' },
   { ma: 'HH:mm', ten: '14:05' },
   { ma: 'HH:mm:ss', ten: '14:05:30' },
 ]);
@@ -114,7 +120,8 @@ const laTruongHopLe = (ma) => TRUONG_TEM.some((t) => t.ma === ma);
 //       kieu: 'chu' | 'qr' | 'barcode',          // mặc định 'chu'
 //       phan: [                                  // nội dung ghép nối, để trống = ô rỗng (ghi tay)
 //         { loai: 'chu', gia_tri: 'PO' },        //   chữ cố định
-//         { loai: 'truong', ma: 'ma_don_hang', dinh_dang: 'DD/MM/YY HH:mm' }
+//         { loai: 'truong', ma: 'ma_don_hang', dinh_dang: 'DD/MM/YY HH:mm',
+//           thay: [{ tu: 'Chuyền M', thanh: '' }] }   // TÌM & THAY khi hiện lên tem
 //       ],
 //       cs: 3, rs: 1,                            // colspan/rowspan (mặc định 1)
 //       dam: true, nghieng: false, gach_chan: false,
@@ -124,6 +131,8 @@ const laTruongHopLe = (ma) => TRUONG_TEM.some((t) => t.ma === ma);
 //       nen: '#f1f1f1' | null,
 //       mau_chu: '#000000' | null,
 //       xuong_dong: false,                       // false = ép 1 dòng (nowrap)
+//       gian_chu_mm: 0.3,                        // GIÃN CHỮ (letter-spacing, mm) — âm = bóp lại
+//       xoay: 90,                                // 0 ngang · 90 dọc đọc từ trên xuống · 270 từ dưới lên
 //       vien: { tren: true, duoi: true, trai: true, phai: true },
 //       ma_qr: 'ma_tem'                          // kieu qr/barcode: lấy giá trị từ trường nào
 //     }

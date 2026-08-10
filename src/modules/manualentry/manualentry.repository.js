@@ -2,14 +2,15 @@
 
 const { query } = require('../../config/db');
 const AppError = require('../../utils/AppError');
+const { mauTim } = require('../../utils/timKiem');
 
 // ─── Tra cứu để chọn "có sẵn" ────────────────────────────────────────────────
 async function searchKhach(q, limit = 30) {
   const { rows } = await query(
     `SELECT id, ma_khach_hang, ten_khach_hang FROM khach_hang
-     WHERE dang_hoat_dong AND ($1='' OR ma_khach_hang ILIKE '%'||$1||'%' OR ten_khach_hang ILIKE '%'||$1||'%')
+     WHERE dang_hoat_dong AND ($1='' OR ma_khach_hang ~* $1 OR ten_khach_hang ~* $1)
      ORDER BY ten_khach_hang LIMIT $2`,
-    [q || '', limit]
+    [mauTim(q), limit]
   );
   return rows;
 }
@@ -18,9 +19,9 @@ async function searchDon(khachId, q, limit = 30) {
   const { rows } = await query(
     `SELECT id, ma_don_hang, so_po, ten_don_hang FROM don_hang
      WHERE ($1::uuid IS NULL OR khach_hang_id = $1)
-       AND ($2='' OR ma_don_hang ILIKE '%'||$2||'%' OR COALESCE(so_po,'') ILIKE '%'||$2||'%' OR COALESCE(ten_don_hang,'') ILIKE '%'||$2||'%')
+       AND ($2='' OR ma_don_hang ~* $2 OR COALESCE(so_po,'') ~* $2 OR COALESCE(ten_don_hang,'') ~* $2)
      ORDER BY created_date DESC LIMIT $3`,
-    [khachId || null, q || '', limit]
+    [khachId || null, mauTim(q), limit]
   );
   return rows;
 }
@@ -29,9 +30,9 @@ async function searchMaHang(donId, q, limit = 30) {
   const { rows } = await query(
     `SELECT id, ma_hang, ten_ma_hang FROM ma_hang
      WHERE ($1::uuid IS NULL OR don_hang_id = $1)
-       AND ($2='' OR ma_hang ILIKE '%'||$2||'%' OR COALESCE(ten_ma_hang,'') ILIKE '%'||$2||'%')
+       AND ($2='' OR ma_hang ~* $2 OR COALESCE(ten_ma_hang,'') ~* $2)
      ORDER BY created_date DESC LIMIT $3`,
-    [donId || null, q || '', limit]
+    [donId || null, mauTim(q), limit]
   );
   return rows;
 }
@@ -40,10 +41,10 @@ async function searchPhanIn(maHangId, q, limit = 30) {
   const { rows } = await query(
     `SELECT id, ma_phan, mau_vai, kich_vai, kich_phim FROM phan_in
      WHERE dang_hoat_dong AND ($1::uuid IS NULL OR ma_hang_id = $1)
-       AND ($2='' OR ma_phan ILIKE '%'||$2||'%' OR COALESCE(mau_vai,'') ILIKE '%'||$2||'%'
-            OR COALESCE(kich_vai,'') ILIKE '%'||$2||'%' OR COALESCE(kich_phim,'') ILIKE '%'||$2||'%')
+       AND ($2='' OR ma_phan ~* $2 OR COALESCE(mau_vai,'') ~* $2
+            OR COALESCE(kich_vai,'') ~* $2 OR COALESCE(kich_phim,'') ~* $2)
      ORDER BY created_date DESC LIMIT $3`,
-    [maHangId || null, q || '', limit]
+    [maHangId || null, mauTim(q), limit]
   );
   return rows;
 }
@@ -147,10 +148,10 @@ async function searchVaiVe(q, limit = 40) {
      JOIN don_hang dh ON dh.id = mh.don_hang_id
      JOIN khach_hang kh ON kh.id = dh.khach_hang_id
      WHERE dv.trang_thai NOT IN ('DA_GOP','DA_HUY')
-       AND ($1='' OR pin.ma_phan ILIKE '%'||$1||'%' OR dv.ma_dot_vai ILIKE '%'||$1||'%' OR mh.ma_hang ILIKE '%'||$1||'%'
-            OR dh.ma_don_hang ILIKE '%'||$1||'%' OR COALESCE(pin.mau_vai,'') ILIKE '%'||$1||'%')
+       AND ($1='' OR pin.ma_phan ~* $1 OR dv.ma_dot_vai ~* $1 OR mh.ma_hang ~* $1
+            OR dh.ma_don_hang ~* $1 OR COALESCE(pin.mau_vai,'') ~* $1)
      ORDER BY dv.created_date DESC LIMIT ${lim}`.replace(/\s+/g, ' '),
-    [q || '']
+    [mauTim(q)]
   );
   if (!rows.length) return [];
   const ids = rows.map((r) => r.id);

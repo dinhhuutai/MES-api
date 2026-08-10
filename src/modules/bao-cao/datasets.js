@@ -17,6 +17,7 @@ const { query } = require('../../config/db');
 const { slaStatus } = require('../../utils/sla');
 const { flowRowsCached } = require('./flowCache');
 const { KHUON_OPT_SQL_LIST } = require('../../utils/tech');
+const { mauTim } = require('../../utils/timKiem');
 
 const VN_TODAY = "(now() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date";
 const clean = (v) => (v == null ? '' : String(v).trim());
@@ -76,11 +77,11 @@ async function runPhanIn({ loc = {}, gioi_han }) {
   const conds = ["dv.trang_thai NOT IN ('DA_GOP','DA_HUY')", 'pin.dang_hoat_dong'];
   const nc = ngayCond('dv.ngay_vai_ve', loc.ngay, false);
   if (nc) conds.push(nc);
-  if (clean(loc.khach)) { params.push(clean(loc.khach)); conds.push(`kh.ten_khach_hang ILIKE '%'||$${params.length}||'%'`); }
+  if (clean(loc.khach)) { params.push(mauTim(loc.khach)); conds.push(`kh.ten_khach_hang ~* $${params.length}`); }
   if (clean(loc.tim)) {
-    params.push(clean(loc.tim));
+    params.push(mauTim(loc.tim));
     const i = params.length;
-    conds.push(`(pin.ma_phan ILIKE '%'||$${i}||'%' OR mh.ma_hang ILIKE '%'||$${i}||'%' OR dh.ma_don_hang ILIKE '%'||$${i}||'%' OR pin.mau_vai ILIKE '%'||$${i}||'%')`);
+    conds.push(`(pin.ma_phan ~* $${i} OR mh.ma_hang ~* $${i} OR dh.ma_don_hang ~* $${i} OR pin.mau_vai ~* $${i})`);
   }
   const sql = `
     SELECT dv.id AS dot_vai_ve_id, pin.id AS phan_in_id, dv.ma_dot_vai,
@@ -168,12 +169,12 @@ async function runDotSanXuat({ loc = {}, gioi_han }) {
   const conds = ["ls.trang_thai <> 'HUY'"];
   const nc = ngayCond('ls.ngay_ke_hoach', loc.ngay, false);
   if (nc) conds.push(nc);
-  if (clean(loc.chuyen)) { params.push(clean(loc.chuyen)); conds.push(`cs.ten_chuyen ILIKE '%'||$${params.length}||'%'`); }
+  if (clean(loc.chuyen)) { params.push(mauTim(loc.chuyen)); conds.push(`cs.ten_chuyen ~* $${params.length}`); }
   if (clean(loc.trang_thai)) { params.push(clean(loc.trang_thai)); conds.push(`ls.trang_thai = $${params.length}`); }
   if (clean(loc.tim)) {
-    params.push(clean(loc.tim));
+    params.push(mauTim(loc.tim));
     const i = params.length;
-    conds.push(`(ls.ma_lenh_san_xuat ILIKE '%'||$${i}||'%' OR info.ma_phan ILIKE '%'||$${i}||'%' OR info.ma_hang ILIKE '%'||$${i}||'%' OR info.mau_vai ILIKE '%'||$${i}||'%')`);
+    conds.push(`(ls.ma_lenh_san_xuat ~* $${i} OR info.ma_phan ~* $${i} OR info.ma_hang ~* $${i} OR info.mau_vai ~* $${i})`);
   }
   const sql = `
     SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.trang_thai AS tt,
@@ -260,11 +261,11 @@ const COT_TEST_RUN = [
 async function runTestRun({ loc = {}, gioi_han }) {
   const params = [];
   const conds = ["ls.trang_thai <> 'HUY'", 'info.ma_phan IS NOT NULL'];
-  if (clean(loc.chuyen)) { params.push(clean(loc.chuyen)); conds.push(`cs.ten_chuyen ILIKE '%'||$${params.length}||'%'`); }
+  if (clean(loc.chuyen)) { params.push(mauTim(loc.chuyen)); conds.push(`cs.ten_chuyen ~* $${params.length}`); }
   if (clean(loc.tim)) {
-    params.push(clean(loc.tim));
+    params.push(mauTim(loc.tim));
     const i = params.length;
-    conds.push(`(ls.ma_lenh_san_xuat ILIKE '%'||$${i}||'%' OR info.ma_phan ILIKE '%'||$${i}||'%' OR info.ma_hang ILIKE '%'||$${i}||'%' OR info.mau_vai ILIKE '%'||$${i}||'%')`);
+    conds.push(`(ls.ma_lenh_san_xuat ~* $${i} OR info.ma_phan ~* $${i} OR info.ma_hang ~* $${i} OR info.mau_vai ~* $${i})`);
   }
   // Nhánh "đã test" lọc theo NGÀY xác nhận TEST_QA — MẶC ĐỊNH (để trống) = HÔM NAY (dataset "Test Run hôm nay").
   // Nhánh "có mặt/chờ test" là snapshot HIỆN TẠI (không theo ngày) → luôn hiện lệnh đang chờ test ở Test Run.
@@ -360,11 +361,11 @@ async function runTem({ loc = {}, gioi_han }) {
   const nc = ngayCond('t.created_date', loc.ngay, true);
   if (nc) conds.push(nc);
   if (clean(loc.trang_thai)) { params.push(clean(loc.trang_thai)); conds.push(`t.trang_thai = $${params.length}`); }
-  if (clean(loc.chuyen)) { params.push(clean(loc.chuyen)); conds.push(`cs.ten_chuyen ILIKE '%'||$${params.length}||'%'`); }
+  if (clean(loc.chuyen)) { params.push(mauTim(loc.chuyen)); conds.push(`cs.ten_chuyen ~* $${params.length}`); }
   if (clean(loc.tim)) {
-    params.push(clean(loc.tim));
+    params.push(mauTim(loc.tim));
     const i = params.length;
-    conds.push(`(t.ma_tem ILIKE '%'||$${i}||'%' OR info.ma_phan ILIKE '%'||$${i}||'%' OR info.ma_hang ILIKE '%'||$${i}||'%')`);
+    conds.push(`(t.ma_tem ~* $${i} OR info.ma_phan ~* $${i} OR info.ma_hang ~* $${i})`);
   }
   const sql = `
     SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai AS tt,
@@ -444,9 +445,9 @@ async function runHoanThanhTram({ loc = {}, gioi_han }) {
 
   const outer = [];
   if (clean(loc.tim)) {
-    params.push(clean(loc.tim));
+    params.push(mauTim(loc.tim));
     const i = params.length;
-    outer.push(`(pin.ma_phan ILIKE '%'||$${i}||'%' OR mh.ma_hang ILIKE '%'||$${i}||'%' OR dh.ma_don_hang ILIKE '%'||$${i}||'%' OR pin.mau_vai ILIKE '%'||$${i}||'%')`);
+    outer.push(`(pin.ma_phan ~* $${i} OR mh.ma_hang ~* $${i} OR dh.ma_don_hang ~* $${i} OR pin.mau_vai ~* $${i})`);
   }
   const sql = `
     WITH done AS (${branches.join(' UNION ALL ')}),
@@ -553,10 +554,10 @@ async function runReadyDangO({ loc = {}, gioi_han }) {
   // 1) ĐANG ở READY hiện tại (snapshot) — luôn lấy.
   const pc = [];
   const conds = ['pin.dang_hoat_dong', READY_MEMBER, `NOT ${QC_DONE_EXISTS}`];
-  if (clean(loc.khach)) { pc.push(clean(loc.khach)); conds.push(`kh.ten_khach_hang ILIKE '%'||$${pc.length}||'%'`); }
+  if (clean(loc.khach)) { pc.push(mauTim(loc.khach)); conds.push(`kh.ten_khach_hang ~* $${pc.length}`); }
   if (clean(loc.tim)) {
-    pc.push(clean(loc.tim)); const i = pc.length;
-    conds.push(`(pin.ma_phan ILIKE '%'||$${i}||'%' OR mh.ma_hang ILIKE '%'||$${i}||'%' OR dh.ma_don_hang ILIKE '%'||$${i}||'%' OR pin.mau_vai ILIKE '%'||$${i}||'%')`);
+    pc.push(mauTim(loc.tim)); const i = pc.length;
+    conds.push(`(pin.ma_phan ~* $${i} OR mh.ma_hang ~* $${i} OR dh.ma_don_hang ~* $${i} OR pin.mau_vai ~* $${i})`);
   }
   const sqlCur = `
     SELECT ${READY_INFO_SELECT},
@@ -575,10 +576,10 @@ async function runReadyDangO({ loc = {}, gioi_han }) {
     const dconds = ["cp.ma_checkpoint = 'QC_XAC_NHAN'", "kq.trang_thai = 'DAT'", 'pin.dang_hoat_dong'];
     const nc = ngayCond(READY_TS, ngay, true);
     if (nc) dconds.push(nc);
-    if (clean(loc.khach)) { dc.push(clean(loc.khach)); dconds.push(`kh.ten_khach_hang ILIKE '%'||$${dc.length}||'%'`); }
+    if (clean(loc.khach)) { dc.push(mauTim(loc.khach)); dconds.push(`kh.ten_khach_hang ~* $${dc.length}`); }
     if (clean(loc.tim)) {
-      dc.push(clean(loc.tim)); const i = dc.length;
-      dconds.push(`(pin.ma_phan ILIKE '%'||$${i}||'%' OR mh.ma_hang ILIKE '%'||$${i}||'%' OR dh.ma_don_hang ILIKE '%'||$${i}||'%' OR pin.mau_vai ILIKE '%'||$${i}||'%')`);
+      dc.push(mauTim(loc.tim)); const i = dc.length;
+      dconds.push(`(pin.ma_phan ~* $${i} OR mh.ma_hang ~* $${i} OR dh.ma_don_hang ~* $${i} OR pin.mau_vai ~* $${i})`);
     }
     const sqlDone = `
       SELECT DISTINCT ON (pin.id) ${READY_INFO_SELECT},
@@ -630,9 +631,9 @@ async function runReadyHoanThanh({ loc = {}, gioi_han }) {
   const nc = ngayCond(READY_TS, loc.ngay, true);
   if (nc) conds.push(nc);
   if (clean(loc.tim)) {
-    params.push(clean(loc.tim));
+    params.push(mauTim(loc.tim));
     const i = params.length;
-    conds.push(`(pin.ma_phan ILIKE '%'||$${i}||'%' OR mh.ma_hang ILIKE '%'||$${i}||'%' OR dh.ma_don_hang ILIKE '%'||$${i}||'%' OR pin.mau_vai ILIKE '%'||$${i}||'%')`);
+    conds.push(`(pin.ma_phan ~* $${i} OR mh.ma_hang ~* $${i} OR dh.ma_don_hang ~* $${i} OR pin.mau_vai ~* $${i})`);
   }
   const sql = `
     SELECT to_char(${READY_TS} AT TIME ZONE 'Asia/Ho_Chi_Minh', 'DD/MM/YYYY') AS ngay_hoan_thanh,
@@ -693,9 +694,9 @@ async function runPhanInVaoTram({ loc = {}, gioi_han }) {
     : `CASE WHEN v.tg_kt IS NOT NULL THEN to_char(v.tg_kt AT TIME ZONE 'Asia/Ho_Chi_Minh', 'HH24:MI') ELSE '' END`;
   const outer = [];
   if (clean(loc.tim)) {
-    params.push(clean(loc.tim));
+    params.push(mauTim(loc.tim));
     const i = params.length;
-    outer.push(`(pin.ma_phan ILIKE '%'||$${i}||'%' OR mh.ma_hang ILIKE '%'||$${i}||'%' OR dh.ma_don_hang ILIKE '%'||$${i}||'%' OR pin.mau_vai ILIKE '%'||$${i}||'%')`);
+    outer.push(`(pin.ma_phan ~* $${i} OR mh.ma_hang ~* $${i} OR dh.ma_don_hang ~* $${i} OR pin.mau_vai ~* $${i})`);
   }
   const sql = `
     WITH vao AS (

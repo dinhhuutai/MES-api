@@ -2,6 +2,7 @@
 
 const { query, withTransaction } = require('../../config/db');
 const { applyPainToBarcode } = require('../../utils/hskt');
+const { mauTim } = require('../../utils/timKiem');
 
 // SELECT phần in dùng chung (kèm khách/đơn/mã hàng).
 const PIN_SELECT = `pin.id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.barcode,
@@ -30,12 +31,12 @@ const HSKT_FILTER_COLS = {
 
 async function listHskt({ search = '', filters = {}, offset = 0, limit = 20 }) {
   const f = filters || {};
-  const params = [search];
+  const params = [mauTim(search)];
   const conds = [];
   Object.entries(HSKT_FILTER_COLS).forEach(([key, col]) => {
     if (!f[key]) return;
-    params.push(f[key]);
-    conds.push(`${col} ILIKE '%'||$${params.length}||'%'`);
+    params.push(mauTim(f[key]));
+    conds.push(`${col} ~* $${params.length}`);
   });
   // Phương án in: khớp CHÍNH XÁC (0 chưa xác định · 1 Bàn · 2 Máy · 3 Robot).
   if (f.phuongAnIn !== undefined && f.phuongAnIn !== null && f.phuongAnIn !== '') {
@@ -91,9 +92,9 @@ async function listHskt({ search = '', filters = {}, offset = 0, limit = 20 }) {
       WHERE hp.hskt_id = h.id AND hp.dang_hoat_dong
     ) info ON true
     WHERE h.dang_hoat_dong = true
-      AND ($1 = '' OR h.barcode_hskt ILIKE '%'||$1||'%' OR h.ma_hskt ILIKE '%'||$1||'%'
+      AND ($1 = '' OR h.barcode_hskt ~* $1 OR h.ma_hskt ~* $1
            OR EXISTS (SELECT 1 FROM hskt_phan_in hp JOIN phan_in pin ON pin.id = hp.phan_in_id
-                      WHERE hp.hskt_id = h.id AND hp.dang_hoat_dong AND pin.ma_phan ILIKE '%'||$1||'%'))
+                      WHERE hp.hskt_id = h.id AND hp.dang_hoat_dong AND pin.ma_phan ~* $1))
       ${extra}
     ORDER BY h.updated_date DESC NULLS LAST, h.created_date DESC
     LIMIT $${pLimit} OFFSET $${pOffset}`;

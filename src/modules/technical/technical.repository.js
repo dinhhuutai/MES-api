@@ -4,6 +4,7 @@ const { query } = require('../../config/db');
 // Hiển thị theo PHƯƠNG ÁN IN — cấu hình động (mig 067), mặc định BẬT HẾT = không lọc.
 const { dkTrang } = require('../../utils/phuongAnIn');
 const { techDoneSql, KHUON_OPT_SQL_LIST } = require('../../utils/tech');
+const { mauTim } = require('../../utils/timKiem');
 
 // Đọc cấu hình READY (version + trạm + checkpoint) trong 1 query (giảm round-trip tới DB ở xa).
 async function loadReadyConfig() {
@@ -37,10 +38,10 @@ async function listCandidates({
 }) {
   // Cùng 1 hàm phục vụ 2 màn: READY (Chuẩn bị kỹ thuật) và QC READY (Chất lượng) ⇒ 2 khóa cấu hình khác nhau.
   const dkPain = await dkTrang(onlyQcReady ? 'CL_QC_READY' : 'KT_READY', 'pin', 'pin.id');
-  const SEARCH = `($1 = '' OR pin.ma_phan ILIKE '%'||$1||'%' OR kh.ten_khach_hang ILIKE '%'||$1||'%'
-                  OR dh.ma_don_hang ILIKE '%'||$1||'%' OR mh.ma_hang ILIKE '%'||$1||'%'
-                  OR pin.mau_vai ILIKE '%'||$1||'%' OR pin.kich_vai ILIKE '%'||$1||'%'
-                  OR pin.kich_phim ILIKE '%'||$1||'%')`;
+  const SEARCH = `($1 = '' OR pin.ma_phan ~* $1 OR kh.ten_khach_hang ~* $1
+                  OR dh.ma_don_hang ~* $1 OR mh.ma_hang ~* $1
+                  OR pin.mau_vai ~* $1 OR pin.kich_vai ~* $1
+                  OR pin.kich_phim ~* $1)`;
   const doneExpr = (param) =>
     `EXISTS (SELECT 1 FROM ket_qua_checkpoint k WHERE k.phan_in_id = pin.id AND k.checkpoint_id = ${param} AND k.trang_thai = 'DAT')`;
   // withItems=true: kèm cờ tình trạng từng mục (cho bảng); dùng $6..$9.
@@ -149,7 +150,7 @@ async function listCandidates({
     ORDER BY q.n_tech_done DESC, q.ma_phan
     LIMIT $4 OFFSET $5`;
 
-  const { rows } = await query(dataSql, [search, inputIds, qcId, limit, offset, khuonId, filmId, mucId, readySla, readyCanhBao, onlyQcReady, qcSla, qcCanhBao]);
+  const { rows } = await query(dataSql, [mauTim(search), inputIds, qcId, limit, offset, khuonId, filmId, mucId, readySla, readyCanhBao, onlyQcReady, qcSla, qcCanhBao]);
   const total = rows.length ? rows[0].total_count : 0;
   // Bỏ cột phụ total_count khỏi từng dòng trả về.
   const items = rows.map(({ total_count, ...r }) => r);
@@ -222,11 +223,11 @@ async function listConfirmHistory({ date, search = '' }) {
     LEFT JOIN nguoi_dung nx ON nx.id = kq.nguoi_xac_nhan_id
     WHERE t.ma_tram = 'READY' AND kq.trang_thai = 'DAT'
       AND (kq.tg_xac_nhan AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
-      AND ($2 = '' OR pin.ma_phan ILIKE '%'||$2||'%' OR mh.ma_hang ILIKE '%'||$2||'%'
-           OR kh.ten_khach_hang ILIKE '%'||$2||'%' OR dh.ma_don_hang ILIKE '%'||$2||'%'
-           OR pin.mau_vai ILIKE '%'||$2||'%' OR pin.kich_vai ILIKE '%'||$2||'%' OR pin.kich_phim ILIKE '%'||$2||'%')
+      AND ($2 = '' OR pin.ma_phan ~* $2 OR mh.ma_hang ~* $2
+           OR kh.ten_khach_hang ~* $2 OR dh.ma_don_hang ~* $2
+           OR pin.mau_vai ~* $2 OR pin.kich_vai ~* $2 OR pin.kich_phim ~* $2)
     ORDER BY kq.tg_xac_nhan DESC NULLS LAST`;
-  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [date, search]);
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [date, mauTim(search)]);
   return rows;
 }
 
@@ -525,10 +526,10 @@ async function listReopenCandidates({ search = '' }) {
       AND EXISTS (SELECT 1 FROM dot_vai_ve d WHERE d.phan_in_id = pin.id AND d.trang_thai <> 'DA_GOP'
                     AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai l JOIN lenh_san_xuat ls ON ls.id = l.lenh_san_xuat_id
                                     WHERE l.dot_vai_ve_id = d.id AND ls.trang_thai <> 'HUY'))
-      AND ($1 = '' OR pin.ma_phan ILIKE '%'||$1||'%' OR kh.ten_khach_hang ILIKE '%'||$1||'%'
-           OR mh.ma_hang ILIKE '%'||$1||'%' OR pin.mau_vai ILIKE '%'||$1||'%')
+      AND ($1 = '' OR pin.ma_phan ~* $1 OR kh.ten_khach_hang ~* $1
+           OR mh.ma_hang ~* $1 OR pin.mau_vai ~* $1)
     ORDER BY kh.ten_khach_hang, pin.ma_phan`;
-  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [search]);
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [mauTim(search)]);
   return rows;
 }
 

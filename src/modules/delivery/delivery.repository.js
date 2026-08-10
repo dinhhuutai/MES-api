@@ -5,6 +5,7 @@ const { query } = require('../../config/db');
 const { dkTrang } = require('../../utils/phuongAnIn');
 const { lenhPhanInMatch } = require('../../utils/search');
 const { timTem } = require('../../utils/temPrefix');
+const { mauTim } = require('../../utils/timKiem');
 
 const DON_SUB = (col, alias) => `(SELECT string_agg(DISTINCT ${col}, ', ')
     FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
@@ -24,10 +25,10 @@ async function listTemSanSang({ search = '', filters = {}, ngayTu = '', ngayDen 
   const dkPain = await dkTrang('GH_TEM', 'phieu', 't.phieu_san_xuat_id');
   const conds = ["t.trang_thai <> 'HUY'", dkPain, '(t.sl_oqc_dat - t.sl_da_giao) > 0'];
   if (search) {
-    params.push(timTem(search)); const i = params.length;
-    conds.push(`(t.ma_tem ILIKE '%'||$${i}||'%' OR ls.ma_lenh_san_xuat ILIKE '%'||$${i}||'%' OR ${lenhPhanInMatch('ls.id', `$${i}`)})`);
+    params.push(mauTim(timTem(search))); const i = params.length;
+    conds.push(`(t.ma_tem ~* $${i} OR ls.ma_lenh_san_xuat ~* $${i} OR ${lenhPhanInMatch('ls.id', `$${i}`)})`);
   }
-  const add = (val, col) => { if (!val) return; params.push(val); conds.push(`${col} ILIKE '%'||$${params.length}||'%'`); };
+  const add = (val, col) => { if (!val) return; params.push(mauTim(val)); conds.push(`${col} ~* $${params.length}`); };
   add(f.tem, 't.ma_tem');
   add(f.khach, 'info.ten_khach_hang');
   add(f.don, 'info.ma_don_hang');
@@ -151,13 +152,13 @@ async function listGiaoHang({ search = '' }) {
      FROM giao_hang gh
      LEFT JOIN don_hang dh ON dh.id = gh.don_hang_id
      LEFT JOIN khach_hang kh ON kh.id = dh.khach_hang_id
-     WHERE ($1 = '' OR gh.ma_phieu_giao ILIKE '%'||$1||'%' OR kh.ten_khach_hang ILIKE '%'||$1||'%'
+     WHERE ($1 = '' OR gh.ma_phieu_giao ~* $1 OR kh.ten_khach_hang ~* $1
             OR EXISTS (SELECT 1 FROM giao_hang_tem gt_s
                        JOIN tem t_s ON t_s.id = gt_s.tem_id
                        JOIN phieu_san_xuat ps_s ON ps_s.id = t_s.phieu_san_xuat_id
                        WHERE gt_s.giao_hang_id = gh.id AND ${lenhPhanInMatch('ps_s.lenh_san_xuat_id', '$1')}))
      ORDER BY gh.created_date DESC`,
-    [search]
+    [mauTim(search)]
   );
   return rows;
 }

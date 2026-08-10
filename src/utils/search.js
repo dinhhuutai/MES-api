@@ -10,9 +10,9 @@ function lenhPhanInMatch(lenhIdExpr, p) {
     JOIN phan_in pin_s ON pin_s.id = dv_s.phan_in_id
     JOIN ma_hang mh_s ON mh_s.id = pin_s.ma_hang_id
     WHERE lsd_s.lenh_san_xuat_id = ${lenhIdExpr}
-      AND (pin_s.ma_phan ILIKE '%'||${p}||'%' OR mh_s.ma_hang ILIKE '%'||${p}||'%'
-           OR pin_s.mau_vai ILIKE '%'||${p}||'%' OR pin_s.kich_vai ILIKE '%'||${p}||'%'
-           OR pin_s.kich_phim ILIKE '%'||${p}||'%'))`;
+      AND (pin_s.ma_phan ~* ${p} OR mh_s.ma_hang ~* ${p}
+           OR pin_s.mau_vai ~* ${p} OR pin_s.kich_vai ~* ${p}
+           OR pin_s.kich_phim ~* ${p}))`;
 }
 
 module.exports = { lenhPhanInMatch };

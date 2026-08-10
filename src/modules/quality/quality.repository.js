@@ -5,6 +5,7 @@ const { query } = require('../../config/db');
 const { dkTrang } = require('../../utils/phuongAnIn');
 const { lenhPhanInMatch } = require('../../utils/search');
 const { timTem } = require('../../utils/temPrefix');
+const { mauTim } = require('../../utils/timKiem');
 
 // SỔ CÁI SỐ LƯỢNG tem (migration 043): SL còn lại từng công đoạn (dùng cho lọc + hiển thị).
 // con_kcs tính theo TỔNG CẦN KIỂM = so_luong + sl_chenh_lech (dư/thiếu — mig 044).
@@ -71,15 +72,15 @@ async function listCandByCon(condExpr, { search = '', filters = {} } = {}, maTra
   const conds = ["t.trang_thai <> 'HUY'", dkPain, condExpr];
   // Ô tìm kiếm chung (chỉ thêm ILIKE vào SQL khi CÓ nhập — giữ query gọn cho IPS khi không lọc).
   if (search) {
-    params.push(timTem(search));
+    params.push(mauTim(timTem(search)));
     const i = params.length;
-    conds.push(`(t.ma_tem ILIKE '%'||$${i}||'%' OR ls.ma_lenh_san_xuat ILIKE '%'||$${i}||'%' OR ${lenhPhanInMatch('ls.id', `$${i}`)})`);
+    conds.push(`(t.ma_tem ~* $${i} OR ls.ma_lenh_san_xuat ~* $${i} OR ${lenhPhanInMatch('ls.id', `$${i}`)})`);
   }
   // Lọc từng trường — chỉ nối điều kiện cho trường thực sự được nhập.
   const addFilter = (val, col) => {
     if (!val) return;
-    params.push(val);
-    conds.push(`${col} ILIKE '%'||$${params.length}||'%'`);
+    params.push(mauTim(val));
+    conds.push(`${col} ~* $${params.length}`);
   };
   addFilter(f.khach, 'info.ten_khach_hang');
   addFilter(f.don, 'info.ma_don_hang');
@@ -274,10 +275,10 @@ async function listInlineCandidates({ search = '' }) {
      LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
      ${PHAN_INFO_LATERAL}
      WHERE ps.trang_thai = 'DANG_CHAY'
-       AND ($1 = '' OR ps.ma_phieu_san_xuat ILIKE '%'||$1||'%' OR ls.ma_lenh_san_xuat ILIKE '%'||$1||'%'
+       AND ($1 = '' OR ps.ma_phieu_san_xuat ~* $1 OR ls.ma_lenh_san_xuat ~* $1
               OR ${lenhPhanInMatch('ls.id', '$1')})
      ORDER BY cs.ma_chuyen, ps.created_date`,
-    [search]
+    [mauTim(search)]
   );
   return rows;
 }
@@ -348,9 +349,9 @@ async function listLoaiLoiAll(search = '') {
   const { rows } = await query(
     `SELECT id, ma_loi, ten_loi, nhom_loi, dang_hoat_dong
      FROM loai_loi
-     WHERE ($1 = '' OR ma_loi ILIKE '%'||$1||'%' OR ten_loi ILIKE '%'||$1||'%' OR nhom_loi ILIKE '%'||$1||'%')
+     WHERE ($1 = '' OR ma_loi ~* $1 OR ten_loi ~* $1 OR nhom_loi ~* $1)
      ORDER BY dang_hoat_dong DESC, nhom_loi, ten_loi`,
-    [search]
+    [mauTim(search)]
   );
   return rows;
 }
@@ -474,9 +475,9 @@ async function listGiaoDacBietActive() {
 async function listGiaoDacBietAll(search = '') {
   const { rows } = await query(
     `SELECT id, ma, ten, dang_hoat_dong FROM truong_hop_giao_dac_biet
-     WHERE ($1 = '' OR ma ILIKE '%'||$1||'%' OR ten ILIKE '%'||$1||'%')
+     WHERE ($1 = '' OR ma ~* $1 OR ten ~* $1)
      ORDER BY dang_hoat_dong DESC, ten`,
-    [search]
+    [mauTim(search)]
   );
   return rows;
 }
@@ -808,9 +809,9 @@ async function listTemSua({ search = '' } = {}) {
   const params = [];
   const conds = [`${CON_SUA} > 0`];
   if (search) {
-    params.push(timTem(search));
+    params.push(mauTim(timTem(search)));
     const i = params.length;
-    conds.push(`(t.ma_tem ILIKE '%'||$${i}||'%' OR ls.ma_lenh_san_xuat ILIKE '%'||$${i}||'%' OR ${lenhPhanInMatch('ls.id', `$${i}`)})`);
+    conds.push(`(t.ma_tem ~* $${i} OR ls.ma_lenh_san_xuat ~* $${i} OR ${lenhPhanInMatch('ls.id', `$${i}`)})`);
   }
   const sql = `
     SELECT t.id AS tem_id, t.ma_tem, t.so_luong, t.trang_thai,
@@ -835,9 +836,9 @@ async function listTemSuaDaHuy({ search = '' } = {}) {
   const params = [];
   const conds = ["last.hanh_dong = 'HUY_TEM_SUA'"];
   if (search) {
-    params.push(timTem(search));
+    params.push(mauTim(timTem(search)));
     const i = params.length;
-    conds.push(`(t.ma_tem ILIKE '%'||$${i}||'%' OR ls.ma_lenh_san_xuat ILIKE '%'||$${i}||'%' OR ${lenhPhanInMatch('ls.id', `$${i}`)})`);
+    conds.push(`(t.ma_tem ~* $${i} OR ls.ma_lenh_san_xuat ~* $${i} OR ${lenhPhanInMatch('ls.id', `$${i}`)})`);
   }
   const sql = `
     SELECT t.id AS tem_id, t.ma_tem, t.so_luong, t.trang_thai,

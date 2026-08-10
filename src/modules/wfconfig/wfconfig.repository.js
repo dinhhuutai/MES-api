@@ -1,6 +1,7 @@
 'use strict';
 
 const { query } = require('../../config/db');
+const { mauTim } = require('../../utils/timKiem');
 
 // ============ WORKFLOW VERSION ============
 async function listVersions() {
@@ -212,10 +213,10 @@ async function listStatuses({ search = '', nhom = '' }) {
   const { rows } = await query(
     `SELECT id, ma_trang_thai, ten_trang_thai, nhom_trang_thai, ghi_chu, dang_hoat_dong
      FROM trang_thai
-     WHERE ($1='' OR ten_trang_thai ILIKE '%'||$1||'%' OR ma_trang_thai ILIKE '%'||$1||'%')
+     WHERE ($1='' OR ten_trang_thai ~* $1 OR ma_trang_thai ~* $1)
        AND ($2='' OR nhom_trang_thai=$2)
      ORDER BY nhom_trang_thai NULLS FIRST, ma_trang_thai`,
-    [search, nhom]
+    [mauTim(search), nhom]
   );
   return rows;
 }

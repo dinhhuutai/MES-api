@@ -4,6 +4,7 @@ const { query } = require('../../config/db');
 // Hiển thị theo PHƯƠNG ÁN IN — cấu hình động (mig 067), mặc định BẬT HẾT = không lọc.
 const { dkTrang } = require('../../utils/phuongAnIn');
 const { chipCondition, dominantStageScalar } = require('../../utils/stage');
+const { mauTim } = require('../../utils/timKiem');
 
 const BASE_JOINS = `
   FROM phan_in pin
@@ -12,10 +13,10 @@ const BASE_JOINS = `
   JOIN khach_hang kh ON kh.id = dh.khach_hang_id`;
 
 function buildWhere(search, missingProfit) {
-  let cond = `($1 = '' OR pin.ma_phan ILIKE '%'||$1||'%' OR kh.ten_khach_hang ILIKE '%'||$1||'%'
-              OR dh.ma_don_hang ILIKE '%'||$1||'%' OR mh.ma_hang ILIKE '%'||$1||'%'
-              OR pin.mau_vai ILIKE '%'||$1||'%' OR pin.kich_vai ILIKE '%'||$1||'%'
-              OR pin.kich_phim ILIKE '%'||$1||'%')`;
+  let cond = `($1 = '' OR pin.ma_phan ~* $1 OR kh.ten_khach_hang ~* $1
+              OR dh.ma_don_hang ~* $1 OR mh.ma_hang ~* $1
+              OR pin.mau_vai ~* $1 OR pin.kich_vai ~* $1
+              OR pin.kich_phim ~* $1)`;
   if (missingProfit) cond += ' AND pin.loi_nhuan IS NULL';
   return cond;
 }
@@ -41,8 +42,8 @@ async function list({ search = '', missingProfit = false, offset = 0, limit = 20
   const countSql = `SELECT count(*)::int AS total ${BASE_JOINS} WHERE ${where}`;
 
   const [data, count] = await Promise.all([
-    query(dataSql, [search, limit, offset]),
-    query(countSql, [search]),
+    query(dataSql, [mauTim(search), limit, offset]),
+    query(countSql, [mauTim(search)]),
   ]);
   return { rows: data.rows, total: count.rows[0].total };
 }
@@ -73,17 +74,17 @@ async function listVaiVe({ search = '', filters = {}, stage = '', offset = 0, li
   cond.push(await dkTrang('DH_PHAN_IN', 'pin', 'pin.id'));
 
   if (search) {
-    const p = add(search);
-    cond.push(`(pin.ma_phan ILIKE '%'||${p}||'%' OR kh.ten_khach_hang ILIKE '%'||${p}||'%'
-      OR dh.ma_don_hang ILIKE '%'||${p}||'%' OR mh.ma_hang ILIKE '%'||${p}||'%'
-      OR pin.mau_vai ILIKE '%'||${p}||'%' OR pin.kich_vai ILIKE '%'||${p}||'%' OR pin.kich_phim ILIKE '%'||${p}||'%'
-      OR EXISTS (SELECT 1 FROM dot_vai_ve dvs WHERE dvs.phan_in_id=pin.id AND dvs.ma_dot_vai ILIKE '%'||${p}||'%'))`);
+    const p = add(mauTim(search));
+    cond.push(`(pin.ma_phan ~* ${p} OR kh.ten_khach_hang ~* ${p}
+      OR dh.ma_don_hang ~* ${p} OR mh.ma_hang ~* ${p}
+      OR pin.mau_vai ~* ${p} OR pin.kich_vai ~* ${p} OR pin.kich_phim ~* ${p}
+      OR EXISTS (SELECT 1 FROM dot_vai_ve dvs WHERE dvs.phan_in_id=pin.id AND dvs.ma_dot_vai ~* ${p}))`);
   }
   // Lọc từng trường (AND với nhau).
   const FIELD = { khach: 'kh.ten_khach_hang', don: 'dh.ma_don_hang', maHang: 'mh.ma_hang',
     codePhan: 'pin.ma_phan', mauVai: 'pin.mau_vai', kichVai: 'pin.kich_vai', kichPhim: 'pin.kich_phim' };
   for (const [k, col] of Object.entries(FIELD)) {
-    if (filters[k]) { const p = add(filters[k]); cond.push(`${col} ILIKE '%'||${p}||'%'`); }
+    if (filters[k]) { const p = add(mauTim(filters[k])); cond.push(`${col} ~* ${p}`); }
   }
   // Lọc theo NGÀY VẢI VỀ (khoảng): phần in có ≥1 đợt vải với ngay_vai_ve trong khoảng.
   if (filters.ngayVaiTu || filters.ngayVaiDen) {
@@ -639,11 +640,11 @@ async function searchPhanInForCancel(q, stage = '') {
     JOIN don_hang dh ON dh.id=mh.don_hang_id
     JOIN khach_hang kh ON kh.id=dh.khach_hang_id
     WHERE pin.dang_hoat_dong
-      AND ($1='' OR pin.ma_phan ILIKE '%'||$1||'%' OR mh.ma_hang ILIKE '%'||$1||'%'
-           OR pin.mau_vai ILIKE '%'||$1||'%' OR kh.ten_khach_hang ILIKE '%'||$1||'%')
+      AND ($1='' OR pin.ma_phan ~* $1 OR mh.ma_hang ~* $1
+           OR pin.mau_vai ~* $1 OR kh.ten_khach_hang ~* $1)
       ${stageCond ? `AND (${stageCond})` : ''}
     ORDER BY pin.ma_phan LIMIT 50`;
-  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [q || '']);
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [mauTim(q)]);
   return rows;
 }
 
@@ -710,10 +711,10 @@ async function listDeletedPhanIn(q) {
     JOIN audit_log a ON a.ten_bang='phan_in' AND a.hanh_dong='HUY_PHAN_IN' AND a.id_ban_ghi=pin.id::text
     LEFT JOIN nguoi_dung nd ON nd.id=a.nguoi_thuc_hien_id
     WHERE pin.dang_hoat_dong=false
-      AND ($1='' OR pin.ma_phan ILIKE '%'||$1||'%' OR mh.ma_hang ILIKE '%'||$1||'%'
-           OR pin.mau_vai ILIKE '%'||$1||'%' OR kh.ten_khach_hang ILIKE '%'||$1||'%')
+      AND ($1='' OR pin.ma_phan ~* $1 OR mh.ma_hang ~* $1
+           OR pin.mau_vai ~* $1 OR kh.ten_khach_hang ~* $1)
     ORDER BY pin.id, a.thoi_gian DESC`;
-  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [q || '']);
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [mauTim(q)]);
   return rows.sort((a, b) => new Date(b.tg_huy) - new Date(a.tg_huy)).slice(0, 100);
 }
 
@@ -778,11 +779,11 @@ async function searchDotVaiForCancel(q, stage = '') {
     JOIN khach_hang kh ON kh.id=dh.khach_hang_id
     LEFT JOIN loai_dot_vai ldv ON ldv.id=dv.loai_dot_vai_id
     WHERE pin.dang_hoat_dong AND dv.trang_thai NOT IN ('DA_HUY','DA_GOP')
-      AND ($1='' OR pin.ma_phan ILIKE '%'||$1||'%' OR dv.ma_dot_vai ILIKE '%'||$1||'%'
-           OR mh.ma_hang ILIKE '%'||$1||'%' OR pin.mau_vai ILIKE '%'||$1||'%' OR kh.ten_khach_hang ILIKE '%'||$1||'%')
+      AND ($1='' OR pin.ma_phan ~* $1 OR dv.ma_dot_vai ~* $1
+           OR mh.ma_hang ~* $1 OR pin.mau_vai ~* $1 OR kh.ten_khach_hang ~* $1)
       ${stageCond ? `AND (${stageCond})` : ''}
     ORDER BY pin.ma_phan, dv.created_date LIMIT 100`;
-  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [q || '']);
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [mauTim(q)]);
   return rows;
 }
 
@@ -883,10 +884,10 @@ async function listDeletedDotVai(q) {
     JOIN audit_log a ON a.ten_bang='dot_vai_ve' AND a.hanh_dong='HUY_DOT_VAI' AND a.id_ban_ghi=dv.id::text
     LEFT JOIN nguoi_dung nd ON nd.id=a.nguoi_thuc_hien_id
     WHERE dv.trang_thai='DA_HUY'
-      AND ($1='' OR pin.ma_phan ILIKE '%'||$1||'%' OR dv.ma_dot_vai ILIKE '%'||$1||'%'
-           OR mh.ma_hang ILIKE '%'||$1||'%' OR pin.mau_vai ILIKE '%'||$1||'%' OR kh.ten_khach_hang ILIKE '%'||$1||'%')
+      AND ($1='' OR pin.ma_phan ~* $1 OR dv.ma_dot_vai ~* $1
+           OR mh.ma_hang ~* $1 OR pin.mau_vai ~* $1 OR kh.ten_khach_hang ~* $1)
     ORDER BY dv.id, a.thoi_gian DESC`;
-  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [q || '']);
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [mauTim(q)]);
   return rows.sort((a, b) => new Date(b.tg_huy) - new Date(a.tg_huy)).slice(0, 100);
 }
 

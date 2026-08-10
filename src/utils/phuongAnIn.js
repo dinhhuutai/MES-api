@@ -41,6 +41,7 @@ const TRANG_PAIN = [
   { ma: 'SX_THEO_DOI', module: 'Sản xuất', ten: 'Theo dõi chuyền', muc: 'lenh' },
   { ma: 'SX_KCS', module: 'Sản xuất', ten: 'KCS', muc: 'phieu' },
   { ma: 'SX_SUA', module: 'Sản xuất', ten: 'Sửa', muc: 'phieu' },
+  { ma: 'SX_PHAN_LOAI_LOI', module: 'Sản xuất', ten: 'Phân loại lỗi', muc: 'phieu' },
 
   { ma: 'CL_QC_READY', module: 'Chất lượng', ten: 'QC chuẩn bị kỹ thuật', muc: 'pin' },
   { ma: 'CL_TEST_RUN', module: 'Chất lượng', ten: 'Test Run - QA', muc: 'lenh' },

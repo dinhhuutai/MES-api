@@ -4,6 +4,7 @@ const { query } = require('../../config/db');
 const { lenhPhanInMatch } = require('../../utils/search');
 // Hiển thị theo PHƯƠNG ÁN IN — cấu hình động từng trang (mig 067), mặc định BẬT HẾT = không lọc.
 const { dkTrang } = require('../../utils/phuongAnIn');
+const { mauTim } = require('../../utils/timKiem');
 
 // SL vải đã ĐƯA VÀO đợt SX của 1 đợt vải = Σ lenh_sx_dot_vai.so_luong các lệnh non-HUY gắn đợt đó
 // (mig 052: SL đưa vào theo TỪNG đợt nằm ở junction — đúng cả khi 1 lệnh gồm nhiều đợt).
@@ -27,10 +28,10 @@ const hsktCols = (pinCol) => `
 // Release theo số lượng: 1 đợt có thể release nhiều lần → nhiều lệnh; đợt ở lại pool tới khi release đủ.
 async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
   const dkPain = await dkTrang('KH_RELEASE1', 'pin', 'pin.id');
-  const SEARCH = `($1 = '' OR pin.ma_phan ILIKE '%'||$1||'%' OR kh.ten_khach_hang ILIKE '%'||$1||'%'
-                  OR mh.ma_hang ILIKE '%'||$1||'%' OR pin.mau_vai ILIKE '%'||$1||'%'
-                  OR pin.kich_vai ILIKE '%'||$1||'%' OR pin.kich_phim ILIKE '%'||$1||'%'
-                  OR dv.ma_dot_vai ILIKE '%'||$1||'%' OR dv.id::text ILIKE '%'||$1||'%')`;
+  const SEARCH = `($1 = '' OR pin.ma_phan ~* $1 OR kh.ten_khach_hang ~* $1
+                  OR mh.ma_hang ~* $1 OR pin.mau_vai ~* $1
+                  OR pin.kich_vai ~* $1 OR pin.kich_phim ~* $1
+                  OR dv.ma_dot_vai ~* $1 OR dv.id::text ~* $1)`;
   const FROM = `
     FROM dot_vai_ve dv
     JOIN phan_in pin ON pin.id = dv.phan_in_id
@@ -65,8 +66,8 @@ async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
   const countSql = `SELECT count(*)::int AS total ${FROM}`;
 
   const [data, count] = await Promise.all([
-    query(dataSql, [search, limit, offset]),
-    query(countSql, [search]),
+    query(dataSql, [mauTim(search), limit, offset]),
+    query(countSql, [mauTim(search)]),
   ]);
   return { rows: data.rows, total: count.rows[0].total };
 }
@@ -120,10 +121,10 @@ async function phanInDangChay(phanInIds) {
 // còn SL (>0), không nằm trong set đang mở, chưa bị gộp ẩn (trang_thai<>'DA_GOP').
 // Gộp chỉ trong CÙNG phần in nên trả kèm phan_in_id để FE nhóm.
 async function listGopCandidates({ search = '' }) {
-  const SEARCH = `($1 = '' OR pin.ma_phan ILIKE '%'||$1||'%' OR kh.ten_khach_hang ILIKE '%'||$1||'%'
-                  OR mh.ma_hang ILIKE '%'||$1||'%' OR pin.mau_vai ILIKE '%'||$1||'%'
-                  OR pin.kich_vai ILIKE '%'||$1||'%' OR pin.kich_phim ILIKE '%'||$1||'%'
-                  OR dv.ma_dot_vai ILIKE '%'||$1||'%')`;
+  const SEARCH = `($1 = '' OR pin.ma_phan ~* $1 OR kh.ten_khach_hang ~* $1
+                  OR mh.ma_hang ~* $1 OR pin.mau_vai ~* $1
+                  OR pin.kich_vai ~* $1 OR pin.kich_phim ~* $1
+                  OR dv.ma_dot_vai ~* $1)`;
   const sql = `
     SELECT dv.id AS dot_vai_id, dv.ma_dot_vai, dv.so_luong_vai_ve::int AS so_luong_vai_ve,
            dv.ngay_vai_ve, dv.han_giao_hang,
@@ -146,7 +147,7 @@ async function listGopCandidates({ search = '' }) {
                       WHERE gsd.dot_vai_ve_id = dv.id AND gs.trang_thai = 'MO')
       AND ${SEARCH}
     ORDER BY pin.mau_vai, pin.ma_phan, dv.ngay_vai_ve NULLS LAST, dv.ma_dot_vai`;
-  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [search]);
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [mauTim(search)]);
   return rows;
 }
 
@@ -347,19 +348,19 @@ async function listReleasableSets(search = '') {
        AND NOT EXISTS (SELECT 1 FROM gom_set_dot_vai d JOIN ke_hoach_tam kht
                          ON kht.dot_vai_ve_id = d.dot_vai_ve_id AND kht.trang_thai = 'CHO'
                         WHERE d.gom_set_id = gs.id)
-       AND ($1 = '' OR gs.ma_set ILIKE '%'||$1||'%' OR gs.ghi_chu ILIKE '%'||$1||'%'
+       AND ($1 = '' OR gs.ma_set ~* $1 OR gs.ghi_chu ~* $1
             OR EXISTS (SELECT 1 FROM gom_set_dot_vai ds JOIN dot_vai_ve dvs ON dvs.id = ds.dot_vai_ve_id
                        JOIN phan_in pins ON pins.id = dvs.phan_in_id
                        JOIN ma_hang mhs ON mhs.id = pins.ma_hang_id
                        JOIN don_hang dhs ON dhs.id = mhs.don_hang_id
                        JOIN khach_hang khs ON khs.id = dhs.khach_hang_id
                         WHERE ds.gom_set_id = gs.id
-                          AND (pins.ma_phan ILIKE '%'||$1||'%' OR khs.ten_khach_hang ILIKE '%'||$1||'%'
-                               OR dhs.ma_don_hang ILIKE '%'||$1||'%' OR mhs.ma_hang ILIKE '%'||$1||'%'
-                               OR pins.mau_vai ILIKE '%'||$1||'%' OR pins.kich_vai ILIKE '%'||$1||'%'
-                               OR pins.kich_phim ILIKE '%'||$1||'%' OR dvs.ma_dot_vai ILIKE '%'||$1||'%')))
+                          AND (pins.ma_phan ~* $1 OR khs.ten_khach_hang ~* $1
+                               OR dhs.ma_don_hang ~* $1 OR mhs.ma_hang ~* $1
+                               OR pins.mau_vai ~* $1 OR pins.kich_vai ~* $1
+                               OR pins.kich_phim ~* $1 OR dvs.ma_dot_vai ~* $1)))
      ORDER BY gs.created_date DESC`,
-    [search]
+    [mauTim(search)]
   );
   return rows;
 }
@@ -509,7 +510,7 @@ function lenhListSql(extraWhere, dkPain = 'TRUE') {
     ${PHAN_INFO_LATERAL}
     WHERE ls.trang_thai = 'RELEASE_1'
       AND ${dkPain}
-      AND ($3 = '' OR ls.ma_lenh_san_xuat ILIKE '%'||$3||'%' OR ${lenhPhanInMatch('ls.id', '$3')})
+      AND ($3 = '' OR ls.ma_lenh_san_xuat ~* $3 OR ${lenhPhanInMatch('ls.id', '$3')})
       ${extraWhere}
     ORDER BY ls.created_date DESC
     LIMIT $4 OFFSET $5`;
@@ -517,7 +518,7 @@ function lenhListSql(extraWhere, dkPain = 'TRUE') {
 
 async function listTestRunCandidates({ cnspId, qaId, search = '', offset = 0, limit = 20 }) {
   const dkPain = await dkTrang('CL_TEST_RUN', 'lenh', 'ls.id');
-  const { rows } = await query(lenhListSql('', dkPain), [cnspId, qaId, search, limit, offset]);
+  const { rows } = await query(lenhListSql('', dkPain), [cnspId, qaId, mauTim(search), limit, offset]);
   return rows;
 }
 
@@ -526,7 +527,7 @@ async function listRelease2Candidates({ cnspId, qaId, search = '', offset = 0, l
     AND EXISTS (SELECT 1 FROM ket_qua_checkpoint k WHERE k.lenh_san_xuat_id = ls.id AND k.checkpoint_id = $1 AND k.trang_thai='DAT')
     AND EXISTS (SELECT 1 FROM ket_qua_checkpoint k WHERE k.lenh_san_xuat_id = ls.id AND k.checkpoint_id = $2 AND k.trang_thai='DAT')`;
   const dkPain = await dkTrang('KH_RELEASE2', 'lenh', 'ls.id');
-  const { rows } = await query(lenhListSql(extra, dkPain), [cnspId, qaId, search, limit, offset]);
+  const { rows } = await query(lenhListSql(extra, dkPain), [cnspId, qaId, mauTim(search), limit, offset]);
   return rows;
 }
 
@@ -551,7 +552,7 @@ async function listReplanCandidates({ search = '', offset = 0, limit = 50 }) {
     WHERE ls.trang_thai IN ('RELEASE_1','RELEASE_2')
       AND ${dkPain}
       AND NOT EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = ls.id)
-      AND ($1 = '' OR ls.ma_lenh_san_xuat ILIKE '%'||$1||'%' OR ${lenhPhanInMatch('ls.id', '$1')})`;
+      AND ($1 = '' OR ls.ma_lenh_san_xuat ~* $1 OR ${lenhPhanInMatch('ls.id', '$1')})`;
   const dataSql = `
     SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.ngay_ke_hoach, ls.chuyen_id, ls.trang_thai,
            cs.ma_chuyen, cs.ten_chuyen,
@@ -566,8 +567,8 @@ async function listReplanCandidates({ search = '', offset = 0, limit = 50 }) {
     LIMIT $2 OFFSET $3`;
   const countSql = `SELECT count(*)::int AS total ${FROM}`;
   const [data, count] = await Promise.all([
-    query(dataSql, [search, limit, offset]),
-    query(countSql, [search]),
+    query(dataSql, [mauTim(search), limit, offset]),
+    query(countSql, [mauTim(search)]),
   ]);
   return { rows: data.rows, total: count.rows[0].total };
 }
@@ -582,7 +583,7 @@ async function listGiaCongLenh({ search = '', offset = 0, limit = 50 }) {
     ${PHAN_INFO_LATERAL}
     WHERE ls.trang_thai = 'GIA_CONG'
       AND ${dkPain}
-      AND ($1 = '' OR ls.ma_lenh_san_xuat ILIKE '%'||$1||'%' OR ${lenhPhanInMatch('ls.id', '$1')})`;
+      AND ($1 = '' OR ls.ma_lenh_san_xuat ~* $1 OR ${lenhPhanInMatch('ls.id', '$1')})`;
   const dataSql = `
     SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.ngay_ke_hoach, ls.created_date,
            cs.ma_chuyen, cs.ten_chuyen, nr.ho_ten AS nguoi_release,
@@ -599,8 +600,8 @@ async function listGiaCongLenh({ search = '', offset = 0, limit = 50 }) {
     LIMIT $2 OFFSET $3`;
   const countSql = `SELECT count(*)::int AS total ${FROM}`;
   const [data, count] = await Promise.all([
-    query(dataSql, [search, limit, offset]),
-    query(countSql, [search]),
+    query(dataSql, [mauTim(search), limit, offset]),
+    query(countSql, [mauTim(search)]),
   ]);
   return { rows: data.rows, total: count.rows[0].total };
 }
@@ -679,7 +680,7 @@ async function listGiaCongTemCancelable({ search = '', offset = 0, limit = 50 })
     LEFT JOIN nguoi_dung nd ON nd.id = t.created_by
     ${PHAN_INFO_LATERAL}
     WHERE t.trang_thai <> 'HUY' AND t.sl_oqc_dat = 0 AND t.sl_da_giao = 0
-      AND ($1 = '' OR t.ma_tem ILIKE '%'||$1||'%' OR ls.ma_lenh_san_xuat ILIKE '%'||$1||'%'
+      AND ($1 = '' OR t.ma_tem ~* $1 OR ls.ma_lenh_san_xuat ~* $1
            OR ${lenhPhanInMatch('ls.id', '$1')})`;
   const dataSql = `
     SELECT t.id AS tem_id, t.ma_tem, t.so_luong, t.created_date AS tg_chuyen,
@@ -693,8 +694,8 @@ async function listGiaCongTemCancelable({ search = '', offset = 0, limit = 50 })
     LIMIT $2 OFFSET $3`;
   const countSql = `SELECT count(*)::int AS total ${FROM}`;
   const [data, count] = await Promise.all([
-    query(dataSql.replace(/\s+/g, ' '), [search, limit, offset]),
-    query(countSql.replace(/\s+/g, ' '), [search]),
+    query(dataSql.replace(/\s+/g, ' '), [mauTim(search), limit, offset]),
+    query(countSql.replace(/\s+/g, ' '), [mauTim(search)]),
   ]);
   return { rows: data.rows, total: count.rows[0].total };
 }
@@ -812,8 +813,8 @@ async function keHoachTamDoneByDate(date) {
 
 async function listKeHoachTamRows({ search = '', offset = 0, limit = 200 }) {
   const dkPain = await dkTrang('KH_TAM', 'pin', 'pin.id');
-  const SEARCH = `($1 = '' OR pin.ma_phan ILIKE '%'||$1||'%' OR kh.ten_khach_hang ILIKE '%'||$1||'%'
-                  OR mh.ma_hang ILIKE '%'||$1||'%' OR pin.mau_vai ILIKE '%'||$1||'%' OR dv.ma_dot_vai ILIKE '%'||$1||'%')`;
+  const SEARCH = `($1 = '' OR pin.ma_phan ~* $1 OR kh.ten_khach_hang ~* $1
+                  OR mh.ma_hang ~* $1 OR pin.mau_vai ~* $1 OR dv.ma_dot_vai ~* $1)`;
   const FROM = `
     FROM ke_hoach_tam kt
     JOIN dot_vai_ve dv ON dv.id = kt.dot_vai_ve_id
@@ -840,8 +841,8 @@ async function listKeHoachTamRows({ search = '', offset = 0, limit = 200 }) {
     LIMIT $2 OFFSET $3`;
   const countSql = `SELECT count(*)::int AS total ${FROM}`;
   const [data, count] = await Promise.all([
-    query(dataSql.replace(/\s+/g, ' '), [search, limit, offset]),
-    query(countSql.replace(/\s+/g, ' '), [search]),
+    query(dataSql.replace(/\s+/g, ' '), [mauTim(search), limit, offset]),
+    query(countSql.replace(/\s+/g, ' '), [mauTim(search)]),
   ]);
   return { rows: data.rows, total: count.rows[0].total };
 }
@@ -932,7 +933,7 @@ async function listCancelableLenh({ search = '', offset = 0, limit = 50, moRong 
     LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
     ${PHAN_INFO_LATERAL}
     WHERE ${dieuKien}
-      AND ($1 = '' OR ls.ma_lenh_san_xuat ILIKE '%'||$1||'%' OR ${lenhPhanInMatch('ls.id', '$1')})`;
+      AND ($1 = '' OR ls.ma_lenh_san_xuat ~* $1 OR ${lenhPhanInMatch('ls.id', '$1')})`;
   const dataSql = `
     SELECT ls.id, ls.ma_lenh_san_xuat, ls.trang_thai, ls.so_luong_release, ls.ngay_ke_hoach, ls.created_date,
            cs.ma_chuyen, cs.ten_chuyen,
@@ -954,8 +955,8 @@ async function listCancelableLenh({ search = '', offset = 0, limit = 50, moRong 
     LIMIT $2 OFFSET $3`;
   const countSql = `SELECT count(*)::int AS total ${FROM}`;
   const [data, count] = await Promise.all([
-    query(dataSql, [search, limit, offset]),
-    query(countSql, [search]),
+    query(dataSql, [mauTim(search), limit, offset]),
+    query(countSql, [mauTim(search)]),
   ]);
   return { rows: data.rows, total: count.rows[0].total };
 }

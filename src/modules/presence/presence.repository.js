@@ -1,6 +1,7 @@
 'use strict';
 
 const { query } = require('../../config/db');
+const { mauTim } = require('../../utils/timKiem');
 
 // Ghi 1 lần điều hướng trang.
 async function insertNav({ userId, duongDan, tieuDe, ip }) {
@@ -90,8 +91,8 @@ async function listActivity({ date, userId, loai, search, limit = 50, offset = 0
   if (userId) { params.push(userId); conds.push(`e.nguoi_id = $${params.length}`); }
   if (loai) { params.push(loai); conds.push(`e.loai = $${params.length}`); }
   if (search) {
-    params.push(search); const i = params.length;
-    conds.push(`(e.doi_tuong ILIKE '%'||$${i}||'%' OR e.hanh_dong ILIKE '%'||$${i}||'%' OR e.chi_tiet ILIKE '%'||$${i}||'%' OR nd.ho_ten ILIKE '%'||$${i}||'%' OR nd.ten_dang_nhap ILIKE '%'||$${i}||'%')`);
+    params.push(mauTim(search)); const i = params.length;
+    conds.push(`(e.doi_tuong ~* $${i} OR e.hanh_dong ~* $${i} OR e.chi_tiet ~* $${i} OR nd.ho_ten ~* $${i} OR nd.ten_dang_nhap ~* $${i})`);
   }
   const where = conds.length ? 'WHERE ' + conds.join(' AND ') : '';
   params.push(limit); const li = params.length;
