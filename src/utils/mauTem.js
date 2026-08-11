@@ -113,7 +113,10 @@ const laTruongHopLe = (ma) => TRUONG_TEM.some((t) => t.ma === ma);
 //
 // KHUNG = {
 //   so_cot: 4,                                  // số cột của lưới
-//   hang: [ { cao_mm: 3.4 | null }, ... ],       // cao_mm null = tự giãn chia đều phần trống còn lại
+//   hang: [ { cao_mm: 3.4 | null }, ... ],       // cao_mm null = tự giãn CHIA ĐỀU phần trống còn lại
+//   // ⚠⚠ "chia đều" do MES TỰ TÍNH (`renderMauTem.caoHangMm`) rồi ghi `height:…mm` vào MỌI <tr>.
+//   //   Để `height:auto` cho trình duyệt tự chia thì nó chia THEO NỘI DUNG ⇒ hàng có ảnh QR/mã vạch
+//   //   phình theo kích thước GỐC của ảnh, hàng toàn ô TRỐNG bị bóp gần 0 (lỗi thật 2026-08-11).
 //   cot:  [ { rong_mm: 9 | null }, ... ],        // rong_mm null = tự chia đều phần còn lại
 //   o: {                                         // CHỈ ô gốc (ô bị gộp che thì KHÔNG có mặt)
 //     "0,0": {
@@ -121,7 +124,11 @@ const laTruongHopLe = (ma) => TRUONG_TEM.some((t) => t.ma === ma);
 //       phan: [                                  // nội dung ghép nối, để trống = ô rỗng (ghi tay)
 //         { loai: 'chu', gia_tri: 'PO' },        //   chữ cố định
 //         { loai: 'truong', ma: 'ma_don_hang', dinh_dang: 'DD/MM/YY HH:mm',
-//           thay: [{ tu: 'Chuyền M', thanh: '' }] }   // TÌM & THAY khi hiện lên tem
+//           // ĐỔI CÁCH HIỂN THỊ khi in (không đụng dữ liệu gốc) — chạy lần lượt; `kieu` thiếu = THAY.
+//           //   THAY  { tu, thanh }                 thay mọi lần xuất hiện của `tu`
+//           //   VITRI { vi_tri, so_kt, thanh }      thay `so_kt` ký tự kể từ ký tự thứ `vi_tri` (từ 1); so_kt=0 = chèn
+//           //   DAU   { thanh } · CUOI { thanh }    thêm vào đầu / cuối chuỗi
+//           thay: [{ kieu: 'THAY', tu: 'Chuyền M', thanh: '' }] }
 //       ],
 //       cs: 3, rs: 1,                            // colspan/rowspan (mặc định 1)
 //       dam: true, nghieng: false, gach_chan: false,
@@ -134,7 +141,14 @@ const laTruongHopLe = (ma) => TRUONG_TEM.some((t) => t.ma === ma);
 //       gian_chu_mm: 0.3,                        // GIÃN CHỮ (letter-spacing, mm) — âm = bóp lại
 //       xoay: 90,                                // 0 ngang · 90 dọc đọc từ trên xuống · 270 từ dưới lên
 //       vien: { tren: true, duoi: true, trai: true, phai: true },
-//       ma_qr: 'ma_tem'                          // kieu qr/barcode: lấy giá trị từ trường nào
+//       ma_qr: 'ma_tem',                         // kieu qr/barcode: lấy giá trị từ trường nào
+//       thay: [{ kieu: 'VITRI', vi_tri: 1, so_kt: 2, thanh: '17' }],  // luật ở MỨC Ô, chỉ cho ô mã
+//       // ⚠⚠ Khác `phan[].thay` (chỉ đổi CHỮ hiện ra): luật ở ô mã đổi LUÔN nội dung được MÃ HÓA vào
+//       //   QR/vạch ⇒ máy quét đọc ra chuỗi mới. Cắt bớt ký tự mã tem là quét không ra tem nữa.
+//       hien_ma: true                            // có in dãy chữ mã bên dưới hình không
+//       // ⚠ MẶC ĐỊNH KHÁC NHAU (luật ở FE `renderMauTem.hienChuMa`): MÃ VẠCH thiếu khóa = **KHÔNG**
+//       //   in số (vạch đã đủ dữ liệu, đỡ tốn chỗ trên tem 55×80) · QR thiếu khóa = CÓ in (mắt người
+//       //   không đọc được QR). 4 mẫu gốc khai `hien_ma: true` cho ô QR nên không mẫu nào bị đổi.
 //     }
 //   }
 // }
