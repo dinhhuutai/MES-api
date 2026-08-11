@@ -40,6 +40,17 @@ async function getRun(lenhId) {
     : [[], null, await repo.getLenhDotVaiList(lenhId), await repo.listVaiHuyByLenh(lenhId), { items: [] }];
   // Lệnh GOM SET = nhiều PHẦN IN khác nhau trong cùng 1 đợt SX (in chung 1 chuyền).
   const soPhanIn = new Set(dotVai.map((d) => d.phan_in_id)).size;
+  // Lý do BỔ SUNG đã ghi của từng đợt vải (mig 077) — gắn thẳng vào dòng đợt vải cho FE khỏi ghép.
+  // ⚠ Chưa chạy mig 077 thì trả [] ⇒ các trường dưới là undefined, sidebar tự ẩn khối.
+  const bsMap = new Map((await repo.lyDoBoSungByLenh(lenhId).catch(() => []))
+    .map((r) => [r.dot_vai_ve_id, r]));
+  dotVai.forEach((d) => {
+    const b = bsMap.get(d.dot_vai_ve_id);
+    if (b) Object.assign(d, {
+      ly_do_bo_sung_id: b.ly_do_bo_sung_id, ghi_chu_bo_sung: b.ghi_chu_bo_sung,
+      ten_ly_do_bo_sung: b.ten_ly_do,
+    });
+  });
   return { lenh, phieu, tems, printed, ngung_list: ngungList, ngung_active: ngungActive,
            dot_vai: dotVai, vai_huy: vaiHuy, phan_cong: phanCong,
            goi_y_tem: await goiYTemMeta(lenhId, phieu?.id),
@@ -185,6 +196,44 @@ async function suaLyDoNgung(id, d, actorId) {
 async function doiTrangThaiLyDoNgung(id, active, actorId) {
   if (!await repo.getLyDoNgung(id)) throw new AppError('Lý do không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   await repo.setLyDoNgungActive(id, active, actorId);
+}
+
+// ─── DANH MỤC LÝ DO BỔ SUNG + ghi cho ĐỢT VẢI (mig 077) ──────────────────────
+// ⚠ `dsLyDoBoSung` NUỐT LỖI trả mảng rỗng (chưa chạy mig 077) — sidebar chỉ hiện ô ghi chú, người
+//   đứng máy vẫn ghi tay được; không để thiếu migration chặn việc xưởng (giống lý do ngừng chuyền).
+async function dsLyDoBoSung(opts) {
+  try { return await repo.listLyDoBoSung(opts); } catch { return []; }
+}
+
+async function taoLyDoBoSung(d, actorId) {
+  const ma = String(d.maLyDo || '').trim().toUpperCase();
+  const ten = String(d.tenLyDo || '').trim();
+  if (!ma || !ten) throw new AppError('Nhập mã và tên lý do', { status: 422, errorCode: 'VALIDATION_ERROR' });
+  if (await repo.existsMaLyDoBoSung(ma)) throw new AppError(`Mã "${ma}" đã tồn tại`, { status: 409, errorCode: 'DUPLICATE' });
+  return { id: await repo.createLyDoBoSung({ ...d, maLyDo: ma, tenLyDo: ten }, actorId) };
+}
+
+async function suaLyDoBoSung(id, d, actorId) {
+  if (!await repo.getLyDoBoSung(id)) throw new AppError('Lý do không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  await repo.updateLyDoBoSung(id, d, actorId);
+}
+
+async function doiTrangThaiLyDoBoSung(id, active, actorId) {
+  if (!await repo.getLyDoBoSung(id)) throw new AppError('Lý do không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  await repo.setLyDoBoSungActive(id, active, actorId);
+}
+
+// Ghi lý do bổ sung cho 1 ĐỢT VẢI (sidebar màn Sản xuất). Bỏ trống cả 2 = xóa lý do đã ghi.
+async function luuLyDoBoSungDotVai(dotVaiId, { lyDoId, ghiChu }, actorId) {
+  if (lyDoId) {
+    let dm = null;
+    try { dm = await repo.getLyDoBoSung(lyDoId); } catch { dm = null; }
+    if (!dm) throw new AppError('Lý do bổ sung không tồn tại', { status: 404, errorCode: 'LY_DO_NOT_FOUND' });
+  }
+  const ok = await repo.setLyDoBoSungChoDotVai(dotVaiId, lyDoId || null, (ghiChu || '').trim() || null, actorId);
+  if (!ok) throw new AppError('Chưa chạy migration 077 nên chưa ghi được lý do bổ sung', { status: 409, errorCode: 'THIEU_MIGRATION' });
+  sockets.emit('production:updated', { action: 'ly-do-bo-sung' });
+  return { ok: true };
 }
 
 // Chuyền hoạt động lại — lưu thời gian ngừng. `gioKt` (tùy chọn, 'HH:MM') = giờ kết thúc nhập tay.
@@ -742,6 +791,7 @@ module.exports = {
   getXePhoi, listTemChoPhoi, addToXe, adjustPhoi, listDrying, confirmDry, redry,
   stopLine, resumeLine, addVaiHuy, savePhanCong,
   dsLyDoNgung, taoLyDoNgung, suaLyDoNgung, doiTrangThaiLyDoNgung,
+  dsLyDoBoSung, taoLyDoBoSung, suaLyDoBoSung, doiTrangThaiLyDoBoSung, luuLyDoBoSungDotVai,
   listCancelableTem, cancelPrintTem,
   listCloseCandidates, closeProduction,
   listReopenCandidates, reopenProduction, pauseLenhChay, doiChuyen,

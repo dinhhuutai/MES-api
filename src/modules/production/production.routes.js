@@ -36,6 +36,15 @@ router.post('/ly-do-ngung', rbac('LY_DO_NGUNG_MANAGE'), c.lyDoNgungCreate);
 router.patch('/ly-do-ngung/:id/active', rbac('LY_DO_NGUNG_MANAGE'), c.lyDoNgungToggle);
 router.patch('/ly-do-ngung/:id', rbac('LY_DO_NGUNG_MANAGE'), c.lyDoNgungUpdate);
 
+// DANH MỤC LÝ DO BỔ SUNG (mig 077) — trang Sản xuất > Danh mục lý do bổ sung.
+// ⚠ ĐỌC mở cho `PROD_RUN`: người đứng máy phải chọn được lý do ở sidebar khi đợt vải là BỔ SUNG.
+router.get('/ly-do-bo-sung', rbac('PROD_RUN', 'PROD_MONITOR', 'LY_DO_BO_SUNG_MANAGE'), c.lyDoBoSungList);
+router.post('/ly-do-bo-sung', rbac('LY_DO_BO_SUNG_MANAGE'), c.lyDoBoSungCreate);
+router.patch('/ly-do-bo-sung/:id/active', rbac('LY_DO_BO_SUNG_MANAGE'), c.lyDoBoSungToggle);
+router.patch('/ly-do-bo-sung/:id', rbac('LY_DO_BO_SUNG_MANAGE'), c.lyDoBoSungUpdate);
+// Ghi lý do bổ sung cho 1 ĐỢT VẢI (sidebar Sản xuất)
+router.post('/dot-vai/:dotVaiId/ly-do-bo-sung', rbac('PROD_RUN'), c.luuLyDoBoSungDotVai);
+
 // Hủy lệnh in tem (xóa/HỦY tem chưa kiểm + gỡ xe phơi, trả SL về) — dùng ở trang Hủy lệnh xác nhận
 router.get('/huy-tem/candidates', rbac('PROD_RUN'), c.cancelableTem);
 router.post('/huy-tem/:temId', rbac('PROD_RUN'), c.cancelPrintTem);

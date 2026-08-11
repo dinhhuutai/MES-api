@@ -230,7 +230,8 @@ async function getLenhDotVaiList(lenhId) {
             COALESCE(lsd.so_luong, dv.so_luong_vai_ve)::int AS sl_vao_sx,
             pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim,
             pin.tinh_chat_in, pin.so_luong_don_hang,
-            kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, ldv.ten_loai AS ten_loai_dot_vai
+            kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, ldv.ten_loai AS ten_loai_dot_vai,
+            ldv.ma_loai AS ma_loai_dot_vai
      FROM lenh_sx_dot_vai lsd
      JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
      JOIN phan_in pin ON pin.id = dv.phan_in_id
@@ -608,7 +609,9 @@ async function getTemLabelData(temId, dotVaiId = null) {
             info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan,
             info.mau_vai, info.kich_vai, info.kich_phim, info.so_luong_don_hang,
             info.nha_gia_cong, info.so_luong_vai_ve,
-            t.gc_mau_vai, t.ma_ngay_ca, t.ngay_ca, t.gio_sx_bd, t.gio_sx_kt,
+            t.gc_mau_vai, t.ma_ngay_ca, t.ngay_ca,
+            to_char(t.gio_sx_bd, 'HH24:MI') AS gio_sx_bd,
+            to_char(t.gio_sx_kt, 'HH24:MI') AS gio_sx_kt,
             ps.chuyen_truong, ndct.ho_ten AS ca_truong,
             (SELECT string_agg(DISTINCT pc.tho_in, ', ') FROM phan_cong_san_xuat pc
               WHERE pc.phieu_san_xuat_id = ps.id AND COALESCE(pc.tho_in,'') <> '') AS tho_in,
@@ -1086,6 +1089,89 @@ const getLyDoNgung = async (id) => (
   await query('SELECT id, ten_ly_do, dang_hoat_dong FROM ly_do_ngung_chuyen WHERE id = $1', [id])
 ).rows[0] || null;
 
+// ─── DANH MỤC LÝ DO BỔ SUNG + ghi lý do cho ĐỢT VẢI (mig 077) ────────────────
+// Cùng khuôn với danh mục lý do ngừng chuyền. Ghi ở mức ĐỢT VẢI (`dot_vai_ve`), không phải phiếu:
+// lý do bổ sung đi theo đợt vải qua mọi lệnh sản xuất về sau.
+async function listLyDoBoSung({ search = '', all = false } = {}) {
+  const { rows } = await query(
+    `SELECT id, ma_ly_do, ten_ly_do, mo_ta, dang_hoat_dong
+       FROM ly_do_bo_sung
+      WHERE ($1 = '' OR ma_ly_do ~* $1 OR ten_ly_do ~* $1)
+        ${all ? '' : 'AND dang_hoat_dong'}
+      ORDER BY ten_ly_do`.replace(/\s+/g, ' '),
+    [mauTim(search)]
+  );
+  return rows;
+}
+
+async function createLyDoBoSung(d, actorId) {
+  const { rows } = await query(
+    `INSERT INTO ly_do_bo_sung (ma_ly_do, ten_ly_do, mo_ta, created_by)
+     VALUES ($1,$2,$3,$4) RETURNING id`,
+    [d.maLyDo, d.tenLyDo, d.moTa || null, actorId || null]
+  );
+  return rows[0].id;
+}
+
+async function updateLyDoBoSung(id, d, actorId) {
+  await query(
+    `UPDATE ly_do_bo_sung SET ten_ly_do = COALESCE($2, ten_ly_do), mo_ta = $3,
+       updated_by = $4, updated_date = CURRENT_TIMESTAMP WHERE id = $1`,
+    [id, d.tenLyDo ?? null, d.moTa ?? null, actorId || null]
+  );
+}
+
+async function setLyDoBoSungActive(id, active, actorId) {
+  await query(
+    `UPDATE ly_do_bo_sung SET dang_hoat_dong = $2, updated_by = $3, updated_date = CURRENT_TIMESTAMP
+      WHERE id = $1`, [id, active, actorId || null]
+  );
+}
+
+const existsMaLyDoBoSung = async (ma) => (
+  await query('SELECT 1 FROM ly_do_bo_sung WHERE ma_ly_do = $1', [ma])
+).rows.length > 0;
+
+const getLyDoBoSung = async (id) => (
+  await query('SELECT id, ten_ly_do, dang_hoat_dong FROM ly_do_bo_sung WHERE id = $1', [id])
+).rows[0] || null;
+
+// ⚠ Đường dự phòng khi CHƯA chạy mig 077 — dò cột trước, giống `coCotLyDoNgung`.
+let _coCotBoSung = null;
+async function coCotLyDoBoSung() {
+  if (_coCotBoSung) return true;
+  const { rows } = await query(
+    `SELECT 1 FROM information_schema.columns
+      WHERE table_schema='public' AND table_name='dot_vai_ve' AND column_name='ly_do_bo_sung_id'`
+  );
+  if (rows.length) _coCotBoSung = true;
+  return rows.length > 0;
+}
+
+async function setLyDoBoSungChoDotVai(dotVaiId, lyDoId, ghiChu, actorId) {
+  if (!await coCotLyDoBoSung()) return false;
+  await query(
+    `UPDATE dot_vai_ve SET ly_do_bo_sung_id = $2, ghi_chu_bo_sung = $3,
+       updated_by = $4, updated_date = CURRENT_TIMESTAMP WHERE id = $1`,
+    [dotVaiId, lyDoId || null, ghiChu || null, actorId || null]
+  );
+  return true;
+}
+
+// Lý do bổ sung đã ghi của các đợt vải trong 1 lệnh — trả map để sidebar hiện lại giá trị đã lưu.
+async function lyDoBoSungByLenh(lenhId) {
+  if (!await coCotLyDoBoSung()) return [];
+  const { rows } = await query(
+    `SELECT dv.id AS dot_vai_ve_id, dv.ly_do_bo_sung_id, dv.ghi_chu_bo_sung, lb.ten_ly_do
+       FROM lenh_sx_dot_vai lsd
+       JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+       LEFT JOIN ly_do_bo_sung lb ON lb.id = dv.ly_do_bo_sung_id
+      WHERE lsd.lenh_san_xuat_id = $1`.replace(/\s+/g, ' '),
+    [lenhId]
+  );
+  return rows;
+}
+
 async function startNgung({ phieuId, lenhId, chuyenId, lyDo, lyDoId, gioBd }, actorId) {
   const coCot = lyDoId ? await coCotLyDoNgung() : false;
   const cot = coCot ? ', ly_do_id' : '';
@@ -1196,4 +1282,6 @@ module.exports = {
   promoteFinishedDrying, redryTem, getDryMinForPhieu,
   getActiveNgung, startNgung, resumeNgung, listNgungByPhieu,
   listLyDoNgung, createLyDoNgung, updateLyDoNgung, setLyDoNgungActive, existsMaLyDoNgung, getLyDoNgung,
+  listLyDoBoSung, createLyDoBoSung, updateLyDoBoSung, setLyDoBoSungActive, existsMaLyDoBoSung,
+  getLyDoBoSung, setLyDoBoSungChoDotVai, lyDoBoSungByLenh,
 };

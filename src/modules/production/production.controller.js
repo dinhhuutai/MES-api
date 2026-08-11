@@ -72,6 +72,21 @@ const lyDoNgungToggle = asyncHandler(async (req, res) => {
   ok(res, null, 'Đã cập nhật');
 });
 
+// ─── Danh mục lý do bổ sung + ghi cho đợt vải (mig 077) ──────────────────────
+const lyDoBoSungList = asyncHandler(async (req, res) =>
+  ok(res, await service.dsLyDoBoSung({ search: req.query.search || '', all: req.query.all === '1' })));
+const lyDoBoSungCreate = asyncHandler(async (req, res) =>
+  ok(res, await service.taoLyDoBoSung(req.body, req.user.id), 'Đã thêm lý do'));
+const lyDoBoSungUpdate = asyncHandler(async (req, res) => {
+  await service.suaLyDoBoSung(req.params.id, req.body, req.user.id); ok(res, null, 'Đã cập nhật');
+});
+const lyDoBoSungToggle = asyncHandler(async (req, res) => {
+  await service.doiTrangThaiLyDoBoSung(req.params.id, req.body.active !== false, req.user.id);
+  ok(res, null, 'Đã cập nhật');
+});
+const luuLyDoBoSungDotVai = asyncHandler(async (req, res) =>
+  ok(res, await service.luuLyDoBoSungDotVai(req.params.dotVaiId, req.body, req.user.id), 'Đã lưu lý do bổ sung'));
+
 const resumeLine = asyncHandler(async (req, res) =>
   ok(res, await service.resumeLine(req.params.phieuId, req.user.id, req.body?.gioKt || null), 'Chuyền hoạt động lại'));
 
@@ -138,6 +153,7 @@ module.exports = {
   xePhoi, temChoPhoi, themTem, adjustPhoi, drying, confirmDry, redry,
   stopLine, resumeLine, addVaiHuy, savePhanCong, vuotSanXuat,
   lyDoNgungList, lyDoNgungCreate, lyDoNgungUpdate, lyDoNgungToggle,
+  lyDoBoSungList, lyDoBoSungCreate, lyDoBoSungUpdate, lyDoBoSungToggle, luuLyDoBoSungDotVai,
   cancelableTem, cancelPrintTem,
   closeCandidates, closeProduction,
   reopenCandidates, reopenProduction, pauseLenhChay, doiChuyen,
