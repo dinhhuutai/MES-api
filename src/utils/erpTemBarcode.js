@@ -33,6 +33,9 @@ function erpProxy() {
 
 async function goiMotLan() {
   const url = env.erp.barcodeTemUrl;
+  // ⚠ LOG CẢ URL: lỗi production 2026-08-11 (gọi nhầm host LAN) mất rất lâu mới tìm ra vì thông điệp
+  //   lỗi chỉ ghi "timeout" mà không nói đang gọi ĐI ĐÂU.
+  console.log(`[tem-barcode] → GET ${url} (timeout ${Math.round(env.erp.barcodeTemTimeoutMs / 1000)}s)`);
   const res = await axios.get(url, {
     timeout: env.erp.barcodeTemTimeoutMs,
     headers: { Accept: 'application/json', ...(env.erp.apiHeaders || {}) },
@@ -65,9 +68,9 @@ async function layBarcodeTem() {
       }
     }
   }
-  console.error(`[tem-barcode] ✗ Không lấy được mã tem sau ${soLan} lần: ${loiCuoi && loiCuoi.message}`);
+  console.error(`[tem-barcode] ✗ Không lấy được mã tem sau ${soLan} lần (${env.erp.barcodeTemUrl}): ${loiCuoi && loiCuoi.message}`);
   throw new AppError(
-    `Không lấy được mã tem từ ERP (đã thử ${soLan} lần): ${loiCuoi && loiCuoi.message}. `
+    `Không lấy được mã tem từ ERP (đã thử ${soLan} lần, ${env.erp.barcodeTemUrl}): ${loiCuoi && loiCuoi.message}. `
     + 'Kiểm tra kết nối tới ERP rồi bấm in lại — tem CHƯA được tạo.',
     { status: 503, errorCode: 'ERP_BARCODE_TEM' }
   );

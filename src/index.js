@@ -34,6 +34,12 @@ async function start() {
   }
   server.listen(env.port, () => {
     console.log(`[server] THLA MES API chạy tại http://localhost:${env.port} (${env.nodeEnv})`);
+    // ⚠⚠ IN 2 URL ERP NGAY LÚC KHỞI ĐỘNG — lỗi 2026-08-11: production chỉ đặt URL nhận vải, URL lấy
+    //   mã tem trỏ host khác ⇒ đồng bộ chạy ngon mà KHÔNG IN ĐƯỢC TEM, log đồng bộ vẫn xanh nên rất
+    //   khó đoán. Nhìn 2 dòng này là thấy ngay 2 đường có cùng host không.
+    console.log(`[erp] Nhận vải : ${env.erp.phieuNhanVaiUrl}`);
+    console.log(`[erp] Mã tem   : ${env.erp.barcodeTemUrl}`
+      + (process.env.ERP_BARCODE_TEM_URL ? '' : '   ⚠ CHƯA đặt ERP_BARCODE_TEM_URL trong .env — đang suy theo gốc URL nhận vải'));
     // [ERP TẮT TẠM] không tự đồng bộ ERP. Bỏ comment để bật lại.
      startErpSyncJob();
     startCleanupJob();

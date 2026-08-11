@@ -29,6 +29,13 @@ router.post('/phieu/:phieuId/phan-cong', rbac('PROD_RUN'), c.savePhanCong);
 router.post('/phieu/:phieuId/ngung', rbac('PROD_RUN'), c.stopLine);
 router.post('/phieu/:phieuId/hoat-dong-lai', rbac('PROD_RUN'), c.resumeLine);
 
+// DANH MỤC LÝ DO NGỪNG CHUYỀN (mig 076) — trang Sản xuất > Danh mục lý do ngừng chuyền.
+// ⚠ ĐỌC mở cho `PROD_RUN`: người đứng máy phải lấy được danh sách để chọn khi ngừng chuyền.
+router.get('/ly-do-ngung', rbac('PROD_RUN', 'PROD_MONITOR', 'LY_DO_NGUNG_MANAGE'), c.lyDoNgungList);
+router.post('/ly-do-ngung', rbac('LY_DO_NGUNG_MANAGE'), c.lyDoNgungCreate);
+router.patch('/ly-do-ngung/:id/active', rbac('LY_DO_NGUNG_MANAGE'), c.lyDoNgungToggle);
+router.patch('/ly-do-ngung/:id', rbac('LY_DO_NGUNG_MANAGE'), c.lyDoNgungUpdate);
+
 // Hủy lệnh in tem (xóa/HỦY tem chưa kiểm + gỡ xe phơi, trả SL về) — dùng ở trang Hủy lệnh xác nhận
 router.get('/huy-tem/candidates', rbac('PROD_RUN'), c.cancelableTem);
 router.post('/huy-tem/:temId', rbac('PROD_RUN'), c.cancelPrintTem);

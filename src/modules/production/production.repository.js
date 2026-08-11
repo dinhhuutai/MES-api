@@ -1027,11 +1027,74 @@ const BD_TU_GIO = `(CASE
       THEN (((now() ${VN_TZ})::date - 1 + $6::time) ${VN_TZ})
     ELSE (((now() ${VN_TZ})::date + $6::time) ${VN_TZ}) END)`;
 
-async function startNgung({ phieuId, lenhId, chuyenId, lyDo, gioBd }, actorId) {
-  const sql = `INSERT INTO ngung_chuyen (phieu_san_xuat_id, lenh_san_xuat_id, chuyen_id, ly_do, tg_bd_ngung, trang_thai, created_by)
-     VALUES ($1,$2,$3,$4,${BD_TU_GIO},'DANG_NGUNG',$5) RETURNING id`;
-  const { rows } = await query(sql.replace(/\s+/g, ' '),
-    [phieuId, lenhId || null, chuyenId || null, lyDo || null, actorId, gioBd || null]);
+// ─── DANH MỤC LÝ DO NGỪNG CHUYỀN (mig 076) ───────────────────────────────────
+// ⚠ Đường dự phòng khi CHƯA chạy mig 076: dò `information_schema` TRƯỚC rồi mới dựng câu INSERT
+//   (cùng khuôn `temCoCot` của mig 066). Thiếu bảng/cột thì ngừng chuyền vẫn ghi được như cũ bằng
+//   `ly_do` TEXT — chỉ mất phần gắn danh mục. Ngừng chuyền là thao tác xưởng đang cần, không được kẹt.
+let _coCotLyDoId = null;
+async function coCotLyDoNgung() {
+  if (_coCotLyDoId) return true;                       // chỉ cache khi ĐÃ có ⇒ chạy migration là nhận ngay
+  const { rows } = await query(
+    `SELECT 1 FROM information_schema.columns
+      WHERE table_schema='public' AND table_name='ngung_chuyen' AND column_name='ly_do_id'`
+  );
+  if (rows.length) _coCotLyDoId = true;
+  return rows.length > 0;
+}
+
+async function listLyDoNgung({ search = '', all = false } = {}) {
+  const { rows } = await query(
+    `SELECT id, ma_ly_do, ten_ly_do, mo_ta, dang_hoat_dong
+       FROM ly_do_ngung_chuyen
+      WHERE ($1 = '' OR ma_ly_do ~* $1 OR ten_ly_do ~* $1)
+        ${all ? '' : 'AND dang_hoat_dong'}
+      ORDER BY ten_ly_do`.replace(/\s+/g, ' '),
+    [mauTim(search)]
+  );
+  return rows;
+}
+
+async function createLyDoNgung(d, actorId) {
+  const { rows } = await query(
+    `INSERT INTO ly_do_ngung_chuyen (ma_ly_do, ten_ly_do, mo_ta, created_by)
+     VALUES ($1,$2,$3,$4) RETURNING id`,
+    [d.maLyDo, d.tenLyDo, d.moTa || null, actorId || null]
+  );
+  return rows[0].id;
+}
+
+async function updateLyDoNgung(id, d, actorId) {
+  await query(
+    `UPDATE ly_do_ngung_chuyen SET ten_ly_do = COALESCE($2, ten_ly_do), mo_ta = $3,
+       updated_by = $4, updated_date = CURRENT_TIMESTAMP WHERE id = $1`,
+    [id, d.tenLyDo ?? null, d.moTa ?? null, actorId || null]
+  );
+}
+
+async function setLyDoNgungActive(id, active, actorId) {
+  await query(
+    `UPDATE ly_do_ngung_chuyen SET dang_hoat_dong = $2, updated_by = $3, updated_date = CURRENT_TIMESTAMP
+      WHERE id = $1`, [id, active, actorId || null]
+  );
+}
+
+const existsMaLyDoNgung = async (ma) => (
+  await query('SELECT 1 FROM ly_do_ngung_chuyen WHERE ma_ly_do = $1', [ma])
+).rows.length > 0;
+
+const getLyDoNgung = async (id) => (
+  await query('SELECT id, ten_ly_do, dang_hoat_dong FROM ly_do_ngung_chuyen WHERE id = $1', [id])
+).rows[0] || null;
+
+async function startNgung({ phieuId, lenhId, chuyenId, lyDo, lyDoId, gioBd }, actorId) {
+  const coCot = lyDoId ? await coCotLyDoNgung() : false;
+  const cot = coCot ? ', ly_do_id' : '';
+  const gt = coCot ? ', $7' : '';
+  const sql = `INSERT INTO ngung_chuyen (phieu_san_xuat_id, lenh_san_xuat_id, chuyen_id, ly_do, tg_bd_ngung, trang_thai, created_by${cot})
+     VALUES ($1,$2,$3,$4,${BD_TU_GIO},'DANG_NGUNG',$5${gt}) RETURNING id`;
+  const params = [phieuId, lenhId || null, chuyenId || null, lyDo || null, actorId, gioBd || null];
+  if (coCot) params.push(lyDoId);
+  const { rows } = await query(sql.replace(/\s+/g, ' '), params);
   return rows[0].id;
 }
 
@@ -1132,4 +1195,5 @@ module.exports = {
   listDryingTems, confirmDry, getTemBasic,
   promoteFinishedDrying, redryTem, getDryMinForPhieu,
   getActiveNgung, startNgung, resumeNgung, listNgungByPhieu,
+  listLyDoNgung, createLyDoNgung, updateLyDoNgung, setLyDoNgungActive, existsMaLyDoNgung, getLyDoNgung,
 };

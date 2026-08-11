@@ -10,6 +10,22 @@ function required(name, fallback) {
   return val;
 }
 
+// ⚠⚠ MỌI API ERP PHẢI ĐI CHUNG MỘT GỐC — bài học 2026-08-11: PRODUCTION KHÔNG IN TEM ĐƯỢC.
+// Nguyên nhân: `.env` (mọi môi trường) chỉ đặt `ERP_PHIEU_NHAN_VAI_URL`, còn `ERP_BARCODE_TEM_URL`
+// KHÔNG ai đặt ⇒ rơi về mặc định CỨNG `http://10.84.40.34:5000/...` (địa chỉ LAN). Máy chủ production
+// ra được ERP bằng địa chỉ khác nên **đồng bộ ERP vẫn chạy ngon mà lấy mã tem thì timeout** → 503
+// `ERP_BARCODE_TEM` → không in được tem, trong khi log đồng bộ vẫn xanh nên rất khó đoán ra.
+//
+// ⇒ CÁCH LÀM NAY, theo đúng khuôn của URL nhận vải:
+//   1. **`ERP_BARCODE_TEM_URL` là biến CHÍNH THỨC trong `.env` của TỪNG môi trường** (đã đưa vào
+//      `.env.example` **và** `.env` local) — production sửa host ngay tại biến này.
+//   2. Nếu môi trường nào QUÊN đặt thì **suy GỐC từ URL đồng bộ** (2 API cùng nằm dưới
+//      `/api/server/backup/mes/`) làm lưới an toàn — thà đi theo host đang chạy được còn hơn trỏ về
+//      địa chỉ LAN cứng như trước. Lúc đó `index.js` in cảnh báo ngay khi khởi động.
+const ERP_PHIEU_NHAN_VAI_URL = process.env.ERP_PHIEU_NHAN_VAI_URL
+  || 'http://10.84.40.34:5000/api/server/backup/mes/phieu-nhan-vai-60';
+const ERP_GOC = ERP_PHIEU_NHAN_VAI_URL.split('?')[0].replace(/\/+$/, '').replace(/\/[^/]*$/, '');
+
 const env = {
   nodeEnv: process.env.NODE_ENV || 'development',
   port: parseInt(process.env.PORT || '5000', 10),
@@ -37,12 +53,11 @@ const env = {
   },
   erp: {
     // API ERP lấy phiếu nhận vải CHÍNH THỨC (60 ngày) — dữ liệu này chuyển phần in qua READY. Override qua .env.
-    phieuNhanVaiUrl: process.env.ERP_PHIEU_NHAN_VAI_URL
-      || 'http://10.84.40.34:5000/api/server/backup/mes/phieu-nhan-vai-60',
+    phieuNhanVaiUrl: ERP_PHIEU_NHAN_VAI_URL,
     // API lấy MÃ TEM (barcode 12 số, 2 số đầu = tiền tố công đoạn `15`) — thay mã tự sinh `TEM00001`.
     // ⚠ Mỗi lần gọi TIÊU MỘT SỐ ⇒ chỉ gọi khi TẠO tem mới (in lại tem không gọi).
-    barcodeTemUrl: process.env.ERP_BARCODE_TEM_URL
-      || 'http://10.84.40.34:5000/api/server/backup/mes/barcode-tem',
+    // ⚠⚠ MẶC ĐỊNH SUY TỪ URL ĐỒNG BỘ (xem ghi chú đầu file) — đừng hardcode host lại ở đây.
+    barcodeTemUrl: process.env.ERP_BARCODE_TEM_URL || `${ERP_GOC}/barcode-tem`,
     // Timeout 1 lần gọi lấy mã tem (ms) — API này nhẹ, người dùng đang ĐỨNG CHỜ máy in nên để ngắn.
     barcodeTemTimeoutMs: parseInt(process.env.ERP_BARCODE_TEM_TIMEOUT_MS || '10000', 10),
     // Số lần thử lại khi lấy mã tem lỗi; hết lượt thì CHẶN in và báo rõ (không lùi về mã `TEM…` cũ).

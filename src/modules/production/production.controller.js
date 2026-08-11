@@ -56,7 +56,21 @@ const savePhanCong = asyncHandler(async (req, res) =>
   ok(res, await service.savePhanCong(req.params.phieuId, req.body || {}, req.user.id), 'Đã lưu phân công'));
 
 const stopLine = asyncHandler(async (req, res) =>
-  ok(res, await service.stopLine(req.params.phieuId, req.body.lyDo, req.user.id, req.body.gioBd || null), 'Đã ngừng chuyền'));
+  ok(res, await service.stopLine(req.params.phieuId, req.body.lyDo, req.user.id, req.body.gioBd || null,
+    req.body.lyDoId || null), 'Đã ngừng chuyền'));
+
+// ─── Danh mục lý do ngừng chuyền (mig 076) ───────────────────────────────────
+const lyDoNgungList = asyncHandler(async (req, res) =>
+  ok(res, await service.dsLyDoNgung({ search: req.query.search || '', all: req.query.all === '1' })));
+const lyDoNgungCreate = asyncHandler(async (req, res) =>
+  ok(res, await service.taoLyDoNgung(req.body, req.user.id), 'Đã thêm lý do'));
+const lyDoNgungUpdate = asyncHandler(async (req, res) => {
+  await service.suaLyDoNgung(req.params.id, req.body, req.user.id); ok(res, null, 'Đã cập nhật');
+});
+const lyDoNgungToggle = asyncHandler(async (req, res) => {
+  await service.doiTrangThaiLyDoNgung(req.params.id, req.body.active !== false, req.user.id);
+  ok(res, null, 'Đã cập nhật');
+});
 
 const resumeLine = asyncHandler(async (req, res) =>
   ok(res, await service.resumeLine(req.params.phieuId, req.user.id, req.body?.gioKt || null), 'Chuyền hoạt động lại'));
@@ -123,6 +137,7 @@ module.exports = {
   candidates, getRun, start, chayDacBietCandidates, chayDacBiet, printTem, printTemBatch, reprintTem, temLabel, temLogs, finish, monitor,
   xePhoi, temChoPhoi, themTem, adjustPhoi, drying, confirmDry, redry,
   stopLine, resumeLine, addVaiHuy, savePhanCong, vuotSanXuat,
+  lyDoNgungList, lyDoNgungCreate, lyDoNgungUpdate, lyDoNgungToggle,
   cancelableTem, cancelPrintTem,
   closeCandidates, closeProduction,
   reopenCandidates, reopenProduction, pauseLenhChay, doiChuyen,

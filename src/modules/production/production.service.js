@@ -130,18 +130,61 @@ async function savePhanCong(phieuId, { caTruongId, chuyenTruong, thoIn, items },
 
 // Ngừng chuyền (đang sản xuất) — kèm lý do; cho ngừng nhiều lần/phiếu.
 // `gioBd` (tùy chọn, 'HH:MM') = giờ bắt đầu ngừng nhập tay; bỏ trống → giờ hệ thống.
-async function stopLine(phieuId, lyDo, actorId, gioBd = null) {
+// `lyDoId` = lý do chọn từ DANH MỤC (mig 076); `lyDo` = ghi chú thêm (hoặc lý do gõ tay khi chưa có
+// danh mục / chọn "Khác"). Ít nhất một trong hai phải có.
+// ⚠ Cột `ngung_chuyen.ly_do` (TEXT) VẪN LÀ NGUỒN HIỂN THỊ — service tự ghép "Tên lý do — ghi chú" vào
+//   đó, nên mọi màn đang đọc `ly_do` (sidebar, Theo dõi chuyền, lịch sử) không phải sửa gì.
+async function stopLine(phieuId, lyDo, actorId, gioBd = null, lyDoId = null) {
   const phieu = await repo.getPhieuById(phieuId);
   if (!phieu) throw new AppError('Phiếu sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   if (phieu.trang_thai !== 'DANG_CHAY') throw new AppError('Phiếu không ở trạng thái đang chạy', { status: 409, errorCode: 'WRONG_STAGE' });
-  if (!lyDo || !lyDo.trim()) throw new AppError('Nhập lý do ngừng chuyền', { status: 422, errorCode: 'NO_LY_DO' });
+
+  let dm = null;
+  if (lyDoId) {
+    // Tra bọc try/catch: chưa chạy mig 076 thì bảng chưa có — vẫn cho ngừng chuyền bằng lý do gõ tay.
+    try { dm = await repo.getLyDoNgung(lyDoId); } catch { dm = null; }
+    if (!dm) throw new AppError('Lý do ngừng chuyền không tồn tại', { status: 404, errorCode: 'LY_DO_NOT_FOUND' });
+  }
+  const ghiChu = (lyDo || '').trim();
+  const noiDung = dm ? [dm.ten_ly_do, ghiChu].filter(Boolean).join(' — ') : ghiChu;
+  if (!noiDung) throw new AppError('Chọn lý do ngừng chuyền', { status: 422, errorCode: 'NO_LY_DO' });
+
   const active = await repo.getActiveNgung(phieuId);
   if (active) throw new AppError('Chuyền đang ngừng — hãy cho hoạt động lại trước', { status: 409, errorCode: 'ALREADY_STOPPED' });
   const lenh = await repo.getLenhBasic(phieu.lenh_san_xuat_id);
-  await repo.startNgung({ phieuId, lenhId: phieu.lenh_san_xuat_id, chuyenId: lenh?.chuyen_id, lyDo: lyDo.trim(), gioBd }, actorId);
+  await repo.startNgung({
+    phieuId, lenhId: phieu.lenh_san_xuat_id, chuyenId: lenh?.chuyen_id,
+    lyDo: noiDung, lyDoId: dm ? lyDoId : null, gioBd,
+  }, actorId);
   sockets.emit('production:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'ngung' });
   sockets.emit('dashboard:refresh', {});
   return getRun(phieu.lenh_san_xuat_id);
+}
+
+// ─── DANH MỤC LÝ DO NGỪNG CHUYỀN (mig 076) ───────────────────────────────────
+// Cùng khuôn với danh mục biện pháp xử lý (`phanloailoi.service`) để 2 trang thao tác giống nhau.
+// ⚠ `dsLyDoNgung` NUỐT LỖI trả mảng rỗng: chưa chạy mig 076 thì dropdown ở màn Sản xuất chỉ trống,
+//   người đứng máy vẫn ngừng chuyền được bằng ô ghi chú — không để thiếu migration chặn việc xưởng.
+async function dsLyDoNgung(opts) {
+  try { return await repo.listLyDoNgung(opts); } catch { return []; }
+}
+
+async function taoLyDoNgung(d, actorId) {
+  const ma = String(d.maLyDo || '').trim().toUpperCase();
+  const ten = String(d.tenLyDo || '').trim();
+  if (!ma || !ten) throw new AppError('Nhập mã và tên lý do', { status: 422, errorCode: 'VALIDATION_ERROR' });
+  if (await repo.existsMaLyDoNgung(ma)) throw new AppError(`Mã "${ma}" đã tồn tại`, { status: 409, errorCode: 'DUPLICATE' });
+  return { id: await repo.createLyDoNgung({ ...d, maLyDo: ma, tenLyDo: ten }, actorId) };
+}
+
+async function suaLyDoNgung(id, d, actorId) {
+  if (!await repo.getLyDoNgung(id)) throw new AppError('Lý do không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  await repo.updateLyDoNgung(id, d, actorId);
+}
+
+async function doiTrangThaiLyDoNgung(id, active, actorId) {
+  if (!await repo.getLyDoNgung(id)) throw new AppError('Lý do không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  await repo.setLyDoNgungActive(id, active, actorId);
 }
 
 // Chuyền hoạt động lại — lưu thời gian ngừng. `gioKt` (tùy chọn, 'HH:MM') = giờ kết thúc nhập tay.
@@ -698,6 +741,7 @@ module.exports = {
   listCandidates, getRun, startProduction, startProductionSpecial, printTem, printTemBatch, reprintTem, temLabel, temLogs, finishRun, monitor, vuotSanXuat,
   getXePhoi, listTemChoPhoi, addToXe, adjustPhoi, listDrying, confirmDry, redry,
   stopLine, resumeLine, addVaiHuy, savePhanCong,
+  dsLyDoNgung, taoLyDoNgung, suaLyDoNgung, doiTrangThaiLyDoNgung,
   listCancelableTem, cancelPrintTem,
   listCloseCandidates, closeProduction,
   listReopenCandidates, reopenProduction, pauseLenhChay, doiChuyen,
