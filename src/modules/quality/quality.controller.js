@@ -65,6 +65,8 @@ const oqcHistory = asyncHandler(async (req, res) => ok(res, await service.oqcHis
 
 const kcsDone = asyncHandler(async (req, res) => ok(res, await service.kcsDone(req.query.date || today())));
 const suaDone = asyncHandler(async (req, res) => ok(res, await service.suaDone(req.query.date || today())));
+const luuNguoiSua = asyncHandler(async (req, res) =>
+  ok(res, await service.luuNguoiSua(req.body?.items, req.user.id), 'Đã lưu người sửa'));
 const oqcDone = asyncHandler(async (req, res) => ok(res, await service.oqcDone(req.query.date || today())));
 const inlineDone = asyncHandler(async (req, res) => ok(res, await service.inlineDone(req.query.date || today())));
 
@@ -106,7 +108,7 @@ module.exports = {
   plList, plTraTem, plChiTiet, plLuu, bpList, bpCreate, bpUpdate, bpToggle,
   kcsCandidates, recordKcs, gopTem, suaCandidates, recordSua, oqcCandidates, recordOqc,
   kcsHistory, suaHistory, oqcHistory,
-  kcsDone, suaDone, oqcDone, inlineDone,
+  kcsDone, suaDone, oqcDone, inlineDone, luuNguoiSua,
   inlineCandidates, inlineLoaiLoi, inlineHistory, recordInline,
   loaiLoiList, loaiLoiCreate, loaiLoiUpdate, loaiLoiToggle,
   giaoDacBietActive, giaoDacBietList, giaoDacBietCreate, giaoDacBietUpdate, giaoDacBietToggle,

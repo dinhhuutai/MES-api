@@ -77,6 +77,21 @@ const TRUONG_TEM = Object.freeze([
   { ma: 'ca_truong', ten: 'Ca trưởng', kieu: 'chu', nhom: 'Phân công' },
   { ma: 'chuyen_truong', ten: 'Chuyền trưởng', kieu: 'chu', nhom: 'Phân công' },
   { ma: 'tho_in', ten: 'Thợ in trên chuyền', kieu: 'chu', nhom: 'Phân công' },
+  // ─── NHÓM "SỬA" — CHỈ CÓ GIÁ TRỊ Ở VỊ TRÍ IN `SUA_IN_TEM_OQC` (tem 17 của trang Sửa) ─────────
+  // ⚠⚠ 2 loại nguồn KHÁC NHAU, đừng lẫn:
+  //   · `nguoi_sua` được NHẬP TAY ngay lúc in (modal In tem) rồi ghép vào dữ liệu nhãn phía trình
+  //     duyệt + lưu `sua.nguoi_sua` (mig 080).
+  //   · các trường còn lại lấy từ CHÍNH LƯỢT SỬA đang in (bản ghi `sua` của dòng được tích ở sidebar
+  //     "Đã hoàn thành") — cũng ghép ở trình duyệt, KHÔNG có trong `getTemLabelData`.
+  // ⇒ Nút in KHÁC (Sản xuất / KCS / Gia công) kéo mấy trường này vào sẽ ra RỖNG. Màn thiết kế đã ghi
+  //   rõ trong tên trường để người dùng không đặt nhầm chỗ.
+  { ma: 'nguoi_sua', ten: 'Người sửa (nhập lúc in) — tem Sửa', kieu: 'chu', nhom: 'Sửa' },
+  { ma: 'sl_sua', ten: 'SL đưa vào sửa — tem Sửa', kieu: 'so', nhom: 'Sửa' },
+  { ma: 'sl_sua_dat', ten: 'SL sửa ĐẠT (→ OQC) — tem Sửa', kieu: 'so', nhom: 'Sửa' },
+  { ma: 'sl_sua_huy', ten: 'SL sửa HỦY — tem Sửa', kieu: 'so', nhom: 'Sửa' },
+  { ma: 'ty_le_sua_dat', ten: '% sửa đạt — tem Sửa', kieu: 'chu', nhom: 'Sửa' },
+  { ma: 'nguoi_xn_sua', ten: 'Người xác nhận sửa (hệ thống) — tem Sửa', kieu: 'chu', nhom: 'Sửa' },
+  { ma: 'tg_sua', ten: 'Giờ xác nhận sửa — tem Sửa', kieu: 'ngay', nhom: 'Sửa' },
 
   { ma: 'created_date', ten: 'Ngày giờ in tem', kieu: 'ngay', nhom: 'Thời gian' },
   { ma: 'tg_bd_in', ten: 'Giờ bắt đầu in (phiếu)', kieu: 'ngay', nhom: 'Thời gian' },

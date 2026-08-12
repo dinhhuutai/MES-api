@@ -4,9 +4,15 @@ const service = require('./auth.service');
 const asyncHandler = require('../../utils/asyncHandler');
 const { ok } = require('../../utils/response');
 
+const { ipCuaRequest } = require('../../utils/thietBi');
+
 const login = asyncHandler(async (req, res) => {
   const { tenDangNhap, matKhau } = req.body;
-  const data = await service.login(tenDangNhap, matKhau);
+  // User-Agent + IP để ghi PHIÊN theo thiết bị (mig 081) — trang "Phiên đăng nhập" hiện lên từ đây.
+  const data = await service.login(tenDangNhap, matKhau, {
+    userAgent: req.headers['user-agent'] || null,
+    ip: ipCuaRequest(req),
+  });
   return ok(res, data, 'Đăng nhập thành công');
 });
 
@@ -35,8 +41,10 @@ const changePassword = asyncHandler(async (req, res) => {
   return ok(res, data, 'Đã đổi mật khẩu');
 });
 
-// JWT stateless: logout xử lý phía client (xóa token). Endpoint để client gọi cho nhất quán.
+// Client vẫn tự xóa token; endpoint này ĐÓNG PHIÊN của token đang dùng (mig 081) để nó biến mất
+// khỏi danh sách "đang đăng nhập" và token đó thôi dùng được ở máy khác nếu bị copy.
 const logout = asyncHandler(async (req, res) => {
+  await service.logout(req.user.jti);
   return ok(res, {}, 'Đã đăng xuất');
 });
 

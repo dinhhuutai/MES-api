@@ -438,7 +438,8 @@ async function release1HistoryByDate(date) {
   const sql = `
     SELECT ls.created_date AS tg, nd.ho_ten AS nguoi,
            ls.ma_lenh_san_xuat AS ma_lenh, cs.ten_chuyen, cs.ma_chuyen,
-           pin.ma_phan, pin.mau_vai, dv.ma_dot_vai
+           pin.ma_phan, pin.mau_vai, dv.ma_dot_vai,
+           (ls.trang_thai = 'HUY') AS da_huy
     FROM lenh_san_xuat ls
     JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
     JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
@@ -1273,6 +1274,10 @@ const DONE_INFO = `info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_
                    info.mau_vai, info.kich_vai, info.kich_phim, info.tinh_chat_in, info.han_giao_hang`;
 
 // Release 1: lệnh sản xuất được tạo trong ngày (mỗi đợt vải 1 lệnh).
+// ⚠⚠ LOẠI LỆNH ĐÃ HỦY (fix 2026-08-12): lệnh bị hủy = thao tác Release 1 ĐÃ BỊ HOÀN TÁC, đợt vải quay
+//   về pool Release 1 ⇒ để nó trong "Đã hoàn thành" là đếm khống. Ca thật 12/08: sidebar hiện **57**
+//   trong khi số lệnh thật còn sống là **53** — đúng 4 lệnh (LSX0819/0862/0863/0864) vừa bị hủy khi
+//   trả 5 phần in SD-2607-001-A19 về Kỹ thuật. Người dùng đối chiếu với màn khác thấy lệch 4.
 async function release1DoneByDate(date) {
   const sql = `
     SELECT ls.created_date AS tg, nd.ho_ten AS nguoi, ls.ma_lenh_san_xuat AS ma,
@@ -1281,6 +1286,7 @@ async function release1DoneByDate(date) {
     LEFT JOIN nguoi_dung nd ON nd.id = ls.created_by
     ${PHAN_INFO_LATERAL}
     WHERE (ls.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
+      AND ls.trang_thai <> 'HUY'
     ORDER BY ls.created_date DESC`;
   const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [date]);
   return rows;
@@ -1368,29 +1374,48 @@ async function upsertCaTuan({ nam, tuan, loaiCa, ghiChu }, actorId) {
   return rows[0];
 }
 
-// DANH SÁCH RELEASE theo NGÀY KẾ HOẠCH (mỗi đợt SX ≠HUY = 1 dòng) — cho modal/report + Excel/In.
-// SLNV = Σ SL vải về của các đợt trong lệnh; SL đã in/giao suy từ tem của lệnh. IPS-safe (SQL 1 dòng).
-async function releaseListByDate(date) {
+// DANH SÁCH RELEASE — cho modal/report + Excel/In. IPS-safe (SQL gộp 1 dòng, không comment `--`).
+//
+// ⚠⚠ MỖI (LỆNH × PHẦN IN) = 1 DÒNG (fix 2026-08-12). Bản cũ dùng `JOIN LATERAL (… LIMIT 1)` nên
+//   **lệnh GOM SET chỉ hiện ĐÚNG 1 phần in**, các phần in còn lại biến mất khỏi cả bảng lẫn số
+//   "Tổng phần". Đo prod 12/08: 29/134 lệnh của ngày là gom set ⇒ đúng phải 174 dòng, đang ra 134
+//   (thiếu 40 phần in). Xưởng in theo code phần nên thiếu dòng là thiếu việc.
+//   · `sl_release_phan` / `slnv` TÁCH THEO PHẦN IN (Σ `lenh_sx_dot_vai.so_luong` và Σ `so_luong_vai_ve`
+//     của các đợt vải thuộc phần in đó trong lệnh này) ⇒ Σ các dòng = ĐÚNG `so_luong_release` của lệnh,
+//     không đếm trùng khi cộng tổng.
+//   · `sl_da_in` / `sl_da_giao` chỉ tính được ở mức LỆNH (bảng `tem` KHÔNG lưu đợt vải/phần in —
+//     giới hạn đã biết, xem DATABASE.md §4) ⇒ service chỉ để số này ở DÒNG ĐẦU của mỗi lệnh, dòng
+//     sau bỏ trống để không ai cộng dồn thành số sai.
+//
+// `mode`: 'KE_HOACH' (mặc định) = lọc theo `ngay_ke_hoach` (ngày hàng lên chuyền — dùng để in phiếu
+//   release) · 'RELEASE' = lọc theo ngày TẠO LỆNH (ngày bấm Release 1) ⇒ khớp đúng với sidebar
+//   "Đã hoàn thành" của màn Release 1.
+async function releaseListByDate(date, mode = 'KE_HOACH') {
+  const dkNgay = mode === 'RELEASE'
+    ? "(ls.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date"
+    : 'ls.ngay_ke_hoach = $1::date';
   const sql = `
-    SELECT ls.id AS lenh_id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.ngay_ke_hoach,
+    SELECT ls.id AS lenh_id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.ngay_ke_hoach, ls.created_date,
            ls.tg_bd_kh, ls.tg_kt_kh, ls.giai_doan,
-           cs.ma_chuyen, cs.ten_chuyen,
+           cs.ma_chuyen, cs.ten_chuyen, lc.ma_loai AS ma_loai_chuyen, lc.ten_loai AS ten_loai_chuyen,
            pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.so_luong_don_hang,
            mh.ma_hang, mh.ten_ma_hang, dh.ma_don_hang, dh.so_po, kh.ten_khach_hang,
            u.ho_ten AS owner,
-           COALESCE((SELECT SUM(dv.so_luong_vai_ve) FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id=lsd.dot_vai_ve_id WHERE lsd.lenh_san_xuat_id=ls.id),0)::int AS slnv,
+           pv.sl_release_phan, pv.slnv,
+           count(*) OVER (PARTITION BY ls.id)::int AS so_phan_in,
            COALESCE((SELECT SUM(t.so_luong) FROM phieu_san_xuat ps JOIN tem t ON t.phieu_san_xuat_id=ps.id WHERE ps.lenh_san_xuat_id=ls.id AND t.trang_thai<>'HUY'),0)::int AS sl_da_in,
            COALESCE((SELECT SUM(t.sl_da_giao) FROM phieu_san_xuat ps JOIN tem t ON t.phieu_san_xuat_id=ps.id WHERE ps.lenh_san_xuat_id=ls.id AND t.trang_thai<>'HUY'),0)::int AS sl_da_giao
     FROM lenh_san_xuat ls
     LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
-    JOIN LATERAL (SELECT dv.phan_in_id FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id=lsd.dot_vai_ve_id WHERE lsd.lenh_san_xuat_id=ls.id LIMIT 1) pv ON true
+    LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
+    JOIN LATERAL (SELECT dv.phan_in_id, COALESCE(SUM(lsd.so_luong),0)::int AS sl_release_phan, COALESCE(SUM(dv.so_luong_vai_ve),0)::int AS slnv FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id=lsd.dot_vai_ve_id WHERE lsd.lenh_san_xuat_id=ls.id GROUP BY dv.phan_in_id) pv ON true
     JOIN phan_in pin ON pin.id = pv.phan_in_id
     JOIN ma_hang mh ON mh.id = pin.ma_hang_id
     JOIN don_hang dh ON dh.id = mh.don_hang_id
     JOIN khach_hang kh ON kh.id = dh.khach_hang_id
     LEFT JOIN nguoi_dung u ON u.id = ls.created_by
-    WHERE ls.trang_thai <> 'HUY' AND ls.ngay_ke_hoach = $1::date
-    ORDER BY cs.ten_chuyen NULLS LAST, kh.ten_khach_hang, dh.ma_don_hang, pin.mau_vai, ls.created_date`;
+    WHERE ls.trang_thai <> 'HUY' AND ${dkNgay}
+    ORDER BY cs.ten_chuyen NULLS LAST, kh.ten_khach_hang, dh.ma_don_hang, ls.created_date, ls.id, pin.ma_phan`;
   const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [date]);
   return rows;
 }

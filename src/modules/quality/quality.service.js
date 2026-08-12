@@ -608,6 +608,30 @@ async function suaDone(date) { return repo.temDoneByDate('sua', date); }
 async function oqcDone(date) { return repo.temDoneByDate('oqc', date); }
 async function inlineDone(date) { return repo.inlineDoneByDate(date); }
 
+// Ghi NGƯỜI SỬA cho các lượt sửa được chọn (nhập ở modal In tem của trang Sửa, mig 080).
+// Nhận NHIỀU dòng 1 lượt vì mỗi lần in được tối đa 2 tem (tờ decal 2-up).
+// ⚠ Tên là BẮT BUỘC (in lên tem thì phải có gì mà in); `nguoiSuaId` tùy chọn — người sửa khoán chưa
+//   có tài khoản thì chỉ có tên.
+async function luuNguoiSua(items, actorId) {
+  const ds = (Array.isArray(items) ? items : []).filter((x) => x && x.suaId);
+  if (!ds.length) throw new AppError('Chưa chọn lượt sửa nào', { status: 422, errorCode: 'NO_ITEM' });
+  const thieuTen = ds.find((x) => !String(x.nguoiSua || '').trim());
+  if (thieuTen) throw new AppError('Nhập tên người sửa cho mọi dòng trước khi in', { status: 422, errorCode: 'NO_NGUOI_SUA' });
+
+  const daGhi = [];
+  for (const x of ds) {
+    const ok = await repo.setNguoiSua(x.suaId, {
+      nguoiSuaId: x.nguoiSuaId || null,
+      nguoiSua: String(x.nguoiSua).trim(),
+    }, actorId);
+    if (ok === false) {
+      throw new AppError('Chưa chạy migration 080 nên chưa lưu được người sửa', { status: 409, errorCode: 'THIEU_MIGRATION_080' });
+    }
+    if (ok) daGhi.push(x.suaId);
+  }
+  return { so_dong: daGhi.length };
+}
+
 // ----- QC IN-LINE (kiểm tại chuyền — phiếu đang chạy) -----
 async function listInlineCandidates(search) { return repo.listInlineCandidates({ search }); }
 async function listLoaiLoi() { return repo.listLoaiLoiActive(); }
@@ -700,7 +724,7 @@ module.exports = {
   listCancelKcs, listCancelSua, listCancelOqc, cancelKcs, cancelSua, cancelOqc,
   listTemSuaCancelable, listTemSuaDeleted, huyTemSua, moTemSua,
   kcsHistory, suaHistory, oqcHistory, temHanhTrinh,
-  kcsDone, suaDone, oqcDone, inlineDone,
+  kcsDone, suaDone, oqcDone, inlineDone, luuNguoiSua,
   listInlineCandidates, listLoaiLoi, recordQcInline, inlineHistory,
   listLoaiLoiAll, createLoaiLoi, updateLoaiLoi, toggleLoaiLoi,
   listGiaoDacBiet, listGiaoDacBietAll, createGiaoDacBiet, updateGiaoDacBiet, toggleGiaoDacBiet,

@@ -20,6 +20,10 @@ router.post('/kcs/:temId', rbac('KCS'), c.recordKcs);
 router.get('/sua/candidates', rbac('SUA'), c.suaCandidates);
 router.get('/sua/history', rbac('SUA'), c.suaHistory);
 router.get('/sua/done', rbac('SUA'), c.suaDone);
+// Ghi NGƯỜI SỬA cho các lượt sửa được chọn (modal In tem, mig 080).
+// ⚠ Route TĨNH phải đặt TRƯỚC `/sua/:temId` — nếu không sẽ bị route động nuốt (temId='nguoi-sua'
+//   → lỗi 'invalid input syntax for type uuid'), cùng bẫy với nhóm `/sua/tem-sua/*` bên dưới.
+router.post('/sua/nguoi-sua', rbac('SUA'), c.luuNguoiSua);
 router.post('/sua/:temId', rbac('SUA'), c.recordSua);
 
 router.get('/oqc/candidates', rbac('OQC'), c.oqcCandidates);

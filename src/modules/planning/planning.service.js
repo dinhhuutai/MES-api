@@ -337,7 +337,10 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
       const out = [];
       for (const { dvId, qty } of plan) {
         const c = await createGiaCongLenh(client, {
+          // ⚠ Phải truyền giờ BD/KT: `createGiaCongLenh` nhận sẵn 2 tham số này nhưng caller quên
+          //   ⇒ lệnh gia công release từ màn Release 1 mất giờ kế hoạch (fix 2026-08-12).
           versionId: version.id, chuyenId, junctions: [{ dotVaiId: dvId, soLuong: qty }], tongSL: qty, ngayKeHoach,
+          tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null,
         }, actorId);
         out.push({ ...c, dot_vai_id: dvId });
       }
@@ -503,13 +506,16 @@ async function release1History(date) {
     repo.release1HistoryByDate(date),
     repo.keHoachTamHistoryByDate(date),
   ]);
+  // ⚠ LỊCH SỬ thì GIỮ cả lệnh đã hủy (thao tác đó CÓ xảy ra) nhưng phải ghi rõ "đã hủy" — khác
+  //   "Đã hoàn thành" (`release1DoneByDate`) vốn đã LOẠI hẳn lệnh hủy vì thao tác bị hoàn tác.
   const lenh = rows.map((r) => ({
     tg: r.tg,
     nguoi: r.nguoi || '—',
-    hanh_dong: 'Release 1',
+    hanh_dong: r.da_huy ? 'Release 1 (đã hủy)' : 'Release 1',
     doi_tuong: r.ma_lenh || '',
     chi_tiet: [r.ma_phan, r.mau_vai, r.ma_dot_vai].filter(Boolean).join(' · ')
-      + (r.ten_chuyen ? ` → ${r.ten_chuyen}` : ''),
+      + (r.ten_chuyen ? ` → ${r.ten_chuyen}` : '')
+      + (r.da_huy ? ' · ĐÃ HỦY LỆNH' : ''),
   }));
   const tam = kht.map((r) => ({
     tg: r.tg,
@@ -537,7 +543,7 @@ async function listReleaseSets(search) {
   }));
 }
 
-async function releaseSet(setId, { chuyenId, soLuongRelease, ngayKeHoach }, actorId) {
+async function releaseSet(setId, { chuyenId, soLuongRelease, ngayKeHoach, tgBdKh, tgKtKh }, actorId) {
   if (!chuyenId) throw new AppError('Chọn chuyền sản xuất', { status: 422, errorCode: 'NO_CHUYEN' });
   const set = await repo.getSetForRelease(setId);
   if (!set) throw new AppError('Set không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
@@ -566,6 +572,7 @@ async function releaseSet(setId, { chuyenId, soLuongRelease, ngayKeHoach }, acto
     const maLenh = await repo.nextMaLenhTx(client);
     const id = await repo.createLenh(client, {
       versionId: version.id, maLenh, chuyenId, soLuongRelease: soLuong, ngayKeHoach,
+      tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null,
       trangThai: laGiaCong ? 'GIA_CONG' : 'RELEASE_1',
     }, actorId);
     // Gom set = mỗi đợt vào trọn SL vải về (all-or-nothing) → so_luong junction = SL đợt.
@@ -1310,19 +1317,40 @@ async function upsertCaTuan({ nam, tuan, loaiCa, ghiChu }, actorId) {
   return repo.upsertCaTuan({ nam: y, tuan: w, loaiCa, ghiChu }, actorId);
 }
 
-// ----- DANH SÁCH RELEASE theo ngày kế hoạch (modal/report + Excel/In) -----
-async function releaseList(date) {
+// ----- DANH SÁCH RELEASE (modal/report + Excel/In) -----
+// `mode`: 'KE_HOACH' (mặc định) lọc theo ngày kế hoạch · 'RELEASE' lọc theo ngày TẠO LỆNH.
+//
+// ⚠ Mỗi (lệnh × phần in) = 1 dòng ⇒ lệnh gom set ra nhiều dòng. Vì vậy:
+//   · `sl_release` cộng theo `sl_release_phan` (đã tách theo phần in) — cộng `so_luong_release`
+//     của từng dòng sẽ ĐẾM TRÙNG số của lệnh gom set.
+//   · `sl_da_in`/`sl_da_giao` chỉ có ở mức LỆNH nên chỉ giữ ở DÒNG ĐẦU của mỗi lệnh (`la_dong_dau`),
+//     dòng sau để `null` ⇒ nhìn vào bảng/Excel không ai cộng dồn thành số sai.
+//   · `so_lenh` để biết số ĐỢT SẢN XUẤT (khác số dòng khi có gom set).
+async function releaseList(date, mode = 'KE_HOACH') {
   if (!date) throw new AppError('Thiếu ngày', { status: 422, errorCode: 'NO_DATE' });
-  const items = await repo.releaseListByDate(date);
+  const raw = await repo.releaseListByDate(date, mode);
+  const daThay = new Set();
+  const items = raw.map((r) => {
+    const dongDau = !daThay.has(r.lenh_id);
+    daThay.add(r.lenh_id);
+    return {
+      ...r,
+      la_dong_dau: dongDau,
+      sl_da_in: dongDau ? r.sl_da_in : null,
+      sl_da_giao: dongDau ? r.sl_da_giao : null,
+    };
+  });
   const uniq = (key) => new Set(items.map((r) => r[key]).filter(Boolean)).size;
   return {
     items,
     meta: {
       ngay: date,
+      mode,
+      so_lenh: daThay.size,
       tong_don: uniq('ma_don_hang'),
       tong_ma: uniq('ma_hang'),
       tong_phan: uniq('ma_phan'),
-      sl_release: items.reduce((s, r) => s + (Number(r.so_luong_release) || 0), 0),
+      sl_release: items.reduce((s, r) => s + (Number(r.sl_release_phan) || 0), 0),
     },
   };
 }

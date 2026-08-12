@@ -581,13 +581,41 @@ const TEM_INFO_LATERAL = `
     WHERE ps.id = t.phieu_san_xuat_id ORDER BY pin.ma_phan, dv.ma_dot_vai LIMIT 1
   ) info ON true`;
 
+// ⚠ Đường dự phòng khi CHƯA chạy mig 080 (`sua.nguoi_sua_id`/`nguoi_sua`) — DÒ CỘT TRƯỚC, cùng khuôn
+//   `temCoCot` (mig 066). Chỉ cache khi ĐÃ có cột ⇒ chạy migration xong nhận ngay, không restart BE.
+let _coCotNguoiSua = null;
+async function coCotNguoiSua() {
+  if (_coCotNguoiSua) return true;
+  const { rows } = await query(
+    `SELECT 1 FROM information_schema.columns
+      WHERE table_schema='public' AND table_name='sua' AND column_name='nguoi_sua'`
+  );
+  if (rows.length) _coCotNguoiSua = true;
+  return rows.length > 0;
+}
+
+// Ghi NGƯỜI SỬA cho 1 lượt sửa (bản ghi `sua`) — nhập ở modal In tem của trang Sửa (mig 080).
+// Trả false khi chưa chạy migration để service báo đúng thay vì im lặng bỏ qua.
+async function setNguoiSua(suaId, { nguoiSuaId, nguoiSua }, actorId) {
+  if (!await coCotNguoiSua()) return false;
+  const { rowCount } = await query(
+    `UPDATE sua SET nguoi_sua_id = $2, nguoi_sua = $3, updated_by = $4,
+       updated_date = CURRENT_TIMESTAMP WHERE id = $1`,
+    [suaId, nguoiSuaId || null, nguoiSua || null, actorId || null]
+  );
+  return rowCount > 0;
+}
+
 // table ∈ 'kcs'|'sua'|'oqc' (nội bộ, không nhận từ user).
 async function temDoneByDate(table, date) {
   const qtyCol = table === 'sua' ? 'so_luong_sua_dat' : 'so_luong_dat';
   const kiemCol = table === 'sua' ? 'so_luong_sua' : 'so_luong_kiem'; // SL đã kiểm (cho in tem KCS)
   // OQC: thêm nguồn (KCS/Sửa) + SL chuyền qua giao từ nguồn đó (sl_qua_giao). Sửa: thêm SL sửa hủy.
   const oqcCols = table === 'oqc' ? ', x.nguon, x.sl_qua_giao' : '';
-  const suaCols = table === 'sua' ? ', x.so_luong_sua_huy' : '';
+  // Sửa: + SL sửa hủy, + `sua_id` (khóa để ghi người sửa) và NGƯỜI SỬA (mig 080 — thiếu cột thì trả NULL).
+  const suaCols = table === 'sua'
+    ? `, x.so_luong_sua_huy, x.id AS sua_id, ${await coCotNguoiSua() ? 'x.nguoi_sua, x.nguoi_sua_id' : 'NULL::text AS nguoi_sua, NULL::uuid AS nguoi_sua_id'}`
+    : '';
   const sql = `
     SELECT x.created_date AS tg, nd.ho_ten AS nguoi, t.ma_tem AS ma, t.id AS tem_id,
            x.${qtyCol} AS so_luong, x.${kiemCol} AS so_luong_kiem${oqcCols}${suaCols},
@@ -961,7 +989,7 @@ module.exports = {
   nextMaTem, createChildTem, insertTemSplit, getTemForSplit,
   insertKcs, insertSua, nextOqcRound, insertOqc,
   kcsHistoryByDate, suaHistoryByDate, oqcHistoryByDate,
-  temDoneByDate, inlineDoneByDate,
+  temDoneByDate, inlineDoneByDate, setNguoiSua,
   listInlineCandidates, getPhieuRun, nextInlineRound, insertQcInline, insertQcInlineLoi, inlineHistoryByDate,
   listLoaiLoiActive, listLoaiLoiAll, insertLoaiLoi, updateLoaiLoi, setLoaiLoiActive,
   listGiaoDacBietActive, listGiaoDacBietAll, insertGiaoDacBiet, updateGiaoDacBiet, setGiaoDacBietActive,

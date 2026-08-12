@@ -1,10 +1,13 @@
 'use strict';
 
+const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const repo = require('./auth.repository');
 const { sign } = require('../../utils/jwt');
 const AppError = require('../../utils/AppError');
 const { saveAvatarFile, removeAvatarFiles } = require('../../utils/avatarStorage');
+const phienRepo = require('../phien/phien.repository');
+const { tenThietBi } = require('../../utils/thietBi');
 
 function toPublicUser(row, roles, permissions) {
   return {
@@ -23,7 +26,8 @@ function toPublicUser(row, roles, permissions) {
   };
 }
 
-async function login(username, password) {
+// `ctx` = { userAgent, ip } của request đăng nhập → ghi PHIÊN theo thiết bị (mig 081).
+async function login(username, password, ctx = {}) {
   const row = await repo.findByUsername(username);
   if (!row) {
     throw new AppError('Sai tài khoản hoặc mật khẩu', { status: 401, errorCode: 'INVALID_CREDENTIALS' });
@@ -43,8 +47,27 @@ async function login(username, password) {
 
   await repo.updateLastLogin(row.id);
 
-  const token = sign({ sub: row.id, username: row.ten_dang_nhap, roles, permissions });
+  // `jti` = MÃ PHIÊN nhúng vào JWT ⇒ đăng xuất từ xa chặn được đúng token của thiết bị đó (mig 081).
+  // ⚠ Ghi phiên là BEST-EFFORT: chưa chạy mig 081 / lỗi ghi ⇒ `taoPhien` trả false và ĐĂNG NHẬP VẪN
+  //   THÀNH CÔNG. Không được để việc quản lý thiết bị chặn đường vào của cả nhà máy.
+  const jti = crypto.randomUUID();
+  await phienRepo.taoPhien({
+    userId: row.id,
+    jti,
+    thietBi: tenThietBi(ctx.userAgent),
+    userAgent: ctx.userAgent || null,
+    ip: ctx.ip || null,
+  });
+
+  const token = sign({ sub: row.id, username: row.ten_dang_nhap, roles, permissions, jti });
   return { token, user: toPublicUser(row, roles, permissions) };
+}
+
+// Đăng xuất do CHÍNH người dùng bấm → đóng phiên của token đang dùng (nếu có `jti`).
+// Token cũ không có `jti` thì chỉ xóa token phía client như trước — không có gì để đóng.
+async function logout(jti) {
+  if (jti) await phienRepo.dongPhienTheoJti(jti, 'DA_DANG_XUAT');
+  return { ok: true };
 }
 
 async function me(userId) {
@@ -93,4 +116,4 @@ async function changePassword(userId, matKhauCu, matKhauMoi) {
   return { ok: true };
 }
 
-module.exports = { login, me, updateProfile, uploadAvatar, resetAvatar, changePassword };
+module.exports = { login, logout, me, updateProfile, uploadAvatar, resetAvatar, changePassword };

@@ -1148,24 +1148,58 @@ async function coCotLyDoBoSung() {
   return rows.length > 0;
 }
 
-async function setLyDoBoSungChoDotVai(dotVaiId, lyDoId, ghiChu, actorId) {
-  if (!await coCotLyDoBoSung()) return false;
-  await query(
-    `UPDATE dot_vai_ve SET ly_do_bo_sung_id = $2, ghi_chu_bo_sung = $3,
-       updated_by = $4, updated_date = CURRENT_TIMESTAMP WHERE id = $1`,
-    [dotVaiId, lyDoId || null, ghiChu || null, actorId || null]
+// ⚠ Đường dự phòng khi CHƯA chạy mig 079 (2 cột SL bổ sung theo trách nhiệm) — DÒ CỘT TRƯỚC, cùng
+//   khuôn `coCotLyDoBoSung`. 2 migration ĐỘC LẬP nhau nên phải dò riêng, đừng gộp 1 cờ.
+let _coCotSlBoSung = null;
+async function coCotSlBoSung() {
+  if (_coCotSlBoSung) return true;
+  const { rows } = await query(
+    `SELECT 1 FROM information_schema.columns
+      WHERE table_schema='public' AND table_name='dot_vai_ve' AND column_name='sl_bo_sung_cty'`
   );
-  return true;
+  if (rows.length) _coCotSlBoSung = true;
+  return rows.length > 0;
 }
 
-// Lý do bổ sung đã ghi của các đợt vải trong 1 lệnh — trả map để sidebar hiện lại giá trị đã lưu.
+// Ghi thông tin bổ sung cho 1 đợt vải. `lyDoId` giữ lại cho dữ liệu cũ (giao diện đã bỏ ô chọn lý do).
+// Trả về cột nào ghi được để service báo đúng cho người dùng khi thiếu migration.
+async function setLyDoBoSungChoDotVai(dotVaiId, { lyDoId, ghiChu, slCty, slKhach }, actorId) {
+  const coLyDo = await coCotLyDoBoSung();
+  const coSl = await coCotSlBoSung();
+  if (!coLyDo && !coSl) return { ghiLyDo: false, ghiSl: false };
+
+  const set = [];
+  const vals = [dotVaiId];
+  if (coLyDo) {
+    set.push(`ly_do_bo_sung_id = $${vals.push(lyDoId || null)}`);
+    set.push(`ghi_chu_bo_sung = $${vals.push(ghiChu || null)}`);
+  }
+  if (coSl) {
+    set.push(`sl_bo_sung_cty = $${vals.push(slCty == null ? null : slCty)}`);
+    set.push(`sl_bo_sung_khach = $${vals.push(slKhach == null ? null : slKhach)}`);
+  }
+  set.push(`updated_by = $${vals.push(actorId || null)}`);
+  await query(
+    `UPDATE dot_vai_ve SET ${set.join(', ')}, updated_date = CURRENT_TIMESTAMP WHERE id = $1`,
+    vals
+  );
+  return { ghiLyDo: coLyDo, ghiSl: coSl };
+}
+
+// Thông tin bổ sung đã ghi của các đợt vải trong 1 lệnh — sidebar hiện lại giá trị đã lưu.
+// `so_luong_vai_ve` trả kèm để giao diện đối chiếu Σ(cty + khách) với SL vải về của đợt bổ sung.
 async function lyDoBoSungByLenh(lenhId) {
-  if (!await coCotLyDoBoSung()) return [];
+  const coLyDo = await coCotLyDoBoSung();
+  const coSl = await coCotSlBoSung();
+  if (!coLyDo && !coSl) return [];
+  const cotLyDo = coLyDo ? 'dv.ly_do_bo_sung_id, dv.ghi_chu_bo_sung, lb.ten_ly_do' : 'NULL::uuid AS ly_do_bo_sung_id, NULL::text AS ghi_chu_bo_sung, NULL::text AS ten_ly_do';
+  const cotSl = coSl ? 'dv.sl_bo_sung_cty, dv.sl_bo_sung_khach' : 'NULL::int AS sl_bo_sung_cty, NULL::int AS sl_bo_sung_khach';
+  const joinLyDo = coLyDo ? 'LEFT JOIN ly_do_bo_sung lb ON lb.id = dv.ly_do_bo_sung_id' : '';
   const { rows } = await query(
-    `SELECT dv.id AS dot_vai_ve_id, dv.ly_do_bo_sung_id, dv.ghi_chu_bo_sung, lb.ten_ly_do
+    `SELECT dv.id AS dot_vai_ve_id, dv.so_luong_vai_ve, ${cotLyDo}, ${cotSl}
        FROM lenh_sx_dot_vai lsd
        JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
-       LEFT JOIN ly_do_bo_sung lb ON lb.id = dv.ly_do_bo_sung_id
+       ${joinLyDo}
       WHERE lsd.lenh_san_xuat_id = $1`.replace(/\s+/g, ' '),
     [lenhId]
   );

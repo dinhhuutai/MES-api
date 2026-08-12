@@ -31,7 +31,9 @@ const release1History = asyncHandler(async (req, res) => {
 
 const releaseList = asyncHandler(async (req, res) => {
   const date = req.query.date || new Date().toISOString().slice(0, 10);
-  return ok(res, await service.releaseList(date));
+  // `mode=RELEASE` → lọc theo ngày TẠO LỆNH (ngày bấm Release 1); mặc định theo ngày kế hoạch.
+  const mode = String(req.query.mode || '').toUpperCase() === 'RELEASE' ? 'RELEASE' : 'KE_HOACH';
+  return ok(res, await service.releaseList(date, mode));
 });
 
 const releaseSets = asyncHandler(async (req, res) =>

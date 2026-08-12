@@ -40,8 +40,8 @@ async function getRun(lenhId) {
     : [[], null, await repo.getLenhDotVaiList(lenhId), await repo.listVaiHuyByLenh(lenhId), { items: [] }];
   // Lệnh GOM SET = nhiều PHẦN IN khác nhau trong cùng 1 đợt SX (in chung 1 chuyền).
   const soPhanIn = new Set(dotVai.map((d) => d.phan_in_id)).size;
-  // Lý do BỔ SUNG đã ghi của từng đợt vải (mig 077) — gắn thẳng vào dòng đợt vải cho FE khỏi ghép.
-  // ⚠ Chưa chạy mig 077 thì trả [] ⇒ các trường dưới là undefined, sidebar tự ẩn khối.
+  // Thông tin BỔ SUNG đã ghi của từng đợt vải (mig 077 + 079) — gắn thẳng vào dòng đợt vải cho FE
+  // khỏi ghép. ⚠ Chưa chạy migration thì trả [] ⇒ các trường dưới là undefined, sidebar tự ẩn.
   const bsMap = new Map((await repo.lyDoBoSungByLenh(lenhId).catch(() => []))
     .map((r) => [r.dot_vai_ve_id, r]));
   dotVai.forEach((d) => {
@@ -49,6 +49,7 @@ async function getRun(lenhId) {
     if (b) Object.assign(d, {
       ly_do_bo_sung_id: b.ly_do_bo_sung_id, ghi_chu_bo_sung: b.ghi_chu_bo_sung,
       ten_ly_do_bo_sung: b.ten_ly_do,
+      sl_bo_sung_cty: b.sl_bo_sung_cty, sl_bo_sung_khach: b.sl_bo_sung_khach,
     });
   });
   return { lenh, phieu, tems, printed, ngung_list: ngungList, ngung_active: ngungActive,
@@ -223,15 +224,38 @@ async function doiTrangThaiLyDoBoSung(id, active, actorId) {
   await repo.setLyDoBoSungActive(id, active, actorId);
 }
 
-// Ghi lý do bổ sung cho 1 ĐỢT VẢI (sidebar màn Sản xuất). Bỏ trống cả 2 = xóa lý do đã ghi.
-async function luuLyDoBoSungDotVai(dotVaiId, { lyDoId, ghiChu }, actorId) {
+// Ghi thông tin BỔ SUNG cho 1 ĐỢT VẢI (sidebar màn Sản xuất): SL do CÔNG TY / do KHÁCH HÀNG + ghi chú.
+// Bỏ trống hết = xóa thông tin đã ghi.
+//
+// ⚠ Giao diện ĐÃ BỎ ô chọn lý do (chốt 12/08/2026) nên FE không gửi `lyDoId` nữa; tham số vẫn nhận để
+//   dữ liệu cũ / API cũ không vỡ. `slCty`/`slKhach` là SỐ NGUYÊN ≥ 0 (mig 079).
+// ⚠ CỐ Ý KHÔNG chặn khi Σ(cty + khách) ≠ SL vải về của đợt: đây là ô nhập tại chuyền đang chạy, số
+//   ERP và số thực nhận có thể lệch — giao diện đã hiện cảnh báo màu để người nhập tự đối chiếu.
+const soNguyenKhongAm = (v) => {
+  if (v === '' || v === null || v === undefined) return null;
+  const n = Math.trunc(Number(v));
+  return Number.isFinite(n) && n >= 0 ? n : null;
+};
+
+async function luuLyDoBoSungDotVai(dotVaiId, { lyDoId, ghiChu, slCty, slKhach }, actorId) {
   if (lyDoId) {
     let dm = null;
     try { dm = await repo.getLyDoBoSung(lyDoId); } catch { dm = null; }
     if (!dm) throw new AppError('Lý do bổ sung không tồn tại', { status: 404, errorCode: 'LY_DO_NOT_FOUND' });
   }
-  const ok = await repo.setLyDoBoSungChoDotVai(dotVaiId, lyDoId || null, (ghiChu || '').trim() || null, actorId);
-  if (!ok) throw new AppError('Chưa chạy migration 077 nên chưa ghi được lý do bổ sung', { status: 409, errorCode: 'THIEU_MIGRATION' });
+  const res = await repo.setLyDoBoSungChoDotVai(dotVaiId, {
+    lyDoId: lyDoId || null,
+    ghiChu: (ghiChu || '').trim() || null,
+    slCty: soNguyenKhongAm(slCty),
+    slKhach: soNguyenKhongAm(slKhach),
+  }, actorId);
+  if (!res.ghiLyDo && !res.ghiSl) {
+    throw new AppError('Chưa chạy migration 077/079 nên chưa ghi được thông tin bổ sung', { status: 409, errorCode: 'THIEU_MIGRATION' });
+  }
+  // Thiếu riêng mig 079 thì ghi chú vẫn lưu được nhưng 2 số thì không — phải nói rõ, đừng báo "đã lưu".
+  if (!res.ghiSl && (slCty != null || slKhach != null)) {
+    throw new AppError('Chưa chạy migration 079 nên chưa ghi được SL bổ sung do công ty / khách hàng', { status: 409, errorCode: 'THIEU_MIGRATION_079' });
+  }
   sockets.emit('production:updated', { action: 'ly-do-bo-sung' });
   return { ok: true };
 }
