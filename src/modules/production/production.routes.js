@@ -63,6 +63,12 @@ router.post('/phieu/:phieuId/ngung-lenh', rbac('PROD_RUN'), c.pauseLenhChay);
 // Đổi chuyền của lượt chạy — đổi cả phieu_san_xuat.chuyen_id lẫn lenh_san_xuat.chuyen_id.
 router.post('/phieu/:phieuId/doi-chuyen', rbac('PROD_RUN'), c.doiChuyen);
 
+// TRẢ VỀ KỸ THUẬT từ màn Xác nhận chạy (chờ chạy / đang chạy) → hủy lệnh + phần in quay lại READY.
+// ⚠ Theo LỆNH (không phải phiếu) vì bảng "Chờ chạy" chưa có phiếu SX nào.
+// ⚠ Quyền `PROD_RUN`: người đứng chuyền là người phát hiện lỗi khuôn/film/mực, và họ vốn đã hủy được
+//   tem qua "Hủy lệnh in tem" / "Hủy lệnh đang chạy" (cùng quyền). Guard sổ cái vẫn nằm ở service.
+router.post('/lenh/:lenhId/tra-ve-ky-thuat', rbac('PROD_RUN'), c.traVeKyThuat);
+
 // Vượt sản xuất: cộng SL vượt vào release + trừ đợt vải chưa release cùng phần in — sidebar Xác nhận chạy
 router.post('/phieu/:phieuId/vuot-san-xuat', rbac('PROD_RUN'), c.vuotSanXuat);
 

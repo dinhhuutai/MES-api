@@ -145,6 +145,11 @@ const undoStartCandidates = asyncHandler(async (req, res) => ok(res, await servi
 const undoStartProduction = asyncHandler(async (req, res) =>
   ok(res, await service.undoStartProduction(req.params.phieuId, req.user.id), 'Đã hủy lệnh đang chạy — đưa về chờ chạy'));
 
+// Trả về Kỹ thuật từ màn Xác nhận chạy (chờ chạy / đang chạy) → hủy lệnh + phần in quay lại READY
+const traVeKyThuat = asyncHandler(async (req, res) =>
+  ok(res, await service.traVeKyThuat(req.params.lenhId, req.body || {}, req.user.id),
+    'Đã trả về Kỹ thuật — phần in quay lại READY'));
+
 const vuotSanXuat = asyncHandler(async (req, res) =>
   ok(res, await service.vuotSanXuat(req.params.phieuId, req.body?.soLuong, req.user.id), 'Đã ghi nhận vượt sản xuất'));
 
@@ -158,4 +163,5 @@ module.exports = {
   closeCandidates, closeProduction,
   reopenCandidates, reopenProduction, pauseLenhChay, doiChuyen,
   undoStartCandidates, undoStartProduction,
+  traVeKyThuat,
 };

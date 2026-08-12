@@ -7,6 +7,10 @@ const { buildMeta } = require('../../utils/pagination');
 const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
 const planningRepo = require('../planning/planning.repository');
+// ⚠ KHÔNG vòng: `planning.service` chỉ require `production.repository` (không phải service này).
+const planningService = require('../planning/planning.service'); // rollbackLenh (Trả về Kỹ thuật)
+const erpsyncRepo = require('../erpsync/erpsync.repository');     // reopenReadyForPhanIn
+const qaRepo = require('../quality/quality.repository');          // qc_tra_ve (badge + lý do ở READY)
 const { caFromParts, maNgayCa, ngayTuMaNgayCa } = require('../../utils/ca');
 const { layBarcodeTem, layNhieuBarcodeTem } = require('../../utils/erpTemBarcode');
 
@@ -769,6 +773,67 @@ async function undoStartProduction(phieuId, actorId) {
   return { lenh_id: phieu.lenh_san_xuat_id, ma_lenh_san_xuat: lenh?.ma_lenh_san_xuat };
 }
 
+// ----- TRẢ VỀ KỸ THUẬT (màn Xác nhận chạy — cả "Chờ chạy" lẫn "Đang chạy") -----
+// Sắp chạy / đang chạy mới phát hiện khuôn-film-mực sai ⇒ HỦY LỆNH + đưa phần in quay lại READY để
+// kỹ thuật làm lại. Cùng ý nghĩa với nút "Trả về Kỹ thuật" ở Release 1, chỉ khác điểm xuất phát:
+// ở đây lệnh ĐÃ release nên `planning.traVeKyThuat` sẽ bị chính guard `RELEASED` của nó chặn.
+//
+// ⚠⚠ TÁI DÙNG service đang chạy ngoài giao diện, KHÔNG viết đường ghi riêng (cùng nguyên tắc với
+//   trang "Quản trị phần in" đích READY_KT): `planning.rollbackLenh` hủy lệnh (kèm phiếu + tem nếu
+//   đã in) rồi `erpsync.reopenReadyForPhanIn` hủy Khuôn/Film/Mực + gắn cờ `can_lam_lai_ready`.
+// ⚠⚠ THỨ TỰ BẮT BUỘC — hủy lệnh TRƯỚC: `reopenReadyForPhanIn` chỉ gắn cờ cho đợt vải CHƯA release
+//   (`NOT EXISTS` lệnh ≠ HUY); gọi ngược lại thì cờ không được gắn mà cũng không báo lỗi gì.
+// ⚠ Lệnh ĐANG CHẠY luôn có phiếu ⇒ phải đi đường `force` của `rollbackLenh` (nhánh thường chặn
+//   `HAS_PHIEU`). `force` vẫn GIỮ guard `TEM_DA_XU_LY`: tem đã qua KCS/Sửa/OQC/giao thì chặn, vì hủy
+//   lúc đó làm sai SỔ CÁI SỐ LƯỢNG — muốn gỡ phải hủy xác nhận từng công đoạn ở tab KCS/Sửa/OQC trước.
+//   Quyền: route dùng `PROD_RUN` — người đứng chuyền chính là người phát hiện lỗi, và họ vốn đã hủy
+//   được tem qua "Hủy lệnh in tem" / "Hủy lệnh đang chạy" (cùng quyền này).
+async function traVeKyThuat(lenhId, { lyDo }, actorId) {
+  const reason = String(lyDo || '').trim();
+  if (!reason) throw new AppError('Nhập lý do trả về Kỹ thuật', { status: 422, errorCode: 'NO_LY_DO' });
+
+  const lenh = await planningRepo.getLenhForCancel(lenhId);
+  if (!lenh) throw new AppError('Lệnh sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  if (lenh.trang_thai === 'HUY') throw new AppError('Lệnh đã hủy', { status: 409, errorCode: 'ALREADY' });
+  if (!['RELEASE_2', 'SAN_XUAT'].includes(lenh.trang_thai)) {
+    throw new AppError('Chỉ trả về Kỹ thuật từ màn Xác nhận chạy (lệnh đang chờ chạy hoặc đang chạy)',
+      { status: 409, errorCode: 'WRONG_STAGE' });
+  }
+
+  // Lấy phần in TRƯỚC khi hủy lệnh (junction `lenh_sx_dot_vai` không bị xóa, nhưng đọc trước cho chắc).
+  const pinIds = await planningRepo.phanInIdsByLenh(lenhId);
+
+  // 1) Hủy lệnh về READY — `force` chỉ khi lệnh đã có phiếu (đang chạy / đã in tem).
+  const ketQuaLenh = await planningService.rollbackLenh(
+    lenhId, { target: 'READY', lyDo: `[Trả về Kỹ thuật từ Sản xuất] ${reason}`, force: !!lenh.co_phieu }, actorId
+  );
+
+  // 2) Mở lại READY đầy đủ: hủy Khuôn/Film/Mực (bước 1 mới chỉ hủy QC) + cờ làm lại cho đợt chưa release.
+  for (const pinId of pinIds) {
+    await erpsyncRepo.reopenReadyForPhanIn(pinId);
+    await planningRepo.auditTraVeKyThuat(pinId, null, reason, actorId);
+    // Dùng lại loai 'RELEASE1' (mức phần in) ⇒ màn READY/QC READY hiện sẵn badge + lý do mà KHÔNG
+    // phải sửa gì bên `technical` (nó đọc `activeReturnsMap('RELEASE1', …)`); cờ tự tắt khi QC xác
+    // nhận READY lại (`technical.confirmQC` → `resolveReturns('RELEASE1')`).
+    await qaRepo.insertQcTraVe({ loai: 'RELEASE1', phanInId: pinId, lenhId, lyDo: reason }, actorId);
+  }
+
+  await planningRepo.logPlanChange(null, lenhId, 'TRA_VE_KY_THUAT_SAN_XUAT',
+    { trang_thai: lenh.trang_thai, so_tem: lenh.so_tem || 0 },
+    { ma_lenh: lenh.ma_lenh_san_xuat, ly_do: reason, phan_in: pinIds.length, so_tem_huy: ketQuaLenh?.so_tem_huy || 0 },
+    actorId);
+
+  // `rollbackLenh` đã `tracking.revertToReady(dotVaiIds)` nên KHÔNG move lại ở đây (tránh ghi 2 lần).
+  sockets.emit('production:updated', { lenhId, action: 'tra-ve-ky-thuat' });
+  sockets.emit('workflow:updated', { lenhId, stage: 'READY', traVe: true });
+  sockets.emit('ready:confirmed', { traVe: true }); // READY & QC READY nghe event này để tải lại ngầm
+  sockets.emit('dashboard:refresh', {});
+  return {
+    lenh_id: lenhId, ma_lenh_san_xuat: lenh.ma_lenh_san_xuat, trang_thai_cu: lenh.trang_thai,
+    phan_in: pinIds.length, so_tem_huy: ketQuaLenh?.so_tem_huy || 0, tu_set: ketQuaLenh?.tu_set === true,
+  };
+}
+
 // ===== VƯỢT SẢN XUẤT =====
 // Cộng SL vượt vào so_luong_release của lệnh + TRỪ SL đó khỏi các đợt vải CHƯA release của
 // cùng phần in (đợt về 0 → ẩn). Ghi lịch sử. SL trừ là best-effort (thiếu đợt chưa release thì trừ được bao nhiêu hay bấy nhiêu).
@@ -820,4 +885,5 @@ module.exports = {
   listCloseCandidates, closeProduction,
   listReopenCandidates, reopenProduction, pauseLenhChay, doiChuyen,
   listUndoStartCandidates, undoStartProduction,
+  traVeKyThuat,
 };
