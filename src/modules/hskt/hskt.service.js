@@ -84,6 +84,10 @@ async function changePhuongAnIn(id, pain, actorId) {
     );
   }
   sockets.emit('workflow:updated', { stage: 'HSKT', hsktId: res.id });
+  // Màn READY / QC READY cho đổi phương án in ngay tại cột ⇒ máy khác phải thấy. 2 màn đó nghe
+  // `ready:confirmed` (KHÔNG nghe `workflow:updated` — event ấy bị planning bắn rất dày, nghe vào là
+  // tải lại liên tục vô ích), nên emit thêm ở đây thay vì nới danh sách nghe bên FE.
+  sockets.emit('ready:confirmed', { stage: 'HSKT', hsktId: res.id });
   const data = await detail(res.id);
   return { ...data, barcode_cu: res.barcode_cu, barcode_moi: res.barcode_moi };
 }
