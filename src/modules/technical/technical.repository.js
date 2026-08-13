@@ -147,7 +147,15 @@ async function listCandidates({
            count(*) OVER()::int AS total_count
     FROM (${selectBase(true)}) q
     ${OUTER_WHERE}
-    ORDER BY q.n_tech_done DESC, q.ma_phan
+    -- MÀN KỸ THUẬT: phần in VỪA ĐƯỢC XÁC NHẬN (Khuôn/Film/Mực) lên ĐẦU danh sách.
+    -- kt_done_tg = lần xác nhận MUỘN NHẤT trong 3 mục (LATERAL sla ở trên), mà tg_xac_nhan được
+    -- GHI ĐÈ mỗi lần xác nhận lại ⇒ nó luôn là "vừa mới xác nhận lúc nào". Chưa xác nhận mục nào
+    -- (NULL) thì xuống cuối, nên phải ghi rõ NULLS LAST (Postgres DESC mặc định là NULLS FIRST).
+    -- MÀN QC ($11 = onlyQcReady): giữ NGUYÊN thứ tự cũ — CASE cho ra NULL ở mọi dòng nên hòa,
+    -- rơi xuống 2 khóa sắp xếp cũ bên dưới.
+    -- (KHÔNG viết dấu backtick trong comment SQL nằm trong template literal — nó đóng chuỗi JS sớm.)
+    ORDER BY (CASE WHEN $11 THEN NULL::timestamptz ELSE q.kt_done_tg END) DESC NULLS LAST,
+             q.n_tech_done DESC, q.ma_phan
     LIMIT $4 OFFSET $5`;
 
   const { rows } = await query(dataSql, [mauTim(search), inputIds, qcId, limit, offset, khuonId, filmId, mucId, readySla, readyCanhBao, onlyQcReady, qcSla, qcCanhBao]);
