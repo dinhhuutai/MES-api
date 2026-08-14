@@ -1229,9 +1229,20 @@ async function cancelGiaCongTem(temId, { lyDo } = {}, actorId) {
   };
 }
 
-async function replan(lenhId, { chuyenId, ngayKeHoach, lyDo }, actorId) {
+// Giờ trong ngày ('HH:MM') của một timestamp đã lưu — server chạy GMT+7 nên giờ local = giờ VN
+// (cùng quy ước với `toDateStr` bên dưới).
+function gioCua(v) {
+  if (!v) return null;
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return null;
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+async function replan(lenhId, { chuyenId, ngayKeHoach, lyDo, tgBdKh, tgKtKh }, actorId) {
   if (!ngayKeHoach) throw new AppError('Chọn ngày sản xuất theo kế hoạch', { status: 422, errorCode: 'NO_NGAY' });
-  if (!lyDo || !lyDo.trim()) throw new AppError('Nhập lý do lập kế hoạch lại', { status: 422, errorCode: 'NO_LY_DO' });
+  // Lý do KHÔNG bắt buộc (chốt 2026-08-14) — dời ngày/chuyền là việc điều độ hằng ngày, bắt nhập lý do
+  // mỗi lần chỉ khiến người dùng gõ cho có. Vẫn ghi vào audit khi có nhập.
+  const lyDoSach = (lyDo || '').trim() || null;
 
   const lenh = await repo.getLenhForReplan(lenhId);
   if (!lenh) throw new AppError('Lệnh sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
@@ -1242,11 +1253,28 @@ async function replan(lenhId, { chuyenId, ngayKeHoach, lyDo }, actorId) {
   }
 
   const newChuyen = chuyenId || lenh.chuyen_id; // không gửi thì giữ chuyền cũ
+  // GIỜ BẮT ĐẦU / KẾT THÚC kế hoạch:
+  //  - FE gửi lên → dùng luôn (đã ghép sẵn ngày mới + giờ, y như Release 1).
+  //  - KHÔNG gửi → DỜI giờ cũ sang NGÀY MỚI, giữ nguyên giờ-trong-ngày.
+  // ⚠ Không được để nguyên `tg_bd_kh` cũ: nó mang NGÀY CŨ, lập lại kế hoạch mà giữ y nguyên thì
+  //   `ngay_ke_hoach` và `tg_bd_kh` chỏi nhau (mọi màn đọc giờ SX sẽ hiện ngày đã bị dời đi).
+  //   Cũng KHÔNG xóa trắng — người dùng chỉ dời ngày thì không có lý do gì mất giờ đã đặt.
+  const ngayMoi = toDateStr(ngayKeHoach);
+  const doiGio = (moi, cu) => {
+    if (moi) return moi;
+    const g = gioCua(cu);
+    return g && ngayMoi ? `${ngayMoi}T${g}:00` : null;
+  };
+  const bdMoi = doiGio(tgBdKh, lenh.tg_bd_kh);
+  const ktMoi = doiGio(tgKtKh, lenh.tg_kt_kh);
   await withTransaction(async (client) => {
-    await repo.updateLenhPlan(client, lenhId, { chuyenId: newChuyen, ngayKeHoach }, actorId);
+    await repo.updateLenhPlan(client, lenhId,
+      { chuyenId: newChuyen, ngayKeHoach, tgBdKh: bdMoi, tgKtKh: ktMoi }, actorId);
     await repo.logPlanChange(client, lenhId, 'REPLAN',
-      { chuyen_id: lenh.chuyen_id || null, ngay_ke_hoach: toDateStr(lenh.ngay_ke_hoach) },
-      { chuyen_id: newChuyen || null, ngay_ke_hoach: toDateStr(ngayKeHoach), ly_do: lyDo.trim() },
+      { chuyen_id: lenh.chuyen_id || null, ngay_ke_hoach: toDateStr(lenh.ngay_ke_hoach),
+        gio_bd: gioCua(lenh.tg_bd_kh), gio_kt: gioCua(lenh.tg_kt_kh) },
+      { chuyen_id: newChuyen || null, ngay_ke_hoach: ngayMoi, ly_do: lyDoSach,
+        gio_bd: gioCua(bdMoi), gio_kt: gioCua(ktMoi) },
       actorId);
   });
   sockets.emit('workflow:updated', { lenhId, stage: 'RELEASE_2', replan: true });
@@ -1282,8 +1310,15 @@ async function planHistory(date) {
   const ng = (v) => v || '—';
   return rows.map((r) => {
     const isReplan = r.hanh_dong === 'REPLAN';
+    // Giờ BD/KT chỉ ghi vào phần chi tiết khi CÓ đặt giờ (dòng lịch sử cũ không có 2 khóa này).
+    const khoangGio = (bd, kt) => (bd || kt ? `${bd || '—'}→${kt || '—'}` : '');
+    const gioCu = khoangGio(r.gio_bd_cu, r.gio_kt_cu);
+    const gioMoi = khoangGio(r.gio_bd_moi, r.gio_kt_moi);
+    const phanGio = gioCu || gioMoi
+      ? ` · Giờ ${gioCu || '—'}→${gioMoi || '—'}`
+      : '';
     const chiTiet = isReplan
-      ? `Chuyền ${r.ten_chuyen_cu || '—'}→${r.ten_chuyen_moi || '—'} · Ngày ${ng(r.ngay_cu)}→${ng(r.ngay_moi)} · Lý do: ${r.ly_do || '—'}`
+      ? `Chuyền ${r.ten_chuyen_cu || '—'}→${r.ten_chuyen_moi || '—'} · Ngày ${ng(r.ngay_cu)}→${ng(r.ngay_moi)}${phanGio} · Lý do: ${r.ly_do || '—'}`
       : `Duyệt Release 2 → chuyền ${r.ten_chuyen_moi || '—'}, ngày ${ng(r.ngay_moi)}`;
     return {
       tg: r.tg,

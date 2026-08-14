@@ -556,6 +556,7 @@ async function listReplanCandidates({ search = '', offset = 0, limit = 50 }) {
       AND ($1 = '' OR ls.ma_lenh_san_xuat ~* $1 OR ${lenhPhanInMatch('ls.id', '$1')})`;
   const dataSql = `
     SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.ngay_ke_hoach, ls.chuyen_id, ls.trang_thai,
+           ls.tg_bd_kh, ls.tg_kt_kh,
            cs.ma_chuyen, cs.ten_chuyen,
            info.ten_khach_hang, info.ma_don_hang, info.ma_hang,
            info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan, info.tinh_chat_in,
@@ -1086,6 +1087,7 @@ async function logLenhCancel(lenhId, maLenh, lyDo, actorId) {
 async function getLenhForReplan(lenhId) {
   const { rows } = await query(
     `SELECT ls.id, ls.ma_lenh_san_xuat, ls.trang_thai, ls.chuyen_id, ls.ngay_ke_hoach,
+            ls.tg_bd_kh, ls.tg_kt_kh,
             EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = ls.id) AS co_phieu
      FROM lenh_san_xuat ls WHERE ls.id = $1`,
     [lenhId]
@@ -1093,11 +1095,13 @@ async function getLenhForReplan(lenhId) {
   return rows[0] || null;
 }
 
-async function updateLenhPlan(client, lenhId, { chuyenId, ngayKeHoach }, actorId) {
+// Cập nhật kế hoạch của lệnh. `tgBdKh`/`tgKtKh` = giờ bắt đầu/kết thúc theo kế hoạch (mig gốc 001,
+// cùng 2 cột mà Release 1 / Tạo đợt SX ghi) — service đã ghép sẵn ngày + giờ trước khi gọi.
+async function updateLenhPlan(client, lenhId, { chuyenId, ngayKeHoach, tgBdKh, tgKtKh }, actorId) {
   await client.query(
-    `UPDATE lenh_san_xuat SET chuyen_id = $2, ngay_ke_hoach = $3,
-       updated_by = $4, updated_date = CURRENT_TIMESTAMP WHERE id = $1`,
-    [lenhId, chuyenId, ngayKeHoach || null, actorId]
+    `UPDATE lenh_san_xuat SET chuyen_id = $2, ngay_ke_hoach = $3, tg_bd_kh = $4, tg_kt_kh = $5,
+       updated_by = $6, updated_date = CURRENT_TIMESTAMP WHERE id = $1`,
+    [lenhId, chuyenId, ngayKeHoach || null, tgBdKh || null, tgKtKh || null, actorId]
   );
 }
 
@@ -1120,6 +1124,8 @@ async function planHistoryByDate(date) {
             csc.ten_chuyen AS ten_chuyen_cu, csm.ten_chuyen AS ten_chuyen_moi,
             a.gia_tri_cu->>'ngay_ke_hoach' AS ngay_cu,
             a.gia_tri_moi->>'ngay_ke_hoach' AS ngay_moi,
+            a.gia_tri_cu->>'gio_bd' AS gio_bd_cu, a.gia_tri_cu->>'gio_kt' AS gio_kt_cu,
+            a.gia_tri_moi->>'gio_bd' AS gio_bd_moi, a.gia_tri_moi->>'gio_kt' AS gio_kt_moi,
             a.gia_tri_moi->>'ly_do' AS ly_do
      FROM audit_log a
      JOIN lenh_san_xuat ls ON ls.id = a.id_ban_ghi::uuid

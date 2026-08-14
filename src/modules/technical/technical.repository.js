@@ -85,7 +85,7 @@ async function listCandidates({
            ${doneExpr('$8')} AS muc_done,
            ${techDoneSql('kh.ten_khach_hang', doneExpr('$6'), doneExpr('$7'), doneExpr('$8'))} AS tech_done` : ''},
            hs.phuong_an_in, hs.barcode_hskt, hs.hskt_id, hs.hskt_inset,
-           sla.ready_tg_vao, sla.kt_done_tg
+           sla.ready_tg_vao, sla.kt_done_tg, sla.xn_sort_tg
     FROM phan_in pin
     JOIN ma_hang mh ON mh.id = pin.ma_hang_id
     JOIN don_hang dh ON dh.id = mh.don_hang_id
@@ -109,7 +109,13 @@ async function listCandidates({
                     AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd WHERE lsd.dot_vai_ve_id = dv.id))
              ) AS ready_tg_vao,
              (SELECT max(COALESCE(k.tg_xac_nhan, k.created_date)) FROM ket_qua_checkpoint k
-                WHERE k.phan_in_id = pin.id AND k.checkpoint_id = ANY($2::uuid[]) AND k.trang_thai = 'DAT') AS kt_done_tg
+                WHERE k.phan_in_id = pin.id AND k.checkpoint_id = ANY($2::uuid[]) AND k.trang_thai = 'DAT') AS kt_done_tg,
+             -- xn_sort_tg = mốc "vừa được xác nhận" dùng ĐỂ SẮP XẾP màn Kỹ thuật — CHỈ tính KHUON ($6)
+             -- và MUC ($8), CỐ Ý BỎ FILM ($7): xác nhận Film không được đẩy phần in lên đầu danh sách.
+             -- ⚠ Phải là cột RIÊNG, KHÔNG sửa kt_done_tg ở trên: kt_done_tg là mốc bắt đầu đếm SLA của
+             -- QC (dòng tg_vao/sla_phut bên dưới) nên vẫn phải tính ĐỦ CẢ 3 mục.
+             (SELECT max(COALESCE(k.tg_xac_nhan, k.created_date)) FROM ket_qua_checkpoint k
+                WHERE k.phan_in_id = pin.id AND k.checkpoint_id IN ($6, $8) AND k.trang_thai = 'DAT') AS xn_sort_tg
     ) sla ON true
     -- Ở READY khi phần in CÒN đợt vải CHƯA release (đợt không nằm trong lệnh ≠ HUY), HOẶC chưa có đợt vải nào.
     -- ⇒ phần in đã release hết đợt thì rời READY; nhưng nếu "Mở lại READY" (hủy QC) mà còn đợt mới chưa release
@@ -147,14 +153,15 @@ async function listCandidates({
            count(*) OVER()::int AS total_count
     FROM (${selectBase(true)}) q
     ${OUTER_WHERE}
-    -- MÀN KỸ THUẬT: phần in VỪA ĐƯỢC XÁC NHẬN (Khuôn/Film/Mực) lên ĐẦU danh sách.
-    -- kt_done_tg = lần xác nhận MUỘN NHẤT trong 3 mục (LATERAL sla ở trên), mà tg_xac_nhan được
-    -- GHI ĐÈ mỗi lần xác nhận lại ⇒ nó luôn là "vừa mới xác nhận lúc nào". Chưa xác nhận mục nào
-    -- (NULL) thì xuống cuối, nên phải ghi rõ NULLS LAST (Postgres DESC mặc định là NULLS FIRST).
+    -- MÀN KỸ THUẬT: phần in VỪA ĐƯỢC XÁC NHẬN lên ĐẦU danh sách.
+    -- ⚠ CHỈ tính KHUÔN và MỰC — xác nhận FILM KHÔNG đẩy phần in lên đầu (yêu cầu nghiệp vụ).
+    -- Mốc lấy từ xn_sort_tg (LATERAL sla ở trên); tg_xac_nhan được GHI ĐÈ mỗi lần xác nhận lại nên
+    -- nó luôn là "vừa mới xác nhận lúc nào". Phần in chưa xác nhận Khuôn/Mực (NULL) xuống cuối, nên
+    -- phải ghi rõ NULLS LAST (Postgres DESC mặc định là NULLS FIRST).
     -- MÀN QC ($11 = onlyQcReady): giữ NGUYÊN thứ tự cũ — CASE cho ra NULL ở mọi dòng nên hòa,
     -- rơi xuống 2 khóa sắp xếp cũ bên dưới.
     -- (KHÔNG viết dấu backtick trong comment SQL nằm trong template literal — nó đóng chuỗi JS sớm.)
-    ORDER BY (CASE WHEN $11 THEN NULL::timestamptz ELSE q.kt_done_tg END) DESC NULLS LAST,
+    ORDER BY (CASE WHEN $11 THEN NULL::timestamptz ELSE q.xn_sort_tg END) DESC NULLS LAST,
              q.n_tech_done DESC, q.ma_phan
     LIMIT $4 OFFSET $5`;
 
