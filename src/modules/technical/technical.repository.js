@@ -179,7 +179,7 @@ async function countReadyItems({ khuonId, filmId, mucId, qcId }) {
     `EXISTS (SELECT 1 FROM ket_qua_checkpoint k WHERE k.phan_in_id = pin.id AND k.checkpoint_id = ${param} AND k.trang_thai = 'DAT')`;
   const sql = `
     SELECT count(*) FILTER (WHERE NOT khuon_done AND khach NOT IN (${KHUON_OPT_SQL_LIST}))::int AS khuon,
-           count(*) FILTER (WHERE NOT film_done)::int AS film,
+           count(*) FILTER (WHERE NOT film_done AND khach NOT IN (${KHUON_OPT_SQL_LIST}))::int AS film,
            count(*) FILTER (WHERE NOT muc_done)::int AS muc
     FROM (
       SELECT ${doneExpr('$1')} AS khuon_done, ${doneExpr('$2')} AS film_done, ${doneExpr('$3')} AS muc_done,

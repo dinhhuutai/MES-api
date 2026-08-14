@@ -40,6 +40,9 @@ async function start() {
     console.log(`[erp] Nhận vải : ${env.erp.phieuNhanVaiUrl}`);
     console.log(`[erp] Mã tem   : ${env.erp.barcodeTemUrl}`
       + (process.env.ERP_BARCODE_TEM_URL ? '' : '   ⚠ CHƯA đặt ERP_BARCODE_TEM_URL trong .env — đang suy theo gốc URL nhận vải'));
+    console.log(`[erp] Ghi in tem: ${env.erp.ghiInTemUrl}`
+      + (env.erp.ghiInTemEnabled ? '' : '   (ĐANG TẮT qua ERP_GHI_IN_TEM_ENABLED=false)')
+      + (process.env.ERP_GHI_IN_TEM_URL ? '' : '   ⚠ CHƯA đặt ERP_GHI_IN_TEM_URL trong .env — đang suy theo gốc URL nhận vải'));
     // [ERP TẮT TẠM] không tự đồng bộ ERP. Bỏ comment để bật lại.
      startErpSyncJob();
     startCleanupJob();

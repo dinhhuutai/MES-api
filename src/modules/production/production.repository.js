@@ -670,9 +670,11 @@ async function logReprint(temId, maTem, lyDo, soLan, actorId) {
   );
 }
 
-// ⚠⚠ KHÔNG CÒN DÙNG từ 07/08/2026 — mã tem nay LẤY TỪ ERP (`utils/erpTemBarcode.layBarcodeTem`,
-// barcode 12 số đã sẵn tiền tố công đoạn `15`). Giữ hàm cho dữ liệu/tem cũ dạng `TEM00123` và làm
-// tham chiếu; ĐỪNG nối lại vào luồng in tem — 2 dãy mã song song sẽ loạn tiền tố công đoạn.
+// ĐƯỜNG DỰ PHÒNG khi API mã tem bị TẮT ở Hệ thống > Cài đặt API (mig 083).
+// Mặc định mã tem LẤY TỪ ERP (`utils/erpTemBarcode.layBarcodeTem`, barcode 12 số sẵn tiền tố `15`);
+// chỉ khi người dùng CHỦ ĐỘNG tắt thì mới rơi về dãy `TEM00123` này.
+// ⚠ Tem mang mã này KHÔNG quét được bằng máy quét của ERP (không đúng 12 số) — trong MES thì vẫn
+//   quét/tra cứu bình thường nhờ `utils/temPrefix.js` nhận cả 2 định dạng.
 async function nextMaTem() {
   // CHỈ tính mã chuẩn '^TEM<digits>$' và ép KIỂU SỐ TRƯỚC khi MAX (tránh so sánh chuỗi '2' > '00003'
   // → sinh mã trùng). Mã tem seed/khác định dạng bị bỏ qua để không làm lệch số.
@@ -681,6 +683,19 @@ async function nextMaTem() {
      FROM tem`
   );
   return rows[0].ma;
+}
+
+// Sinh N mã `TEM00123` LIÊN TIẾP trong 1 lượt — cho lệnh gom set khi API mã tem đang tắt.
+// ⚠ Phải có hàm riêng: `nextMaTem()` dùng POOL (không phải client của transaction) nên gọi N lần
+//   trước khi mở transaction sẽ trả về **CÙNG một mã** N lần → trùng khóa UNIQUE `ma_tem`.
+// ⚠ Vẫn có kẽ hở nếu 2 máy in cùng lúc (dãy này không có bộ đếm nguyên tử như mã ERP) — lúc đó
+//   UNIQUE sẽ chặn và lượt in báo lỗi trùng khóa. Chấp nhận: đây là đường dự phòng tạm thời.
+async function nextMaTemNhieu(n) {
+  const { rows } = await query(
+    `SELECT COALESCE(MAX(substring(ma_tem from 4)::int) FILTER (WHERE ma_tem ~ '^TEM[0-9]+$'),0) AS m FROM tem`
+  );
+  const base = Number(rows[0].m) || 0;
+  return Array.from({ length: n }, (_, i) => `TEM${String(base + i + 1).padStart(5, '0')}`);
 }
 
 // Đường dự phòng khi CHƯA chạy mig 066: DÒ CỘT TRƯỚC, không try/catch quanh INSERT.
@@ -761,6 +776,122 @@ async function goiYTemMeta(lenhId, phieuId) {
       FROM b LEFT JOIN t ON true LEFT JOIN p ON true`;
   const { rows } = await query(sql.replace(/\s+/g, ' '), [lenhId, phieuId || null]);
   return rows[0] || null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BÁO NGƯỢC LÊN ERP MỖI LẦN IN TEM (`POST /ghi-in-tem` → proc `MES_spr_MES2SF0`, mig 082)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Cấp mã `IDMES` DUY NHẤT: `YMMDD` + 4 số thứ tự trong ngày (vd 31/08/2026 lượt 1 = 608310001).
+// ⚠ Chỉ giữ 1 chữ số năm vì `@pIDMES` bên ERP khai kiểu `int` (SQL Server, tối đa 2.147.483.647):
+//   `YYMMDD`+4 cho ra 2.608.310.001 là TRÀN. Đổi lại: mã trùng vào 2036 (đã chốt, chấp nhận).
+// ⚠ 1 CÂU DUY NHẤT nên NGUYÊN TỬ — nhiều máy in bấm cùng lúc vẫn không nhận trùng số, khỏi khóa.
+// ⚠ Lỗi (chưa chạy mig 082 / vượt trần 9999) → trả NULL để bên gọi BỎ QUA lời gọi ERP.
+//   Tuyệt đối không ném lỗi: việc in tem không được phụ thuộc vào chiều đẩy này.
+async function capIdMes() {
+  try {
+    const { rows } = await query(
+      `INSERT INTO erp_idmes_counter (ngay, so_thu_tu)
+       VALUES ((now() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date, 1)
+       ON CONFLICT (ngay) DO UPDATE SET so_thu_tu = erp_idmes_counter.so_thu_tu + 1
+       RETURNING so_thu_tu, to_char(ngay, 'YMMDD') AS ymd`.replace(/\s+/g, ' ')
+    );
+    const r = rows[0];
+    if (!r) return null;
+    const stt = Number(r.so_thu_tu);
+    if (!(stt >= 1 && stt <= 9999)) {
+      console.error(`[ghi-in-tem] ✗ Vượt trần 9999 lượt/ngày (số ${stt}) — BỎ QUA lời gọi ERP để không gửi mã trùng`);
+      return null;
+    }
+    return Number(`${r.ymd}${String(stt).padStart(4, '0')}`);
+  } catch (e) {
+    console.error(`[ghi-in-tem] ✗ Không cấp được IDMES (đã chạy migration 082 chưa?): ${e.message}`);
+    return null;
+  }
+}
+
+// Gom đủ 20 trường ERP cần, cho NHIỀU tem trong 1 LƯỢT QUERY (lệnh gom set in N tem ⇒ tránh N+1
+// làm IPS reset — cùng lý do với `phanInRowsByLenh`).
+// `capTem` = [{ temId, dotVaiId }] ; `dotVaiId` null thì lấy đợt vải đại diện của lệnh.
+//   · printTemBatch (gom set) LUÔN truyền `dotVaiId` ⇒ chính xác tuyệt đối theo từng dòng.
+//   · printTem (lệnh thường) không có ⇒ lấy đợt đầu theo `ma_dot_vai`. An toàn trên thực tế: đo prod
+//     14/08/2026 có 687/888 lệnh đúng 1 đợt + 1 phần in, và 0 lệnh nào 1 phần in mà nhiều đợt vải.
+//     Vẫn trả `so_dot_cua_lenh` để service cảnh báo nếu về sau xuất hiện ca đó.
+// Ngày giờ ghép NGAY TRONG SQL theo giờ VN (server có thể chạy múi giờ khác — đừng new Date() ở JS):
+//   · Ngayct = ngày in tem  · Tugio/Dengio = ngày của `ma_ngay_ca` (cột `ngay_ca` đã tách sẵn) + giờ SX
+//   · `gio_kt < gio_bd` ⇒ ca ĐÊM ⇒ Dengio +1 ngày
+//   · `ngay_ca` NULL (mã ngày ca sai định dạng) ⇒ lùi về ngày in tem, KHÔNG bịa ngày
+async function duLieuGhiInTem(capTem = []) {
+  if (!capTem.length) return [];
+  const temIds = capTem.map((x) => x.temId);
+  const dotVaiIds = capTem.map((x) => x.dotVaiId || null);
+  const VN = "AT TIME ZONE 'Asia/Ho_Chi_Minh'";
+  const sql = `
+    WITH inp AS (SELECT * FROM unnest($1::uuid[], $2::uuid[]) AS x(tem_id, dot_vai_id))
+    SELECT t.id AS tem_id, t.ma_tem, t.so_luong, t.ma_ngay_ca, t.gc_mau_vai,
+           info.ma_phan,
+           ls.ma_lenh_san_xuat, cs.ma_chuyen,
+           ps.chuyen_truong, ndct.ho_ten AS ca_truong,
+           (SELECT string_agg(DISTINCT pc.tho_in, ',') FROM phan_cong_san_xuat pc
+             WHERE pc.phieu_san_xuat_id = ps.id AND COALESCE(pc.tho_in,'') <> '') AS tho_in,
+           info.barcode AS id_dot_nhan_vai, info.ddh_sub_id, info.ddh_id, info.la_bo_sung,
+           (SELECT count(*) FROM lenh_sx_dot_vai l2
+             WHERE l2.lenh_san_xuat_id = COALESCE(ls.lenh_lien_ket_id, ls.id))::int AS so_dot_cua_lenh,
+           to_char(now() ${VN}, 'YYYY/MM/DD') AS ngay_ct,
+           CASE WHEN t.gio_sx_bd IS NULL THEN NULL
+                ELSE to_char(nen.ngay + t.gio_sx_bd, 'YYYY/MM/DD HH24:MI:SS') END AS tu_gio,
+           CASE WHEN t.gio_sx_kt IS NULL THEN NULL
+                ELSE to_char(nen.ngay + t.gio_sx_kt
+                       + CASE WHEN t.gio_sx_bd IS NOT NULL AND t.gio_sx_kt < t.gio_sx_bd
+                              THEN interval '1 day' ELSE interval '0' END,
+                     'YYYY/MM/DD HH24:MI:SS') END AS den_gio
+      FROM inp
+      JOIN tem t ON t.id = inp.tem_id
+      JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+      JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+      LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+      LEFT JOIN nguoi_dung ndct ON ndct.id = ps.ca_truong_id
+      CROSS JOIN LATERAL (
+        SELECT COALESCE(t.ngay_ca, (t.created_date ${VN})::date) AS ngay
+      ) nen
+      LEFT JOIN LATERAL (
+        SELECT dv.barcode, dv.ddh_sub_id, dh.ddh_id, pin.ma_phan, (ldv.ma_loai = 'BO_SUNG') AS la_bo_sung
+        FROM lenh_sx_dot_vai lsd
+        JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+        JOIN phan_in pin ON pin.id = dv.phan_in_id
+        JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+        JOIN don_hang dh ON dh.id = mh.don_hang_id
+        LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id
+        WHERE lsd.lenh_san_xuat_id = COALESCE(ls.lenh_lien_ket_id, ls.id)
+          AND (inp.dot_vai_id IS NULL OR dv.id = inp.dot_vai_id)
+        ORDER BY dv.ma_dot_vai LIMIT 1
+      ) info ON true`;
+  const { rows } = await query(sql.replace(/\s+/g, ' '), [temIds, dotVaiIds]);
+  return rows;
+}
+
+// Ghi vết mỗi lần báo ERP (forward-only, không cần bảng mới):
+//   · THÀNH CÔNG → `ERP_GHI_IN_TEM`, lưu {id_mes, ma_tem} để tra ngược IDMES ↔ tem khi đối soát.
+//   · THẤT BẠI  → `ERP_GHI_IN_TEM_LOI`, lưu NGUYÊN payload + thông điệp lỗi ⇒ gửi lại bằng tay
+//                 được ngay, khỏi phải dựng lại dữ liệu.
+// ⚠ Bọc try/catch: đây là bước GHI VẾT, hỏng nó không được kéo theo lỗi cho luồng in tem.
+async function logGhiInTem(temId, thanhCong, payload, loi, actorId) {
+  try {
+    await query(
+      `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+       VALUES ('tem', $1, $2, $3::jsonb, $4, CURRENT_TIMESTAMP, $4)`,
+      [
+        String(temId),
+        thanhCong ? 'ERP_GHI_IN_TEM' : 'ERP_GHI_IN_TEM_LOI',
+        JSON.stringify(thanhCong
+          ? { id_mes: payload?.IDMES ?? null, ma_tem: payload?.BarcodeIn ?? null }
+          : { loi: loi || null, payload: payload || null }),
+        actorId || null,
+      ]
+    );
+  } catch (e) {
+    console.error(`[ghi-in-tem] ✗ Không ghi được audit_log: ${e.message}`);
+  }
 }
 
 async function logTemPrint(client, { temId, maTem, actorId, lyDo = null }) {
@@ -1308,7 +1439,8 @@ module.exports = {
   listReopenCandidates, getPhieuFull, reopenPhieuTx, logReopenProduction, logPauseLenhChay,
   cancelPhieuStart, logUndoStart, logChayDacBiet,
   listTemLogByPhieu, nextReprint, logReprint,
-  nextMaTem, createTem, goiYTemMeta, logTemPrint, finishPhieu,
+  nextMaTem, nextMaTemNhieu, createTem, goiYTemMeta, logTemPrint, finishPhieu,
+  capIdMes, duLieuGhiInTem, logGhiInTem,
   nextMaPhieuTx, nextMaTemTx, createPhieuDone, createTemGiaCongOqc,
   setPhieuTruong, upsertPhanCong, getPhanCongByPhieu,
   monitorRunning, monitorQueue, downstreamSlaAfterProduction, listXePhoi, listCurrentPhoi, listTemChoPhoi, addTemToXe, adjustPhoi,

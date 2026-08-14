@@ -35,6 +35,18 @@ const depApplies = () => false; // không còn ràng buộc phụ thuộc nào
 // Option mặc định (dùng khi cấu hình checkpoint chưa khai báo trong DB).
 const DEFAULT_OPTIONS = {};
 
+// ─── KHUÔN KÉO THEO FILM (chốt 2026-08-14) ───────────────────────────────────
+// Xác nhận Khuôn ⇒ hệ thống TỰ ĐẶT Film = DAT luôn, người làm film không phải bấm nữa.
+// ⚠ Film VẪN là 1 mục thật (có người + giờ + lịch sử) — cố ý KHÔNG gỡ checkpoint, vì gỡ là
+//   kéo theo quyền `READY_FILM`, cột Film ở READY/QC/Excel, 3 dataset báo cáo và metric `FILM_CHO`.
+// ⚠ Lịch sử ghi rõ `LY_DO_TU_DONG` để sau này phân biệt được với lần ai đó bấm Film THẬT
+//   (`lich_su_trang_thai` chỉ có dòng DAT — xem DATABASE.md §8).
+// ⚠ CỐ Ý áp cho MỌI khách, kể cả khách gia công (II/AD): với họ Film không bắt buộc nên đặt thêm
+//   cũng vô hại, mà tránh phải tra tên khách trong đường xác nhận HÀNG LOẠT (thêm 1 query nặng).
+const FILM_CP = 'FILM';
+const LY_DO_TU_DONG = 'Tự động theo Khuôn';
+const keoTheoFilm = (ma) => ma === 'KHUON';
+
 // Đọc options của 1 checkpoint từ cau_hinh_json, fallback về DEFAULT_OPTIONS theo mã.
 function optionsFor(ma, cfg) {
   let o = [];
@@ -71,15 +83,21 @@ function buildState(results) {
   const khuon_done = done('KHUON');
   const film_done = done('FILM');
   const muc_done = done('MUC');
-  // Khách II/AD: Khuôn KHÔNG bắt buộc → đủ KT = Film + Mực. Khách khác = đủ 3 mục.
+  // Khách HÀNG GIA CÔNG (II/AD): miễn CẢ Khuôn LẪN Film → đủ KT = chỉ Mực.
+  // Khách thường: Mực + Khuôn (xác nhận Khuôn tự kéo Film theo).
+  // ⚠ CỐ Ý không xét `film_done` — Film là HỆ QUẢ của Khuôn, không phải điều kiện. Nếu xét thì
+  //   hủy Khuôn xong Film vẫn DAT ⇒ tech_done vẫn true ⇒ QC duyệt được mà khuôn chưa làm lại.
+  //   Phải khớp với `utils/tech.js techDoneSql` (nguồn của mọi query) — xem ghi chú ở đó.
   const tenKhach = results[0]?.ten_khach_hang;
-  const khuonReq = !isKhuonOptional(tenKhach);
+  const giaCong = isKhuonOptional(tenKhach);
   return {
     khuon_done,
     film_done,
     muc_done,
-    khuon_required: khuonReq,
-    tech_done: film_done && muc_done && (khuon_done || !khuonReq),
+    khuon_required: !giaCong,
+    film_required: false,   // Film không còn là mục BẮT BUỘC của ai (khách thường: Khuôn kéo theo)
+    film_hien: !giaCong,    // nhưng vẫn HIỆN cột/mục Film cho khách thường
+    tech_done: muc_done && (giaCong || khuon_done),
     qc_done: done(QC_CP),
   };
 }
@@ -268,6 +286,11 @@ async function confirmItem(phanInId, ma, value, actorId, phuongAnIn = null) {
     throw new AppError(`Phải xác nhận ${byMa[dep]?.ten_checkpoint || dep} trước khi xác nhận ${cp.ten_checkpoint} (khuôn mới)`, { status: 409, errorCode: 'DEP_NOT_MET' });
   }
 
+  // Khuôn kéo theo Film — bỏ qua nếu Film đã DAT sẵn (không ghi đè người/giờ của lần bấm thật).
+  const filmCp = byMa[FILM_CP];
+  const themFilm = keoTheoFilm(ma) && filmCp
+    && results.find((r) => r.ma_checkpoint === FILM_CP)?.trang_thai !== 'DAT';
+
   const datId = await wf.getTrangThaiId('DAT');
   await withTransaction(async (client) => {
     const kqId = await repo.upsertResult(client, {
@@ -282,12 +305,22 @@ async function confirmItem(phanInId, ma, value, actorId, phuongAnIn = null) {
     await repo.insertStatusLog(client, {
       ketQuaId: kqId, trangThaiMoiId: datId, nguoiId: actorId, lyDo: `Xác nhận ${cp.ten_checkpoint}`,
     });
+    if (themFilm) {
+      const filmId = await repo.upsertResult(client, {
+        phanInId, checkpointId: filmCp.id, trangThai: 'DAT', giaTriText: null,
+        nguoiXacNhanId: actorId, tgXacNhan: new Date(), actorId,
+      });
+      await repo.insertStatusLog(client, {
+        ketQuaId: filmId, trangThaiMoiId: datId, nguoiId: actorId,
+        lyDo: `Xác nhận ${filmCp.ten_checkpoint} — ${LY_DO_TU_DONG}`,
+      });
+    }
   });
 
   if (ma === 'KHUON') await applyPhuongAnIn(phanInId, phuongAnIn, actorId);
   const after = buildState(await repo.getResults(tram.id, phanInId));
   await tracking.moveByPhanIn(phanInId, READY_TRAM, actorId); // theo dõi dòng chảy: đợt vải vào trạm READY
-  sockets.emit('ready:confirmed', { phanInId, buoc: ma, tech_done: after.tech_done });
+  sockets.emit('ready:confirmed', { phanInId, buoc: themFilm ? [ma, FILM_CP] : ma, tech_done: after.tech_done });
   sockets.emit('dashboard:refresh', {});
   return getDetail(phanInId);
 }
@@ -312,6 +345,14 @@ async function confirmItemsBatch(phanInId, items, actorId, phuongAnIn = null) {
     todo.push({ ma, value: OPTION_CPS.includes(ma) ? (it.value ?? null) : null });
   }
   if (todo.length === 0) throw new AppError('Không có mục nào đủ điều kiện xác nhận', { status: 422, errorCode: 'NOTHING' });
+  // Khuôn kéo theo Film: chèn Film vào cùng lô nếu chưa DAT và người dùng chưa tự chọn.
+  // ⚠ Đặt SAU guard `todo.length === 0` — nếu không, lô chỉ toàn mục đã DAT sẽ bị Film "cứu" thành
+  //   hợp lệ và ta ghi Film cho một lượt bấm mà thực chất không xác nhận được gì.
+  if (todo.some((t) => keoTheoFilm(t.ma)) && byMa[FILM_CP]
+      && !todo.some((t) => t.ma === FILM_CP)
+      && results.find((r) => r.ma_checkpoint === FILM_CP)?.trang_thai !== 'DAT') {
+    todo.push({ ma: FILM_CP, value: null, tuDong: true });
+  }
   // Ràng buộc phụ thuộc: mục phụ thuộc phải đã DAT HOẶC được xác nhận cùng lô này (vd Khuôn cần Film).
   for (const t of todo) {
     const dep = CP_REQUIRES[t.ma];
@@ -328,7 +369,8 @@ async function confirmItemsBatch(phanInId, items, actorId, phuongAnIn = null) {
         giaTriText: t.value, nguoiXacNhanId: actorId, tgXacNhan: new Date(), actorId,
       });
       await repo.insertStatusLog(client, {
-        ketQuaId: kqId, trangThaiMoiId: datId, nguoiId: actorId, lyDo: `Xác nhận ${byMa[t.ma].ten_checkpoint}`,
+        ketQuaId: kqId, trangThaiMoiId: datId, nguoiId: actorId,
+        lyDo: `Xác nhận ${byMa[t.ma].ten_checkpoint}${t.tuDong ? ` — ${LY_DO_TU_DONG}` : ''}`,
       });
     }
   });
@@ -355,11 +397,15 @@ async function confirmItemBulk(phanInIds, ma, value, actorId) {
   const depMa = CP_REQUIRES[ma];
   const depId = (depMa && depApplies(ma, value)) ? byMa[depMa]?.id : null; // Khuôn cũ/Gia công → bỏ ràng buộc Film
 
+  // Khuôn kéo theo Film — cần biết phần in nào ĐÃ có Film để không ghi đè người/giờ của lần bấm thật.
+  const filmCp = keoTheoFilm(ma) ? byMa[FILM_CP] : null;
+
   // Bỏ qua phần in đã xác nhận mục này, đã QC (khóa), hoặc CHƯA xác nhận mục phụ thuộc (vd Khuôn cần Film).
-  const states = await repo.getBulkStates(phanInIds, [cp.id, qcId, depId].filter(Boolean));
+  const states = await repo.getBulkStates(phanInIds, [cp.id, qcId, depId, filmCp?.id].filter(Boolean));
   const itemDone = new Set(states.filter((s) => s.checkpoint_id === cp.id).map((s) => s.phan_in_id));
   const qcDone = new Set(qcId ? states.filter((s) => s.checkpoint_id === qcId).map((s) => s.phan_in_id) : []);
   const depDone = new Set(depId ? states.filter((s) => s.checkpoint_id === depId).map((s) => s.phan_in_id) : []);
+  const filmDone = new Set(filmCp ? states.filter((s) => s.checkpoint_id === filmCp.id).map((s) => s.phan_in_id) : []);
   const eligible = phanInIds.filter((id) => !qcDone.has(id) && !itemDone.has(id) && (!depId || depDone.has(id)));
 
   const datId = await wf.getTrangThaiId('DAT');
@@ -373,6 +419,16 @@ async function confirmItemBulk(phanInIds, ma, value, actorId) {
       await repo.insertStatusLog(client, {
         ketQuaId: kqId, trangThaiMoiId: datId, nguoiId: actorId, lyDo: `Xác nhận ${cp.ten_checkpoint}`,
       });
+      if (filmCp && !filmDone.has(id)) {
+        const filmId = await repo.upsertResult(client, {
+          phanInId: id, checkpointId: filmCp.id, trangThai: 'DAT', giaTriText: null,
+          nguoiXacNhanId: actorId, tgXacNhan: new Date(), actorId,
+        });
+        await repo.insertStatusLog(client, {
+          ketQuaId: filmId, trangThaiMoiId: datId, nguoiId: actorId,
+          lyDo: `Xác nhận ${filmCp.ten_checkpoint} — ${LY_DO_TU_DONG}`,
+        });
+      }
     }
   });
   for (const id of eligible) await tracking.moveByPhanIn(id, READY_TRAM, actorId); // theo dõi dòng chảy

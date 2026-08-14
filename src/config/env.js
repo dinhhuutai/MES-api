@@ -62,6 +62,16 @@ const env = {
     barcodeTemTimeoutMs: parseInt(process.env.ERP_BARCODE_TEM_TIMEOUT_MS || '10000', 10),
     // Số lần thử lại khi lấy mã tem lỗi; hết lượt thì CHẶN in và báo rõ (không lùi về mã `TEM…` cũ).
     barcodeTemRetry: parseInt(process.env.ERP_BARCODE_TEM_RETRY || '3', 10),
+    // API BÁO NGƯỢC LÊN ERP mỗi lần in tem (proc `MES_spr_MES2SF0`) — chiều ĐẨY duy nhất của hệ.
+    // ⚠⚠ MẶC ĐỊNH SUY TỪ URL ĐỒNG BỘ (xem ghi chú đầu file) — đừng hardcode host lại ở đây.
+    ghiInTemUrl: process.env.ERP_GHI_IN_TEM_URL || `${ERP_GOC}/ghi-in-tem`,
+    // Timeout 1 lần gọi (ms). Gọi NGẦM sau khi tem đã tạo nên người in không phải chờ.
+    ghiInTemTimeoutMs: parseInt(process.env.ERP_GHI_IN_TEM_TIMEOUT_MS || '10000', 10),
+    // Số lần thử lại khi báo lỗi. Hết lượt thì GHI LOG rồi thôi — KHÔNG chặn in (khác `barcodeTemRetry`:
+    // lúc đó tem đã tạo và mã tem đã tiêu của ERP, chặn lại là hỏng việc của người đứng máy).
+    ghiInTemRetry: parseInt(process.env.ERP_GHI_IN_TEM_RETRY || '3', 10),
+    // Tắt nhanh khi ERP bảo trì mà không phải sửa code/deploy lại.
+    ghiInTemEnabled: String(process.env.ERP_GHI_IN_TEM_ENABLED || 'true').toLowerCase() === 'true',
     // Bật/tắt job tự đồng bộ theo chu kỳ (mặc định 5 phút/lần).
     syncEnabled: String(process.env.ERP_SYNC_ENABLED || 'true').toLowerCase() === 'true',
     // Chu kỳ tự đồng bộ (phút). Mặc định 5 phút/lần (sàn tối thiểu 5 — xem jobs/erpSync.job.js).

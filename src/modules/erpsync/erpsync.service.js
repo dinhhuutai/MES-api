@@ -7,6 +7,7 @@ const repo = require('./erpsync.repository');
 const env = require('../../config/env');
 const AppError = require('../../utils/AppError');
 const { buildMeta } = require('../../utils/pagination');
+const { apiBat } = require('../../utils/caiDatApi');
 const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
 const gomRepo = require('../gomset/gomset.repository');
@@ -421,6 +422,15 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
 
 // API DUY NHẤT /phieu-nhan-vai-60 → đợt vải vào READY (hoặc thẳng Release 1 khi KTCankiemtra=0).
 async function syncPhieuNhanVai({ fromDate, actorId = null, tuDong = false } = {}) {
+  // Tắt ở Hệ thống > Cài đặt API (mig 083). ⚠ Chặn CẢ nút "Đồng bộ ngay" chứ không chỉ job — tắt mà
+  // bấm tay vẫn chạy thì công tắc thành vô nghĩa. Báo lỗi rõ để người dùng biết chỗ bật lại.
+  // (Job đã tự bỏ qua trước khi gọi tới đây; nhánh này lo đường bấm tay.)
+  if (!(await apiBat('ERP_DONG_BO_VAI'))) {
+    throw new AppError(
+      'Đồng bộ đợt vải từ ERP đang TẮT — bật lại ở Hệ thống > Cài đặt API.',
+      { status: 409, errorCode: 'API_DANG_TAT' }
+    );
+  }
   return runSync({ baseUrl: env.erp.phieuNhanVaiUrl, nguon: NGUON, fromDate, actorId, tuDong });
 }
 

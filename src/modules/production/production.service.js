@@ -13,6 +13,8 @@ const erpsyncRepo = require('../erpsync/erpsync.repository');     // reopenReady
 const qaRepo = require('../quality/quality.repository');          // qc_tra_ve (badge + lý do ở READY)
 const { caFromParts, maNgayCa, ngayTuMaNgayCa } = require('../../utils/ca');
 const { layBarcodeTem, layNhieuBarcodeTem } = require('../../utils/erpTemBarcode');
+const { ghiInTem } = require('../../utils/erpGhiInTem');
+const { apiChoPhepPhanIn } = require('../../utils/caiDatApi');
 
 // Gắn `phan_in_list` (1 dòng / phần in) cho các lệnh GOM SET — màn Xác nhận chạy tách dòng theo phần in,
 // hợp nhất ô ở STT + nút thao tác. Lệnh 1 phần in KHÔNG gắn (FE render như cũ, khỏi phình payload).
@@ -340,6 +342,77 @@ const temMeta = (b = {}) => {
   };
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// BÁO NGƯỢC LÊN ERP MỖI LẦN IN TEM (`POST /ghi-in-tem` → proc `MES_spr_MES2SF0`)
+//
+// ⚠⚠ CHẠY NGẦM — bên gọi KHÔNG `await`. Timeout 10s × 3 lần + backoff ⇒ xấu nhất ~33s; chặn
+//   response từng ấy thời gian là hỏng thao tác của người đứng chờ máy in. Tem đã tạo xong rồi,
+//   ERP chỉ là bên nhận tin.
+// ⚠ KHÔNG BAO GIỜ ném lỗi ra ngoài: mọi nhánh hỏng đều ghi `audit_log` (`ERP_GHI_IN_TEM_LOI`,
+//   kèm nguyên payload) để gửi lại bằng tay, rồi thôi.
+// ⚠ `Toin` gửi null — danh mục TỔ IN thuộc phase 2 (bảng `to_in` + gắn tổ cho chuyền/user +
+//   ô chọn lúc in tem + phân quyền theo tổ). Mẫu ERP cho thấy proc nhận null bình thường.
+// ─────────────────────────────────────────────────────────────────────────────
+async function guiGhiInTem(items, actorId) {
+  try {
+    const list = (items || []).filter((x) => x && x.temId);
+    if (!list.length) return;
+    const rows = await repo.duLieuGhiInTem(list.map((x) => ({ temId: x.temId, dotVaiId: x.dotVaiId || null })));
+    const theoTem = new Map(rows.map((r) => [r.tem_id, r]));
+
+    for (const it of list) {
+      const r = theoTem.get(it.temId);
+      if (!r) {
+        console.error(`[ghi-in-tem] ✗ Không đọc được dữ liệu tem ${it.temId} — bỏ qua lời gọi ERP`);
+        continue;
+      }
+      // Lệnh thường không truyền `dotVaiId` ⇒ lấy đợt đại diện. Prod hiện không có ca 1 phần in mà
+      // nhiều đợt vải, nhưng vẫn cảnh báo để phát hiện sớm nếu về sau xuất hiện.
+      if (!it.dotVaiId && Number(r.so_dot_cua_lenh) > 1) {
+        console.warn(`[ghi-in-tem] ⚠ Lệnh ${r.ma_lenh_san_xuat} có ${r.so_dot_cua_lenh} đợt vải mà lượt in không chỉ rõ đợt — đang lấy đợt đầu (${r.id_dot_nhan_vai})`);
+      }
+      // ⚠⚠ LỌC THEO CODE PHẦN **TRƯỚC KHI CẤP `IDMES`** — cấp trước rồi mới bỏ qua là **thủng dãy
+      //   số** của ERP một cách vô ích (mỗi lần `capIdMes` là tiêu 1 số trong ngày).
+      // ⚠ Bỏ qua IM LẶNG (chốt với người dùng): không gọi ERP, KHÔNG ghi audit_log — giống hệt lúc
+      //   tắt hẳn API. In nhiều mà ghi log "đã bỏ qua" thì `audit_log` phình rất nhanh.
+      if (!(await apiChoPhepPhanIn('ERP_GHI_IN_TEM', r.ma_phan))) continue;
+
+      const idMes = await repo.capIdMes();
+      if (idMes == null) return; // hỏng khâu cấp số thì các tem sau cũng vậy — dừng luôn cho khỏi spam log
+
+      const laBoSung = r.la_bo_sung === true;
+      const payload = {
+        IDMES: idMes,
+        Ngayct: r.ngay_ct,
+        Ngayca: r.ma_ngay_ca,
+        Tugio: r.tu_gio,
+        Dengio: r.den_gio,
+        Chuyentruong: r.chuyen_truong,
+        Catruong: r.ca_truong,
+        dsthoin: r.tho_in,
+        Toin: null,
+        banin: r.ma_chuyen,
+        IDDotNhanvai: r.id_dot_nhan_vai,
+        DDHID: r.ddh_id,
+        DDHsubID: r.ddh_sub_id,
+        BarcodeIn: r.ma_tem,
+        // Mẫu ERP truyền null cho 2 trường này ⇒ chỉ điền khi đợt vải THẬT SỰ là loại BỔ SUNG.
+        inbosung: laBoSung ? 1 : null,
+        Lenhbosung: laBoSung ? r.ma_lenh_san_xuat : null,
+        Soluong: r.so_luong,
+        Soluongloi: Number(it.soLuongHuy) || 0,
+        SOLUONGTHIEU: Number(it.soLuongThieu) || 0,
+        GCMauvai: r.gc_mau_vai,
+      };
+      const kq = await ghiInTem(payload);
+      if (kq.bo_qua) continue; // tắt qua ERP_GHI_IN_TEM_ENABLED — không ghi audit lỗi
+      await repo.logGhiInTem(it.temId, kq.ok, kq.body, kq.error, actorId);
+    }
+  } catch (e) {
+    console.error(`[ghi-in-tem] ✗ Lỗi ngoài dự kiến khi báo ERP: ${e.message}`);
+  }
+}
+
 async function printTem(phieuId, soLuong, actorId, body) {
   const meta = temMeta(body);
   const qty = Number(soLuong);
@@ -375,7 +448,8 @@ async function printTem(phieuId, soLuong, actorId, body) {
   // Mã tem lấy TỪ ERP (barcode 12 số, đã sẵn tiền tố `15`). Lấy TRƯỚC transaction: gọi HTTP bên trong
   // sẽ giữ transaction hở suốt thời gian chờ, mà lỗi mạng còn abort cả transaction.
   // Đặt SAU mọi guard ở trên (110% SL release, xe phơi…) để không tiêu số của ERP một cách vô ích.
-  const maTem = await layBarcodeTem();
+  // `null` = API mã tem đang TẮT ở Hệ thống > Cài đặt API ⇒ lùi về dãy `TEM00123` của MES.
+  const maTem = (await layBarcodeTem()) || (await repo.nextMaTem());
   let newTemId;
   await withTransaction(async (client) => {
     newTemId = await repo.createTem(client, { phieuId, maTem, soLuong: qty, ...meta }, actorId);
@@ -383,6 +457,8 @@ async function printTem(phieuId, soLuong, actorId, body) {
     await repo.addTemToXe(client, { temId: newTemId, xeId: xe.id, soLuongPhoi: qty, phut: dryMin }, actorId);
   });
   await tracking.moveByLenh(phieu.lenh_san_xuat_id, 'CHO_KHO', actorId); // in tem → xe phơi → CHỜ KHÔ
+  // Báo ERP — CỐ Ý không `await` (xem ghi chú ở `guiGhiInTem`): người in không phải chờ.
+  guiGhiInTem([{ temId: newTemId, dotVaiId: null, soLuongHuy: 0, soLuongThieu: 0 }], actorId);
   sockets.emit('production:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'tem' });
   sockets.emit('drying:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'auto-phoi' });
   const run = await getRun(phieu.lenh_san_xuat_id);
@@ -455,7 +531,9 @@ async function printTemBatch(phieuId, items, actorId, body) {
 
   // Lấy ĐỦ N mã tem từ ERP TRƯỚC khi mở transaction (mỗi dòng 1 mã). Lỗi giữa chừng thì ném luôn —
   // chưa tem nào được tạo nên không phải dọn gì; số ERP đã lấy coi như bỏ.
-  const maTemList = await layNhieuBarcodeTem(list.length);
+  // `null` = API mã tem đang TẮT ⇒ tự sinh đủ N mã LIÊN TIẾP (không gọi `nextMaTem` N lần —
+  // hàm đó dùng pool nên sẽ trả cùng một mã, gây trùng khóa UNIQUE).
+  const maTemList = (await layNhieuBarcodeTem(list.length)) || (await repo.nextMaTemNhieu(list.length));
 
   const out = [];
   await withTransaction(async (client) => {
@@ -491,6 +569,16 @@ async function printTemBatch(phieuId, items, actorId, body) {
     }
   }
   await tracking.moveByLenh(phieu.lenh_san_xuat_id, 'CHO_KHO', actorId);
+  // Báo ERP từng tem — CỐ Ý không `await`. Lệnh gom set LUÔN có `dotVaiId` nên ERP nhận đúng đợt vải
+  // của từng dòng (không phải đợt đầu tiên của lệnh). Vải hủy/thiếu lấy theo ĐÚNG dòng đã nhập.
+  const vaiTheoDot = new Map(vaiList.map((v) => [v.dotVaiId, v]));
+  guiGhiInTem(out.map((o) => {
+    const v = vaiTheoDot.get(o.dot_vai_id);
+    return {
+      temId: o.tem_id, dotVaiId: o.dot_vai_id,
+      soLuongHuy: v ? v.huy : 0, soLuongThieu: v ? v.thieu : 0,
+    };
+  }), actorId);
   sockets.emit('production:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'tem', so_tem: out.length });
   sockets.emit('drying:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'auto-phoi' });
   const run = await getRun(phieu.lenh_san_xuat_id);
@@ -886,4 +974,5 @@ module.exports = {
   listReopenCandidates, reopenProduction, pauseLenhChay, doiChuyen,
   listUndoStartCandidates, undoStartProduction,
   traVeKyThuat,
+  guiGhiInTem, // export để kiểm thực (không có route nào gọi trực tiếp)
 };

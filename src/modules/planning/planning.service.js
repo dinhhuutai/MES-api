@@ -597,6 +597,21 @@ async function releaseSet(setId, { chuyenId, soLuongRelease, ngayKeHoach, tgBdKh
   return getLenhDetail(lenhId);
 }
 
+// Gắn `phan_in_list` (danh sách phần in) cho các lệnh GOM SET ở những màn mức LỆNH.
+// ⚠⚠ BẮT BUỘC vì `PHAN_INFO_LATERAL` chỉ `LIMIT 1` ⇒ hàng chỉ mang phần in ĐẠI DIỆN:
+//   (a) tìm ra lệnh nhưng cột Code phần hiện phần in KHÁC cái vừa gõ (lỗi thật 14/08/2026);
+//   (b) bộ lọc client so `r.ma_phan` sẽ LÀM MẤT CẢ LỆNH khi lọc theo phần in thứ hai.
+// ⚠ CHỈ gắn cho lệnh >1 phần in (`so_phan_in`) — lệnh thường giữ nguyên hình dạng dữ liệu cũ,
+//   FE không phải sửa gì. 1 QUERY GỘP cho cả danh sách (N+1 làm IPS reset).
+async function attachPhanInList(rows, idKey = 'id') {
+  const ids = (rows || []).filter((r) => Number(r.so_phan_in) > 1).map((r) => r[idKey]);
+  if (!ids.length) return rows || [];
+  const all = await repo.phanInRowsByLenh(ids);
+  const byLenh = {};
+  for (const p of all) (byLenh[p.lenh_san_xuat_id] ||= []).push(p);
+  return rows.map((r) => (byLenh[r[idKey]] ? { ...r, phan_in_list: byLenh[r[idKey]] } : r));
+}
+
 // ----- TEST RUN -----
 async function listTestRunCandidates({ search, page, limit, offset }) {
   const { byMa } = await loadTestConfig();
@@ -610,7 +625,7 @@ async function listTestRunCandidates({ search, page, limit, offset }) {
     const rm = await qaRepo.activeReturnsMap('TEST_RUN', allDv);
     choKt.forEach((r, i) => { r.tra_ve = (perLenh[i] || []).map((id) => rm[id]).find(Boolean) || null; });
   }
-  return { items: rows, meta: buildMeta(page, limit, rows.length) };
+  return { items: await attachPhanInList(rows), meta: buildMeta(page, limit, rows.length) };
 }
 
 async function getLenhDetail(lenhId) {
@@ -733,7 +748,7 @@ async function confirmTestBatch(lenhIds, which, actorId, extra = {}) {
 async function listRelease2Candidates({ search, page, limit, offset }) {
   const { byMa } = await loadTestConfig();
   const rows = await repo.listRelease2Candidates({ cnspId: byMa[CNSP_CP].id, qaId: byMa[QA_CP].id, search, offset, limit });
-  return { items: rows, meta: buildMeta(page, limit, rows.length) };
+  return { items: await attachPhanInList(rows), meta: buildMeta(page, limit, rows.length) };
 }
 
 async function approveRelease2(lenhId, actorId) {
@@ -940,7 +955,7 @@ async function assertKhongChoKyThuat(lenhId) {
 // ----- LẬP KẾ HOẠCH LẠI -----
 async function listReplanCandidates({ search, page, limit, offset }) {
   const { rows, total } = await repo.listReplanCandidates({ search, offset, limit });
-  return { items: rows, meta: buildMeta(page, limit, total) };
+  return { items: await attachPhanInList(rows), meta: buildMeta(page, limit, total) };
 }
 
 // ----- KẾ HOẠCH TẠM (mig 058): màn Kế hoạch xác nhận lại Release 1 khi phần in Ready xong -----
@@ -1081,7 +1096,7 @@ async function listGiaCong({ search, page, limit, offset }) {
   // + biết lệnh đang CHỜ TRẢ LẠI nhà gia công (chưa bấm "Trả lại nhà gia công").
   const rm = await qaRepo.activeReturnsMap('OQC_GIA_CONG', rows.map((r) => r.id));
   const items = rows.map((r) => ({ ...r, tra_ve: rm[r.id] || null, cho_tra_lai: !!rm[r.id] }));
-  return { items, meta: buildMeta(page, limit, total) };
+  return { items: await attachPhanInList(items), meta: buildMeta(page, limit, total) };
 }
 
 // Kế hoạch đã mang hàng trả lại cho nhà gia công → tắt cờ trả về, lệnh về trạng thái "đang gia công"
@@ -1151,7 +1166,8 @@ async function confirmGiaCongToOqc(lenhId, { soLuong } = {}, actorId) {
   const xong = daChuyen + qty >= tong;
 
   // Mã tem lấy TỪ ERP (barcode 12 số) — lấy TRƯỚC transaction, SAU mọi guard ở trên để không tiêu số vô ích.
-  const mt = await layBarcodeTem();
+  // `null` = API mã tem đang TẮT ở Hệ thống > Cài đặt API ⇒ lùi về dãy `TEM00123` của MES.
+  const mt = (await layBarcodeTem()) || (await productionRepo.nextMaTem());
 
   const maTem = await withTransaction(async (client) => {
     const maPhieu = await productionRepo.nextMaPhieuTx(client);

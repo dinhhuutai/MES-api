@@ -26,6 +26,7 @@ const wfconfigRoutes = require('./modules/wfconfig/wfconfig.routes');
 const dashboardRoutes = require('./modules/dashboard/dashboard.routes');
 const erpsyncRoutes = require('./modules/erpsync/erpsync.routes');
 const hienThiPainRoutes = require('./modules/hienthipain/hienthipain.routes');
+const caiDatApiRoutes = require('./modules/caidatapi/caidatapi.routes');
 const mauTemRoutes = require('./modules/mautem/mautem.routes');
 const presenceRoutes = require('./modules/presence/presence.routes');
 const phienRoutes = require('./modules/phien/phien.routes');
@@ -70,6 +71,8 @@ app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/erp', erpsyncRoutes);
 // Hệ thống > Hiển thị theo phương án in (bật/tắt Máy/Bàn/Robot/Khác cho từng trang — mig 067)
 app.use('/api/hien-thi-pain', hienThiPainRoutes);
+// Hệ thống > Cài đặt API (bật/tắt 3 API ERP ngay trên giao diện — mig 083)
+app.use('/api/cai-dat-api', caiDatApiRoutes);
 app.use('/api/mau-tem', mauTemRoutes);
 app.use('/api/presence', presenceRoutes);
 app.use('/api/phien', phienRoutes);

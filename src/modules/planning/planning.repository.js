@@ -480,6 +480,37 @@ const PHAN_INFO_LATERAL = `
     LIMIT 1
   ) info ON true`;
 
+// DANH SÁCH PHẦN IN của NHIỀU lệnh trong 1 LƯỢT QUERY — cho các màn mức LỆNH hiện đủ phần in khi
+// lệnh là GOM SET (Release 2 · Test Run · Gia công · Lập kế hoạch lại).
+//
+// ⚠⚠ VÌ SAO CẦN: `PHAN_INFO_LATERAL` có `LIMIT 1` nên hàng chỉ mang phần in ĐẠI DIỆN ⇒ (a) người
+//   dùng tìm ra lệnh nhưng thấy code phần KHÁC cái mình gõ, (b) bộ lọc client so `r.ma_phan` sẽ
+//   LÀM MẤT CẢ LỆNH khi lọc theo phần in thứ hai. Lỗi thật 14/08/2026 (`SL-2608-006-A07-F01-C05`
+//   không ra vì LSX0605 hiện `…-C02`). Đo prod: 175/837 lệnh Replan là gom set.
+// ⚠ Gộp 1 query cho cả danh sách (KHÔNG gọi từng lệnh) — N+1 làm IPS reset, cùng bài học
+//   `production.repository.phanInRowsByLenh`.
+// ⚠ DISTINCT theo phần in: 1 phần in có thể có NHIỀU đợt vải trong cùng lệnh (gộp đợt) — hiện lặp
+//   tên là rác mắt và làm số đếm gom set sai.
+async function phanInRowsByLenh(lenhIds = []) {
+  if (!lenhIds.length) return [];
+  const { rows } = await query(
+    `SELECT DISTINCT ON (lsd.lenh_san_xuat_id, pin.id)
+            lsd.lenh_san_xuat_id, pin.id AS phan_in_id, pin.ma_phan,
+            pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
+            kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang
+     FROM lenh_sx_dot_vai lsd
+     JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+     JOIN phan_in pin ON pin.id = dv.phan_in_id
+     JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+     JOIN don_hang dh ON dh.id = mh.don_hang_id
+     JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+     WHERE lsd.lenh_san_xuat_id = ANY($1::uuid[])
+     ORDER BY lsd.lenh_san_xuat_id, pin.id, pin.ma_phan`.replace(/\s+/g, ' '),
+    [lenhIds]
+  );
+  return rows;
+}
+
 // Lệnh ĐANG CHỜ KỸ THUẬT LÀM LẠI: Test Run không đạt → QA trả về READY nhưng lệnh được GIỮ NGUYÊN
 // (không hủy, không phải Release 1 lại). Nhận diện = còn phần in trong lệnh CHƯA có QC_XAC_NHAN đạt.
 // Bất biến: release luôn đòi QC xong ⇒ QC bị hủy = đang làm lại kỹ thuật.
@@ -563,14 +594,18 @@ async function listReplanCandidates({ search = '', offset = 0, limit = 50 }) {
            info.phuong_an_in, info.barcode_hskt, info.hskt_id, info.hskt_inset,
            info.so_luong_don_hang, info.so_luong_vai_ve, info.ngay_vai_ve, info.han_giao_hang,
            info.loai_dot_vai, info.nha_gia_cong,
-           (SELECT count(*) FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id)::int AS so_dot_vai
+           (SELECT count(*) FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id)::int AS so_dot_vai,
+           (SELECT count(DISTINCT dv2.phan_in_id) FROM lenh_sx_dot_vai lsd2 JOIN dot_vai_ve dv2 ON dv2.id = lsd2.dot_vai_ve_id WHERE lsd2.lenh_san_xuat_id = ls.id)::int AS so_phan_in
     ${FROM}
     ORDER BY ls.ngay_ke_hoach NULLS LAST, ls.created_date
     LIMIT $2 OFFSET $3`;
   const countSql = `SELECT count(*)::int AS total ${FROM}`;
+  // ⚠⚠ GỬI SQL GỘP 1 DÒNG (§9 CLAUDE.md): query này vốn đã dài, thêm subquery `so_phan_in` là bị
+  //   thiết bị mạng RESET (`Connection terminated unexpectedly`) — đã gặp THẬT 14/08/2026.
+  //   ⚠ Kèm theo: TUYỆT ĐỐI không đặt comment `--` bên trong 2 chuỗi SQL trên.
   const [data, count] = await Promise.all([
-    query(dataSql, [mauTim(search), limit, offset]),
-    query(countSql, [mauTim(search)]),
+    query(dataSql.replace(/\s+/g, ' '), [mauTim(search), limit, offset]),
+    query(countSql.replace(/\s+/g, ' '), [mauTim(search)]),
   ]);
   return { rows: data.rows, total: count.rows[0].total };
 }
@@ -596,14 +631,17 @@ async function listGiaCongLenh({ search = '', offset = 0, limit = 50 }) {
            info.nha_gia_cong,
            ${GIA_CONG_DA_CHUYEN} AS da_chuyen,
            (ls.so_luong_release - ${GIA_CONG_DA_CHUYEN})::int AS con_lai,
-           (SELECT count(*) FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id)::int AS so_dot_vai
+           (SELECT count(*) FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id)::int AS so_dot_vai,
+           (SELECT count(DISTINCT dv2.phan_in_id) FROM lenh_sx_dot_vai lsd2 JOIN dot_vai_ve dv2 ON dv2.id = lsd2.dot_vai_ve_id WHERE lsd2.lenh_san_xuat_id = ls.id)::int AS so_phan_in
     ${FROM}
     ORDER BY ls.ngay_ke_hoach NULLS LAST, ls.created_date
     LIMIT $2 OFFSET $3`;
   const countSql = `SELECT count(*)::int AS total ${FROM}`;
+  // ⚠⚠ GỘP 1 DÒNG — cùng lý do với `listReplanCandidates` (§9 CLAUDE.md): query dài + thêm subquery
+  //   `so_phan_in` là bị IPS reset. Không đặt comment `--` bên trong 2 chuỗi SQL trên.
   const [data, count] = await Promise.all([
-    query(dataSql, [mauTim(search), limit, offset]),
-    query(countSql, [mauTim(search)]),
+    query(dataSql.replace(/\s+/g, ' '), [mauTim(search), limit, offset]),
+    query(countSql.replace(/\s+/g, ' '), [mauTim(search)]),
   ]);
   return { rows: data.rows, total: count.rows[0].total };
 }
@@ -1458,6 +1496,7 @@ module.exports = {
   getLenhTestStatus, insertTestRun, insertTestRunTx, upsertLenhResult, insertStatusLog, setLenhTrangThai,
   testRunHistoryByDate, testRunsByLenh,
   listReplanCandidates, getLenhForReplan, updateLenhPlan, logPlanChange, planHistoryByDate,
+  phanInRowsByLenh,
   listGiaCongLenh, getGiaCongLenh, listGiaCongHistory,
   listGiaCongTemCancelable, getGiaCongTem, cancelGiaCongTemTx, logGiaCongTraLai,
   upsertKeHoachTam, listKeHoachTamRows, getKeHoachTam, getOpenSetOfDotVai, updateKeHoachTam, deleteKeHoachTam, deleteKeHoachTamByDotVai,

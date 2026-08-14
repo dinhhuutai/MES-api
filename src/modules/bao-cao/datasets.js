@@ -509,11 +509,12 @@ const READY_INFO_SELECT = `
   (SELECT COALESCE(sum(dv5.so_luong_vai_ve),0) FROM dot_vai_ve dv5 WHERE dv5.phan_in_id = pin.id AND dv5.trang_thai NOT IN ('DA_GOP','DA_HUY'))::int AS so_luong_vai_ve,
   to_char((SELECT min(dv4.han_giao_hang) FROM dot_vai_ve dv4 WHERE dv4.phan_in_id = pin.id AND dv4.trang_thai NOT IN ('DA_GOP','DA_HUY')), 'DD/MM/YYYY') AS han_giao_hang,
   (CASE WHEN kh.ten_khach_hang IN (${KHUON_OPT_SQL_LIST}) THEN '—' ELSE ${readyMark('KHUON')} END) AS ready_khuon,
-  ${readyMark('FILM')} AS ready_film, ${readyMark('MUC')} AS ready_muc,
+  (CASE WHEN kh.ten_khach_hang IN (${KHUON_OPT_SQL_LIST}) THEN '—' ELSE ${readyMark('FILM')} END) AS ready_film,
+  ${readyMark('MUC')} AS ready_muc,
   ((SELECT count(*) FROM ket_qua_checkpoint k JOIN checkpoint cp ON cp.id = k.checkpoint_id
      WHERE k.phan_in_id = pin.id AND k.trang_thai = 'DAT'
-       AND (cp.ma_checkpoint IN ('FILM','MUC') OR (cp.ma_checkpoint = 'KHUON' AND kh.ten_khach_hang NOT IN (${KHUON_OPT_SQL_LIST}))))::text
-    || '/' || (CASE WHEN kh.ten_khach_hang IN (${KHUON_OPT_SQL_LIST}) THEN '2' ELSE '3' END)) AS so_muc_kt`;
+       AND (cp.ma_checkpoint = 'MUC' OR (cp.ma_checkpoint = 'KHUON' AND kh.ten_khach_hang NOT IN (${KHUON_OPT_SQL_LIST}))))::text
+    || '/' || (CASE WHEN kh.ten_khach_hang IN (${KHUON_OPT_SQL_LIST}) THEN '1' ELSE '2' END)) AS so_muc_kt`;
 
 const COT_READY_DANG_O = [
   { key: 'stt', ten: 'STT', kieu: 'so' },

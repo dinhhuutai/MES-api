@@ -2,14 +2,28 @@
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MỤC KỸ THUẬT READY THEO KHÁCH HÀNG (dùng chung service + các query build SQL).
-// Với khách hàng trong KHUON_OPTIONAL_KH: mục "Khuôn" KHÔNG bắt buộc — READY hoàn tất
-// chỉ cần Film + Mực (QC duyệt được dù chưa xác nhận Khuôn).
-// Nguyên tắc "đủ mục KT" = Film & Mực đều DAT, VÀ (Khuôn DAT HOẶC khách ∈ danh sách bỏ khuôn).
-// ⚠ KHÔNG dùng "đếm ≥ N" (sẽ sai khi khách II/AD có Khuôn+Film mà thiếu Mực).
+//
+// LUẬT HIỆN HÀNH (chốt 2026-08-14):
+//   · Khách THƯỜNG      → cần **Khuôn + Mực**. Film KHÔNG phải bấm riêng nữa: xác nhận Khuôn thì
+//                          hệ thống TỰ ĐẶT Film = DAT (xem `technical.service.tuDatFilmTheoKhuon`).
+//   · Khách GIA CÔNG (`KHUON_OPTIONAL_KH`) → chỉ cần **Mực**. Nhóm này không xác nhận Khuôn, mà
+//                          Film nay đi theo Khuôn ⇒ giữ Film lại thì họ mắc kẹt vĩnh viễn.
+//
+// ⚠⚠ "ĐỦ MỤC KT" CỐ Ý **KHÔNG XÉT FILM** — đã cân nhắc rồi bỏ nhánh `OR existsFilm`:
+//   · Không mất gì: đo prod 14/08 — bỏ Film KHÔNG làm phần in nào tụt ngược (biểu thức mới là
+//     SIÊU TẬP của luật cũ), và 115 phần in có Film-mà-chưa-Khuôn thì **không cái nào đã xác nhận
+//     Mực** nên cũng chẳng cái nào tự dưng thành "đủ".
+//   · Nhận Film sẽ TẠO LỖ HỔNG: hủy xác nhận Khuôn (QC trả về / Test Run trả về / Hủy xác nhận
+//     READY) mà Film vẫn còn DAT ⇒ `tech_done` vẫn TRUE ⇒ QC duyệt lại được trong khi kỹ thuật
+//     CHƯA hề làm lại khuôn. Bỏ Film đi thì hủy Khuôn là chặn ngay, không cần đồng bộ 2 mục.
+//   ⇒ Film thuần túy là HỆ QUẢ của Khuôn, không phải điều kiện.
+//
+// ⚠ KHÔNG dùng "đếm ≥ N" (sẽ sai khi khách gia công có Khuôn+Film mà thiếu Mực).
 // SQL trả về gộp 1 dòng được (IPS-safe) — không đặt comment `-- …` trong chuỗi SQL.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Khách hàng KHÔNG bắt buộc Khuôn (khớp theo khach_hang.ten_khach_hang; ERP set ma=ten).
+// Khách hàng HÀNG GIA CÔNG — KHÔNG bắt buộc Khuôn, và (từ 2026-08-14) KHÔNG bắt buộc cả Film.
+// Khớp theo `khach_hang.ten_khach_hang` (ERP set ma=ten).
 const KHUON_OPTIONAL_KH = ['II', 'AD'];
 
 // Danh sách literal an toàn cho SQL ('II','AD') — hằng code, không phải input người dùng.
@@ -18,15 +32,28 @@ const KHUON_OPT_SQL_LIST = KHUON_OPTIONAL_KH.map((k) => `'${k}'`).join(',');
 function isKhuonOptional(tenKhach) {
   return KHUON_OPTIONAL_KH.includes(String(tenKhach || '').trim());
 }
+// Tên gọi rõ nghĩa hơn cho luật mới (cùng một danh sách khách).
+const laHangGiaCong = isKhuonOptional;
 
 // Mục kỹ thuật CẦN thiết theo khách (JS side — cho FE/service dựng nhãn "/N").
+// ⚠ FILM không còn nằm trong danh sách của ai cả: khách thường thì Khuôn kéo theo, khách gia công
+//   thì miễn hẳn. Muốn biết "có HIỆN mục Film trên giao diện không" thì dùng `hienFilm()`.
 function requiredTechItems(tenKhach) {
-  return isKhuonOptional(tenKhach) ? ['FILM', 'MUC'] : ['KHUON', 'FILM', 'MUC'];
+  return isKhuonOptional(tenKhach) ? ['MUC'] : ['KHUON', 'MUC'];
+}
+
+// Có hiện mục/cột Film cho khách này không (FE + Excel). Khách gia công: ẩn hẳn.
+function hienFilm(tenKhach) {
+  return !isKhuonOptional(tenKhach);
 }
 
 // Boolean "đủ mục KT" khi ĐÃ có sẵn trong scope: cột tên khách + 3 biểu thức EXISTS DAT từng mục.
+//   · khách gia công  → chỉ cần Mực
+//   · khách thường    → Mực AND Khuôn
+// ⚠ `existsFilm` GIỮ trong chữ ký (mọi call-site đang truyền đủ 3) nhưng CỐ Ý KHÔNG dùng — xem
+//   ghi chú "KHÔNG XÉT FILM" ở đầu file. Đừng nối lại vào biểu thức.
 function techDoneSql(khachExpr, existsKhuon, existsFilm, existsMuc) {
-  return `(${existsFilm} AND ${existsMuc} AND ((${khachExpr}) IN (${KHUON_OPT_SQL_LIST}) OR ${existsKhuon}))`;
+  return `(${existsMuc} AND ((${khachExpr}) IN (${KHUON_OPT_SQL_LIST}) OR ${existsKhuon}))`;
 }
 
 // Boolean "đủ mục KT" chỉ từ 1 biểu thức phần in (tự dựng EXISTS + subquery khách).
@@ -38,5 +65,6 @@ function techDoneSqlByPin(pinExpr) {
 }
 
 module.exports = {
-  KHUON_OPTIONAL_KH, KHUON_OPT_SQL_LIST, isKhuonOptional, requiredTechItems, techDoneSql, techDoneSqlByPin,
+  KHUON_OPTIONAL_KH, KHUON_OPT_SQL_LIST, isKhuonOptional, laHangGiaCong,
+  requiredTechItems, hienFilm, techDoneSql, techDoneSqlByPin,
 };
