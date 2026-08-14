@@ -73,10 +73,32 @@ function macDinhCua(ma) {
 const tachCodePhan = (s) => String(s || '')
   .split(/[,;\r\n]+/).map((x) => x.trim().toUpperCase()).filter(Boolean);
 
+// ⚠⚠ DÒ CỘT `code_phan` TRƯỚC KHI DÙNG (khuôn `temCoCot` mig 066) — cột này thêm SAU khi bảng
+//   `cai_dat_api` đã lên production ⇒ có môi trường đã tạo bảng mà chưa có cột.
+//   **KHÔNG được dựa vào try/catch quanh SELECT**: `napCache` nuốt lỗi rồi trả `{}` ⇒ fail-open ⇒
+//   **toàn bộ cấu hình bật/tắt đã lưu bị bỏ qua, API nào cũng chạy theo mặc định `.env`**
+//   — người dùng tắt API mà nó vẫn gọi, mà log thì chỉ có 1 dòng cảnh báo mờ nhạt.
+//   (Lỗi thật 14/08/2026: prod chạy mig 083 bản cũ nên thiếu cột, lưu cấu hình ăn 42703.)
+// Cache khi ĐÃ có cột; chưa có thì dò lại mỗi lần ⇒ chạy migration xong nhận ngay, khỏi restart BE.
+let _coCotCodePhan = false;
+async function coCotCodePhan() {
+  if (_coCotCodePhan) return true;
+  try {
+    const { rows } = await query(
+      `SELECT 1 FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='cai_dat_api' AND column_name='code_phan' LIMIT 1`
+        .replace(/\s+/g, ' ')
+    );
+    _coCotCodePhan = rows.length > 0;
+  } catch { _coCotCodePhan = false; }
+  return _coCotCodePhan;
+}
+
 async function napCache() {
-  const { rows } = await query('SELECT ma_api, bat, code_phan FROM cai_dat_api');
+  const co = await coCotCodePhan();
+  const { rows } = await query(`SELECT ma_api, bat${co ? ', code_phan' : ''} FROM cai_dat_api`);
   const m = {};
-  for (const r of rows) m[r.ma_api] = { bat: r.bat !== false, code_phan: r.code_phan || null };
+  for (const r of rows) m[r.ma_api] = { bat: r.bat !== false, code_phan: (co && r.code_phan) || null };
   return m;
 }
 
@@ -124,6 +146,7 @@ function xoaCache() { cache = null; cacheHan = 0; }
 // Danh sách đầy đủ cho trang cài đặt: trạng thái thật + URL đang gọi + mô tả.
 async function danhSachCauHinh() {
   const m = await layCache();
+  const coCot = await coCotCodePhan(); // tính 1 LẦN — `await` trong `.map()` sẽ ra Promise, không chạy
   return DANH_MUC_API.map((x) => ({
     ma: x.ma,
     ten: x.ten,
@@ -137,6 +160,8 @@ async function danhSachCauHinh() {
     loc_code_phan: !!x.loc_code_phan,
     code_phan: (m[x.ma] && m[x.ma].code_phan) || '',
     so_code_phan: tachCodePhan(m[x.ma] && m[x.ma].code_phan).length,
+    // FE dùng để hiện lời nhắc chạy migration thay vì để người dùng bấm Lưu rồi ăn lỗi khó hiểu.
+    thieu_cot_code_phan: !!x.loc_code_phan && !coCot,
   }));
 }
 
@@ -148,5 +173,5 @@ function urlCua(ma) {
 
 module.exports = {
   DANH_MUC_API, MA_HOP_LE, apiBat, codePhanChoPhep, apiChoPhepPhanIn,
-  xoaCache, danhSachCauHinh, urlCua, macDinhCua, tachCodePhan,
+  xoaCache, danhSachCauHinh, urlCua, macDinhCua, tachCodePhan, coCotCodePhan,
 };
