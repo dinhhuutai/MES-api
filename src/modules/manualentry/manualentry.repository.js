@@ -81,10 +81,12 @@ async function createChainTx(client, p, actorId) {
     let donId = p.don?.id || null;
     if (!donId) {
       const ma = (p.don?.ma_don_hang || '').trim() || genCode('DH');
+      // `ddh_id` = trường `DDHID` của ERP (mig 074) — 1:1 với ĐƠN HÀNG.
       const r = await client.query(
-        `INSERT INTO don_hang (khach_hang_id, ma_don_hang, so_po, ten_don_hang, ngay_dat_hang, ghi_chu, created_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-        [khachId, ma, p.don?.so_po || null, p.don?.ten_don_hang || null, p.don?.ngay_dat_hang || null, p.don?.ghi_chu || null, actorId]
+        `INSERT INTO don_hang (khach_hang_id, ma_don_hang, so_po, ten_don_hang, ngay_dat_hang, ddh_id, ghi_chu, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+        [khachId, ma, p.don?.so_po || null, p.don?.ten_don_hang || null, p.don?.ngay_dat_hang || null,
+          p.don?.ddh_id || null, p.don?.ghi_chu || null, actorId]
       );
       donId = r.rows[0].id;
     }
@@ -100,14 +102,16 @@ async function createChainTx(client, p, actorId) {
     }
     // 4) Phần in (luôn tạo mới)
     const ma = (p.phanIn?.ma_phan || '').trim() || genCode('PIN');
+    // `barcode` = mã vạch TDTHĐH (`BarcodePTHDH` của ERP) — mã của CHÍNH phần in, 11 số, 1 mã ↔ 1 phần in.
+    // ⚠ ĐỪNG nhầm với `dot_vai_ve.barcode` (`IDDotReady`) — mã đó ở mức ĐỢT VẢI và dùng chung nhiều phần in.
     const r = await client.query(
       `INSERT INTO phan_in (ma_hang_id, ma_phan, mau_vai, kich_vai, kich_phim, tinh_chat_in, do_in, mau_in,
-         so_luong_don_hang, la_in_kieng, thoi_gian_cho_kho_phut, ghi_chu, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id, ma_phan`,
+         so_luong_don_hang, la_in_kieng, thoi_gian_cho_kho_phut, barcode, ghi_chu, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id, ma_phan`,
       [maHangId, ma, p.phanIn?.mau_vai || null, p.phanIn?.kich_vai || null, p.phanIn?.kich_phim || null,
         p.phanIn?.tinh_chat_in || null, p.phanIn?.do_in || null, p.phanIn?.mau_in || null,
         p.phanIn?.so_luong_don_hang ?? null, !!p.phanIn?.la_in_kieng, p.phanIn?.thoi_gian_cho_kho_phut ?? null,
-        p.phanIn?.ghi_chu || null, actorId]
+        p.phanIn?.barcode || null, p.phanIn?.ghi_chu || null, actorId]
     );
     phanInId = r.rows[0].id;
     maPhan = r.rows[0].ma_phan;
@@ -117,14 +121,21 @@ async function createChainTx(client, p, actorId) {
     maPhan = r.rows[0].ma_phan;
   }
 
-  // 5) Đợt vải
+  // 5) Đợt vải — khai ĐỦ các cột mà `erpsync.upsertDotVai` ghi, để hàng nhập tay không thiếu
+  //    trường nào so với hàng ERP đẩy về (`IDDotReady`/`Inset`/`NGC`/`DDHSUBID`/`Duan`/`KTCankiemtra`).
+  // ⚠ `tg_chuyen_ready` KHÔNG khai: cột có `DEFAULT now()` (mig 056) ⇒ đợt vào thẳng READY như ERP.
   const dots = [];
   for (const d of p.dotVai) {
     const ma = (d.ma_dot_vai || '').trim() || genCode('MAN');
     const r = await client.query(
-      `INSERT INTO dot_vai_ve (phan_in_id, ma_dot_vai, so_luong_vai_ve, ngay_vai_ve, han_giao_hang, loai_dot_vai_id, ghi_chu, trang_thai, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,'NHAN_VAI',$8) RETURNING id, ma_dot_vai, so_luong_vai_ve`,
-      [phanInId, ma, d.so_luong_vai_ve ?? 0, d.ngay_vai_ve || null, d.han_giao_hang || null, d.loai_dot_vai_id || null, d.ghi_chu || null, actorId]
+      `INSERT INTO dot_vai_ve (phan_in_id, ma_dot_vai, so_luong_vai_ve, ngay_vai_ve, han_giao_hang,
+         loai_dot_vai_id, barcode, inset, nha_gia_cong, ddh_sub_id, du_an, kt_can_kiem_tra,
+         ghi_chu, trang_thai, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'NHAN_VAI',$14)
+       RETURNING id, ma_dot_vai, so_luong_vai_ve`,
+      [phanInId, ma, d.so_luong_vai_ve ?? 0, d.ngay_vai_ve || null, d.han_giao_hang || null,
+        d.loai_dot_vai_id || null, d.barcode || null, d.inset ?? null, d.nha_gia_cong || null,
+        d.ddh_sub_id || null, d.du_an || null, d.kt_can_kiem_tra ?? null, d.ghi_chu || null, actorId]
     );
     dots.push(r.rows[0]);
   }

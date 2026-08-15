@@ -4,6 +4,12 @@ const repo = require('./manualentry.repository');
 const AppError = require('../../utils/AppError');
 const { withTransaction } = require('../../config/db');
 const sockets = require('../../sockets');
+// ⚠⚠ TÁI DÙNG ĐÚNG 2 HÀM ERP ĐANG CHẠY, KHÔNG viết đường ghi HSKT riêng cho nhập tay.
+// `upsertHsktForPin` lo hết: tra HSKT theo **11 SỐ ĐẦU** barcode (số cuối = phương án in nên ERP và
+// MES lệch nhau), KHÔNG ghi đè `phuong_an_in` của HSKT đã tồn tại, ghi `lich_su_hskt`, nối
+// `hskt_phan_in`, và tự lùi về bản KHÔNG barcode khi chỉ có Pain. Viết lại là chắc chắn lệch.
+const erpRepo = require('../erpsync/erpsync.repository');
+const hsktRepo = require('../hskt/hskt.repository');
 
 const searchKhach = (q) => repo.searchKhach(q || '');
 const searchDon = (khachId, q) => repo.searchDon(khachId || null, q || '');
@@ -34,7 +40,50 @@ async function createChain(payload, actorId) {
   }
 
   const result = await withTransaction((client) => repo.createChainTx(client, p, actorId));
+
+  // ─── HỒ SƠ KỸ THUẬT — chạy SAU transaction chính, y hệt trình tự của `syncPhieuNhanVai` ───
+  // ⚠ `upsertHsktForPin` tự mở transaction riêng nên KHÔNG gọi được bên trong `createChainTx`.
+  const hs = p.hskt || {};
+  const barcodeHskt = (hs.barcode_hskt || '').trim() || null;
+  const pain = hs.phuong_an_in === '' || hs.phuong_an_in == null ? null : Number(hs.phuong_an_in);
+  let hsktId = null;
+  if (barcodeHskt || pain != null) {
+    try {
+      hsktId = await erpRepo.upsertHsktForPin({
+        pinId: result.phan_in_id,
+        barcodeHskt,
+        pain,
+        inset: hs.inset ?? null,
+        maDonReady: hs.ma_don_ready || null,
+        maPhan: result.ma_phan,
+        actorId,
+      });
+    } catch (e) {
+      // Hồ sơ kỹ thuật hỏng KHÔNG được nuốt mất chuỗi khách→đơn→…→đợt vải đã tạo xong ở trên.
+      // Báo rõ để người dùng bổ sung ở trang Hồ sơ kỹ thuật thay vì tưởng cả thao tác thất bại.
+      result.hskt_loi = e.message || 'Không tạo được hồ sơ kỹ thuật';
+    }
+  } else if (result.phan_in_id) {
+    // Thêm đợt vải vào phần in CÓ SẴN (hoặc không nhập HSKT): vẫn phải tính lại phương án in
+    // vì tổng SL vải của hồ sơ vừa đổi — đúng như post-pass của ERP.
+    const cur = await hsktRepo.activeHsktOfPhanIn(result.phan_in_id).catch(() => null);
+    hsktId = cur ? cur.id : null;
+  }
+
+  // POST-PASS luật sản lượng — **cùng hàm** ERP gọi cuối mỗi lần đồng bộ: Σ SL vải của CẢ hồ sơ
+  // ≥ 2000 m → in Máy, < 2000 → in Bàn (bỏ qua khi `pa_in_sua_tay`). Nhờ vậy hàng nhập tay không
+  // bị "5 phút sau ERP đổi phương án in" một cách khó hiểu.
+  if (hsktId) {
+    try {
+      const r = await erpRepo.applyPainTheoSanLuong(hsktId, actorId);
+      result.phuong_an_in = r.pain;
+      result.tong_vai_hskt = r.tong;
+      result.doi_phuong_an_in = !!r.doi;
+    } catch { /* không chặn: chuỗi dữ liệu đã tạo xong */ }
+  }
+
   sockets.emit('dashboard:refresh', {});
+  sockets.emit('ready:confirmed', {});   // màn READY / QC READY tải lại ngầm
   return result;
 }
 

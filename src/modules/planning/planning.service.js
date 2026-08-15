@@ -915,9 +915,14 @@ async function returnTestRunToReady(lenhId, { checklists, lyDo, loai }, actorId)
   if (!reason) throw new AppError('Nhập lý do trả về Kỹ thuật', { status: 422, errorCode: 'NO_LY_DO' });
   const kieu = LOAI_TRA_VE.has(loai) ? loai : 'TEST_LOI';
   const doiPaIn = kieu === 'DOI_PA_IN';
-  const chosen = normalizeTechItems(checklists);
-  // ⚠ Đổi phương án in thì KHÔNG bắt chọn mục Khuôn/Film/Mực: kỹ thuật sẽ làm lại theo phương án
-  //   mới, chưa biết mục nào phải sửa. Test run lỗi thì vẫn bắt buộc (phải biết mục nào rớt).
+  // ⚠⚠ ĐỔI PHƯƠNG ÁN IN ⇒ HỦY **CẢ 3 MỤC** Khuôn/Film/Mực, KHÔNG phụ thuộc người dùng tick gì
+  //   (chốt 15/08/2026). Đổi phương án in là đổi hẳn cách in (Bàn ↔ Máy ↔ Robot) nên khuôn/film/mực
+  //   phải làm lại từ đầu ⇒ phần in phải quay về **READY (Kỹ thuật)**.
+  //   ⚠ Bản đầu chỉ hủy QC nên phần in dừng ở **READY (QA)**: 3 mục KT vẫn còn `DAT` nên `tech_done`
+  //     vẫn TRUE, QC chỉ việc bấm duyệt lại — kỹ thuật KHÔNG hề làm lại gì. Đó là lỗi, không phải
+  //     lựa chọn; đừng "tối ưu" về lại kiểu cũ.
+  const chosen = doiPaIn ? TECH_ITEMS.slice() : normalizeTechItems(checklists);
+  // Test run lỗi thì vẫn BẮT BUỘC chọn mục (phải biết mục nào rớt để chỉ làm lại đúng mục đó).
   if (!doiPaIn && chosen.length === 0) {
     throw new AppError('Chọn ít nhất 1 mục không đạt (Khuôn / Film / Mực)', { status: 422, errorCode: 'NO_ITEM' });
   }
