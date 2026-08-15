@@ -9,6 +9,7 @@ const wf = require('../workflow/workflow.repository');
 const AppError = require('../../utils/AppError');
 const { buildMeta } = require('../../utils/pagination');
 const { layBarcodeTem } = require('../../utils/erpTemBarcode');
+const { STAGE_LABEL } = require('../../utils/stage'); // nhãn giai đoạn — dùng chung với dashboard
 const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
 const erpRepo = require('../erpsync/erpsync.repository'); // reopenReadyForPhanIn (mở lại READY)
@@ -230,10 +231,13 @@ async function createGiaCongLenh(client, { versionId, chuyenId, junctions, tongS
 
 // Trả 1 đợt vải ở Release 1 NGƯỢC về Kỹ thuật: mở lại READY cho phần in (hủy xác nhận Khuôn/Film/Mực/QC
 // + gắn cờ can_lam_lai_ready cho đợt chưa release). Chỉ khi đợt CHƯA release (chưa có lệnh ≠ HUY).
-// ⚠⚠ GOM SET → TRẢ VỀ NGUYÊN CẢ SET: các phần in trong set in CHUNG (release ra 1 lệnh, all-or-nothing)
-// nên trả lẻ 1 phần in sẽ để set nửa Ready nửa không — set vẫn không release được mà kỹ thuật cũng
-// không biết mấy phần còn lại phải làm lại. Chốt: bấm trả về 1 đợt trong set = mở lại READY cho MỌI
-// phần in của set đó (mỗi phần in 1 dòng audit + 1 cờ qc_tra_ve để badge/lý do hiện ở màn READY).
+//
+// ⚠⚠ TRẢ **LẺ ĐÚNG 1 PHẦN IN**, KỂ CẢ KHI ĐỢT VẢI THUỘC GOM SET (chốt 15/08/2026).
+// Bản trước trả về NGUYÊN CẢ SET, với lý do: "set in chung, release all-or-nothing nên trả lẻ sẽ để
+// set nửa Ready nửa không — set vẫn không release được". Tiền đề đó KHÔNG CÒN kể từ khi Release 1
+// cho release LẺ từng phần in: set nửa Ready nửa không nay là trạng thái BÌNH THƯỜNG (phần Ready đi
+// trước, phần chưa Ready đi sau). Giữ luật cũ thì bấm trả về 1 phần in sẽ **xóa công đã làm của các
+// phần in khác trong set** — làm quá tay, và người bấm không hề thấy chúng trên màn hình.
 async function traVeKyThuat({ dotVaiId, lyDo }, actorId) {
   if (!dotVaiId) throw new AppError('Thiếu đợt vải', { status: 400, errorCode: 'EMPTY' });
   const reason = (lyDo || '').trim();
@@ -241,37 +245,24 @@ async function traVeKyThuat({ dotVaiId, lyDo }, actorId) {
   const pinId = await repo.phanInIdByDotVai(dotVaiId);
   if (!pinId) throw new AppError('Không tìm thấy đợt vải', { status: 404, errorCode: 'NOT_FOUND' });
 
-  const set = await repo.getOpenSetOfDotVai(dotVaiId);
-  const members = set ? await repo.getSetMembersForRelease(set.id) : [];
-  const laSet = !!set && members.length > 0;
-  // 1 phần in có thể có NHIỀU đợt vải trong set ⇒ gom theo phan_in_id (reopenReadyForPhanIn đã gắn cờ
-  // can_lam_lai_ready cho mọi đợt chưa release của phần in đó, chạy 2 lần là thừa).
-  const targets = laSet
-    ? [...new Map(members.map((m) => [m.phan_in_id, m])).values()].map((m) => ({ pinId: m.phan_in_id, dotVaiId: m.dot_vai_id }))
-    : [{ pinId, dotVaiId }];
-
-  const daRelease = laSet ? members.some((m) => m.da_release) : await repo.dotVaiReleasedOne(dotVaiId);
-  if (daRelease) {
-    throw new AppError(
-      laSet
-        ? `Set ${set.ma_set} đã có đợt vải release — hãy hủy lệnh trước khi trả về Kỹ thuật`
-        : 'Đợt vải đã release — hãy hủy lệnh trước khi trả về Kỹ thuật',
-      { status: 409, errorCode: 'RELEASED' }
-    );
+  // ⚠ Guard chỉ xét ĐÚNG đợt vải được bấm (trước đây xét cả set). Đợt đã release thì phải hủy lệnh
+  //   trước, vì mở lại READY khi lệnh còn sống sẽ cho ra "chưa Ready mà đã ở Test Run".
+  if (await repo.dotVaiReleasedOne(dotVaiId)) {
+    throw new AppError('Đợt vải đã release — hãy hủy lệnh trước khi trả về Kỹ thuật',
+      { status: 409, errorCode: 'RELEASED' });
   }
 
-  for (const t of targets) {
-    await erpRepo.reopenReadyForPhanIn(t.pinId);
-    await repo.auditTraVeKyThuat(t.pinId, t.dotVaiId, reason, actorId);
-    // Ghi qc_tra_ve loai='RELEASE1' (mức phần in) → màn READY/QC READY hiện badge + LÝ DO trả về;
-    // cờ tự tắt khi QC xác nhận READY lại (technical.confirmQC → resolveReturns('RELEASE1')).
-    await qaRepo.insertQcTraVe({ loai: 'RELEASE1', phanInId: t.pinId, dotVaiId: t.dotVaiId, lyDo: reason }, actorId);
-    await tracking.moveByPhanIn(t.pinId, 'READY', actorId);
-  }
+  await erpRepo.reopenReadyForPhanIn(pinId);
+  await repo.auditTraVeKyThuat(pinId, dotVaiId, reason, actorId);
+  // Ghi qc_tra_ve loai='RELEASE1' (mức phần in) → màn READY/QC READY hiện badge + LÝ DO trả về;
+  // cờ tự tắt khi QC xác nhận READY lại (technical.confirmQC → resolveReturns('RELEASE1')).
+  await qaRepo.insertQcTraVe({ loai: 'RELEASE1', phanInId: pinId, dotVaiId, lyDo: reason }, actorId);
+  await tracking.moveByPhanIn(pinId, 'READY', actorId);
+
   sockets.emit('workflow:updated', { stage: 'READY', traVe: true });
   sockets.emit('ready:confirmed', { traVe: true }); // READY & QC READY nghe event này để tải lại ngầm
   sockets.emit('dashboard:refresh', {});
-  return { phan_in_id: pinId, so_phan_in: targets.length, ma_set: laSet ? set.ma_set : null };
+  return { phan_in_id: pinId, so_phan_in: 1, ma_set: null };
 }
 
 async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach, tgBdKh, tgKtKh }, actorId) {
@@ -347,6 +338,7 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
       return out;
     });
     await qaRepo.resolveReturnsMany('TEST_RUN', created.map((c) => c.dot_vai_id));
+    await repo.dongSetDaReleaseHet(created.map((c) => c.dot_vai_id), actorId);
     created.forEach((c) => sockets.emit('workflow:updated', { lenhId: c.id, stage: 'GIA_CONG', giaCong: true }));
     sockets.emit('dashboard:refresh', {});
     const detail = await getLenhDetail(created[0].id);
@@ -388,6 +380,8 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
     await tracking.moveDotVaiTo([c.dot_vai_id], c.trang_thai === 'RELEASE_2' ? 'RELEASE_2' : 'RELEASE_1', actorId);
   }
   await qaRepo.resolveReturnsMany('TEST_RUN', created.map((c) => c.dot_vai_id)); // release lại → tắt cờ "bị Test Run trả về"
+  // Đợt vải thuộc gom set nay release LẺ được ⇒ set tự đóng khi member cuối cùng đã release.
+  await repo.dongSetDaReleaseHet(created.map((c) => c.dot_vai_id), actorId);
   created.forEach((c) => sockets.emit('workflow:updated', { lenhId: c.id, stage: c.trang_thai }));
   sockets.emit('dashboard:refresh', {});
 
@@ -452,6 +446,7 @@ async function createDotSanXuat({ items, chuyenId, ngayKeHoach, tgBdKh, tgKtKh }
       tongSL, ngayKeHoach, tgBdKh, tgKtKh,
     }, actorId));
     await qaRepo.resolveReturnsMany('TEST_RUN', ids);
+    await repo.dongSetDaReleaseHet(ids, actorId);
     sockets.emit('workflow:updated', { lenhId: gc.id, stage: 'GIA_CONG', giaCong: true });
     sockets.emit('dashboard:refresh', {});
     return { ...(await getLenhDetail(gc.id)), gia_cong: true, so_luong_release: tongSL };
@@ -493,6 +488,7 @@ async function createDotSanXuat({ items, chuyenId, ngayKeHoach, tgBdKh, tgKtKh }
 
   await tracking.moveDotVaiTo(ids, trangThai === 'RELEASE_2' ? 'RELEASE_2' : 'RELEASE_1', actorId);
   await qaRepo.resolveReturnsMany('TEST_RUN', ids); // release lại → tắt cờ "bị Test Run trả về"
+  await repo.dongSetDaReleaseHet(ids, actorId);
   sockets.emit('workflow:updated', { lenhId, stage: trangThai });
   sockets.emit('dashboard:refresh', {});
   return { ...(await getLenhDetail(lenhId)), skipped_test: diTat, so_luong_release: tongSL, in_kieng: inKieng, ep_ui_id: epUiId };
@@ -543,6 +539,12 @@ async function listReleaseSets(search) {
   }));
 }
 
+// ⚠⚠ TỪ 15/08/2026 KHÔNG CÒN NÚT NÀO GỌI HÀM NÀY. Màn Release 1 đã bỏ dòng SET (đợt vải trong set
+// hiện thành dòng lẻ, release riêng) nên đường "release cả set thành 1 lệnh chung" không còn lối vào.
+// GIỮ LẠI hàm + route: (a) đây là code đang chạy ổn định, gỡ đi là rủi ro thừa; (b) nếu sau này muốn
+// bật lại lối in chung (chọn nhiều dòng cùng set → hỏi "chung 1 lệnh hay tách riêng?") thì dùng ngay.
+// ⚠ ĐỪNG nối lại vào `confirmKeHoachTam` — chính nhánh đó đẻ ra lỗi `SET_NOT_READY` chặn phần in
+//   đã Ready phải chờ cả set.
 async function releaseSet(setId, { chuyenId, soLuongRelease, ngayKeHoach, tgBdKh, tgKtKh }, actorId) {
   if (!chuyenId) throw new AppError('Chọn chuyền sản xuất', { status: 422, errorCode: 'NO_CHUYEN' });
   const set = await repo.getSetForRelease(setId);
@@ -900,11 +902,23 @@ function normalizeTechItems(checklists) {
   return TECH_ITEMS.filter((m) => set.has(m)); // giữ thứ tự Khuôn → Film → Mực
 }
 
-async function returnTestRunToReady(lenhId, { checklists, lyDo }, actorId) {
+// `loai` = LÝ DO trả về, quyết định lệnh có được GIỮ hay không (chốt 15/08/2026):
+//   · `TEST_LOI` (mặc định) — test run lỗi: **GIỮ lệnh** ⇒ QC xác nhận READY xong là đợt vải nhảy
+//     THẲNG lại Test Run, Kế hoạch không phải Release 1 lần nữa. (Hành vi cũ, không đổi.)
+//   · `DOI_PA_IN` — đổi phương án in: **HỦY lệnh** ⇒ đợt vải rơi về pool Release 1 để Kế hoạch
+//     **release lại từ đầu**. Bắt buộc phải hủy: đổi phương án in là đổi chuyền/cách in, mà lệnh cũ
+//     đã chốt chuyền — giữ lệnh thì hàng quay lại đúng cái chuyền vừa bị chê.
+const LOAI_TRA_VE = new Set(['TEST_LOI', 'DOI_PA_IN']);
+
+async function returnTestRunToReady(lenhId, { checklists, lyDo, loai }, actorId) {
   const reason = (lyDo || '').trim();
   if (!reason) throw new AppError('Nhập lý do trả về Kỹ thuật', { status: 422, errorCode: 'NO_LY_DO' });
+  const kieu = LOAI_TRA_VE.has(loai) ? loai : 'TEST_LOI';
+  const doiPaIn = kieu === 'DOI_PA_IN';
   const chosen = normalizeTechItems(checklists);
-  if (chosen.length === 0) {
+  // ⚠ Đổi phương án in thì KHÔNG bắt chọn mục Khuôn/Film/Mực: kỹ thuật sẽ làm lại theo phương án
+  //   mới, chưa biết mục nào phải sửa. Test run lỗi thì vẫn bắt buộc (phải biết mục nào rớt).
+  if (!doiPaIn && chosen.length === 0) {
     throw new AppError('Chọn ít nhất 1 mục không đạt (Khuôn / Film / Mực)', { status: 422, errorCode: 'NO_ITEM' });
   }
   const lenh = await repo.getLenhBasic(lenhId);
@@ -921,8 +935,12 @@ async function returnTestRunToReady(lenhId, { checklists, lyDo }, actorId) {
 
   await withTransaction(async (client) => {
     await repo.cancelTestResults(client, lenhId, actorId);                        // phải test lại
-    await repo.cancelReadyItemsByPhanIn(client, pinIds, chosen, actorId);         // mục rớt → xác nhận lại
+    if (chosen.length) await repo.cancelReadyItemsByPhanIn(client, pinIds, chosen, actorId); // mục rớt → xác nhận lại
     await repo.cancelReadyQcForDotVai(client, dotVaiIds, actorId);                // QC phải duyệt lại
+    // ĐỔI PHƯƠNG ÁN IN → HỦY LỆNH trong CÙNG transaction ⇒ đợt vải quay về pool Release 1.
+    // ⚠ Đã chặn `co_phieu` ở trên nên chắc chắn chưa in tem — không phải dọn tem/phiếu.
+    // ⚠ `cancelLenhOrder` cũng lo luôn việc mở lại gom set nếu đợt vải thuộc set đã đóng.
+    if (doiPaIn) await repo.cancelLenhOrder(client, lenhId, actorId);
   });
 
   const checklistList = chosen.join(',');
@@ -936,11 +954,16 @@ async function returnTestRunToReady(lenhId, { checklists, lyDo }, actorId) {
   }
   await repo.logPlanChange(null, lenhId, 'TRA_VE_KY_THUAT_TEST_RUN',
     { trang_thai: 'RELEASE_1' },
-    { ma_lenh: lenh.ma_lenh_san_xuat, checklists: chosen, ly_do: reason, giu_lenh: true }, actorId);
+    { ma_lenh: lenh.ma_lenh_san_xuat, checklists: chosen, ly_do: reason, loai: kieu, giu_lenh: !doiPaIn }, actorId);
   await tracking.moveDotVaiTo(dotVaiIds, 'READY', actorId);
   sockets.emit('workflow:updated', { lenhId, stage: 'READY', traVe: true });
+  // Đổi phương án in ⇒ đợt vải quay lại màn Release 1 ⇒ báo cho màn đó tải lại ngầm.
+  if (doiPaIn) sockets.emit('ready:confirmed', { traVe: true });
   sockets.emit('dashboard:refresh', {});
-  return { lenh_id: lenhId, dot_vai: dotVaiIds.length, phan_in: pinIds.length, checklists: chosen };
+  return {
+    lenh_id: lenhId, dot_vai: dotVaiIds.length, phan_in: pinIds.length,
+    checklists: chosen, loai: kieu, huy_lenh: doiPaIn,
+  };
 }
 
 // Chặn mọi thao tác test khi lệnh đang chờ kỹ thuật làm lại (đã bị QA trả về READY).
@@ -964,9 +987,10 @@ async function listKeHoachTam({ search, page, limit, offset }) {
   return { items: rows, meta: buildMeta(page, limit, total) };
 }
 
-// KẾ HOẠCH TẠM CHO CẢ GOM SET: set chưa đủ QC thì KHÔNG release được (phải in chung 1 lệnh), nhưng
-// VẪN phải lập kế hoạch sớm được. Ở đây chỉ ghi kế hoạch tạm cho MỌI đợt vải trong set — không tạo lệnh,
-// không đụng tới set. Khi cả set Ready xong, xác nhận ở màn Kế hoạch tạm sẽ release nguyên set thành 1 lệnh.
+// KẾ HOẠCH TẠM CHO CẢ GOM SET — ghi kế hoạch tạm cho MỌI đợt vải trong set.
+// ⚠⚠ TỪ 15/08/2026 KHÔNG CÒN NÚT NÀO GỌI HÀM NÀY (màn Release 1 bỏ dòng SET; mỗi đợt vải tự lập kế
+// hoạch tạm riêng qua `createRelease1`). Đây chính là hành vi người dùng phản ánh: "làm kế hoạch cho
+// 1 phần thì mấy phần gom set kia dính kế hoạch luôn". GIỮ hàm + route như `releaseSet` — xem ghi chú ở đó.
 async function keHoachTamSet(setId, { chuyenId, ngayKeHoach, tgBdKh, tgKtKh }, actorId) {
   if (!chuyenId) throw new AppError('Chọn chuyền sản xuất', { status: 422, errorCode: 'NO_CHUYEN' });
   const set = await repo.getSetForRelease(setId);
@@ -992,27 +1016,13 @@ async function confirmKeHoachTam(id, actorId) {
   if (!kt) throw new AppError('Kế hoạch tạm không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   if (!kt.qc_done) throw new AppError('Phần in chưa Ready xong (chưa có xác nhận QA) — chưa thể Release 1', { status: 409, errorCode: 'NOT_READY' });
 
-  // Đợt thuộc GOM SET đang mở → phải release CẢ SET thành 1 lệnh chung (không tách lẻ từng đợt).
-  const gs = await repo.getOpenSetOfDotVai(kt.dot_vai_ve_id);
-  if (gs) {
-    if (gs.so_chua_ready > 0) {
-      throw new AppError(`Đợt vải thuộc ${gs.ma_set} — còn ${gs.so_chua_ready} đợt trong set chưa Ready, phải chờ cả set xong mới release chung`,
-        { status: 409, errorCode: 'SET_NOT_READY' });
-    }
-    // Lấy danh sách đợt TRƯỚC khi release (sau khi release set đổi trạng thái, khó truy lại).
-    const members = await repo.getSetMembersForRelease(gs.id);
-    const ids = members.length ? members.map((m) => m.dot_vai_id) : [kt.dot_vai_ve_id];
-    const res = await releaseSet(gs.id, {
-      chuyenId: kt.chuyen_id, ngayKeHoach: kt.ngay_ke_hoach,
-    }, actorId);
-    await repo.deleteKeHoachTamByDotVai(ids);
-    await repo.logKeHoachTam('XAC_NHAN_KE_HOACH_TAM', kt.dot_vai_ve_id, {
-      chuyen_id: kt.chuyen_id, ngay_ke_hoach: kt.ngay_ke_hoach, so_luong: kt.so_luong,
-      ma_set: gs.ma_set, ma_lenh: (res && (res.ma_lenh_san_xuat || res.lenh?.ma_lenh_san_xuat)) || null,
-    }, actorId);
-    return { ...res, ke_hoach_tam_id: id, ma_set: gs.ma_set };
-  }
-  // Đợt ĐÃ được release ở đường khác (điển hình: release theo GOM SET từ màn Release 1) mà dòng kế hoạch
+  // ⚠⚠ ĐÃ GỠ NHÁNH "RELEASE CẢ SET" (15/08/2026 — cùng đợt với việc cho release LẺ ở Release 1).
+  // Trước đây: đợt thuộc gom set đang MỞ thì `confirmKeHoachTam` gọi `releaseSet` để ra 1 lệnh chung,
+  // và chặn `SET_NOT_READY` nếu còn member chưa Ready ⇒ **phần in đã Ready không đi được, phải chờ
+  // cả set** (ca thật SET0184: C02/C03 đã Ready vẫn kẹt vì C01 chưa xong).
+  // Nay xác nhận kế hoạch tạm chỉ release ĐÚNG đợt vải của dòng đó, y như đợt vải lẻ; set tự đóng
+  // khi member cuối cùng được release (`repo.dongSetDaReleaseHet` trong `createRelease1`).
+  // Đợt ĐÃ được release ở đường khác (dữ liệu cũ: release theo GOM SET từ màn Release 1) mà dòng kế hoạch
   // tạm còn sót → `createRelease1` sẽ ném "SL release (N) vượt SL còn lại (0)", người dùng không hiểu gì.
   // Dọn dòng chết rồi trả `da_don` — CỐ Ý KHÔNG ném lỗi: đây không phải người dùng làm sai, và ném lỗi
   // thì xác nhận hàng loạt đếm thành "N lỗi" (toast đỏ) dù dòng đã được dọn xong.
@@ -1167,7 +1177,7 @@ async function confirmGiaCongToOqc(lenhId, { soLuong } = {}, actorId) {
 
   // Mã tem lấy TỪ ERP (barcode 12 số) — lấy TRƯỚC transaction, SAU mọi guard ở trên để không tiêu số vô ích.
   // `null` = API mã tem đang TẮT ở Hệ thống > Cài đặt API ⇒ lùi về dãy `TEM00123` của MES.
-  const mt = (await layBarcodeTem()) || (await productionRepo.nextMaTem());
+  const mt = (await layBarcodeTem(actorId)) || (await productionRepo.nextMaTem());
 
   const maTem = await withTransaction(async (client) => {
     const maPhieu = await productionRepo.nextMaPhieuTx(client);
@@ -1389,6 +1399,9 @@ async function releaseList(date, mode = 'KE_HOACH') {
       la_dong_dau: dongDau,
       sl_da_in: dongDau ? r.sl_da_in : null,
       sl_da_giao: dongDau ? r.sl_da_giao : null,
+      // Nhãn tiếng Việt của giai đoạn HIỆN TẠI — dùng chung `STAGE_LABEL` với dashboard/Đơn hàng.
+      // Trả lời trực tiếp câu "release 51 phần hôm 15/08, giờ chúng đang ở đâu".
+      giai_doan_ten: STAGE_LABEL[r.giai_doan_hien_tai] || r.giai_doan_hien_tai || '—',
     };
   });
   const uniq = (key) => new Set(items.map((r) => r[key]).filter(Boolean)).size;

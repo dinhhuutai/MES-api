@@ -15,5 +15,8 @@ router.get('/', rbac('WORKFLOW_VIEW'), c.list);
 router.put('/', rbac('WORKFLOW_MANAGE'), c.save);
 // Thử kết nối tới máy chủ ERP — chỉ ping HOST, không gọi endpoint nghiệp vụ (xem service).
 router.post('/thu/:ma', rbac('WORKFLOW_VIEW'), c.thu);
+// Lịch sử gọi API — xem đã LẤY/GỬI những gì (nguồn `audit_log`). Chỉ cần quyền XEM.
+// ⚠ Route TĨNH `/lich-su/...` không đụng route nào khác vì `/` và `/thu/:ma` đã chiếm chỗ riêng.
+router.get('/lich-su/:ma', rbac('WORKFLOW_VIEW'), c.lichSu);
 
 module.exports = router;

@@ -2,6 +2,7 @@
 
 const { query } = require('../../config/db');
 const { coCotCodePhan } = require('../../utils/caiDatApi');
+const { mauTim } = require('../../utils/timKiem');
 
 // Lưu 1 dòng cấu hình. `ma_api` là PK nên upsert theo nó.
 // ⚠⚠ DÒ CỘT `code_phan` TRƯỚC rồi mới dựng câu INSERT (khuôn `temCoCot` mig 066) — cột này thêm SAU
@@ -34,4 +35,49 @@ async function thongTinSua() {
   return rows;
 }
 
-module.exports = { luu, thongTinSua };
+// ───────────────────────── LỊCH SỬ GỌI API (nguồn: `audit_log`) ─────────────────────────
+// ⚠⚠ ĐỌC ĐƯỢC CẢ 2 HÌNH DẠNG JSON — bắt buộc, vì dòng ghi TRƯỚC 15/08/2026 có hình dạng cũ:
+//   · thành công (cũ): { id_mes, ma_tem }                 ← KHÔNG có payload
+//   · thất bại  (cũ): { loi, payload:{IDMES,...} }        ← IDMES nằm SÂU trong payload
+//   · mọi dòng  (mới): { id_mes, ma_tem, url, gui, nhan, loi, so_lan_thu, thoi_gian_ms }
+//   ⇒ `id_mes`/`ma_tem` phải COALESCE qua cả 3 đường, nếu không dòng lỗi cũ sẽ trống IDMES —
+//     đúng cái cột quan trọng nhất để đối soát với ERP.
+const ID_MES = `COALESCE(a.gia_tri_moi->>'id_mes', a.gia_tri_moi->'gui'->>'IDMES', a.gia_tri_moi->'payload'->>'IDMES')`;
+const MA_TEM = `COALESCE(a.gia_tri_moi->>'ma_tem', a.gia_tri_moi->'gui'->>'BarcodeIn', a.gia_tri_moi->'payload'->>'BarcodeIn')`;
+
+// `ma` = mã API (ERP_BARCODE_TEM | ERP_GHI_IN_TEM). Lấy cả dòng thành công (`ma`) lẫn lỗi (`ma_LOI`).
+// ⚠ Lọc ngày theo GIỜ VN (khuôn chung của mọi màn lịch sử — §11.8 DATABASE.md).
+// ⚠ Tìm kiếm: theo IDMES / mã tem — 2 khóa người dùng thực sự cầm trên tay khi đối soát 2 bên.
+//   Dùng `~*` + `mauTim` theo luật tìm-kiếm-không-dấu toàn app (§8 CLAUDE.md).
+async function lichSu({ ma, date = '', search = '', offset = 0, limit = 20 }) {
+  const FROM = `
+    FROM audit_log a
+    LEFT JOIN nguoi_dung nd ON nd.id = a.nguoi_thuc_hien_id
+    WHERE a.hanh_dong IN ($1, $2)
+      AND ($3 = '' OR (a.thoi_gian AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $3::date)
+      AND ($4 = '' OR ${ID_MES} ~* $4 OR ${MA_TEM} ~* $4)`;
+  const args = [ma, `${ma}_LOI`, date || '', mauTim(search)];
+
+  const dataSql = `
+    SELECT a.id, a.thoi_gian, a.hanh_dong, a.id_ban_ghi,
+           (a.hanh_dong = $1) AS thanh_cong,
+           ${ID_MES} AS id_mes, ${MA_TEM} AS ma_tem,
+           a.gia_tri_moi->>'url' AS url,
+           a.gia_tri_moi->>'loi' AS loi,
+           (a.gia_tri_moi->>'so_lan_thu')::int AS so_lan_thu,
+           (a.gia_tri_moi->>'thoi_gian_ms')::int AS thoi_gian_ms,
+           a.gia_tri_moi AS chi_tiet,
+           nd.ho_ten AS nguoi
+    ${FROM}
+    ORDER BY a.thoi_gian DESC
+    LIMIT $5 OFFSET $6`;
+  const countSql = `SELECT count(*)::int AS total ${FROM}`;
+
+  const [data, count] = await Promise.all([
+    query(dataSql.replace(/\s+/g, ' '), [...args, limit, offset]),
+    query(countSql.replace(/\s+/g, ' '), args),
+  ]);
+  return { rows: data.rows, total: count.rows[0].total };
+}
+
+module.exports = { luu, thongTinSua, lichSu };

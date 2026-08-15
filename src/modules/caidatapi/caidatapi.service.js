@@ -4,6 +4,7 @@ const axios = require('axios');
 const repo = require('./caidatapi.repository');
 const AppError = require('../../utils/AppError');
 const env = require('../../config/env');
+const { buildMeta } = require('../../utils/pagination');
 const { MA_HOP_LE, DANH_MUC_API, tachCodePhan, xoaCache, danhSachCauHinh, urlCua } = require('../../utils/caiDatApi');
 
 // Danh sách API + trạng thái bật/tắt + URL đang gọi + người/giờ sửa gần nhất.
@@ -80,4 +81,23 @@ function erpProxy() {
   } catch { return undefined; }
 }
 
-module.exports = { danhSach, luu, thuKetNoi };
+// LỊCH SỬ GỌI API — chỉ 2 API có ghi vết (`ERP_BARCODE_TEM` lấy mã tem · `ERP_GHI_IN_TEM` báo in tem).
+// API đồng bộ đợt vải KHÔNG ở đây: nó đã có màn *Đồng bộ ERP* riêng với bảng `erp_sync_log`.
+const MA_CO_LICH_SU = new Set(['ERP_BARCODE_TEM', 'ERP_GHI_IN_TEM']);
+
+async function lichSu(ma, { date, search, page, limit, offset }) {
+  if (!MA_CO_LICH_SU.has(ma)) {
+    throw new AppError('API này chưa có lịch sử gọi', { status: 404, errorCode: 'NO_HISTORY' });
+  }
+  // ⚠ Thiếu bảng/lỗi đọc ⇒ trả rỗng thay vì ném lỗi: đây là màn TRA CỨU, hỏng nó không được
+  //   chặn người dùng bật/tắt API (cùng tinh thần fail-open của `utils/caiDatApi`).
+  try {
+    const { rows, total } = await repo.lichSu({ ma, date, search, offset, limit });
+    return { items: rows, meta: buildMeta(page, limit, total) };
+  } catch (e) {
+    console.warn(`[cai-dat-api] Không đọc được lịch sử ${ma}: ${e.message}`);
+    return { items: [], meta: buildMeta(page, limit, 0) };
+  }
+}
+
+module.exports = { danhSach, luu, thuKetNoi, lichSu, MA_CO_LICH_SU };

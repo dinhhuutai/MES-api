@@ -406,7 +406,8 @@ async function guiGhiInTem(items, actorId) {
       };
       const kq = await ghiInTem(payload);
       if (kq.bo_qua) continue; // tắt qua ERP_GHI_IN_TEM_ENABLED — không ghi audit lỗi
-      await repo.logGhiInTem(it.temId, kq.ok, kq.body, kq.error, actorId);
+      // ⚠ Truyền cả `kq.data` (phản hồi ERP) để lịch sử hiện được "gửi gì → nhận gì" trong 1 màn.
+      await repo.logGhiInTem(it.temId, kq.ok, kq.body, kq.error, actorId, kq.data);
     }
   } catch (e) {
     console.error(`[ghi-in-tem] ✗ Lỗi ngoài dự kiến khi báo ERP: ${e.message}`);
@@ -449,7 +450,7 @@ async function printTem(phieuId, soLuong, actorId, body) {
   // sẽ giữ transaction hở suốt thời gian chờ, mà lỗi mạng còn abort cả transaction.
   // Đặt SAU mọi guard ở trên (110% SL release, xe phơi…) để không tiêu số của ERP một cách vô ích.
   // `null` = API mã tem đang TẮT ở Hệ thống > Cài đặt API ⇒ lùi về dãy `TEM00123` của MES.
-  const maTem = (await layBarcodeTem()) || (await repo.nextMaTem());
+  const maTem = (await layBarcodeTem(actorId)) || (await repo.nextMaTem());
   let newTemId;
   await withTransaction(async (client) => {
     newTemId = await repo.createTem(client, { phieuId, maTem, soLuong: qty, ...meta }, actorId);
@@ -533,7 +534,7 @@ async function printTemBatch(phieuId, items, actorId, body) {
   // chưa tem nào được tạo nên không phải dọn gì; số ERP đã lấy coi như bỏ.
   // `null` = API mã tem đang TẮT ⇒ tự sinh đủ N mã LIÊN TIẾP (không gọi `nextMaTem` N lần —
   // hàm đó dùng pool nên sẽ trả cùng một mã, gây trùng khóa UNIQUE).
-  const maTemList = (await layNhieuBarcodeTem(list.length)) || (await repo.nextMaTemNhieu(list.length));
+  const maTemList = (await layNhieuBarcodeTem(list.length, actorId)) || (await repo.nextMaTemNhieu(list.length));
 
   const out = [];
   await withTransaction(async (client) => {

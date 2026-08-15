@@ -62,6 +62,17 @@ async function removeFromSet(setId, dotVaiId, actorId) {
   const set = await repo.getSet(setId);
   if (!set) throw new AppError('Set không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   if (set.trang_thai !== 'MO') throw new AppError('Set không ở trạng thái mở', { status: 409, errorCode: 'NOT_OPEN' });
+  // ⚠⚠ CHẶN GỠ ĐỢT VẢI ĐÃ RELEASE (thêm 15/08/2026 cùng đợt cho release LẺ từng phần in).
+  // Trước đây lỗ này KHÔNG lộ: release gom set là all-or-nothing nên set rời ngay khỏi 'MO' và guard
+  // phía trên đã chặn. Nay set ở LẠI 'MO' trong lúc vài member đã release ⇒ không có câu này thì gỡ
+  // được member đang có lệnh sản xuất, làm mất dấu vết "đợt này vốn thuộc set nào".
+  // (FE `GomSetPage` vốn đã ẩn nút với `m.da_release` — đây là chốt chặn thật ở server.)
+  const members = await repo.getSetMembers(setId);
+  const m = (members || []).find((x) => x.dot_vai_id === dotVaiId);
+  if (m && m.da_release) {
+    throw new AppError('Đợt vải đã release — hãy hủy lệnh sản xuất trước khi tách khỏi set',
+      { status: 409, errorCode: 'RELEASED' });
+  }
   const labels = await repo.getDotVaiLabels([dotVaiId]);
   await repo.removeDotVai(setId, dotVaiId);
   await repo.logGomAction(null, setId, 'REMOVE_DOT_VAI', `Tách đợt vải: ${labelOf(labels) || dotVaiId}`, actorId);

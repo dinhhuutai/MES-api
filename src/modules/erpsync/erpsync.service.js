@@ -36,7 +36,7 @@ const BO_TINH_CHAT_IN_RAW = [
   'RT+EP PHOI', 'RT+EP UI', 'RT+KIENG UI', 'RT+KIENG UI DQ', 'RT+LG EP', 'RTB+EP DINH', 'RTB+EP NHIET',
   'T+DQ+EPLUN', 'T+EP DC', 'T+EP DIEN', 'T+EP DINH', 'T+EP KIENG', 'T+EP LUN', 'T+EP LUN PHOI', 'T+EP LUN+LS',
   'T+EP NHUNG', 'T+EP NOI', 'T+EP NONG', 'T+EP PHOI', 'T+EP UI', 'T+KIENG UI', 'T+KIENG UI DQ', 'T+LG EP',
-  'T+LS', 'TB+EP DINH', 'TB+EP NHIET', 'TB+KIENGUIBONG',
+  'T+LS', 'TB+EP DINH', 'TB+EP NHIET', 'TB+KIENGUIBONG', 'IN KIENG DQ'
 ];
 const normTcin = (v) => String(v == null ? '' : v).toUpperCase().replace(/\s+/g, '');
 const BO_TINH_CHAT_IN = new Set(BO_TINH_CHAT_IN_RAW.map(normTcin));

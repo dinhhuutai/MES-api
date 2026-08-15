@@ -19,6 +19,7 @@ const axios = require('axios');
 const env = require('../config/env');
 const AppError = require('./AppError');
 const { apiBat } = require('./caiDatApi');
+const { ghiLog } = require('./erpApiLog');
 
 const BARCODE_RE = /^\d{12}$/;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -58,16 +59,24 @@ async function goiMotLan() {
 // Bên gọi thấy `null` thì tự sinh mã `TEM00123` bằng `production.repository.nextMaTem*`.
 // (Chốt 2026-08-14 — nới chốt cũ 07/08 "không lùi về mã cũ": chốt đó vẫn giữ nguyên cho ca ERP
 //  LỖI, còn đây là người dùng CHỦ ĐỘNG tắt, biết rõ hệ quả là tem không quét được ở ERP.)
-async function layBarcodeTem() {
+async function layBarcodeTem(actorId = null) {
   if (!(await apiBat('ERP_BARCODE_TEM'))) {
     console.log('[tem-barcode] ⏸ API đang TẮT (Hệ thống > Cài đặt API) — MES tự sinh mã tem');
     return null;
   }
   const soLan = Math.max(1, env.erp.barcodeTemRetry);
+  const batDau = Date.now();
   let loiCuoi;
   for (let i = 1; i <= soLan; i += 1) {
     try {
-      return await goiMotLan();
+      const bc = await goiMotLan();
+      // ⚠ Ghi vết NGAY cả khi thành công — mã vừa lấy là một số ĐÃ TIÊU của ERP, phải tra lại được
+      //   (kể cả khi transaction sau đó rollback làm thủng dãy). KHÔNG `await`: đây là bước phụ.
+      ghiLog('ERP_BARCODE_TEM', {
+        thanhCong: true, idBanGhi: bc, maTem: bc, url: env.erp.barcodeTemUrl,
+        soLanThu: i, thoiGianMs: Date.now() - batDau, nhan: { barcode: bc }, actorId,
+      });
+      return bc;
     } catch (e) {
       loiCuoi = e;
       if (i < soLan) {
@@ -78,6 +87,10 @@ async function layBarcodeTem() {
     }
   }
   console.error(`[tem-barcode] ✗ Không lấy được mã tem sau ${soLan} lần (${env.erp.barcodeTemUrl}): ${loiCuoi && loiCuoi.message}`);
+  ghiLog('ERP_BARCODE_TEM', {
+    thanhCong: false, idBanGhi: '-', url: env.erp.barcodeTemUrl,
+    soLanThu: soLan, thoiGianMs: Date.now() - batDau, loi: loiCuoi && loiCuoi.message, actorId,
+  });
   throw new AppError(
     `Không lấy được mã tem từ ERP (đã thử ${soLan} lần, ${env.erp.barcodeTemUrl}): ${loiCuoi && loiCuoi.message}. `
     + 'Kiểm tra kết nối tới ERP rồi bấm in lại — tem CHƯA được tạo.',
@@ -88,13 +101,13 @@ async function layBarcodeTem() {
 // Lấy NHIỀU mã (lệnh gom set in N tem 1 lượt). Lấy TUẦN TỰ để không bắn song song vào ERP;
 // lỗi giữa chừng thì ném luôn — chưa tem nào được tạo nên không có gì phải dọn.
 // ⚠ Trả `null` (KHÔNG phải mảng null) khi API bị tắt — bên gọi tự sinh đủ N mã.
-async function layNhieuBarcodeTem(n) {
+async function layNhieuBarcodeTem(n, actorId = null) {
   if (!(await apiBat('ERP_BARCODE_TEM'))) {
     console.log(`[tem-barcode] ⏸ API đang TẮT — MES tự sinh ${n} mã tem`);
     return null;
   }
   const out = [];
-  for (let i = 0; i < n; i += 1) out.push(await layBarcodeTem());
+  for (let i = 0; i < n; i += 1) out.push(await layBarcodeTem(actorId));
   return out;
 }
 

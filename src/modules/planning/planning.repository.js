@@ -5,6 +5,9 @@ const { lenhPhanInMatch } = require('../../utils/search');
 // Hiển thị theo PHƯƠNG ÁN IN — cấu hình động từng trang (mig 067), mặc định BẬT HẾT = không lọc.
 const { dkTrang } = require('../../utils/phuongAnIn');
 const { mauTim } = require('../../utils/timKiem');
+// Giai đoạn HIỆN TẠI của phần in — dùng CHUNG hàm với dashboard/Đơn hàng (`dominantStageScalar`)
+// để "Danh sách release" và các màn khác không bao giờ ra 2 con số đá nhau.
+const { dominantStageScalar, STAGE_LABEL } = require('../../utils/stage');
 
 // SL vải đã ĐƯA VÀO đợt SX của 1 đợt vải = Σ lenh_sx_dot_vai.so_luong các lệnh non-HUY gắn đợt đó
 // (mig 052: SL đưa vào theo TỪNG đợt nằm ở junction — đúng cả khi 1 lệnh gồm nhiều đợt).
@@ -26,6 +29,14 @@ const hsktCols = (pinCol) => `
 
 // ----- RELEASE 1: đợt vải của phần in đã READY, CÒN phần chưa release (SL vải về − đã release > 0) -----
 // Release theo số lượng: 1 đợt có thể release nhiều lần → nhiều lệnh; đợt ở lại pool tới khi release đủ.
+// ⚠⚠ ĐỢT VẢI THUỘC GOM SET NAY HIỆN THÀNH DÒNG LẺ, RELEASE RIÊNG ĐƯỢC (chốt 15/08/2026).
+// Trước đây hàm này loại hẳn đợt thuộc `gom_set` đang 'MO' ⇒ chúng chỉ hiện dưới dạng 1 dòng SET và
+// bắt buộc release CHUNG cả set (all-or-nothing). Hệ quả người dùng gặp: set có 3 phần in mà 1 phần
+// chưa Ready thì 2 phần đã Ready **không đi được**, phải chờ. Nay bỏ điều kiện đó — phần in nào
+// Ready thì release phần đó thành LỆNH RIÊNG.
+// ⚠ Vẫn trả `gom_set_id`/`ma_set` để màn hình còn hiện được badge nhóm (người lập kế hoạch vẫn cần
+//   BIẾT mấy phần in này vốn định in chung, dù nay không bị ép).
+// ⚠ Hàm dùng chung 3 nơi (Release 1 · Tạo đợt SX · Kế hoạch tự động) ⇒ cả 3 cùng thấy đợt trong set.
 async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
   const dkPain = await dkTrang('KH_RELEASE1', 'pin', 'pin.id');
   const SEARCH = `($1 = '' OR pin.ma_phan ~* $1 OR kh.ten_khach_hang ~* $1
@@ -39,12 +50,13 @@ async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
     JOIN don_hang dh ON dh.id = mh.don_hang_id
     JOIN khach_hang kh ON kh.id = dh.khach_hang_id
     LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id
+    LEFT JOIN LATERAL (SELECT gs.id AS gom_set_id, gs.ma_set FROM gom_set_dot_vai gsd
+                        JOIN gom_set gs ON gs.id = gsd.gom_set_id
+                       WHERE gsd.dot_vai_ve_id = dv.id AND gs.trang_thai = 'MO' LIMIT 1) gsx ON TRUE
     WHERE pin.dang_hoat_dong AND dv.trang_thai <> 'DA_HUY'
       AND ${dkPain}
       AND dv.tg_chuyen_ready IS NOT NULL
       AND (COALESCE(dv.so_luong_vai_ve,0) - ${DA_REL}) > 0
-      AND NOT EXISTS (SELECT 1 FROM gom_set_dot_vai gsd JOIN gom_set gs ON gs.id = gsd.gom_set_id
-                      WHERE gsd.dot_vai_ve_id = dv.id AND gs.trang_thai = 'MO')
       AND NOT EXISTS (SELECT 1 FROM ke_hoach_tam kht
                       WHERE kht.dot_vai_ve_id = dv.id AND kht.trang_thai = 'CHO')
       AND ${SEARCH}`;
@@ -59,6 +71,7 @@ async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
                    WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT') AS qc_done,
            ${DA_REL}::int AS da_release,
            (COALESCE(dv.so_luong_vai_ve,0) - ${DA_REL})::int AS con_release,
+           gsx.gom_set_id, gsx.ma_set,
            ${hsktCols('pin.id')}
     ${FROM}
     ORDER BY pin.mau_vai, pin.ma_phan, dv.ma_dot_vai
@@ -1050,6 +1063,48 @@ async function cancelLenhOrder(client, lenhId, actorId) {
     "UPDATE gom_set SET trang_thai='MO', lenh_san_xuat_id=NULL, updated_by=$2, updated_date=CURRENT_TIMESTAMP WHERE lenh_san_xuat_id=$1 AND trang_thai='DA_RELEASE'",
     [lenhId, actorId]
   );
+  // ⚠⚠ ĐƯỜNG THỨ HAI — BẮT BUỘC từ 15/08/2026 (release LẺ từng phần in trong set).
+  // Câu trên chỉ mở lại được set đã đóng bằng `markSetReleased` (1 set ↔ 1 lệnh, cột
+  // `lenh_san_xuat_id`). Nay 1 set có thể được release thành NHIỀU lệnh riêng ⇒ set đóng bằng
+  // `dongSetDaReleaseHet` với `lenh_san_xuat_id = NULL`, câu trên không bao giờ khớp.
+  // Nguyên tắc chung cho CẢ 2 kiểu dữ liệu: hủy lệnh xong mà set lại có member CHƯA release
+  // ⇒ set phải mở lại. Không dựa vào `lenh_san_xuat_id` nữa.
+  await client.query(
+    `UPDATE gom_set gs SET trang_thai='MO', lenh_san_xuat_id=NULL,
+            updated_by=$2, updated_date=CURRENT_TIMESTAMP
+      WHERE gs.trang_thai='DA_RELEASE'
+        AND EXISTS (SELECT 1 FROM gom_set_dot_vai d JOIN lenh_sx_dot_vai l ON l.dot_vai_ve_id = d.dot_vai_ve_id
+                     WHERE d.gom_set_id = gs.id AND l.lenh_san_xuat_id = $1)
+        AND EXISTS (SELECT 1 FROM gom_set_dot_vai d2 JOIN dot_vai_ve dv2 ON dv2.id = d2.dot_vai_ve_id
+                     WHERE d2.gom_set_id = gs.id AND dv2.trang_thai <> 'DA_HUY'
+                       AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai l2 JOIN lenh_san_xuat ls2 ON ls2.id = l2.lenh_san_xuat_id
+                                        WHERE l2.dot_vai_ve_id = dv2.id AND ls2.trang_thai <> 'HUY'))`
+      .replace(/\s+/g, ' '),
+    [lenhId, actorId]
+  );
+}
+
+// ĐÓNG SET KHI MỌI ĐỢT VẢI CỦA NÓ ĐÃ RELEASE (đường release LẺ, 15/08/2026).
+// Nhận danh sách đợt vải vừa release → set nào không còn member chưa release thì chuyển 'DA_RELEASE'.
+// ⚠ `lenh_san_xuat_id` để NULL: release lẻ sinh NHIỀU lệnh nên cột 1-giá-trị đó không còn ý nghĩa;
+//   nhồi đại 1 lệnh vào sẽ làm câu "mở lại set khi hủy lệnh" ở trên chạy sai lệch (chỉ đúng cho
+//   đúng cái lệnh được nhồi). Việc mở lại nay do nhánh EXISTS phía trên lo, không cần cột này.
+// ⚠ Đợt `DA_HUY` không tính là "chưa release" — đợt đã bỏ thì không được giữ set mở mãi.
+async function dongSetDaReleaseHet(dotVaiIds, actorId) {
+  const ids = (dotVaiIds || []).filter(Boolean);
+  if (!ids.length) return [];
+  const { rows } = await query(
+    `UPDATE gom_set gs SET trang_thai='DA_RELEASE', updated_by=$2, updated_date=CURRENT_TIMESTAMP
+      WHERE gs.trang_thai='MO'
+        AND EXISTS (SELECT 1 FROM gom_set_dot_vai d WHERE d.gom_set_id = gs.id AND d.dot_vai_ve_id = ANY($1::uuid[]))
+        AND NOT EXISTS (SELECT 1 FROM gom_set_dot_vai d2 JOIN dot_vai_ve dv2 ON dv2.id = d2.dot_vai_ve_id
+                         WHERE d2.gom_set_id = gs.id AND dv2.trang_thai <> 'DA_HUY'
+                           AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai l2 JOIN lenh_san_xuat ls2 ON ls2.id = l2.lenh_san_xuat_id
+                                            WHERE l2.dot_vai_ve_id = dv2.id AND ls2.trang_thai <> 'HUY'))
+      RETURNING gs.id, gs.ma_set`.replace(/\s+/g, ' '),
+    [ids, actorId || null]
+  );
+  return rows;
 }
 
 // Hủy (xóa mềm) xác nhận QC_XAC_NHAN (READY) của các phần in thuộc đợt vải — khi hoàn tác "về READY".
@@ -1440,7 +1495,9 @@ async function releaseListByDate(date, mode = 'KE_HOACH') {
     : 'ls.ngay_ke_hoach = $1::date';
   const sql = `
     SELECT ls.id AS lenh_id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.ngay_ke_hoach, ls.created_date,
-           ls.tg_bd_kh, ls.tg_kt_kh, ls.giai_doan,
+           ls.tg_bd_kh, ls.tg_kt_kh, ls.giai_doan, ls.trang_thai AS lenh_trang_thai,
+           pin.id AS phan_in_id,
+           ${dominantStageScalar('pin.id')} AS giai_doan_hien_tai,
            cs.ma_chuyen, cs.ten_chuyen, lc.ma_loai AS ma_loai_chuyen, lc.ten_loai AS ten_loai_chuyen,
            pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.so_luong_don_hang,
            mh.ma_hang, mh.ten_ma_hang, dh.ma_don_hang, dh.so_po, kh.ten_khach_hang,
@@ -1506,4 +1563,5 @@ module.exports = {
   cancelPhieuTemByLenhTx,
   cancelReadyItemsByPhanIn, cancelTestResults, phanInIdsByLenh, lenhChoKyThuat,
   listReleasableSets, getOpenSetMembers, getSetForRelease, getSetMembersForRelease, markSetReleased, logGomSetReleased,
+  dongSetDaReleaseHet,
 };

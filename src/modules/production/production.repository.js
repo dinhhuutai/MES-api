@@ -1,10 +1,13 @@
 'use strict';
 
 const { query } = require('../../config/db');
+const env = require('../../config/env');
 const { lenhPhanInMatch } = require('../../utils/search');
 // Hiển thị theo PHƯƠNG ÁN IN — cấu hình động từng trang (mig 067), mặc định BẬT HẾT = không lọc.
 const { dkTrang } = require('../../utils/phuongAnIn');
 const { mauTim } = require('../../utils/timKiem');
+// Ghi vết lượt gọi API ERP (nguồn cho nút "Lịch sử" ở trang Cài đặt API).
+const { ghiLog } = require('../../utils/erpApiLog');
 
 const PHAN_AGG = `(SELECT string_agg(DISTINCT pin.ma_phan, ', ')
     FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
@@ -870,28 +873,27 @@ async function duLieuGhiInTem(capTem = []) {
   return rows;
 }
 
-// Ghi vết mỗi lần báo ERP (forward-only, không cần bảng mới):
-//   · THÀNH CÔNG → `ERP_GHI_IN_TEM`, lưu {id_mes, ma_tem} để tra ngược IDMES ↔ tem khi đối soát.
-//   · THẤT BẠI  → `ERP_GHI_IN_TEM_LOI`, lưu NGUYÊN payload + thông điệp lỗi ⇒ gửi lại bằng tay
-//                 được ngay, khỏi phải dựng lại dữ liệu.
-// ⚠ Bọc try/catch: đây là bước GHI VẾT, hỏng nó không được kéo theo lỗi cho luồng in tem.
-async function logGhiInTem(temId, thanhCong, payload, loi, actorId) {
-  try {
-    await query(
-      `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
-       VALUES ('tem', $1, $2, $3::jsonb, $4, CURRENT_TIMESTAMP, $4)`,
-      [
-        String(temId),
-        thanhCong ? 'ERP_GHI_IN_TEM' : 'ERP_GHI_IN_TEM_LOI',
-        JSON.stringify(thanhCong
-          ? { id_mes: payload?.IDMES ?? null, ma_tem: payload?.BarcodeIn ?? null }
-          : { loi: loi || null, payload: payload || null }),
-        actorId || null,
-      ]
-    );
-  } catch (e) {
-    console.error(`[ghi-in-tem] ✗ Không ghi được audit_log: ${e.message}`);
-  }
+// Ghi vết mỗi lần báo ERP (forward-only, không cần bảng mới) — nguồn cho nút "Lịch sử" ở trang
+// *Hệ thống > Cài đặt API*. Dùng chung bộ ghi `utils/erpApiLog` để hình dạng JSON GIỐNG HỆT lịch sử
+// của API lấy mã tem ⇒ màn lịch sử chỉ cần một cách đọc.
+// ⚠⚠ LƯU NGUYÊN PAYLOAD CẢ KHI THÀNH CÔNG (đổi 15/08/2026): bản cũ chỉ lưu {id_mes, ma_tem} nên
+//   không trả lời được câu "lượt in đó đã gửi những gì lên ERP" — mà đó chính là thứ cần khi 2 bên
+//   lệch số liệu. Khối lượng không đáng ngại: ~1 dòng / 1 tem in ra.
+// ⚠ `IDMES` là KHÓA ĐỐI SOÁT MES ↔ ERP nên luôn được nâng lên mức trên cùng của JSON (cả 2 nhánh),
+//   để màn lịch sử tìm theo IDMES không phải lặn vào `payload`.
+// ⚠ Bọc try/catch (trong `ghiLog`): đây là bước GHI VẾT, hỏng nó không được kéo theo lỗi khi in tem.
+async function logGhiInTem(temId, thanhCong, payload, loi, actorId, phanHoi = null) {
+  await ghiLog('ERP_GHI_IN_TEM', {
+    thanhCong,
+    idBanGhi: temId,
+    idMes: payload?.IDMES ?? null,
+    maTem: payload?.BarcodeIn ?? null,
+    url: env.erp.ghiInTemUrl,
+    gui: payload || null,
+    nhan: phanHoi,
+    loi: loi || null,
+    actorId,
+  });
 }
 
 async function logTemPrint(client, { temId, maTem, actorId, lyDo = null }) {
