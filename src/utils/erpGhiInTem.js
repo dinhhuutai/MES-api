@@ -47,37 +47,73 @@ const THU_TU_TRUONG = [
   'inbosung', 'Lenhbosung', 'Soluong', 'Soluongloi', 'SOLUONGTHIEU', 'GCMauvai',
 ];
 
+// ⚠⚠ KHÔNG GỬI `null` (chốt với người dùng 2026-08-15): chuỗi thiếu → `''`, số thiếu → `0`.
+// Router bên ERP đổ thẳng giá trị vào `request.input(..., sql.NVarChar/Int, v)` rồi `execute` proc,
+// nên `null` đi tới proc dưới dạng SQL NULL — proc phải tự `ISNULL` từng chỗ. Gửi giá trị rỗng đúng
+// kiểu thì proc xử lý một đường, không phải phân nhánh.
 const chuoi = (v, max) => {
-  if (v == null) return null;
+  if (v == null) return '';
   const s = String(v).trim();
-  if (!s) return null;
   return max && s.length > max ? s.slice(0, max) : s;
 };
 
 const soNguyen = (v) => {
-  if (v == null || v === '') return null;
+  if (v == null || v === '') return 0;
   const n = Number.parseInt(String(v), 10);
-  return Number.isFinite(n) ? n : null;
+  return Number.isFinite(n) ? n : 0;
 };
 
-// Chuẩn hóa 1 bản ghi về đúng kiểu + độ dài mà proc nhận. Trường thiếu → null (mẫu ERP cho thấy
-// proc nhận null bình thường, vd `@pinbosung`/`@pLenhbosung`).
+// ⚠⚠ NGOẠI LỆ — 3 trường NGÀY GIỜ VẪN ĐỂ `null` khi thiếu, TUYỆT ĐỐI không đổi sang `''`:
+//   router ERP khai `sql.DateTime`, mà chuỗi rỗng KHÔNG phải ngày hợp lệ ⇒ tedious ném lỗi chuyển
+//   kiểu và **cả lượt gọi hỏng** — tệ hơn hẳn so với truyền NULL (proc vẫn nhận bình thường).
+//   `Ngayct` luôn có (`now()` trong SQL); chỉ `Tugio`/`Dengio` mới rỗng khi lượt in chưa nhập giờ SX.
+const ngayGio = (v) => {
+  if (v == null) return null;
+  const s = String(v).trim();
+  return s || null;
+};
+
+// ⚠⚠ CHỈ GỬI **TÊN** LÊN ERP, BỎ HỌ + TÊN LÓT (chốt với người dùng 15/08/2026).
+//   `"PHẠM THỊ HỒNG"` → `HỒNG` · `"NGÔ VĂN NHỚ"` → `NHỚ` · `"VŨ THỊ THANH NHÀN"` → `NHÀN`.
+//   Khớp đúng mẫu ERP gửi kèm (`dsthoin = 'HAI,NAM,THANH'` — toàn tên đơn) và rút `dsthoin` của ca
+//   thật từ **60 ký tự / 73 byte xuống 17 ký tự / 25 byte**, tức tránh xa mọi giới hạn của proc.
+//   Áp cho 3 trường TÊN NGƯỜI: `Chuyentruong` · `Catruong` · từng phần tử của `dsthoin`.
+//
+// ⚠ Chỉ đổi thứ GỬI ĐI — dữ liệu trong MES (`phieu_san_xuat.chuyen_truong`, `ca_truong_id`,
+//   `phan_cong_san_xuat.tho_in`) vẫn giữ HỌ TÊN ĐẦY ĐỦ; mọi màn/tem/Excel của MES không đổi.
+//
+// ⚠⚠ HỆ QUẢ ĐÃ BIẾT — **trùng tên**: 2 người "PHẠM THỊ HỒNG" và "NGUYỄN VĂN HỒNG" cùng ra `HỒNG`.
+//   CỐ Ý **KHÔNG khử trùng** trong `dsthoin`: đó là danh sách thợ in, bỏ bớt một mục là đổi SĨ SỐ
+//   của ca. Muốn phân biệt thì đổi `SO_TU_TEN` = 2 (ra `THANH NHÀN`) — đúng 1 chỗ, không sửa gì thêm.
+const SO_TU_TEN = 1;
+const chiLayTen = (v) => {
+  const tu = String(v == null ? '' : v).trim().split(/\s+/).filter(Boolean);
+  return tu.length ? tu.slice(-SO_TU_TEN).join(' ') : '';
+};
+
+// 2 trường TÊN NGƯỜI ở mức phiếu (danh sách thợ in xử lý riêng vì ngăn bằng dấu phẩy).
+const TRUONG_TEN = new Set(['Chuyentruong', 'Catruong']);
+
+// Chuẩn hóa 1 bản ghi về đúng kiểu + độ dài mà proc nhận. Trường chuỗi thiếu → `''`, số thiếu → `0`,
+// riêng 3 trường ngày giờ thiếu → `null` (xem `ngayGio`).
 function chuanHoa(row = {}) {
   const out = {};
   for (const k of THU_TU_TRUONG) {
     let v = row[k];
-    // `dsthoin` là DANH SÁCH tên ngăn bằng dấu phẩy — bỏ khoảng trắng SÁT dấu phẩy để ERP tách
-    // chuỗi không dính dấu cách thừa (mẫu ERP: 'HAI,NAM,THANH'). Ô nhập của MES cho gõ tự do nên
-    // dữ liệu thật lẫn cả 2 kiểu: 'THU,RUONL,NGOC' và 'CHAU PHÊNH, THÁI THỊ TUYẾT TRINH'.
-    // ⚠ Chỉ cắt khoảng trắng CẠNH dấu phẩy — tên người có dấu cách bên trong phải giữ nguyên.
-    if (k === 'dsthoin' && v != null) v = String(v).replace(/\s*,\s*/g, ',');
+    // `dsthoin` là DANH SÁCH tên ngăn bằng dấu phẩy (mẫu ERP: 'HAI,NAM,THANH'). Ô nhập của MES cho
+    // gõ tự do nên dữ liệu thật lẫn cả 2 kiểu: 'THU,RUONL,NGOC' và 'CHAU PHÊNH, THÁI THỊ TUYẾT TRINH'
+    // ⇒ tách theo dấu phẩy, lấy TÊN từng người, rồi ghép lại không có dấu cách thừa.
+    if (k === 'dsthoin' && v != null) {
+      v = String(v).split(',').map(chiLayTen).filter(Boolean).join(',');
+    } else if (TRUONG_TEN.has(k) && v != null) {
+      v = chiLayTen(v);
+    }
+    // ⚠ Rút gọn tên chạy TRƯỚC `chuoi(v, max)`: cắt cụt trước rồi mới lấy từ cuối sẽ ra tên sai
+    // (vd cắt "NGUYỄN THỊ HƯƠNG LAN" ở ký tự 20 rồi lấy từ cuối → "LA").
     if (Object.prototype.hasOwnProperty.call(DAI_TOI_DA, k)) out[k] = chuoi(v, DAI_TOI_DA[k]);
-    else if (k === 'Ngayct' || k === 'Tugio' || k === 'Dengio') out[k] = chuoi(v);
+    else if (k === 'Ngayct' || k === 'Tugio' || k === 'Dengio') out[k] = ngayGio(v);
     else out[k] = soNguyen(v);
   }
-  // 2 trường số lượng vải: proc muốn số thật, để null dễ bị hiểu là "chưa biết".
-  out.Soluongloi = out.Soluongloi ?? 0;
-  out.SOLUONGTHIEU = out.SOLUONGTHIEU ?? 0;
   return out;
 }
 

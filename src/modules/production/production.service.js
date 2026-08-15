@@ -114,7 +114,7 @@ async function addVaiHuy(phieuId, { dotVaiId, soLuong, lyDo, loai }, actorId) {
 // body gửi `thoIn` (chuỗi) → ghi CÙNG chuỗi đó cho MỌI đợt vải của phiếu, vì `phan_cong_san_xuat`
 // khóa theo (phiếu, đợt vải). Giữ nguyên bảng để sau này muốn tách lại theo từng phần in vẫn được;
 // `items` (mỗi đợt vải 1 thợ) vẫn nhận được nếu có — dùng khi cần phân công lẻ.
-async function savePhanCong(phieuId, { caTruongId, chuyenTruong, thoIn, items }, actorId) {
+async function savePhanCong(phieuId, { caTruongId, chuyenTruong, thoIn, toInId, items }, actorId) {
   const phieu = await repo.getPhieuById(phieuId);
   if (!phieu) throw new AppError('Phiếu sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   const dotVaiList = await repo.getLenhDotVaiList(phieu.lenh_san_xuat_id);
@@ -129,7 +129,9 @@ async function savePhanCong(phieuId, { caTruongId, chuyenTruong, thoIn, items },
   }
   try {
     await withTransaction(async (client) => {
-      await repo.setPhieuTruong(client, phieuId, { caTruongId, chuyenTruong: (chuyenTruong || '').trim() }, actorId);
+      await repo.setPhieuTruong(client, phieuId, {
+        caTruongId, chuyenTruong: (chuyenTruong || '').trim(), toInId,
+      }, actorId);
       for (const it of rows) {
         const d = byId.get(it.dotVaiId);
         if (!d) continue;
@@ -203,6 +205,34 @@ async function suaLyDoNgung(id, d, actorId) {
 async function doiTrangThaiLyDoNgung(id, active, actorId) {
   if (!await repo.getLyDoNgung(id)) throw new AppError('Lý do không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   await repo.setLyDoNgungActive(id, active, actorId);
+}
+
+// ─── DANH MỤC TỔ IN (mig 084) ────────────────────────────────────────────────
+// ⚠ `dsToIn` NUỐT LỖI trả mảng rỗng: chưa chạy mig 084 thì ô chọn Tổ in ở khối Phân công chỉ ẩn đi,
+//   mọi thao tác sản xuất khác chạy như cũ — không để thiếu migration chặn việc xưởng.
+async function dsToIn(opts) {
+  try { return await repo.listToIn(opts); } catch { return []; }
+}
+
+async function taoToIn(d, actorId) {
+  const ma = String(d.maTo || '').trim().toUpperCase();
+  const ten = String(d.tenTo || '').trim();
+  if (!ma || !ten) throw new AppError('Nhập mã và tên tổ', { status: 422, errorCode: 'VALIDATION_ERROR' });
+  // ⚠ Chặn ở đây vì `ma_to` được GỬI THẲNG lên ERP qua `@pToin NVARCHAR(20)` — dài hơn là ERP ném
+  //   "String or binary data would be truncated" (đúng họ lỗi đã gặp 15/08/2026 với `dsthoin`).
+  if (ma.length > 20) throw new AppError('Mã tổ tối đa 20 ký tự (giới hạn của ERP)', { status: 422, errorCode: 'VALIDATION_ERROR' });
+  if (await repo.existsMaToIn(ma)) throw new AppError(`Mã "${ma}" đã tồn tại`, { status: 409, errorCode: 'DUPLICATE' });
+  return { id: await repo.createToIn({ ...d, maTo: ma, tenTo: ten }, actorId) };
+}
+
+async function suaToIn(id, d, actorId) {
+  if (!await repo.getToIn(id)) throw new AppError('Tổ in không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  await repo.updateToIn(id, d, actorId);
+}
+
+async function doiTrangThaiToIn(id, active, actorId) {
+  if (!await repo.getToIn(id)) throw new AppError('Tổ in không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  await repo.setToInActive(id, active, actorId);
 }
 
 // ─── DANH MỤC LÝ DO BỔ SUNG + ghi cho ĐỢT VẢI (mig 077) ──────────────────────
@@ -390,15 +420,18 @@ async function guiGhiInTem(items, actorId) {
         Chuyentruong: r.chuyen_truong,
         Catruong: r.ca_truong,
         dsthoin: r.tho_in,
-        Toin: null,
+        // TỔ IN (mig 084) — `ma_to` của tổ gán cho phiếu ở khối Phân công. Chưa gán / chưa chạy
+        // migration ⇒ `chuanHoa` đổi thành '' (đúng bằng hiện trạng trước mig 084).
+        Toin: r.ma_to,
         banin: r.ma_chuyen,
         IDDotNhanvai: r.id_dot_nhan_vai,
         DDHID: r.ddh_id,
         DDHsubID: r.ddh_sub_id,
         BarcodeIn: r.ma_tem,
-        // Mẫu ERP truyền null cho 2 trường này ⇒ chỉ điền khi đợt vải THẬT SỰ là loại BỔ SUNG.
-        inbosung: laBoSung ? 1 : null,
-        Lenhbosung: laBoSung ? r.ma_lenh_san_xuat : null,
+        // Chỉ điền khi đợt vải THẬT SỰ là loại BỔ SUNG; ngược lại gửi giá trị RỖNG ĐÚNG KIỂU
+        // (`0` / `''`) chứ không gửi null — xem `chuanHoa` trong `utils/erpGhiInTem.js`.
+        inbosung: laBoSung ? 1 : 0,
+        Lenhbosung: laBoSung ? r.ma_lenh_san_xuat : '',
         Soluong: r.so_luong,
         Soluongloi: Number(it.soLuongHuy) || 0,
         SOLUONGTHIEU: Number(it.soLuongThieu) || 0,
@@ -969,6 +1002,7 @@ module.exports = {
   getXePhoi, listTemChoPhoi, addToXe, adjustPhoi, listDrying, confirmDry, redry,
   stopLine, resumeLine, addVaiHuy, savePhanCong,
   dsLyDoNgung, taoLyDoNgung, suaLyDoNgung, doiTrangThaiLyDoNgung,
+  dsToIn, taoToIn, suaToIn, doiTrangThaiToIn,
   dsLyDoBoSung, taoLyDoBoSung, suaLyDoBoSung, doiTrangThaiLyDoBoSung, luuLyDoBoSungDotVai,
   listCancelableTem, cancelPrintTem,
   listCloseCandidates, closeProduction,

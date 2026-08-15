@@ -72,6 +72,19 @@ const lyDoNgungToggle = asyncHandler(async (req, res) => {
   ok(res, null, 'Đã cập nhật');
 });
 
+// ─── Danh mục TỔ IN (mig 084) ────────────────────────────────────────────────
+const toInList = asyncHandler(async (req, res) =>
+  ok(res, await service.dsToIn({ search: req.query.search || '', all: req.query.all === '1' })));
+const toInCreate = asyncHandler(async (req, res) =>
+  ok(res, await service.taoToIn(req.body, req.user.id), 'Đã thêm tổ in'));
+const toInUpdate = asyncHandler(async (req, res) => {
+  await service.suaToIn(req.params.id, req.body, req.user.id); ok(res, null, 'Đã cập nhật');
+});
+const toInToggle = asyncHandler(async (req, res) => {
+  await service.doiTrangThaiToIn(req.params.id, req.body.active !== false, req.user.id);
+  ok(res, null, 'Đã cập nhật');
+});
+
 // ─── Danh mục lý do bổ sung + ghi cho đợt vải (mig 077) ──────────────────────
 const lyDoBoSungList = asyncHandler(async (req, res) =>
   ok(res, await service.dsLyDoBoSung({ search: req.query.search || '', all: req.query.all === '1' })));
@@ -158,6 +171,7 @@ module.exports = {
   xePhoi, temChoPhoi, themTem, adjustPhoi, drying, confirmDry, redry,
   stopLine, resumeLine, addVaiHuy, savePhanCong, vuotSanXuat,
   lyDoNgungList, lyDoNgungCreate, lyDoNgungUpdate, lyDoNgungToggle,
+  toInList, toInCreate, toInUpdate, toInToggle,
   lyDoBoSungList, lyDoBoSungCreate, lyDoBoSungUpdate, lyDoBoSungToggle, luuLyDoBoSungDotVai,
   cancelableTem, cancelPrintTem,
   closeCandidates, closeProduction,

@@ -323,11 +323,17 @@ async function listVaiHuyByLenh(lenhId) {
 
 // ----- PHÂN CÔNG SẢN XUẤT (mig 063) -----
 // Mức PHIẾU: ca trưởng (tài khoản) + chuyền trưởng (chữ). Mức ĐỢT VẢI: thợ in.
-async function setPhieuTruong(client, phieuId, { caTruongId, chuyenTruong }, actorId) {
+// ⚠ `to_in_id` (mig 084) chỉ ghi khi ĐÃ có cột — dò trước, KHÔNG try/catch: hàm này chạy trong
+//   transaction của `savePhanCong` nên lỗi 42703 abort cả transaction (xem `phieuCoCotToIn`).
+async function setPhieuTruong(client, phieuId, { caTruongId, chuyenTruong, toInId }, actorId) {
+  const themTo = (toInId !== undefined) && (await phieuCoCotToIn());
   await client.query(
-    `UPDATE phieu_san_xuat SET ca_truong_id=$2, chuyen_truong=$3, updated_by=$4, updated_date=CURRENT_TIMESTAMP
+    `UPDATE phieu_san_xuat SET ca_truong_id=$2, chuyen_truong=$3${themTo ? ', to_in_id=$5' : ''},
+       updated_by=$4, updated_date=CURRENT_TIMESTAMP
      WHERE id=$1`,
-    [phieuId, caTruongId || null, chuyenTruong || null, actorId]
+    themTo
+      ? [phieuId, caTruongId || null, chuyenTruong || null, actorId, toInId || null]
+      : [phieuId, caTruongId || null, chuyenTruong || null, actorId]
   );
 }
 
@@ -346,12 +352,16 @@ async function upsertPhanCong(client, { phieuId, dotVaiId, phanInId, thoIn }, ac
 async function getPhanCongByPhieu(phieuId) {
   try {
     const [head, items] = await Promise.all([
-      query(
+      // ⚠ Cột `to_in_id` (mig 084) chỉ SELECT khi đã có — thiếu migration thì khối Phân công vẫn
+      //   chạy y như cũ, chỉ không hiện ô Tổ in.
+      phieuCoCotToIn().then((coTo) => query(
         `SELECT ps.ca_truong_id, nd.ho_ten AS ca_truong_ten, ps.chuyen_truong
+                ${coTo ? ', ps.to_in_id, ti.ma_to, ti.ten_to' : ''}
          FROM phieu_san_xuat ps LEFT JOIN nguoi_dung nd ON nd.id = ps.ca_truong_id
-         WHERE ps.id = $1`,
+         ${coTo ? 'LEFT JOIN to_in ti ON ti.id = ps.to_in_id' : ''}
+         WHERE ps.id = $1`.replace(/\s+/g, ' '),
         [phieuId]
-      ),
+      )),
       query(
         'SELECT dot_vai_ve_id, phan_in_id, tho_in FROM phan_cong_san_xuat WHERE phieu_san_xuat_id = $1',
         [phieuId]
@@ -829,11 +839,15 @@ async function duLieuGhiInTem(capTem = []) {
   const temIds = capTem.map((x) => x.temId);
   const dotVaiIds = capTem.map((x) => x.dotVaiId || null);
   const VN = "AT TIME ZONE 'Asia/Ho_Chi_Minh'";
+  // TỔ IN (mig 084) — gửi `ma_to` lên ERP qua `@pToin`. Chưa chạy migration ⇒ trả NULL, service
+  // chuẩn hóa thành '' ⇒ đúng bằng hiện trạng trước mig này.
+  const coTo = await phieuCoCotToIn();
   const sql = `
     WITH inp AS (SELECT * FROM unnest($1::uuid[], $2::uuid[]) AS x(tem_id, dot_vai_id))
     SELECT t.id AS tem_id, t.ma_tem, t.so_luong, t.ma_ngay_ca, t.gc_mau_vai,
            info.ma_phan,
            ls.ma_lenh_san_xuat, cs.ma_chuyen,
+           ${coTo ? 'ti.ma_to' : 'NULL::varchar'} AS ma_to,
            ps.chuyen_truong, ndct.ho_ten AS ca_truong,
            (SELECT string_agg(DISTINCT pc.tho_in, ',') FROM phan_cong_san_xuat pc
              WHERE pc.phieu_san_xuat_id = ps.id AND COALESCE(pc.tho_in,'') <> '') AS tho_in,
@@ -853,6 +867,7 @@ async function duLieuGhiInTem(capTem = []) {
       JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
       JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
       LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+      ${coTo ? 'LEFT JOIN to_in ti ON ti.id = ps.to_in_id' : ''}
       LEFT JOIN nguoi_dung ndct ON ndct.id = ps.ca_truong_id
       CROSS JOIN LATERAL (
         SELECT COALESCE(t.ngay_ca, (t.created_date ${VN})::date) AS ngay
@@ -1222,6 +1237,69 @@ const getLyDoNgung = async (id) => (
   await query('SELECT id, ten_ly_do, dang_hoat_dong FROM ly_do_ngung_chuyen WHERE id = $1', [id])
 ).rows[0] || null;
 
+// ─── DANH MỤC TỔ IN (mig 084) ────────────────────────────────────────────────
+// Cùng khuôn với danh mục lý do ngừng chuyền. Tổ in gắn ở mức PHIẾU (`phieu_san_xuat.to_in_id`),
+// nhập trong khối Phân công; `ma_to` được gửi thẳng lên ERP qua `@pToin`.
+//
+// ⚠ Đường dự phòng khi CHƯA chạy mig 084: DÒ CỘT TRƯỚC (khuôn `temCoCot`), KHÔNG try/catch quanh
+//   câu ghi — `setPhieuTruong` chạy TRONG transaction nên lỗi 42703 sẽ abort cả transaction và
+//   câu "thử lại" chết tiếp với 25P02. Chỉ cache khi ĐÃ có cột ⇒ chạy migration xong nhận ngay,
+//   không cần restart BE.
+let coCotToIn = false;
+async function phieuCoCotToIn() {
+  if (coCotToIn) return true;
+  const { rows } = await query(
+    `SELECT 1 FROM information_schema.columns
+      WHERE table_schema='public' AND table_name='phieu_san_xuat' AND column_name='to_in_id' LIMIT 1`
+      .replace(/\s+/g, ' ')
+  );
+  coCotToIn = rows.length > 0;
+  return coCotToIn;
+}
+
+async function listToIn({ search = '', all = false } = {}) {
+  const { rows } = await query(
+    `SELECT id, ma_to, ten_to, mo_ta, dang_hoat_dong
+       FROM to_in
+      WHERE ($1 = '' OR ma_to ~* $1 OR ten_to ~* $1)
+        ${all ? '' : 'AND dang_hoat_dong'}
+      ORDER BY ma_to`.replace(/\s+/g, ' '),
+    [mauTim(search)]
+  );
+  return rows;
+}
+
+async function createToIn(d, actorId) {
+  const { rows } = await query(
+    `INSERT INTO to_in (ma_to, ten_to, mo_ta, created_by) VALUES ($1,$2,$3,$4) RETURNING id`,
+    [d.maTo, d.tenTo, d.moTa || null, actorId || null]
+  );
+  return rows[0].id;
+}
+
+async function updateToIn(id, d, actorId) {
+  await query(
+    `UPDATE to_in SET ten_to = COALESCE($2, ten_to), mo_ta = $3,
+       updated_by = $4, updated_date = CURRENT_TIMESTAMP WHERE id = $1`,
+    [id, d.tenTo ?? null, d.moTa ?? null, actorId || null]
+  );
+}
+
+async function setToInActive(id, active, actorId) {
+  await query(
+    `UPDATE to_in SET dang_hoat_dong = $2, updated_by = $3, updated_date = CURRENT_TIMESTAMP
+      WHERE id = $1`, [id, active, actorId || null]
+  );
+}
+
+const existsMaToIn = async (ma) => (
+  await query('SELECT 1 FROM to_in WHERE ma_to = $1', [ma])
+).rows.length > 0;
+
+const getToIn = async (id) => (
+  await query('SELECT id, ma_to, ten_to, dang_hoat_dong FROM to_in WHERE id = $1', [id])
+).rows[0] || null;
+
 // ─── DANH MỤC LÝ DO BỔ SUNG + ghi lý do cho ĐỢT VẢI (mig 077) ────────────────
 // Cùng khuôn với danh mục lý do ngừng chuyền. Ghi ở mức ĐỢT VẢI (`dot_vai_ve`), không phải phiếu:
 // lý do bổ sung đi theo đợt vải qua mọi lệnh sản xuất về sau.
@@ -1450,6 +1528,7 @@ module.exports = {
   promoteFinishedDrying, redryTem, getDryMinForPhieu,
   getActiveNgung, startNgung, resumeNgung, listNgungByPhieu,
   listLyDoNgung, createLyDoNgung, updateLyDoNgung, setLyDoNgungActive, existsMaLyDoNgung, getLyDoNgung,
+  listToIn, createToIn, updateToIn, setToInActive, existsMaToIn, getToIn, phieuCoCotToIn,
   listLyDoBoSung, createLyDoBoSung, updateLyDoBoSung, setLyDoBoSungActive, existsMaLyDoBoSung,
   getLyDoBoSung, setLyDoBoSungChoDotVai, lyDoBoSungByLenh,
 };

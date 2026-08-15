@@ -31,6 +31,13 @@ router.post('/phieu/:phieuId/hoat-dong-lai', rbac('PROD_RUN'), c.resumeLine);
 
 // DANH MỤC LÝ DO NGỪNG CHUYỀN (mig 076) — trang Sản xuất > Danh mục lý do ngừng chuyền.
 // ⚠ ĐỌC mở cho `PROD_RUN`: người đứng máy phải lấy được danh sách để chọn khi ngừng chuyền.
+// TỔ IN (mig 084) — ĐỌC mở cho người đứng máy (phải chọn được tổ ở khối Phân công); chỉ thêm/sửa/
+// ngừng dùng mới cần TO_IN_MANAGE. Route TĨNH nên không đụng route có tham số nào.
+router.get('/to-in', rbac('PROD_RUN', 'PROD_MONITOR', 'TO_IN_MANAGE'), c.toInList);
+router.post('/to-in', rbac('TO_IN_MANAGE'), c.toInCreate);
+router.patch('/to-in/:id/active', rbac('TO_IN_MANAGE'), c.toInToggle);
+router.patch('/to-in/:id', rbac('TO_IN_MANAGE'), c.toInUpdate);
+
 router.get('/ly-do-ngung', rbac('PROD_RUN', 'PROD_MONITOR', 'LY_DO_NGUNG_MANAGE'), c.lyDoNgungList);
 router.post('/ly-do-ngung', rbac('LY_DO_NGUNG_MANAGE'), c.lyDoNgungCreate);
 router.patch('/ly-do-ngung/:id/active', rbac('LY_DO_NGUNG_MANAGE'), c.lyDoNgungToggle);
