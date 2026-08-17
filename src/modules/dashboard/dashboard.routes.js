@@ -2,6 +2,10 @@
 
 const express = require('express');
 const repo = require('./dashboard.repository');
+// ⚠ `flowRows('')` là query NẶNG và 5 endpoint dưới đây đều gọi nó; hook FE `useNghenMap` chạy ở
+//   7 trang + tải lại theo socket broadcast ⇒ không cache thì tải tăng TUYẾN TÍNH theo số người
+//   đăng nhập. Cache gộp về 1 lượt chạy thật mỗi cửa sổ TTL (utils/flowCache.js).
+const { flowRowsCached } = require('../../utils/flowCache');
 const reportService = require('../reports/reports.service');
 const asyncHandler = require('../../utils/asyncHandler');
 const { ok } = require('../../utils/response');
@@ -40,7 +44,7 @@ router.get('/owners', asyncHandler(async (req, res) => {
 const RANK = { OK: 0, SAP_NGHEN: 1, NGHEN: 2 };
 router.get('/bang-2', asyncHandler(async (req, res) => {
   const [rows, tramOwners, todayGroups] = await Promise.all([
-    repo.flowRows(''), repo.tramOwnersActive(), repo.confirmTodayGroups(),
+    flowRowsCached(), repo.tramOwnersActive(), repo.confirmTodayGroups(),
   ]);
   const owners = groupOwners(tramOwners, 'ma_tram');
 
@@ -89,7 +93,7 @@ router.get('/hoan-thanh-hom-nay', asyncHandler(async (req, res) => ok(res, await
 
 // GET /dashboard/dieu-phoi — dữ liệu Bảng điều phối: TRỄ HẠN GIAO theo trạm (đang kẹt) + chờ duyệt/xử lý + chuyền.
 router.get('/dieu-phoi', asyncHandler(async (req, res) => {
-  const [rows, extra] = await Promise.all([repo.flowRows(''), repo.dieuPhoiExtra()]);
+  const [rows, extra] = await Promise.all([flowRowsCached(), repo.dieuPhoiExtra()]);
   // Ngày VN hôm nay (YYYY-MM-DD).
   const todayVN = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Ho_Chi_Minh' }));
   todayVN.setHours(0, 0, 0, 0);
@@ -136,7 +140,7 @@ router.get('/dieu-phoi', asyncHandler(async (req, res) => {
 
 // GET /dashboard/nghen-map — bản đồ nghẽn/sắp nghẽn theo đợt vải + phần in (dùng tô màu các trang xác nhận).
 router.get('/nghen-map', asyncHandler(async (req, res) => {
-  const rows = await repo.flowRows('');
+  const rows = await flowRowsCached();
   const dot = {}; const phan = {}; const lenh = {};
   const worse = (map, key, st) => { if (key && (!map[key] || RANK[st] > RANK[map[key]])) map[key] = st; };
   rows.forEach((r) => {
@@ -209,7 +213,10 @@ router.get('/tinh-trang/phan-in/:id/graph', asyncHandler(async (req, res) => ok(
 router.get('/flow', asyncHandler(async (req, res) => {
   const tram = req.query.tram || '';
   const filter = req.query.filter || 'all';
-  const [rows, owners] = await Promise.all([repo.flowRows(tram), repo.tramOwnersActive()]);
+  // ⚠ CHỈ nhánh không lọc trạm mới đi qua cache — `tram` cụ thể thì gọi thẳng repo.
+  const [rows, owners] = await Promise.all([
+    tram ? repo.flowRows(tram) : flowRowsCached(), repo.tramOwnersActive(),
+  ]);
   const ownerByTram = groupOwners(owners, 'ma_tram');
 
   let items = rows.map((r) => ({
@@ -231,7 +238,7 @@ router.get('/flow/:dotVaiId', asyncHandler(async (req, res) => {
 
 // GET /dashboard/sla-tong-quan — tổng quan nghẽn theo trạm cho BGĐ.
 router.get('/sla-tong-quan', asyncHandler(async (req, res) => {
-  const rows = await repo.flowRows('');
+  const rows = await flowRowsCached();
   const byTram = {};
   let dangChay = 0; let nghen = 0; let sapNghen = 0;
   rows.forEach((r) => {

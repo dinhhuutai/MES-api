@@ -13,6 +13,7 @@ const { query } = require('../../config/db');
 const dashboardRepo = require('../dashboard/dashboard.repository');
 const { dominantStageScalar } = require('../../utils/stage');
 const { techDoneSql, techDoneSqlByPin, KHUON_OPT_SQL_LIST } = require('../../utils/tech');
+const { nguonPhanIn } = require('../../utils/siSoTram');
 
 // Cache ngắn kết quả stageCounts (đếm phần in theo giai đoạn — nguồn tin cậy như dashboard) để nhiều
 // metric "phần in đang ở trạm" dùng chung 1 lần chạy trong cùng lượt compute (tránh chạy lặp query nặng).
@@ -430,12 +431,14 @@ PIN_STAGES.forEach((s) => DEFS.push({
 
 // ================= DÒNG CHẢY THEO CHECKPOINT (trả lời: hôm nay vào bao nhiêu, đi tiếp bao nhiêu,
 //                    đang đứng bao nhiêu, nghẽn / sắp nghẽn bao nhiêu, kẹt ở đâu) =================
-// NGUỒN (cố ý dùng đúng nguồn của dashboard để KHÔNG ra 2 con số đá nhau):
-//   · Vào / Rời hôm nay → `lich_su_luan_chuyen` (nơi DUY NHẤT có mốc tg_bd/tg_kt của lượt chuyển trạm).
+// NGUỒN (cố ý dùng đúng nguồn của dashboard/màn thao tác để KHÔNG ra 2 con số đá nhau):
+//   · Vào / Rời hôm nay → **`utils/siSoTram.js` `nguonPhanIn(maTram)`** — mốc SỰ KIỆN nghiệp vụ,
+//     cùng nguồn với "sĩ số" hiện ở 11 màn xác nhận.
 //   · Đang ở            → `dashboardRepo.stageCounts()` (dominant stage, y hệt ô giai đoạn dashboard).
 //   · Nghẽn / sắp nghẽn → `dashboardRepo.flowRows()` + `slaStatus()` (y hệt bản đồ nghẽn dashboard).
-// ⚠ `lich_su_luan_chuyen` do tracking.service ghi BEST-EFFORT ⇒ "Vào/Rời hôm nay" có thể thiếu lượt
-//   nếu ghi log lỗi; "Đang ở"/"Nghẽn" thì luôn khớp dashboard vì suy từ trạng thái runtime.
+// ⚠⚠ **ĐÃ BỎ `lich_su_luan_chuyen` (16/08/2026)** — bảng đó là tracking best-effort và thực tế HỎNG
+//   (READY 2038/2038 thiếu mốc vào, OQC/Giao 0 dòng, ghi cuối 14/08) nên "Vào/Rời hôm nay" trả 0 dù
+//   xưởng vẫn chạy. Chi tiết đo đạc: DATABASE.md §7. ĐỪNG nối lại vào đây.
 const { slaStatus } = require('../../utils/sla');
 // flowRows = query nặng → cache dùng chung với datasets.js (1 báo cáo có cả metric nghẽn lẫn khối danh sách).
 const { flowRowsCached } = require('./flowCache');
@@ -449,52 +452,45 @@ const slaCount = (maTram, st) => async () => {
 };
 
 // Đếm VÀO/RỜI trạm hôm nay theo mức phần/mã/đơn (1 trạm → không lo cộng dồn substage).
-const FLOW_LV = { phan: 'l.phan_in_id', ma: 'mh.id', don: 'dh.id' };
-const FLOW_JOIN = 'JOIN phan_in pin ON pin.id = l.phan_in_id JOIN ma_hang mh ON mh.id = pin.ma_hang_id JOIN don_hang dh ON dh.id = mh.don_hang_id';
+// ⚠⚠⚠ ĐỔI NGUỒN 16/08/2026 — TRƯỚC ĐÂY DÙNG `lich_su_luan_chuyen` VÀ ĐANG TRẢ SỐ RỖNG.
+// Đo prod: READY 2038/2038 lượt THIẾU `tg_bd` · SAN_XUAT 14 lượt · KIEM/SUA 2 · OQC+Giao 0 dòng ·
+// chỉ 8/14 trạm · lần ghi cuối 14/08 ⇒ mọi metric Vào/Rời hôm nay ra 0 dù xưởng vẫn chạy.
+// Nay lấy mốc từ **SỰ KIỆN NGHIỆP VỤ TIN CẬY** qua `utils/siSoTram.js` `nguonPhanIn(maTram)` —
+// cùng nguồn với "sĩ số" ở 11 màn xác nhận ⇒ Báo cáo và màn thao tác KHÔNG còn 2 con số đá nhau.
+// (Hằng `FLOW_LV`/`FLOW_JOIN` cũ đã gỡ cùng lúc — không còn chỗ dùng.)
+const CP_LV = { phan: 'q.phan_in_id', ma: 'mh.id', don: 'dh.id' };
+const CP_JOIN = `JOIN phan_in pin ON pin.id = q.phan_in_id
+  JOIN ma_hang mh ON mh.id = pin.ma_hang_id JOIN don_hang dh ON dh.id = mh.don_hang_id`;
 
-// Số PHẦN/MÃ/ĐƠN vào trạm trong hôm nay (lượt chuyển tới trạm — `den_tram_id`).
-const vaoTramHomNay = (maTram, lv = 'phan') =>
-  `SELECT count(DISTINCT ${FLOW_LV[lv]})::numeric AS v FROM lich_su_luan_chuyen l
-   JOIN tram tr ON tr.id = l.den_tram_id ${lv === 'phan' ? '' : FLOW_JOIN}
-   WHERE tr.ma_tram = '${maTram}' AND ${TODAY_TS('l.tg_bd')}`;
+// Đếm PHẦN/MÃ/ĐƠN theo mốc `tg_vao` (vào trạm) hoặc `tg_ra` (rời trạm) trong hôm nay.
+// ⚠ Trạm chưa khai trong `CP_PHAN_IN` → trả 0 tường minh thay vì ném lỗi (metric không được làm sập
+//   cả báo cáo); danh sách trạm ở `siSoTram.js`.
+const demTheoMoc = (maTram, cot, lv = 'phan') => {
+  const src = nguonPhanIn(maTram);
+  if (!src) return 'SELECT 0::numeric AS v';
+  return `SELECT count(DISTINCT ${CP_LV[lv]})::numeric AS v FROM (${src}) q
+    ${lv === 'phan' ? '' : CP_JOIN}
+    WHERE q.${cot} IS NOT NULL AND ${TODAY_TS(`q.${cot}`)}`;
+};
 
-// READY: "hoàn thành & qua trạm khác" = phần in được QC XÁC NHẬN READY (QC_XAC_NHAN=DAT) hôm nay.
-// ⚠ KHÔNG dùng `lich_su_luan_chuyen` cho READY: bảng đó ghi best-effort, khai khống lượt "rời READY"
-// (đợt vải mới về / mở lại READY đóng lượt cũ) ⇒ over-count. QC là mốc READY hoàn tất THẬT, tin cậy,
-// khớp cờ `qc_done` của màn READY & dataset DS_HOAN_THANH_TRAM (lọc READY).
-const QC_LV = { phan: 'pin.id', ma: 'mh.id', don: 'dh.id' };
-const roiReadyHomNay = (lv = 'phan') =>
-  `SELECT count(DISTINCT ${QC_LV[lv]})::numeric AS v
-   FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
-   JOIN phan_in pin ON pin.id = kq.phan_in_id
-   ${lv === 'phan' ? '' : 'JOIN ma_hang mh ON mh.id = pin.ma_hang_id JOIN don_hang dh ON dh.id = mh.don_hang_id'}
-   WHERE cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT' AND pin.dang_hoat_dong
-     AND ${TODAY_TS('COALESCE(kq.tg_xac_nhan, kq.created_date)')}`;
+// Số PHẦN/MÃ/ĐƠN VÀO trạm hôm nay.
+const vaoTramHomNay = (maTram, lv = 'phan') => demTheoMoc(maTram, 'tg_vao', lv);
 
-// Số PHẦN/MÃ/ĐƠN rời trạm trong hôm nay (hoàn tất trạm đó & đi tiếp — mốc `tg_kt` của lượt Ở trạm này).
-const roiTramHomNay = (maTram, lv = 'phan') =>
-  maTram === 'READY' ? roiReadyHomNay(lv)
-    : `SELECT count(DISTINCT ${FLOW_LV[lv]})::numeric AS v FROM lich_su_luan_chuyen l
-   JOIN tram tr ON tr.id = l.den_tram_id ${lv === 'phan' ? '' : FLOW_JOIN}
-   WHERE tr.ma_tram = '${maTram}' AND l.tg_kt IS NOT NULL AND ${TODAY_TS('l.tg_kt')}`;
+// Số PHẦN/MÃ/ĐƠN RỜI trạm hôm nay (làm xong & đi tiếp).
+// ⚠ READY vẫn là mốc `QC_XAC_NHAN` DAT — `CP_PHAN_IN.READY` đã lấy đúng mốc đó, khớp cờ `qc_done`
+//   của màn READY và dataset `DS_HOAN_THANH_TRAM`.
+const roiTramHomNay = (maTram, lv = 'phan') => demTheoMoc(maTram, 'tg_ra', lv);
 
-// TỔNG SL ĐẶT (SLĐH) của phần in ĐÃ xác nhận/hoàn tất (rời) trạm trong hôm nay — DISTINCT phần in rồi sum.
-// READY = mốc QC xác nhận (tin cậy); trạm khác = lịch sử luân chuyển tg_kt (best-effort, như roiTramHomNay).
-const slDonRoiTramHomNay = (maTram) =>
-  maTram === 'READY'
-    ? `SELECT COALESCE(sum(x.sldh),0)::numeric AS v FROM (
-         SELECT DISTINCT pin.id, pin.so_luong_don_hang AS sldh
-         FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
-         JOIN phan_in pin ON pin.id = kq.phan_in_id
-         WHERE cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT' AND pin.dang_hoat_dong
-           AND ${TODAY_TS('COALESCE(kq.tg_xac_nhan, kq.created_date)')}
-       ) x`
-    : `SELECT COALESCE(sum(x.sldh),0)::numeric AS v FROM (
-         SELECT DISTINCT pin.id, pin.so_luong_don_hang AS sldh
-         FROM lich_su_luan_chuyen l JOIN tram tr ON tr.id = l.den_tram_id
-         JOIN phan_in pin ON pin.id = l.phan_in_id
-         WHERE tr.ma_tram = '${maTram}' AND l.tg_kt IS NOT NULL AND ${TODAY_TS('l.tg_kt')}
-       ) x`;
+// TỔNG SLĐH của phần in RỜI trạm hôm nay — DISTINCT phần in rồi mới sum (1 phần in có thể ra nhiều lượt).
+const slDonRoiTramHomNay = (maTram) => {
+  const src = nguonPhanIn(maTram);
+  if (!src) return 'SELECT 0::numeric AS v';
+  return `SELECT COALESCE(sum(x.sldh),0)::numeric AS v FROM (
+      SELECT DISTINCT pin.id, pin.so_luong_don_hang AS sldh FROM (${src}) q
+      JOIN phan_in pin ON pin.id = q.phan_in_id
+      WHERE q.tg_ra IS NOT NULL AND ${TODAY_TS('q.tg_ra')}
+    ) x`;
+};
 
 // Trạm (checkpoint) đưa vào catalog + map sang key stageCounts (dominant) của dashboard.
 // stageCounts tách READY→READY_KT/READY_QA và Test Run→TESTRUN_CNSP/TESTRUN_QA nên phải gộp lại.

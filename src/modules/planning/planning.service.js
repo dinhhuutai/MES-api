@@ -7,6 +7,7 @@ const productionRepo = require('../production/production.repository'); // phiế
 const chuyenRepo = require('../chuyen/chuyen.repository');
 const wf = require('../workflow/workflow.repository');
 const AppError = require('../../utils/AppError');
+const wfCache = require('../../utils/wfCache');
 const { buildMeta } = require('../../utils/pagination');
 const { layBarcodeTem } = require('../../utils/erpTemBarcode');
 const { STAGE_LABEL } = require('../../utils/stage'); // nhãn giai đoạn — dùng chung với dashboard
@@ -19,7 +20,14 @@ const CNSP_CP = 'TEST_CNSP';
 const QA_CP = 'TEST_QA';
 const SL_NHO_BO_TEST = 100; // đợt SX tổng SL < ngưỡng này → bỏ Test Run (điểm 5). Ngưỡng cấu hình được sau.
 
+// ⚠ Bọc CACHE RAM (`utils/wfCache.js`, TTL 60s): bản gốc chạy **3 query TUẦN TỰ** (version → trạm →
+//   checkpoint) và được gọi ở 8 chỗ ⇒ ~75 ms độ trễ mạng thừa cho mỗi request dùng nó. Cấu hình này
+//   chỉ đổi khi sửa workflow, mà lúc đó `wfconfig` gọi `xoaCache()`.
 async function loadTestConfig() {
+  return wfCache.nho('TEST_RUN_CONFIG', docTestConfigTuDb);
+}
+
+async function docTestConfigTuDb() {
   const version = await wf.getActiveVersion();
   if (!version) throw new AppError('Chưa cấu hình workflow', { status: 500, errorCode: 'NO_WORKFLOW' });
   const tram = await wf.getTramByMa(version.id, TEST_TRAM);

@@ -2,6 +2,7 @@
 
 const { withTransaction } = require('../../config/db');
 const repo = require('./technical.repository');
+const wfCache = require('../../utils/wfCache');
 const qaRepo = require('../quality/quality.repository'); // qc_tra_ve dùng chung
 const wf = require('../workflow/workflow.repository');
 const AppError = require('../../utils/AppError');
@@ -57,7 +58,15 @@ function optionsFor(ma, cfg) {
 }
 
 // Đọc cấu hình trạm READY + checkpoint (động từ DB) — 1 query thay vì 3.
+// ⚠ Bọc CACHE RAM (`utils/wfCache.js`, TTL 60s): hàm này gọi ở 12 chỗ nên gần như MỌI request của
+//   module READY tốn thêm 1 round-trip (~25 ms) cho dữ liệu gần như không bao giờ đổi. Sửa workflow
+//   ở trang Hệ thống thì `wfconfig` gọi `xoaCache()` ⇒ có hiệu lực tức thì.
+// ⚠ Lỗi (chưa cấu hình workflow…) KHÔNG được cache — `nho` chỉ ghi khi nạp thành công.
 async function loadConfig() {
+  return wfCache.nho('READY_CONFIG', docConfigTuDb);
+}
+
+async function docConfigTuDb() {
   const rows = await repo.loadReadyConfig();
   if (rows.length === 0) throw new AppError('Chưa cấu hình workflow đang hiệu lực', { status: 500, errorCode: 'NO_WORKFLOW' });
   const r0 = rows[0];
@@ -168,14 +177,20 @@ async function listCandidates({ search, page, limit, offset, onlyQcReady = false
     khuonId: byMa.KHUON?.id, filmId: byMa.FILM?.id, mucId: byMa.MUC?.id,
     onlyQcReady, offset, limit, readySla, readyCanhBao, qcSla, qcCanhBao, techTotal: TECH_TOTAL,
   });
-  // Đánh dấu phần in bị QC (READY) trả về (badge + lọc "chỉ hiện phần bị trả về").
-  const rm = await qaRepo.activeReturnsMap('READY', rows.map((r) => r.id));
-  // ... và bị KẾ HOẠCH trả về từ Release 1 (loai='RELEASE1') — hiện lý do ngay tại READY.
-  const rkh = await qaRepo.activeReturnsMap('RELEASE1', rows.map((r) => r.id));
-  // ... và bị TEST RUN (QA) trả về (loai='TEST_RUN_KT') — kèm checklist mục rớt (Khuôn/Film/Mực).
-  const rtt = await qaRepo.activeReturnsMap('TEST_RUN_KT', rows.map((r) => r.id));
-  // Người + giờ xác nhận từng mục KT (query nhẹ theo PK) → phục vụ bảng/Excel màn READY.
-  const ci = await repo.confirmInfoByPins(rows.map((r) => r.id));
+  // ⚠⚠ 4 query HOÀN TOÀN ĐỘC LẬP ⇒ chạy SONG SONG. Bản cũ `await` tuần tự = 4 × ~25 ms round-trip
+  //   mạng tới DB (BE và DB ở 2 nơi — DATABASE.md §7) = 100 ms lãng phí trên MỌI lượt mở màn READY.
+  //   Cộng với việc `loadConfig` nay có cache, endpoint này đi từ 6 lượt tuần tự xuống còn 2.
+  const ids = rows.map((r) => r.id);
+  const [rm, rkh, rtt, ci] = await Promise.all([
+    // Phần in bị QC (READY) trả về (badge + lọc "chỉ hiện phần bị trả về").
+    qaRepo.activeReturnsMap('READY', ids),
+    // ... bị KẾ HOẠCH trả về từ Release 1 (loai='RELEASE1') — hiện lý do ngay tại READY.
+    qaRepo.activeReturnsMap('RELEASE1', ids),
+    // ... bị TEST RUN (QA) trả về (loai='TEST_RUN_KT') — kèm checklist mục rớt (Khuôn/Film/Mực).
+    qaRepo.activeReturnsMap('TEST_RUN_KT', ids),
+    // Người + giờ xác nhận từng mục KT (query nhẹ theo PK) → phục vụ bảng/Excel màn READY.
+    repo.confirmInfoByPins(ids),
+  ]);
   const CI_KEY = { KHUON: 'khuon', FILM: 'film', MUC: 'muc' };
   const ciMap = {};
   ci.forEach((c) => {

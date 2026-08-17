@@ -4,6 +4,7 @@ const { withTransaction } = require('../../config/db');
 const repo = require('./wfconfig.repository');
 const AppError = require('../../utils/AppError');
 const sockets = require('../../sockets');
+const wfCache = require('../../utils/wfCache');
 
 function validateJson(str) {
   if (str === undefined || str === null || str === '') return null;
@@ -15,13 +16,19 @@ function validateJson(str) {
   }
 }
 
-const emit = () => sockets.emit('workflow:config-updated', {});
+// ⚠⚠ MỌI thao tác GHI cấu hình workflow phải đi qua đây: ngoài việc bắn socket, nó **xóa cache RAM**
+//   (`utils/wfCache.js`) mà `technical.loadConfig` / `planning.loadTestConfig` đang dùng — không xóa
+//   thì sửa workflow phải chờ hết TTL (60s) mới có hiệu lực. Thêm hàm ghi mới thì nhớ gọi `emit()`.
+const emit = () => {
+  wfCache.xoaCache();
+  sockets.emit('workflow:config-updated', {});
+};
 
 module.exports = {
   // Version
   listVersions: () => repo.listVersions(),
-  createVersion: (b, a) => repo.createVersion(b, a).then((id) => ({ id })),
-  updateVersion: async (id, b, a) => { await repo.updateVersion(id, b, a); return { id }; },
+  createVersion: (b, a) => repo.createVersion(b, a).then((id) => { emit(); return { id }; }),
+  updateVersion: async (id, b, a) => { await repo.updateVersion(id, b, a); emit(); return { id }; },
   setHienHanh: async (id, a) => {
     await withTransaction(async (c) => { await repo.clearHienHanh(c, a); await repo.setHienHanh(c, id, a); });
     emit();

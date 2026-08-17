@@ -14,7 +14,11 @@ const pool = new Pool({
   // Dashboard bắn ~13 query song song (summary 11 + activity + stage-counts); pool nhỏ → query xếp hàng
   // và có thể timeout khi DB ở xa → trang kẹt "Đang tải". Nới pool để đủ chỗ cho các màn nặng.
   max: 25,
-  idleTimeoutMillis: 30000,
+  // ⚠⚠ GIỮ KẾT NỐI LÂU: BE và DB ở 2 nơi, **bắt tay lần đầu tốn ~175 ms** (query thường chỉ ~25 ms).
+  //   Với 30 giây như bản cũ, chỉ cần xưởng ngơi tay nửa phút là kết nối bị đóng và người bấm tiếp
+  //   theo phải trả nguyên 175 ms. Nâng lên 5 phút + `keepAlive` để NAT/firewall không cắt ngầm.
+  idleTimeoutMillis: 5 * 60 * 1000,
+  keepAlive: true,
   connectionTimeoutMillis: 15000,
 });
 

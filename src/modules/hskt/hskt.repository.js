@@ -58,7 +58,23 @@ async function listHskt({ search = '', filters = {}, offset = 0, limit = 20 }) {
   const pLimit = params.length + 1;
   const pOffset = params.length + 2;
 
+  // ⚠⚠ HIỆU NĂNG — `tg_len_mes` phải tính bằng CTE GỘP 1 LẦN, TUYỆT ĐỐI KHÔNG dùng LATERAL tương
+  //   quan (bản cũ). LATERAL đó chạy lại cho TỪNG dòng: 1.096 hồ sơ active × quét cả 6.336 dòng
+  //   = 6,9 triệu phép so sánh, và không index nào cứu được vì so trên biểu thức `COALESCE(...)`;
+  //   bộ lọc ngày lại nằm TRÊN kết quả LATERAL nên không đẩy xuống được.
+  //   Đo prod bằng EXPLAIN ANALYZE: **2.535 ms / 139.089 buffer → 26,8 ms / 3.309 buffer**, cùng
+  //   132 dòng, cùng `total`. Postgres quét bảng 1 lần (5,6 ms) rồi hash join.
+  // ⚠ Ngữ nghĩa GIỮ NGUYÊN: `tg_len_mes` = `created_date` của phiên bản ĐẦU TIÊN trong chuỗi, gom
+  //   theo `COALESCE(barcode_hskt_goc, barcode_hskt, id::text)` — kể cả fallback `id` cho hồ sơ
+  //   không có barcode (2 cột NULL thì `NULL = NULL` là false ⇒ mất dòng).
+  // ⚠ KHÔNG xóa 5.240 dòng HSKT inactive "cho nhẹ": `tg_len_mes` cần chính bản CŨ NHẤT (thường là
+  //   bản inactive) — xóa đi là sai "Ngày lên MES". Có CTE rồi thì 6.336 dòng chỉ tốn 5,6 ms.
   const sql = `
+    WITH goc AS (
+      SELECT COALESCE(barcode_hskt_goc, barcode_hskt, id::text) AS k,
+             min(created_date) AS tg_len_mes
+        FROM ho_so_ky_thuat GROUP BY 1
+    )
     SELECT h.id, h.barcode_hskt, h.barcode_hskt_goc, h.pa_in_sua_tay,
            h.ma_hskt, h.phuong_an_in, h.phien_ban, h.inset, h.ma_don_ready,
            h.created_date, h.updated_date,
@@ -67,11 +83,7 @@ async function listHskt({ search = '', filters = {}, offset = 0, limit = 20 }) {
            g.tg_len_mes,
            count(*) OVER()::int AS total
     FROM ho_so_ky_thuat h
-    LEFT JOIN LATERAL (
-      SELECT min(h2.created_date) AS tg_len_mes FROM ho_so_ky_thuat h2
-       WHERE COALESCE(h2.barcode_hskt_goc, h2.barcode_hskt, h2.id::text)
-           = COALESCE(h.barcode_hskt_goc, h.barcode_hskt, h.id::text)
-    ) g ON true
+    JOIN goc g ON g.k = COALESCE(h.barcode_hskt_goc, h.barcode_hskt, h.id::text)
     LEFT JOIN LATERAL (
       SELECT count(DISTINCT pin.id)::int AS so_phan_in,
              string_agg(DISTINCT pin.ma_phan, ', ') AS code_phan_list,
