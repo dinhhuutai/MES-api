@@ -25,6 +25,21 @@ const LOC_KEYS = ['timKiem', 'khach', 'don', 'maHang', 'codePhan', 'mauVai', 'ki
   'chuyen', 'nhaGiaCong', 'loaiNgay', 'ngayTu', 'ngayDen'];
 const layLoc = (q = {}) => LOC_KEYS.reduce((a, k) => (q[k] ? { ...a, [k]: q[k] } : a), {});
 
+// ─── BỘ LỌC CỦA TRANG (dải "Theo dõi" bám ô tìm + panel lọc + dải chip của màn) ──────────────
+// Gửi lên với tiền tố `t_` để KHÔNG đụng bộ lọc riêng trong modal (2 tầng AND với nhau — xem
+// `dungLocKep` ở repository). Thêm 3 khóa chip mà modal không có: loại chuyền · khu bàn · PA in.
+// ⚠ `t_phuongAnIn` phải xét `!== ''` chứ không `if (v)`: **`'0'` = CHƯA XÁC ĐỊNH là chip THẬT**
+//   ở màn Release 1, dùng `if (v)` thì chip đó im lặng không lọc gì.
+// ⚠ Thêm khóa mới ở ĐÂY thì FE mới gửi lên được — thiếu là backend BỎ QUA IM LẶNG (không lỗi),
+//   dải số không nhúc nhích và rất khó đoán ra.
+const LOC_TRANG_KEYS = [...LOC_KEYS, 'phuongAnIn', 'loaiChuyen', 'maChuyen',
+  // Ô TÍCH của trang (18/08/2026): "Chỉ hiện … bị trả về" · "Đã Ready / Chờ Ready" · ô lọc "Gom set".
+  'biTraVe', 'daReady', 'choReady', 'gomSet'];
+const layLocTrang = (q = {}) => LOC_TRANG_KEYS.reduce((a, k) => {
+  const v = q[`t_${k}`];
+  return v !== undefined && v !== null && v !== '' ? { ...a, [k]: v } : a;
+}, {});
+
 // Danh mục cho FE dựng UI (tên màn, đơn vị, nhãn 4 ô, danh sách loại ngày phụ).
 function danhMuc() {
   return {
@@ -37,7 +52,7 @@ function danhMuc() {
 async function siSo(maTrang, q) {
   if (!MAN[maTrang]) throw new AppError('Màn hình không có sĩ số', { status: 404, errorCode: 'MAN_LA' });
   const { tu, den, denHienThi } = chuanHoaKy(q);
-  const so = await repo.demSiSo(maTrang, { tu, den, loc: layLoc(q) });
+  const so = await repo.demSiSo(maTrang, { tu, den, loc: layLoc(q), locTrang: layLocTrang(q) });
   const m = MAN[maTrang];
   // ⚠ Bất biến PHẢI đúng theo mô hình khoảng [tg_vao, tg_ra). Lệch = có mục `tg_ra < tg_vao`
   //   (dữ liệu bẩn) lọt qua — trả cờ để FE hiện dấu hỏi thay vì im lặng cho số sai.
@@ -54,7 +69,7 @@ async function chiTiet(maTrang, o, q) {
   // `limit=0` = lấy HẾT (xuất Excel). Trần 500 cho lượt phân trang thường.
   const limit = String(q.limit) === '0' ? 0 : Math.min(500, Math.max(1, Number(q.limit) || 20));
   const { items, total } = await repo.chiTiet(maTrang, o, {
-    tu, den, loc: layLoc(q), page: Number(q.page) || 1, limit,
+    tu, den, loc: layLoc(q), locTrang: layLocTrang(q), page: Number(q.page) || 1, limit,
   });
   return { items, meta: { total, page: Number(q.page) || 1, limit }, o, ten_o: O_SI_SO[o].ten };
 }

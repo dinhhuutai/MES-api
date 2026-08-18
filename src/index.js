@@ -6,6 +6,7 @@ const app = require('./app');
 const env = require('./config/env');
 const sockets = require('./sockets');
 const { pool } = require('./config/db');
+const webPush = require('./utils/webPush'); // trạng thái Web Push (mig 085) — in lúc khởi động
 // [ERP TẮT TẠM] vô hiệu hóa job tự kết nối ERP để kiểm tra. Bỏ comment 2 dòng (đây + startErpSyncJob bên dưới) để bật lại.
  const { startErpSyncJob } = require('./jobs/erpSync.job');
 const { startCleanupJob } = require('./jobs/cleanup.job');
@@ -43,6 +44,10 @@ async function start() {
     console.log(`[erp] Ghi in tem: ${env.erp.ghiInTemUrl}`
       + (env.erp.ghiInTemEnabled ? '' : '   (ĐANG TẮT qua ERP_GHI_IN_TEM_ENABLED=false)')
       + (process.env.ERP_GHI_IN_TEM_URL ? '' : '   ⚠ CHƯA đặt ERP_GHI_IN_TEM_URL trong .env — đang suy theo gốc URL nhận vải'));
+    // ⚠ Web Push (mig 085): thiếu VAPID key / chưa cài `web-push` thì TỰ TẮT — chuông và popup khi
+    //   app đang mở vẫn chạy, chỉ mất phần "báo cả khi đóng app". In ra để khỏi phải đi dò vì sao.
+    const tt = webPush.trangThai();
+    console.log(`[push] Web Push : ${tt.san_sang ? 'sẵn sàng' : `TẮT — ${tt.ly_do}`}`);
     // [ERP TẮT TẠM] không tự đồng bộ ERP. Bỏ comment để bật lại.
      startErpSyncJob();
     startCleanupJob();

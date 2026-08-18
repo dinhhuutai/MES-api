@@ -99,6 +99,28 @@ async function getDotVaiRemaining(dotVaiIds) {
 }
 
 // Thông tin đợt vải để SOẠN đợt sản xuất (mig 052): con_dua theo junction so_luong + màu + READY (QC).
+// Dữ liệu để kiểm luật "phương án in phải khớp loại chuyền" (utils/phuongAnChuyen.js).
+// 1 dòng / đợt vải: mã phần in + phương án in đang hiệu lực + loại chuyền được chọn.
+// ⚠ `phuong_an_in` lấy từ HSKT ĐANG HOẠT ĐỘNG của phần in — cùng nguồn với cột "Phương án in"
+//   trên màn Release 1, nên thông báo lỗi khớp đúng thứ người dùng đang nhìn thấy.
+async function getPainVsChuyen(dotVaiIds, chuyenId) {
+  const { rows } = await query(
+    `SELECT dv.id::text AS dot_vai_id, pin.ma_phan, pin.id::text AS phan_in_id,
+            COALESCE(hs.phuong_an_in, 0)::int AS phuong_an_in,
+            cs.ma_chuyen, lc.ma_loai AS ma_loai_chuyen
+       FROM dot_vai_ve dv
+       JOIN phan_in pin ON pin.id = dv.phan_in_id
+       LEFT JOIN LATERAL (SELECT h.phuong_an_in FROM hskt_phan_in hp
+                            JOIN ho_so_ky_thuat h ON h.id = hp.hskt_id AND h.dang_hoat_dong
+                           WHERE hp.phan_in_id = pin.id AND hp.dang_hoat_dong LIMIT 1) hs ON true
+       LEFT JOIN chuyen_san_xuat cs ON cs.id = $2::uuid
+       LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
+      WHERE dv.id = ANY($1::uuid[])`.replace(/\s+/g, ' '),
+    [dotVaiIds, chuyenId]
+  );
+  return rows;
+}
+
 async function getDotVaiForCompose(dotVaiIds) {
   const { rows } = await query(
     `SELECT dv.id::text AS id, dv.phan_in_id::text AS phan_in_id, dv.ma_dot_vai,
@@ -1546,7 +1568,7 @@ module.exports = {
   listCaTuan, caModeMap, upsertCaTuan,
   listRelease1Candidates, release1HistoryByDate, nextMaLenh, nextMaLenhTx, createLenh,
   release1DoneByDate, planDoneByDate, testDoneByDate,
-  testedDotVaiIds, getDotVaiQty, getDotVaiRemaining, getDotVaiForCompose, phanInDangChay, addLenhDotVai, dotVaiAlreadyReleased,
+  testedDotVaiIds, getDotVaiQty, getDotVaiRemaining, getDotVaiForCompose, getPainVsChuyen, phanInDangChay, addLenhDotVai, dotVaiAlreadyReleased,
   activateEpUi, getLenhGiaiDoan, getChuyenLoai,
   listGopCandidates, getDotVaiForMerge, adjustDotVaiQty, markDotVaiGop, insertGopHistory, gopHistoryByDate,
   listTestRunCandidates, listRelease2Candidates, getLenhBasic, getLenhDotVai, getTestRuns,

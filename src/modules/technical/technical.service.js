@@ -4,6 +4,7 @@ const { withTransaction } = require('../../config/db');
 const repo = require('./technical.repository');
 const wfCache = require('../../utils/wfCache');
 const qaRepo = require('../quality/quality.repository'); // qc_tra_ve dùng chung
+const thongBao = require('../thongbao/thongbao.service'); // chuông Kỹ thuật (mig 085)
 const wf = require('../workflow/workflow.repository');
 const AppError = require('../../utils/AppError');
 const { buildMeta } = require('../../utils/pagination');
@@ -250,6 +251,7 @@ async function returnToTech(phanInId, { checklists, lyDo }, actorId) {
     if (state.qc_done && byMa[QC_CP]) { await repo.cancelResult(client, phanInId, byMa[QC_CP].id, actorId); }
   });
   await qaRepo.insertQcTraVe({ loai: 'READY', phanInId, checklistList: chosen.join(','), lyDo: reason }, actorId);
+  thongBao.banThongBao({ loaiTraVe: 'READY', phanInId, actorId }); // chuông Kỹ thuật (mig 085)
   sockets.emit('ready:confirmed', { phanInId, tra_ve: chosen });
   sockets.emit('dashboard:refresh', {});
   return { phan_in_id: phanInId, huy: huyList, checklists: chosen };

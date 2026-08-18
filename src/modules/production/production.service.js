@@ -11,6 +11,7 @@ const planningRepo = require('../planning/planning.repository');
 const planningService = require('../planning/planning.service'); // rollbackLenh (Trả về Kỹ thuật)
 const erpsyncRepo = require('../erpsync/erpsync.repository');     // reopenReadyForPhanIn
 const qaRepo = require('../quality/quality.repository');          // qc_tra_ve (badge + lý do ở READY)
+const thongBao = require('../thongbao/thongbao.service');         // chuông Kỹ thuật (mig 085)
 const { caFromParts, maNgayCa, ngayTuMaNgayCa } = require('../../utils/ca');
 const { layBarcodeTem, layNhieuBarcodeTem } = require('../../utils/erpTemBarcode');
 const { ghiInTem } = require('../../utils/erpGhiInTem');
@@ -938,6 +939,7 @@ async function traVeKyThuat(lenhId, { lyDo }, actorId) {
     // phải sửa gì bên `technical` (nó đọc `activeReturnsMap('RELEASE1', …)`); cờ tự tắt khi QC xác
     // nhận READY lại (`technical.confirmQC` → `resolveReturns('RELEASE1')`).
     await qaRepo.insertQcTraVe({ loai: 'RELEASE1', phanInId: pinId, lenhId, lyDo: reason }, actorId);
+    thongBao.banThongBao({ loaiTraVe: 'RELEASE1', phanInId: pinId, actorId }); // chuông Kỹ thuật (mig 085)
   }
 
   await planningRepo.logPlanChange(null, lenhId, 'TRA_VE_KY_THUAT_SAN_XUAT',

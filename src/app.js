@@ -27,7 +27,9 @@ const dashboardRoutes = require('./modules/dashboard/dashboard.routes');
 const erpsyncRoutes = require('./modules/erpsync/erpsync.routes');
 const hienThiPainRoutes = require('./modules/hienthipain/hienthipain.routes');
 const caiDatApiRoutes = require('./modules/caidatapi/caidatapi.routes');
+const thongBaoRoutes = require('./modules/thongbao/thongbao.routes');
 const siSoRoutes = require('./modules/siso/siso.routes');
+const duyetRoutes = require('./modules/duyet/duyet.routes');
 const mauTemRoutes = require('./modules/mautem/mautem.routes');
 const presenceRoutes = require('./modules/presence/presence.routes');
 const phienRoutes = require('./modules/phien/phien.routes');
@@ -74,7 +76,10 @@ app.use('/api/erp', erpsyncRoutes);
 app.use('/api/hien-thi-pain', hienThiPainRoutes);
 // Hệ thống > Cài đặt API (bật/tắt 3 API ERP ngay trên giao diện — mig 083)
 app.use('/api/cai-dat-api', caiDatApiRoutes);
+// Thông báo (chuông cạnh avatar) + bật/tắt theo người & theo hệ thống + Web Push — mig 085
+app.use('/api/thong-bao', thongBaoRoutes);
 app.use('/api/si-so', siSoRoutes);
+app.use('/api/duyet', duyetRoutes);
 app.use('/api/mau-tem', mauTemRoutes);
 app.use('/api/presence', presenceRoutes);
 app.use('/api/phien', phienRoutes);

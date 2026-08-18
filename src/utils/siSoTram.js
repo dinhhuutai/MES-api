@@ -144,18 +144,23 @@ const JOIN_PIN = `JOIN ma_hang mh ON mh.id = pin.ma_hang_id
 //
 // Mỗi nguồn trả: `phan_in_id, tg_vao, tg_ra` + nhãn (`ma_lenh_san_xuat`, `ten_chuyen`,
 // `ngay_ke_hoach`, `ngay_release`, `ma_tem`). Trạm không có nhãn nào thì khai `NULL::<kiểu>`.
+// ⚠⚠ `ma_chuyen` + `ma_loai_chuyen` KHÔNG HIỆN TRÊN BẢNG — chỉ để LỌC theo dải chip của trang
+//   (loại chuyền · khu bàn) khi dải "Theo dõi" bám bộ lọc trang. Trạm trước release chưa có chuyền
+//   nên luôn NULL ⇒ chip loại chuyền tự khớp rỗng, đúng bản chất (xem `dungLoc`).
 const NHAN_TRONG = `NULL::text AS ma_lenh_san_xuat, NULL::text AS ten_chuyen,
+  NULL::text AS ma_chuyen, NULL::text AS ma_loai_chuyen,
   NULL::date AS ngay_ke_hoach, NULL::timestamptz AS ngay_release, NULL::text AS ma_tem`;
 
 // Khung nguồn theo LỆNH: 1 dòng / (lệnh × đợt vải) → gom lại thành 1 dòng / phần in.
 const NGUON_LENH = ({ tgVao, tgRa, dk, them = '' }) => `SELECT dv.phan_in_id, ${tgVao} AS tg_vao,
-    ${tgRa} AS tg_ra, ls.ma_lenh_san_xuat, cs.ten_chuyen, ls.ngay_ke_hoach,
-    ls.created_date AS ngay_release, NULL::text AS ma_tem
+    ${tgRa} AS tg_ra, ls.ma_lenh_san_xuat, cs.ten_chuyen, cs.ma_chuyen, lct.ma_loai AS ma_loai_chuyen,
+    ls.ngay_ke_hoach, ls.created_date AS ngay_release, NULL::text AS ma_tem
   FROM lenh_san_xuat ls
   JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
   JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
   JOIN phan_in pin ON pin.id = dv.phan_in_id AND pin.dang_hoat_dong
   LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+  LEFT JOIN loai_chuyen lct ON lct.id = cs.loai_chuyen_id
   ${them}
   WHERE ${dk}`;
 
@@ -164,8 +169,8 @@ const NGUON_LENH = ({ tgVao, tgRa, dk, them = '' }) => `SELECT dv.phan_in_id, ${
 //   của lệnh được quy cho MỌI phần in trong lệnh. Ảnh hưởng 5 trạm theo tem. Muốn chính xác thì
 //   phải thêm cột `tem.dot_vai_ve_id`.
 const NGUON_TEM = ({ tgVao, tgRa, dk, them = '' }) => `SELECT dv.phan_in_id, ${tgVao} AS tg_vao,
-    ${tgRa} AS tg_ra, ls.ma_lenh_san_xuat, cs.ten_chuyen, ls.ngay_ke_hoach,
-    ls.created_date AS ngay_release, t.ma_tem
+    ${tgRa} AS tg_ra, ls.ma_lenh_san_xuat, cs.ten_chuyen, cs.ma_chuyen, lct.ma_loai AS ma_loai_chuyen,
+    ls.ngay_ke_hoach, ls.created_date AS ngay_release, t.ma_tem
   FROM tem t
   JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
   JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
@@ -173,6 +178,7 @@ const NGUON_TEM = ({ tgVao, tgRa, dk, them = '' }) => `SELECT dv.phan_in_id, ${t
   JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
   JOIN phan_in pin ON pin.id = dv.phan_in_id AND pin.dang_hoat_dong
   LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+  LEFT JOIN loai_chuyen lct ON lct.id = cs.loai_chuyen_id
   ${them}
   WHERE ${dk}`;
 
@@ -252,7 +258,8 @@ const DV = {
              THEN rel.tg_release_cuoi END,
         CASE WHEN kht.id IS NOT NULL
              THEN GREATEST(dv.tg_chuyen_ready, kht.created_date) END) AS tg_ra,
-      NULL::text AS ma_lenh_san_xuat, NULL::text AS ten_chuyen, NULL::date AS ngay_ke_hoach,
+      NULL::text AS ma_lenh_san_xuat, NULL::text AS ten_chuyen,
+      NULL::text AS ma_chuyen, NULL::text AS ma_loai_chuyen, NULL::date AS ngay_ke_hoach,
       rel.tg_release_cuoi AS ngay_release, NULL::text AS ma_tem
     FROM dot_vai_ve dv
     JOIN phan_in pin ON pin.id = dv.phan_in_id AND pin.dang_hoat_dong
@@ -279,6 +286,7 @@ const DV = {
       CASE WHEN kht.id IS NOT NULL THEN NULL
            ELSE GREATEST(kt.moc_vao, COALESCE(kt.moc_ra, rel.tg_release_cuoi)) END AS tg_ra,
       NULL::text AS ma_lenh_san_xuat, cs.ten_chuyen,
+      cs.ma_chuyen, lct.ma_loai AS ma_loai_chuyen,
       COALESCE(kht.ngay_ke_hoach, kt.ngay_kh_audit) AS ngay_ke_hoach,
       rel.tg_release_cuoi AS ngay_release, NULL::text AS ma_tem
     FROM (SELECT xa.id_ban_ghi,
@@ -293,6 +301,7 @@ const DV = {
     JOIN phan_in pin ON pin.id = dv.phan_in_id AND pin.dang_hoat_dong
     LEFT JOIN ke_hoach_tam kht ON kht.dot_vai_ve_id = dv.id AND kht.trang_thai = 'CHO'
     LEFT JOIN chuyen_san_xuat cs ON cs.id = COALESCE(kht.chuyen_id, kt.chuyen_id_audit::uuid)
+    LEFT JOIN loai_chuyen lct ON lct.id = cs.loai_chuyen_id
     LEFT JOIN LATERAL (SELECT max(xls.created_date) AS tg_release_cuoi
       FROM lenh_sx_dot_vai xlsd JOIN lenh_san_xuat xls ON xls.id = xlsd.lenh_san_xuat_id
       WHERE xlsd.dot_vai_ve_id = dv.id AND xls.trang_thai <> 'HUY') rel ON true
@@ -414,6 +423,8 @@ const gomTheoPin = (trong) => `SELECT x.phan_in_id, min(x.tg_vao) AS tg_vao,
   string_agg(DISTINCT x.ma_lenh_san_xuat, ', ') AS ma_lenh_san_xuat,
   string_agg(DISTINCT x.ten_chuyen, ', ') AS ten_chuyen,
   string_agg(DISTINCT x.ma_tem, ', ') AS ma_tem,
+  string_agg(DISTINCT x.ma_chuyen, ',') AS ma_chuyen,
+  string_agg(DISTINCT x.ma_loai_chuyen, ',') AS ma_loai_chuyen,
   min(x.ngay_ke_hoach) AS ngay_ke_hoach, min(x.ngay_release) AS ngay_release
   FROM (${trong}) x
   WHERE x.phan_in_id IS NOT NULL AND x.tg_vao IS NOT NULL
@@ -426,12 +437,60 @@ const COT_PIN_GOM = `kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, pin.ma_phan,
   pin.kich_vai, pin.kich_phim, pin.tinh_chat_in, pin.so_luong_don_hang,
   dvs.ten_loai_dot_vai, hs.phuong_an_in, dvs.nha_gia_cong, dvs.so_luong_vai_ve,
   dvs.han_giao_hang, dvs.ngay_vai_ve, dvs.tg_len_mes, dvs.ma_dot_vai,
-  g.ma_lenh_san_xuat, g.ten_chuyen, g.ngay_ke_hoach, g.ngay_release, g.ma_tem, 1 AS so_phan_in`;
+  g.ma_lenh_san_xuat, g.ten_chuyen, g.ngay_ke_hoach, g.ngay_release, g.ma_tem, 1 AS so_phan_in,
+  g.ma_chuyen, g.ma_loai_chuyen`;
 
-const manTheoPin = (trong) => `SELECT pin.id, ${COT_PIN_GOM}, g.tg_vao, g.tg_ra
+// ─── CỘT PHỤC VỤ CÁC Ô TÍCH CỦA TRANG (dải "Theo dõi" bám luôn ô tích — 18/08/2026) ─────────
+// ⚠⚠ TÍNH Ở TẦNG NGOÀI (theo `pin.id`), KHÔNG nhét vào từng nguồn: 3 thứ dưới đây đều là thuộc
+//   tính của PHẦN IN, mà mỗi màn lại có nguồn mốc riêng — thêm vào từng nguồn là phải sửa 12 chỗ
+//   và rất dễ sót (đúng lỗi `column x.ma_chuyen does not exist` đã mắc khi thêm cột loại chuyền).
+// ⚠ Cột nào màn không dùng thì bộ lọc không đụng tới, nên chi phí chỉ là LATERAL/EXISTS nhẹ theo
+//   khóa chính. KHÔNG bỏ đi để "tối ưu": bỏ là bộ lọc im lặng không ăn.
+
+// "Đã Ready" = QC đã xác nhận READY (ô tích *Đã Ready / Chờ Ready* ở màn Release 1).
+const LAT_QC_DONE = `LEFT JOIN LATERAL (
+  SELECT (count(*) > 0) AS qc_done FROM ket_qua_checkpoint xkq
+    JOIN checkpoint xcp ON xcp.id = xkq.checkpoint_id
+   WHERE xkq.phan_in_id = pin.id AND xkq.trang_thai = 'DAT' AND xcp.ma_checkpoint = 'QC_XAC_NHAN'
+) qcd ON true`;
+
+// Mã gom set đang MỞ của phần in (ô lọc *Gom set* ở màn Kế hoạch tạm).
+const LAT_MA_SET = `LEFT JOIN LATERAL (
+  SELECT string_agg(DISTINCT xgs.ma_set, ', ') AS ma_set
+    FROM gom_set_dot_vai xgsd
+    JOIN gom_set xgs ON xgs.id = xgsd.gom_set_id AND xgs.trang_thai = 'MO'
+    JOIN dot_vai_ve xdv ON xdv.id = xgsd.dot_vai_ve_id
+   WHERE xdv.phan_in_id = pin.id
+) gs ON true`;
+
+// ⚠⚠ "BỊ TRẢ VỀ" KHÁC NHAU TỪNG MÀN — phải khai riêng, dùng chung một định nghĩa là số sĩ số lệch
+//   với chính ô tích trên màn đó:
+//     READY / QC READY : `qc_tra_ve.phan_in_id`, loai READY · RELEASE1 · TEST_RUN_KT (3 nguồn)
+//     Release 1        : `qc_tra_ve.dot_vai_ve_id`, loai TEST_RUN
+//     KCS              : `qc_tra_ve.tem_id`, loai OQC
+//   Màn không có ô tích này thì để `false` (bộ lọc gửi lên cũng chỉ khớp rỗng, không sai số).
+// ⚠ Trả MỐC TRẢ VỀ GẦN NHẤT (timestamptz) chứ không phải EXISTS: từ đó suy được CẢ cờ `bi_tra_ve`
+//   LẪN cột ngày cho bộ lọc `NGAY_TRA_VE` — đúng khoảng ngày mà ô tích trên màn đang dùng.
+const TV = {
+  PHAN_IN: `(SELECT max(xq.created_date) FROM qc_tra_ve xq WHERE xq.phan_in_id = pin.id
+    AND xq.da_xu_ly = false AND xq.loai IN ('READY','RELEASE1','TEST_RUN_KT'))`,
+  DOT_VAI_TEST_RUN: `(SELECT max(xq.created_date) FROM qc_tra_ve xq
+    JOIN dot_vai_ve xdv ON xdv.id = xq.dot_vai_ve_id
+    WHERE xdv.phan_in_id = pin.id AND xq.da_xu_ly = false AND xq.loai = 'TEST_RUN')`,
+  TEM_OQC: `(SELECT max(xq.created_date) FROM qc_tra_ve xq JOIN tem xt ON xt.id = xq.tem_id
+    JOIN phieu_san_xuat xps ON xps.id = xt.phieu_san_xuat_id
+    JOIN lenh_sx_dot_vai xlsd ON xlsd.lenh_san_xuat_id = xps.lenh_san_xuat_id
+    JOIN dot_vai_ve xdv ON xdv.id = xlsd.dot_vai_ve_id
+    WHERE xdv.phan_in_id = pin.id AND xq.da_xu_ly = false AND xq.loai = 'OQC')`,
+  KHONG: 'NULL::timestamptz',
+};
+
+const manTheoPin = (trong, { traVe = TV.KHONG } = {}) => `SELECT pin.id, ${COT_PIN_GOM}, g.tg_vao, g.tg_ra,
+  COALESCE(qcd.qc_done, false) AS qc_done, gs.ma_set,
+  (${traVe}) AS tg_tra_ve, ((${traVe}) IS NOT NULL) AS bi_tra_ve
   FROM (${gomTheoPin(trong)}) g
   JOIN phan_in pin ON pin.id = g.phan_in_id
-  ${JOIN_PIN} ${LAT_DOT_CUA_PIN('pin.id')} ${LAT_HSKT('pin.id')}`;
+  ${JOIN_PIN} ${LAT_DOT_CUA_PIN('pin.id')} ${LAT_HSKT('pin.id')} ${LAT_QC_DONE} ${LAT_MA_SET}`;
 
 // ─── 11 MÀN XÁC NHẬN ─────────────────────────────────────────────────────────
 // `ma` khớp `TRANG_PAIN` (utils/phuongAnIn.js) để FE truyền đúng MỘT mã cho cả 2 tính năng.
@@ -441,15 +500,15 @@ const MAN = {
   KT_READY: {
     ten: 'Xác nhận READY (Kỹ thuật)', donVi: 'pin', nhan: 'phần in',
     quyen: ['READY_VIEW', 'READY_KHUON', 'READY_FILM', 'READY_MUC'],
-    sql: manTheoPin(DV.READY_KT),
+    sql: manTheoPin(DV.READY_KT, { traVe: TV.PHAN_IN }),
   },
   CL_QC_READY: {
     ten: 'QC chuẩn bị kỹ thuật', donVi: 'pin', nhan: 'phần in', quyen: ['READY_QC'],
-    sql: manTheoPin(DV.READY_QC),
+    sql: manTheoPin(DV.READY_QC, { traVe: TV.PHAN_IN }),
   },
   KH_RELEASE1: {
     ten: 'Release 1', donVi: 'pin', nhan: 'phần in', quyen: ['RELEASE1'],
-    sql: manTheoPin(DV.RELEASE_1),
+    sql: manTheoPin(DV.RELEASE_1, { traVe: TV.DOT_VAI_TEST_RUN }),
   },
   CL_TEST_RUN: {
     ten: 'Test Run - QA', donVi: 'pin', nhan: 'phần in', quyen: ['TESTRUN_QA'],
@@ -474,7 +533,7 @@ const MAN = {
   },
   SX_KCS: {
     ten: 'KCS (kiểm)', donVi: 'pin', nhan: 'phần in', quyen: ['KCS'],
-    sql: manTheoPin(DV.KIEM),
+    sql: manTheoPin(DV.KIEM, { traVe: TV.TEM_OQC }),
   },
   SX_SUA: {
     ten: 'Sửa', donVi: 'pin', nhan: 'phần in', quyen: ['SUA'],
@@ -521,6 +580,7 @@ const LOAI_NGAY = {
   HAN_GIAO: { ten: 'Hạn giao hàng', col: 'q.han_giao_hang', kieu: 'date' },
   NGAY_KE_HOACH: { ten: 'Ngày KH sản xuất', col: 'q.ngay_ke_hoach', kieu: 'date' },
   NGAY_RELEASE: { ten: 'Ngày release', col: 'q.ngay_release', kieu: 'ts' },
+  NGAY_TRA_VE: { ten: 'Ngày trả về', col: 'q.tg_tra_ve', kieu: 'ts' },
 };
 
 // 4 ô. `ton_dau`/`ton_cuoi` là ẢNH CHỤP tại một mốc; `nhan`/`lam_duoc` là SỰ KIỆN trong kỳ.

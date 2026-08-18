@@ -11,9 +11,13 @@ const wfCache = require('../../utils/wfCache');
 const { buildMeta } = require('../../utils/pagination');
 const { layBarcodeTem } = require('../../utils/erpTemBarcode');
 const { STAGE_LABEL } = require('../../utils/stage'); // nhãn giai đoạn — dùng chung với dashboard
+const { kiemCap } = require('../../utils/phuongAnChuyen'); // luật PA in ↔ loại chuyền (chặn ở Release 1)
 const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
 const erpRepo = require('../erpsync/erpsync.repository'); // reopenReadyForPhanIn (mở lại READY)
+// Chuông thông báo cho Kỹ thuật khi phần in bị trả về (mig 085).
+// ⚠ Không tạo vòng require: `thongbao.service` chỉ phụ thuộc repo của chính nó + utils + sockets.
+const thongBao = require('../thongbao/thongbao.service');
 
 const TEST_TRAM = 'TEST_RUN';
 const CNSP_CP = 'TEST_CNSP';
@@ -265,6 +269,9 @@ async function traVeKyThuat({ dotVaiId, lyDo }, actorId) {
   // Ghi qc_tra_ve loai='RELEASE1' (mức phần in) → màn READY/QC READY hiện badge + LÝ DO trả về;
   // cờ tự tắt khi QC xác nhận READY lại (technical.confirmQC → resolveReturns('RELEASE1')).
   await qaRepo.insertQcTraVe({ loai: 'RELEASE1', phanInId: pinId, dotVaiId, lyDo: reason }, actorId);
+  // Chuông cho Kỹ thuật (mig 085). ⚠ KHÔNG `await`: có thể phải gửi Web Push tới nhiều thiết bị,
+  // chặn response từng ấy giây là hỏng thao tác. Hàm tự nuốt mọi lỗi.
+  thongBao.banThongBao({ loaiTraVe: 'RELEASE1', phanInId: pinId, actorId });
   await tracking.moveByPhanIn(pinId, 'READY', actorId);
 
   sockets.emit('workflow:updated', { stage: 'READY', traVe: true });
@@ -273,11 +280,47 @@ async function traVeKyThuat({ dotVaiId, lyDo }, actorId) {
   return { phan_in_id: pinId, so_phan_in: 1, ma_set: null };
 }
 
+// Kiểm luật "phương án in ↔ loại chuyền" cho danh sách đợt vải sắp release.
+// Lệch ⇒ ném 422 `PAIN_LECH_CHUYEN` kèm danh sách CHI TIẾT từng phần in (`details`) để FE chỉ đúng
+// dòng nào sai, thay vì chỉ báo một câu chung chung rồi người dùng phải tự dò.
+// ⚠ Gom theo PHẦN IN (nhiều đợt vải có thể cùng 1 phần in) — không thì cùng một lỗi báo lặp N lần.
+async function kiemPainVsChuyen(dotVaiIds, chuyenId) {
+  const rows = await repo.getPainVsChuyen(dotVaiIds, chuyenId);
+  const loi = [];
+  const daBao = new Set();
+  rows.forEach((r) => {
+    const kq = kiemCap({
+      maLoaiChuyen: r.ma_loai_chuyen,
+      phuongAnIn: r.phuong_an_in,
+      maChuyen: r.ma_chuyen,
+      maPhan: r.ma_phan,
+    });
+    if (!kq || daBao.has(r.phan_in_id)) return;
+    daBao.add(r.phan_in_id);
+    loi.push({ ...kq, phan_in_id: r.phan_in_id, ma_phan: r.ma_phan, phuong_an_in: r.phuong_an_in });
+  });
+  if (!loi.length) return;
+  const dau = loi[0];
+  throw new AppError(
+    loi.length === 1 ? dau.thong_diep : `${loi.length} phần in có phương án in không khớp loại chuyền. ${dau.thong_diep}`,
+    { status: 422, errorCode: dau.ma_loi, details: loi }
+  );
+}
+
 async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach, tgBdKh, tgKtKh }, actorId) {
   if (!Array.isArray(dotVaiIds) || dotVaiIds.length === 0) {
     throw new AppError('Chọn ít nhất một đợt vải', { status: 422, errorCode: 'NO_DOT_VAI' });
   }
   if (!chuyenId) throw new AppError('Chọn chuyền sản xuất', { status: 422, errorCode: 'NO_CHUYEN' });
+
+  // ⚠⚠ CHẶN: PHƯƠNG ÁN IN PHẢI KHỚP LOẠI CHUYỀN (chốt 18/08/2026 — `utils/phuongAnChuyen.js`).
+  //   CHẶN TUYỆT ĐỐI, không có cờ bỏ qua. Lệch ⇒ phải đổi phương án in (lý do + người duyệt, mig 086).
+  // ⚠ Kiểm TRƯỚC MỌI thao tác ghi (kể cả nhánh Kế hoạch tạm bên dưới): để lọt xuống dưới thì đợt
+  //   CHƯA QC đã kịp lưu kế hoạch tạm với chuyền sai rồi mới báo lỗi — nửa vời, khó gỡ.
+  // ⚠ PHẠM VI: người dùng chốt CHỈ chặn ở Release 1 (chính hàm này). 4 đường gán chuyền còn lại
+  //   (Tạo đợt SX · Kế hoạch tạm xác nhận · Lập kế hoạch lại · Đổi chuyền ở Sản xuất) CỐ Ý KHÔNG
+  //   chặn — nếu sau này muốn bịt thì gọi đúng khối này ở đó, đừng chép luật ra chỗ mới.
+  await kiemPainVsChuyen(dotVaiIds, chuyenId);
 
   // KẾ HOẠCH TẠM (mig 058): tách đợt ĐÃ QC (Ready xong → release ngay) vs CHƯA QC (→ lưu kế hoạch tạm).
   const qcInfo = await repo.getDotVaiForCompose(dotVaiIds);
@@ -961,6 +1004,7 @@ async function returnTestRunToReady(lenhId, { checklists, lyDo, loai }, actorId)
   // + badge "Chờ kỹ thuật làm lại" ở màn Test Run.
   for (const pinId of pinIds) {
     await qaRepo.insertQcTraVe({ loai: 'TEST_RUN_KT', phanInId: pinId, lenhId, checklistList, lyDo: reason }, actorId);
+    thongBao.banThongBao({ loaiTraVe: 'TEST_RUN_KT', phanInId: pinId, actorId }); // chuông Kỹ thuật (mig 085)
   }
   for (const dvId of dotVaiIds) {
     await qaRepo.insertQcTraVe({ loai: 'TEST_RUN', dotVaiId: dvId, lenhId, checklistList, lyDo: reason }, actorId);
