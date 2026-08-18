@@ -201,27 +201,102 @@ const DV = {
     ${LAT_DOT_CUA_PIN('pin.id')} ${LAT_READY('pin.id')} ${LAT_ROI_READY('pin.id')}
     WHERE pin.dang_hoat_dong`,
 
-  // QC chuẩn bị kỹ thuật: CÙNG population với màn Kỹ thuật, chỉ khác lối ra (QC xác nhận).
-  READY_QC: `SELECT pin.id AS phan_in_id, dvs.tg_ready AS tg_vao,
+  // QC chuẩn bị kỹ thuật: **HÀNG ĐỢI CỦA QC** — vào = KỸ THUẬT ĐÃ XÁC NHẬN XONG HẾT MỤC, ra = QC
+  // xác nhận (hoặc rời READY vì đã release thẳng).
+  // ⚠⚠ ĐỔI 18/08/2026 (người dùng chốt) — ĐẢO lại quyết định 16/08 "vào = tg_chuyen_ready".
+  //   Lý do đổi: `listCandidates` phục vụ CẢ 2 màn và lọc y hệt nhau (`onlyQcReady` chỉ đổi cách tính
+  //   SLA), nên lấy mốc vào = lúc lên READY thì ô "Nhận" của QC đếm cả phần in KỸ THUẬT CHƯA ĐỤNG TỚI
+  //   — không phải việc của QC. Nay 4 số phản ánh đúng việc QC phải làm.
+  // ⚠ Ghi chú cũ "đổi vì 4 số ra 0/0/0/0" KHÔNG còn đúng: đo lại prod 13→17/08 cho ra
+  //   Nhận = 197 · 175 · 142 · 0 · 145 (ngày 16/08 nghỉ). Tồn ≈ 0 là ĐÚNG BẢN CHẤT — QC duyệt ngay
+  //   sau khi kỹ thuật xong, không tồn đọng; đừng thấy tồn nhỏ mà tưởng hỏng.
+  // ⚠⚠ BẮT BUỘC có `${JOIN_PIN}`: `MOC_KT_XONG` đọc `kh.ten_khach_hang` (khách II/AD miễn Khuôn).
+  //   Bản cũ KHÔNG join vì không cần `kh` — bỏ quên là lỗi `missing FROM-clause entry for table "kh"`.
+  READY_QC: `SELECT pin.id AS phan_in_id, ${MOC_KT_XONG} AS tg_vao,
+      COALESCE(rdy.moc_qc, roi.moc_roi) AS tg_ra, ${NHAN_TRONG}
+    FROM phan_in pin ${JOIN_PIN}
+    ${LAT_READY('pin.id')} ${LAT_ROI_READY('pin.id')}
+    WHERE pin.dang_hoat_dong`,
+
+  // READY theo nghĩa DÒNG CHẢY (vào = đợt vải lên READY, ra = QC xác nhận) — CHỈ dùng cho **Báo cáo**
+  // (`CP_PHAN_IN.READY`), KHÔNG phải cho màn nào.
+  // ⚠⚠ TÁCH RIÊNG 18/08/2026, đừng gộp lại với `READY_QC`: metric `CP_READY_VAO_HOM_NAY` phải trả lời
+  //   "hôm nay có bao nhiêu phần in VÀO READY" (đo 17/08: 145). Nếu để nó dùng chung `READY_QC` mới thì
+  //   con số biến thành "bao nhiêu phần in KỸ THUẬT LÀM XONG" — cùng ngày ra 10, lệch hẳn ý nghĩa.
+  READY_DONG_CHAY: `SELECT pin.id AS phan_in_id, dvs.tg_ready AS tg_vao,
       COALESCE(rdy.moc_qc, roi.moc_roi) AS tg_ra, ${NHAN_TRONG}
     FROM phan_in pin
     ${LAT_DOT_CUA_PIN('pin.id')} ${LAT_READY('pin.id')} ${LAT_ROI_READY('pin.id')}
     WHERE pin.dang_hoat_dong`,
 
-  // Release 1: đơn vị ĐỢT VẢI. Phần in rời khi MỌI đợt đã release hết số lượng.
-  RELEASE_1: `SELECT dv.phan_in_id, GREATEST(dv.tg_chuyen_ready, rdy.moc_qc) AS tg_vao,
-      CASE WHEN COALESCE(dv.so_luong_vai_ve,0) - COALESCE(rel.da_release,0) <= 0
-           THEN rel.tg_release_cuoi END AS tg_ra,
+  // Release 1: đơn vị ĐỢT VẢI. Vào = đợt vải lên READY (có mặt trên màn Release 1);
+  // ra = đã release HẾT số lượng (`con_release` = 0).
+  // ⚠⚠ BỎ ĐIỀU KIỆN READY 18/08/2026 (người dùng chốt): bản cũ `GREATEST(tg_chuyen_ready, moc_qc)`
+  //   đẩy mốc vào tới lúc QC xác nhận. Nhưng **màn Release 1 KHÔNG đòi QC** —
+  //   `listRelease1Candidates` chỉ lọc `tg_chuyen_ready IS NOT NULL` + `con_release > 0` và hiện badge
+  //   "Đã Ready"/"Chờ Ready" (bỏ bắt buộc QC từ khi có Kế hoạch tạm, mig 058) ⇒ sĩ số đang đếm THIẾU
+  //   so với chính bảng bên dưới. Đo prod: tồn cuối 15/08 **159 → 194**, 14/08 **195 → 264**.
+  // ⚠ `GREATEST` bỏ qua NULL nên bản cũ vẫn lọt phần in chưa QC vào ô "Nhận" ở mốc `tg_chuyen_ready`
+  //   — tức 2 ô "Nhận"/"Tồn" đang tính theo 2 mốc khác nhau. Nay chỉ còn MỘT mốc, hết mâu thuẫn.
+  // ⚠⚠ 2 LỐI RA — thiếu lối thứ 2 là số sĩ số vô nghĩa: đợt vải được LẬP KẾ HOẠCH TẠM sẽ **biến mất
+  //   khỏi màn Release 1** (`listRelease1Candidates` loại `ke_hoach_tam` 'CHO') nhưng vẫn còn
+  //   `con_release > 0`. Đo prod 18/08: **161/165 đợt còn release đang nằm ở Kế hoạch tạm** ⇒ nếu chỉ
+  //   có lối ra "release hết SL" thì sĩ số báo **159 phần in** trong khi bảng chỉ hiện **4**.
+  // ⚠ Mốc rời dùng `kht.created_date` (lúc lập kế hoạch tạm), bọc `GREATEST` để giữ bất biến
+  //   `tg_ra >= tg_vao`. Ưu tiên nhánh "đã release hết" trước — đó mới là rời THẬT khỏi chặng.
+  // ⚠ Điều kiện "đang ở Kế hoạch tạm" đọc TRẠNG THÁI SỐNG (`kht.id IS NOT NULL`), không phải mốc lịch
+  //   sử ⇒ xóa kế hoạch tạm là đợt **tự quay lại** ô Tồn ngay, không cần bản ghi "vào lại".
+  RELEASE_1: `SELECT dv.phan_in_id, dv.tg_chuyen_ready AS tg_vao,
+      COALESCE(
+        CASE WHEN COALESCE(dv.so_luong_vai_ve,0) - COALESCE(rel.da_release,0) <= 0
+             THEN rel.tg_release_cuoi END,
+        CASE WHEN kht.id IS NOT NULL
+             THEN GREATEST(dv.tg_chuyen_ready, kht.created_date) END) AS tg_ra,
       NULL::text AS ma_lenh_san_xuat, NULL::text AS ten_chuyen, NULL::date AS ngay_ke_hoach,
       rel.tg_release_cuoi AS ngay_release, NULL::text AS ma_tem
     FROM dot_vai_ve dv
     JOIN phan_in pin ON pin.id = dv.phan_in_id AND pin.dang_hoat_dong
-    ${LAT_READY('pin.id')}
+    LEFT JOIN ke_hoach_tam kht ON kht.dot_vai_ve_id = dv.id AND kht.trang_thai = 'CHO'
     LEFT JOIN LATERAL (SELECT sum(xlsd.so_luong)::int AS da_release,
         max(xls.created_date) AS tg_release_cuoi
       FROM lenh_sx_dot_vai xlsd JOIN lenh_san_xuat xls ON xls.id = xlsd.lenh_san_xuat_id
       WHERE xlsd.dot_vai_ve_id = dv.id AND xls.trang_thai <> 'HUY') rel ON true
     WHERE dv.trang_thai NOT IN ('DA_GOP','DA_HUY') AND dv.tg_chuyen_ready IS NOT NULL`,
+
+  // KẾ HOẠCH TẠM (mig 058): lập kế hoạch SỚM cho đợt vải chưa QC. Vào = lần LƯU gần nhất,
+  // ra = xác nhận Release 1 / xóa kế hoạch tạm.
+  // ⚠⚠ DÒNG `ke_hoach_tam` BỊ XÓA KHI XONG ⇒ mốc phải lấy từ `audit_log` (`ten_bang='ke_hoach_tam'`,
+  //   `id_ban_ghi` = **dot_vai_ve_id**, kiểu VARCHAR nên phải so `dv.id::text`).
+  // ⚠⚠ NHƯNG KHÔNG ĐƯỢC TIN AUDIT MỘT MÌNH ĐỂ SUY "ĐÃ RỜI": có **2 đường xóa KHÔNG ghi audit** —
+  //   (a) `releaseSet` → `deleteKeHoachTamByDotVai` (dọn kế hoạch tạm khi release theo gom set);
+  //   (b) nhánh `da_don` của `confirmKeHoachTam` (dòng chết của dữ liệu cũ, return sớm).
+  //   Chỉ dựa vào audit thì tồn cuối ra **340** trong khi thực tế chỉ **156** phần in còn kế hoạch tạm.
+  //   ⇒ Còn nằm ở màn hay không phải hỏi CHÍNH BẢNG `ke_hoach_tam` (`kht.id IS NOT NULL`).
+  // ⚠ `GREATEST(moc_vao, …)` giữ bất biến `tg_ra >= tg_vao`; thứ tự lùi: audit XÁC NHẬN/XÓA → mốc tạo
+  //   lệnh của đợt (đường `releaseSet`) → chính `moc_vao` (đã rời nhưng không rõ lúc nào ⇒ coi như rời
+  //   ngay, 4 số vẫn cân). Đối chiếu prod 18/08: tồn cuối **156 = 156** phần in trên màn.
+  KE_HOACH_TAM: `SELECT dv.phan_in_id, kt.moc_vao AS tg_vao,
+      CASE WHEN kht.id IS NOT NULL THEN NULL
+           ELSE GREATEST(kt.moc_vao, COALESCE(kt.moc_ra, rel.tg_release_cuoi)) END AS tg_ra,
+      NULL::text AS ma_lenh_san_xuat, cs.ten_chuyen,
+      COALESCE(kht.ngay_ke_hoach, kt.ngay_kh_audit) AS ngay_ke_hoach,
+      rel.tg_release_cuoi AS ngay_release, NULL::text AS ma_tem
+    FROM (SELECT xa.id_ban_ghi,
+            max(xa.thoi_gian) FILTER (WHERE xa.hanh_dong = 'LUU_KE_HOACH_TAM') AS moc_vao,
+            max(xa.thoi_gian) FILTER (WHERE xa.hanh_dong IN ('XAC_NHAN_KE_HOACH_TAM','XOA_KE_HOACH_TAM')) AS moc_ra,
+            (array_agg((xa.gia_tri_moi->>'ngay_ke_hoach')::date ORDER BY xa.thoi_gian DESC)
+               FILTER (WHERE xa.gia_tri_moi->>'ngay_ke_hoach' IS NOT NULL))[1] AS ngay_kh_audit,
+            (array_agg(xa.gia_tri_moi->>'chuyen_id' ORDER BY xa.thoi_gian DESC)
+               FILTER (WHERE xa.gia_tri_moi->>'chuyen_id' IS NOT NULL))[1] AS chuyen_id_audit
+          FROM audit_log xa WHERE xa.ten_bang = 'ke_hoach_tam' GROUP BY xa.id_ban_ghi) kt
+    JOIN dot_vai_ve dv ON dv.id::text = kt.id_ban_ghi
+    JOIN phan_in pin ON pin.id = dv.phan_in_id AND pin.dang_hoat_dong
+    LEFT JOIN ke_hoach_tam kht ON kht.dot_vai_ve_id = dv.id AND kht.trang_thai = 'CHO'
+    LEFT JOIN chuyen_san_xuat cs ON cs.id = COALESCE(kht.chuyen_id, kt.chuyen_id_audit::uuid)
+    LEFT JOIN LATERAL (SELECT max(xls.created_date) AS tg_release_cuoi
+      FROM lenh_sx_dot_vai xlsd JOIN lenh_san_xuat xls ON xls.id = xlsd.lenh_san_xuat_id
+      WHERE xlsd.dot_vai_ve_id = dv.id AND xls.trang_thai <> 'HUY') rel ON true
+    WHERE dv.trang_thai NOT IN ('DA_GOP','DA_HUY') AND kt.moc_vao IS NOT NULL`,
 
   // Test Run: vào = lệnh Release 1 tạo ra, ra = QA xác nhận đạt (hoặc lệnh đã rời chặng RELEASE_1).
   // ⚠ Lệnh **ĐI TẮT Test Run** (chưa từng có `TEST_QA` mà đã rời `RELEASE_1`) bị loại HẲN khỏi trạm
@@ -384,6 +459,11 @@ const MAN = {
     ten: 'Release 2', donVi: 'pin', nhan: 'phần in', quyen: ['RELEASE2'],
     sql: manTheoPin(DV.RELEASE_2),
   },
+  // ⚠ Quyền khớp menu (`constants/modules.js`: Kế hoạch tạm mở cho RELEASE1 hoặc RELEASE2).
+  KH_TAM: {
+    ten: 'Kế hoạch tạm', donVi: 'pin', nhan: 'phần in', quyen: ['RELEASE1', 'RELEASE2'],
+    sql: manTheoPin(DV.KE_HOACH_TAM),
+  },
   SX_CHO_CHAY: {
     ten: 'Xác nhận chạy', donVi: 'pin', nhan: 'phần in', quyen: ['PROD_RUN', 'PROD_MONITOR'],
     sql: manTheoPin(DV.SAN_XUAT),
@@ -416,7 +496,9 @@ const MAN = {
 // ⚠ Khóa ở đây là **`tram.ma_tram`** (khớp hằng `CP_FLOW` của `bao-cao/metrics.js`), không phải mã trang.
 // ⚠ `READY` dùng `DV.READY_QC` (mốc ra = `QC_XAC_NHAN`) — đó mới là "READY hoàn tất" theo nghĩa dòng chảy.
 const CP_PHAN_IN = {
-  READY: gomTheoPin(DV.READY_QC),
+  // ⚠⚠ DÙNG `READY_DONG_CHAY`, KHÔNG dùng `READY_QC`: từ 18/08/2026 `READY_QC` mang nghĩa "hàng đợi
+  //   của QC" (vào = kỹ thuật xong hết) — hợp cho MÀN, sai cho báo cáo dòng chảy. Xem chú thích ở `DV`.
+  READY: gomTheoPin(DV.READY_DONG_CHAY),
   RELEASE_1: gomTheoPin(DV.RELEASE_1),
   TEST_RUN: gomTheoPin(DV.TEST_RUN),
   RELEASE_2: gomTheoPin(DV.RELEASE_2),
