@@ -47,7 +47,11 @@ function gonPhanHoi(v) {
  *  - soLanThu  {number}  đã thử mấy lần mới xong/mới bỏ
  *  - thoiGianMs{number}
  *  - gui       {object}  payload gửi lên (null với API chỉ GET)
- *  - nhan      {any}     phản hồi nhận về
+ *  - nhan      {any}     phản hồi nhận về — LƯU CẢ KHI LỖI (xem `erpGhiInTem.goiMotLan`)
+ *  - erpMessage     {string} `message` ERP trả về (cả 2 nhánh)
+ *  - erpError       {string} `error` ERP trả về ở nhánh lỗi — câu của SQL Server
+ *  - erpReturnValue {number} mã RETURN của stored procedure (0 = OK). ⚠ Router ERP vẫn trả
+ *                            `success: true` khi proc trả mã khác 0 ⇒ phải lưu riêng để rà.
  *  - loi       {string}
  *  - actorId   {string}
  */
@@ -69,6 +73,11 @@ async function ghiLog(maApi, o = {}) {
           thoi_gian_ms: o.thoiGianMs ?? null,
           gui: o.gui ?? null,
           nhan: gonPhanHoi(o.nhan),
+          // ⚠ 3 khóa dưới nâng từ trong `nhan` ra mức trên cùng để màn Lịch sử đọc thẳng — cùng lý
+          //   do đã làm với `id_mes`. Khóa vắng mặt ở dòng CŨ ⇒ bên đọc phải chịu được `null`.
+          erp_message: o.erpMessage ?? null,
+          erp_error: o.erpError ?? null,
+          erp_return_value: o.erpReturnValue ?? null,
           loi: o.loi ?? null,
         }),
         o.actorId || null,

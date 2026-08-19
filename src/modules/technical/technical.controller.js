@@ -4,7 +4,7 @@ const service = require('./technical.service');
 const asyncHandler = require('../../utils/asyncHandler');
 const AppError = require('../../utils/AppError');
 const { ok } = require('../../utils/response');
-const { getPaging } = require('../../utils/pagination');
+const { getPaging, TRAN_TAI_HET } = require('../../utils/pagination');
 
 // Map mục kỹ thuật → quyền tương ứng (xác nhận theo từng bộ phận).
 const ITEM_PERM = { KHUON: 'READY_KHUON', FILM: 'READY_FILM', MUC: 'READY_MUC', HSKT: 'READY_HSKT' };
@@ -12,13 +12,13 @@ const ITEM_PERM = { KHUON: 'READY_KHUON', FILM: 'READY_FILM', MUC: 'READY_MUC', 
 const config = asyncHandler(async (req, res) => ok(res, await service.getConfig()));
 
 const candidates = asyncHandler(async (req, res) => {
-  const { page, limit, offset } = getPaging(req.query);
+  const { page, limit, offset } = getPaging(req.query, { tranToiDa: TRAN_TAI_HET });
   const data = await service.listCandidates({ search: req.query.search || '', page, limit, offset });
   return ok(res, data);
 });
 
 const qcCandidates = asyncHandler(async (req, res) => {
-  const { page, limit, offset } = getPaging(req.query);
+  const { page, limit, offset } = getPaging(req.query, { tranToiDa: TRAN_TAI_HET });
   const data = await service.listCandidates({ search: req.query.search || '', page, limit, offset, onlyQcReady: true });
   return ok(res, data);
 });

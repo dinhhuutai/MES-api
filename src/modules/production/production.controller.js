@@ -4,10 +4,10 @@ const service = require('./production.service');
 const planningService = require('../planning/planning.service'); // dùng chung candidate Test Run
 const asyncHandler = require('../../utils/asyncHandler');
 const { ok } = require('../../utils/response');
-const { getPaging } = require('../../utils/pagination');
+const { getPaging, TRAN_TAI_HET } = require('../../utils/pagination');
 
 const candidates = asyncHandler(async (req, res) => {
-  const { page, limit, offset } = getPaging(req.query);
+  const { page, limit, offset } = getPaging(req.query, { tranToiDa: TRAN_TAI_HET });
   return ok(res, await service.listCandidates({ search: req.query.search || '', page, limit, offset }));
 });
 

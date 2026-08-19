@@ -897,7 +897,14 @@ async function duLieuGhiInTem(capTem = []) {
 // ⚠ `IDMES` là KHÓA ĐỐI SOÁT MES ↔ ERP nên luôn được nâng lên mức trên cùng của JSON (cả 2 nhánh),
 //   để màn lịch sử tìm theo IDMES không phải lặn vào `payload`.
 // ⚠ Bọc try/catch (trong `ghiLog`): đây là bước GHI VẾT, hỏng nó không được kéo theo lỗi khi in tem.
+// ⚠⚠ NÂNG `message` + `returnValue` LÊN MỨC TRÊN CÙNG (19/08/2026) — cùng lý do đã làm với `IDMES`:
+//   màn *Lịch sử* phải đọc được ngay, khỏi lặn vào `nhan`. Hai thứ này là câu trả lời của ERP cho
+//   câu hỏi "lượt in đó ERP nói gì", và có ở CẢ nhánh thành công lẫn thất bại.
+// ⚠ `returnValue` là mã RETURN của stored procedure. Router ERP luôn trả `success: true` khi
+//   `execute()` không ném ⇒ proc trả mã khác 0 (lỗi nghiệp vụ) vẫn được coi là thành công. Lưu tách
+//   ra thì mới rà được về sau.
 async function logGhiInTem(temId, thanhCong, payload, loi, actorId, phanHoi = null) {
+  const p = phanHoi && typeof phanHoi === 'object' ? phanHoi : null;
   await ghiLog('ERP_GHI_IN_TEM', {
     thanhCong,
     idBanGhi: temId,
@@ -906,6 +913,10 @@ async function logGhiInTem(temId, thanhCong, payload, loi, actorId, phanHoi = nu
     url: env.erp.ghiInTemUrl,
     gui: payload || null,
     nhan: phanHoi,
+    // Thông điệp ERP trả về — nhánh lỗi thì router ERP để câu SQL Server ở khóa `error`.
+    erpMessage: p ? (p.message ?? null) : null,
+    erpError: p ? (p.error ?? null) : null,
+    erpReturnValue: p && p.returnValue != null ? p.returnValue : null,
     loi: loi || null,
     actorId,
   });

@@ -128,12 +128,42 @@ async function goiMotLan(body) {
     proxy: erpProxy(),
     validateStatus: () => true,
   });
-  if (res.status < 200 || res.status >= 300) {
-    const chiTiet = typeof res.data === 'string' ? res.data.slice(0, 300) : JSON.stringify(res.data || {}).slice(0, 300);
-    throw new Error(`ERP trả về HTTP ${res.status}${chiTiet ? ` — ${chiTiet}` : ''}`);
-  }
   const data = typeof res.data === 'string' ? safeJson(res.data) : res.data;
-  if (data && data.success === false) throw new Error(data.message || 'ERP trả về success=false');
+
+  // ⚠⚠ LỖI CŨNG PHẢI GIỮ NGUYÊN PHẢN HỒI ERP (19/08/2026 — người dùng yêu cầu: "dù thành công hay
+  //   thất bại cũng lưu message lại"). Bản cũ chỉ nhét 300 ký tự đầu vào CHUỖI lỗi rồi ném đi, nên
+  //   `nhan` trong `audit_log` là NULL ở mọi dòng lỗi — mất hẳn `message`/`error` mà ERP nói ra.
+  //   Nay đính kèm phản hồi vào chính đối tượng lỗi để `ghiInTem` lưu y như nhánh thành công.
+  //   Ca thật 14/08: ERP trả `{"success":false,"message":"Lỗi ghi in tem","error":"String or binary
+  //   data would be truncated."}` — câu `error` đó mới là thứ chỉ ra cột nào bị tràn.
+  const kemPhanHoi = (msg) => {
+    const e = new Error(msg);
+    e.phanHoi = data ?? res.data ?? null;   // nguyên văn thân phản hồi
+    e.httpStatus = res.status;
+    return e;
+  };
+
+  if (res.status < 200 || res.status >= 300) {
+    // Router ERP trả `{ success:false, message, error }` kèm HTTP 500 — `error` là câu của SQL Server.
+    const chiTiet = data && (data.error || data.message)
+      ? `${data.message || ''}${data.error ? ` — ${data.error}` : ''}`.trim()
+      : String(typeof res.data === 'string' ? res.data : JSON.stringify(res.data || {})).slice(0, 300);
+    throw kemPhanHoi(`ERP trả về HTTP ${res.status}${chiTiet ? ` — ${chiTiet}` : ''}`);
+  }
+  if (data && data.success === false) {
+    throw kemPhanHoi(`${data.message || 'ERP trả về success=false'}${data.error ? ` — ${data.error}` : ''}`);
+  }
+
+  // ⚠⚠ `returnValue` LÀ MÃ TRẢ VỀ CỦA STORED PROCEDURE, KHÔNG PHẢI HTTP status. Router ERP bọc
+  //   `request.execute('MES_spr_MES2SF0')` trong try/catch, nên proc chạy XONG mà `RETURN` mã khác 0
+  //   (lỗi NGHIỆP VỤ: trùng tem, sai đợt nhận vải…) thì router VẪN trả `success: true`.
+  //   ⇒ MES không được coi mỗi `success` là đủ: giữ nguyên `returnValue` để đối chiếu, và cảnh báo
+  //   ra log khi khác 0. CỐ Ý KHÔNG ném lỗi ở đây — chưa rõ bảng mã của proc, ném bừa sẽ chặn in tem
+  //   vì một mã có thể hoàn toàn bình thường.
+  if (data && data.returnValue != null && Number(data.returnValue) !== 0) {
+    console.warn(`[ghi-in-tem] ⚠ ERP nhận nhưng proc trả returnValue=${data.returnValue}`
+      + ` (IDMES ${body.IDMES}, tem ${body.BarcodeIn}) — kiểm tra ở Hệ thống > Cài đặt API > Lịch sử`);
+  }
   return data || {};
 }
 
@@ -176,7 +206,9 @@ async function ghiInTem(row) {
   }
   const error = `${loiCuoi && loiCuoi.message} (${env.erp.ghiInTemUrl})`;
   console.error(`[ghi-in-tem] ✗ Không báo được ERP sau ${soLan} lần — tem ${body.BarcodeIn}: ${error}`);
-  return { ok: false, body, error };
+  // ⚠ TRẢ CẢ `data` Ở NHÁNH LỖI: phản hồi nguyên văn của ERP (nếu có) được `goiMotLan` đính vào lỗi.
+  //   Lỗi mạng/timeout thì không có gì để trả → `null`, đúng bản chất "chưa tới được ERP".
+  return { ok: false, body, error, data: (loiCuoi && loiCuoi.phanHoi) || null };
 }
 
 module.exports = { ghiInTem, chuanHoa, THU_TU_TRUONG, DAI_TOI_DA };

@@ -45,6 +45,18 @@ async function thongTinSua() {
 const ID_MES = `COALESCE(a.gia_tri_moi->>'id_mes', a.gia_tri_moi->'gui'->>'IDMES', a.gia_tri_moi->'payload'->>'IDMES')`;
 const MA_TEM = `COALESCE(a.gia_tri_moi->>'ma_tem', a.gia_tri_moi->'gui'->>'BarcodeIn', a.gia_tri_moi->'payload'->>'BarcodeIn')`;
 
+// ERP TRẢ VỀ GÌ — thêm 19/08/2026 theo yêu cầu "dù thành công hay thất bại cũng lưu message lại".
+// ⚠⚠ `nhan` được `gonPhanHoi` lưu dưới dạng **CHUỖI JSON**, không phải jsonb lồng ⇒ muốn moi khóa
+//   bên trong phải `->>'nhan'` rồi mới ép `::jsonb`. Dòng có phản hồi KHÔNG phải JSON (ERP trả HTML
+//   khi sập chẳng hạn) sẽ làm phép ép kiểu ném lỗi và HỎNG CẢ TRANG lịch sử ⇒ chỉ ép khi chuỗi thật
+//   sự bắt đầu bằng `{`. Đây là màn tra cứu — không được để một dòng rác làm chết cả màn.
+const NHAN_JSON = `CASE WHEN left(btrim(COALESCE(a.gia_tri_moi->>'nhan','')), 1) = '{'
+  THEN (a.gia_tri_moi->>'nhan')::jsonb END`;
+// Ưu tiên khóa nâng sẵn ở mức trên cùng (dòng MỚI); dòng CŨ thì moi từ `nhan`.
+const ERP_MESSAGE = `COALESCE(a.gia_tri_moi->>'erp_message', (${NHAN_JSON})->>'message')`;
+const ERP_ERROR = `COALESCE(a.gia_tri_moi->>'erp_error', (${NHAN_JSON})->>'error')`;
+const ERP_RETURN = `COALESCE(a.gia_tri_moi->>'erp_return_value', (${NHAN_JSON})->>'returnValue')`;
+
 // `ma` = mã API (ERP_BARCODE_TEM | ERP_GHI_IN_TEM). Lấy cả dòng thành công (`ma`) lẫn lỗi (`ma_LOI`).
 // ⚠ Lọc ngày theo GIỜ VN (khuôn chung của mọi màn lịch sử — §11.8 DATABASE.md).
 // ⚠ Tìm kiếm: theo IDMES / mã tem — 2 khóa người dùng thực sự cầm trên tay khi đối soát 2 bên.
@@ -64,6 +76,9 @@ async function lichSu({ ma, date = '', search = '', offset = 0, limit = 20 }) {
            ${ID_MES} AS id_mes, ${MA_TEM} AS ma_tem,
            a.gia_tri_moi->>'url' AS url,
            a.gia_tri_moi->>'loi' AS loi,
+           ${ERP_MESSAGE} AS erp_message,
+           ${ERP_ERROR} AS erp_error,
+           ${ERP_RETURN} AS erp_return_value,
            (a.gia_tri_moi->>'so_lan_thu')::int AS so_lan_thu,
            (a.gia_tri_moi->>'thoi_gian_ms')::int AS thoi_gian_ms,
            a.gia_tri_moi AS chi_tiet,

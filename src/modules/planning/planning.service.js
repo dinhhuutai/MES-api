@@ -677,16 +677,34 @@ async function listTestRunCandidates({ search, page, limit, offset }) {
   const { rows, total } = await repo.listTestRunCandidates({ cnspId: byMa[CNSP_CP].id, qaId: byMa[QA_CP].id, search, offset, limit });
   // Lệnh đang CHỜ KỸ THUẬT (đã bị QA trả về READY, `cho_ky_thuat` từ repo): gắn lý do + mục rớt để FE
   // hiện badge "Chờ kỹ thuật làm lại". Lấy theo đợt vải của lệnh (qc_tra_ve loai='TEST_RUN').
+  //
+  // ⚠⚠ GỘP QUERY, KHÔNG PHẢI N+1 (19/08/2026): bản cũ gọi `tracking.dotVaiFromLenh` cho TỪNG lệnh —
+  //   đo prod 24 lệnh chờ kỹ thuật = 24 lượt gọi DB cho một lần mở màn. Nay 1 query gộp.
   const choKt = rows.filter((r) => r.cho_ky_thuat);
-  if (choKt.length) {
-    const perLenh = await Promise.all(choKt.map((r) => tracking.dotVaiFromLenh(r.id)));
-    const allDv = [...new Set(perLenh.flat())];
+
+  // ⚠ 2 query ĐỘC LẬP ⇒ chạy chồng thời gian. `activeReturnsMap` KHÔNG vào đây được vì nó cần
+  //   danh sách đợt vải do `dotVaiIdsByLenh` trả về.
+  const [phanInTheoLenh, dotVaiTheoLenh] = await Promise.all([
+    repo.phanInRowsByLenh(rows.filter((r) => Number(r.so_phan_in) > 1).map((r) => r.id)),
+    choKt.length ? repo.dotVaiIdsByLenh(choKt.map((r) => r.id)) : {},
+  ]);
+
+  const allDv = [...new Set(Object.values(dotVaiTheoLenh).flat())];
+  if (allDv.length) {
     const rm = await qaRepo.activeReturnsMap('TEST_RUN', allDv);
-    choKt.forEach((r, i) => { r.tra_ve = (perLenh[i] || []).map((id) => rm[id]).find(Boolean) || null; });
+    choKt.forEach((r) => { r.tra_ve = (dotVaiTheoLenh[r.id] || []).map((id) => rm[id]).find(Boolean) || null; });
   }
+
+  // ⚠⚠ GẮN `phan_in_list` PHẢI LÀ BƯỚC CUỐI: nó tạo object MỚI (`{...r, phan_in_list}`), nên mọi thứ
+  //   sửa tại chỗ trên `rows` (ở đây là `r.tra_ve`) phải xong TRƯỚC — nếu không, bản sao sẽ thiếu
+  //   `tra_ve` và badge "Chờ kỹ thuật làm lại" biến mất ở đúng các lệnh gom set.
+  const byLenh = {};
+  for (const p of phanInTheoLenh) (byLenh[p.lenh_san_xuat_id] ||= []).push(p);
+  const items = rows.map((r) => (byLenh[r.id] ? { ...r, phan_in_list: byLenh[r.id] } : r));
+
   // ⚠⚠ `total` là TỔNG THẬT từ repo, KHÔNG phải `rows.length` (số dòng của trang). Dùng `rows.length`
   //   thì FE không bao giờ biết còn trang nữa — đúng lỗi khiến màn này chỉ hiện 200/658 lệnh.
-  return { items: await attachPhanInList(rows), meta: buildMeta(page, limit, total) };
+  return { items, meta: buildMeta(page, limit, total) };
 }
 
 async function getLenhDetail(lenhId) {

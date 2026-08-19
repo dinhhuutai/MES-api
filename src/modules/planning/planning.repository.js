@@ -78,10 +78,10 @@ async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
     LIMIT $2 OFFSET $3`;
   const countSql = `SELECT count(*)::int AS total ${FROM}`;
 
-  const [data, count] = await Promise.all([
-    query(dataSql, [mauTim(search), limit, offset]),
-    query(countSql, [mauTim(search)]),
-  ]);
+  // ⚠ Cùng luật với `demNeuCan` bên dưới: lấy về ít hơn `limit` thì `total` đã biết, khỏi đếm.
+  const data = await query(dataSql, [mauTim(search), limit, offset]);
+  if (data.rows.length < limit) return { rows: data.rows, total: offset + data.rows.length };
+  const count = await query(countSql, [mauTim(search)]);
   return { rows: data.rows, total: count.rows[0].total };
 }
 
@@ -611,15 +611,23 @@ function lenhListSql(extraWhere, dkPain = 'TRUE') {
 // ⚠⚠ TRẢ `total` THẬT (số lệnh của CẢ tập), KHÔNG phải số dòng của trang. Trước 19/08/2026 service
 //   đặt `meta.total = rows.length` ⇒ FE không thể biết còn trang nữa hay không: `taiHetTrang` thấy
 //   `items.length >= total` là dừng ngay sau trang đầu, và màn Test Run - QA chỉ hiện 200/658 lệnh.
+// ⚠ BỎ CÂU ĐẾM KHI ĐÃ LẤY HẾT (19/08/2026): lấy về ÍT hơn `limit` nghĩa là không còn trang sau nữa
+//   ⇒ `total` suy thẳng từ `offset + rows.length`, khỏi tốn một lượt gọi DB cho con số đã biết.
+//   Với màn tải-hết (trần 1000) thì hầu như luôn rơi vào nhánh này. Vẫn đếm thật khi `rows.length`
+//   chạm đúng `limit` — lúc đó mới thực sự chưa biết còn bao nhiêu.
+const demNeuCan = async (rows, { sql, params, offset, limit }) => {
+  if (rows.length < limit) return offset + rows.length;
+  const { rows: r } = await query(sql, params);
+  return r[0].total;
+};
+
 async function listTestRunCandidates({ cnspId, qaId, search = '', offset = 0, limit = 20 }) {
   const dkPain = await dkTrang('CL_TEST_RUN', 'lenh', 'ls.id');
   const tim = mauTim(search);
-  const [data, count] = await Promise.all([
-    query(lenhListSql('', dkPain), [tim, cnspId, qaId, limit, offset]),
-    // extraWhere rỗng ⇒ câu đếm KHÔNG dùng $2/$3 ⇒ chỉ được truyền đúng 1 tham số.
-    query(lenhCountSql('', dkPain), [tim]),
-  ]);
-  return { rows: data.rows, total: count.rows[0].total };
+  const data = await query(lenhListSql('', dkPain), [tim, cnspId, qaId, limit, offset]);
+  // extraWhere rỗng ⇒ câu đếm KHÔNG dùng $2/$3 ⇒ chỉ được truyền đúng 1 tham số.
+  const total = await demNeuCan(data.rows, { sql: lenhCountSql('', dkPain), params: [tim], offset, limit });
+  return { rows: data.rows, total };
 }
 
 async function listRelease2Candidates({ cnspId, qaId, search = '', offset = 0, limit = 20 }) {
@@ -628,11 +636,11 @@ async function listRelease2Candidates({ cnspId, qaId, search = '', offset = 0, l
     AND EXISTS (SELECT 1 FROM ket_qua_checkpoint k WHERE k.lenh_san_xuat_id = ls.id AND k.checkpoint_id = $3 AND k.trang_thai='DAT')`;
   const dkPain = await dkTrang('KH_RELEASE2', 'lenh', 'ls.id');
   const tim = mauTim(search);
-  const [data, count] = await Promise.all([
-    query(lenhListSql(extra, dkPain), [tim, cnspId, qaId, limit, offset]),
-    query(lenhCountSql(extra, dkPain), [tim, cnspId, qaId]),
-  ]);
-  return { rows: data.rows, total: count.rows[0].total };
+  const data = await query(lenhListSql(extra, dkPain), [tim, cnspId, qaId, limit, offset]);
+  const total = await demNeuCan(data.rows, {
+    sql: lenhCountSql(extra, dkPain), params: [tim, cnspId, qaId], offset, limit,
+  });
+  return { rows: data.rows, total };
 }
 
 async function getLenhBasic(lenhId) {
@@ -1292,6 +1300,24 @@ async function planHistoryByDate(date) {
   return rows;
 }
 
+// ĐỢT VẢI của NHIỀU lệnh trong 1 LƯỢT QUERY → `{ [lenhId]: [dotVaiId, …] }`.
+//
+// ⚠⚠ Thay cho vòng `Promise.all(rows.map(r => tracking.dotVaiFromLenh(r.id)))` ở
+//   `planning.service.listTestRunCandidates` — mỗi lệnh chờ kỹ thuật tốn 1 query riêng (đo prod
+//   19/08/2026: 24 lệnh = 24 lượt gọi DB). Cùng khuôn đã dùng cho `phanInRowsByLenh` ở đây và ở
+//   `production.repository` ("gộp 1 query thay vì gọi cho từng lệnh (N+1 → IPS reset)").
+// ⚠ Lệnh không có đợt vải nào sẽ KHÔNG có khóa trong map ⇒ bên gọi phải `|| []`.
+async function dotVaiIdsByLenh(lenhIds = []) {
+  if (!lenhIds.length) return {};
+  const { rows } = await query(
+    'SELECT lenh_san_xuat_id, dot_vai_ve_id FROM lenh_sx_dot_vai WHERE lenh_san_xuat_id = ANY($1::uuid[])',
+    [lenhIds]
+  );
+  const m = {};
+  for (const r of rows) (m[r.lenh_san_xuat_id] ||= []).push(r.dot_vai_ve_id);
+  return m;
+}
+
 async function getLenhDotVai(lenhId) {
   const { rows } = await query(
     `SELECT dv.id AS dot_vai_id, dv.ma_dot_vai, dv.so_luong_vai_ve,
@@ -1608,7 +1634,7 @@ module.exports = {
   testedDotVaiIds, getDotVaiQty, getDotVaiRemaining, getDotVaiForCompose, getPainVsChuyen, phanInDangChay, addLenhDotVai, dotVaiAlreadyReleased,
   activateEpUi, getLenhGiaiDoan, getChuyenLoai,
   listGopCandidates, getDotVaiForMerge, adjustDotVaiQty, markDotVaiGop, insertGopHistory, gopHistoryByDate,
-  listTestRunCandidates, listRelease2Candidates, getLenhBasic, getLenhDotVai, getTestRuns,
+  listTestRunCandidates, listRelease2Candidates, getLenhBasic, getLenhDotVai, dotVaiIdsByLenh, getTestRuns,
   getLenhTestStatus, insertTestRun, insertTestRunTx, upsertLenhResult, insertStatusLog, setLenhTrangThai,
   testRunHistoryByDate, testRunsByLenh,
   listReplanCandidates, getLenhForReplan, updateLenhPlan, logPlanChange, planHistoryByDate,

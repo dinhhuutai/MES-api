@@ -3,10 +3,10 @@
 const service = require('./planning.service');
 const asyncHandler = require('../../utils/asyncHandler');
 const { ok, created } = require('../../utils/response');
-const { getPaging } = require('../../utils/pagination');
+const { getPaging, TRAN_TAI_HET } = require('../../utils/pagination');
 
 const release1Candidates = asyncHandler(async (req, res) => {
-  const { page, limit, offset } = getPaging(req.query);
+  const { page, limit, offset } = getPaging(req.query, { tranToiDa: TRAN_TAI_HET });
   return ok(res, await service.listRelease1Candidates({ search: req.query.search || '', page, limit, offset }));
 });
 
@@ -53,7 +53,7 @@ const releaseSet = asyncHandler(async (req, res) =>
   created(res, await service.releaseSet(req.params.setId, req.body, req.user.id), 'Đã release set — tạo lệnh sản xuất chung'));
 
 const testRunCandidates = asyncHandler(async (req, res) => {
-  const { page, limit, offset } = getPaging(req.query);
+  const { page, limit, offset } = getPaging(req.query, { tranToiDa: TRAN_TAI_HET });
   return ok(res, await service.listTestRunCandidates({ search: req.query.search || '', page, limit, offset }));
 });
 
@@ -90,7 +90,7 @@ const confirmQABatch = asyncHandler(async (req, res) =>
   }), 'QA xác nhận hàng loạt'));
 
 const release2Candidates = asyncHandler(async (req, res) => {
-  const { page, limit, offset } = getPaging(req.query);
+  const { page, limit, offset } = getPaging(req.query, { tranToiDa: TRAN_TAI_HET });
   return ok(res, await service.listRelease2Candidates({ search: req.query.search || '', page, limit, offset }));
 });
 
@@ -106,7 +106,7 @@ const testRunHistory = asyncHandler(async (req, res) => {
 });
 
 const replanCandidates = asyncHandler(async (req, res) => {
-  const { page, limit, offset } = getPaging(req.query);
+  const { page, limit, offset } = getPaging(req.query, { tranToiDa: TRAN_TAI_HET });
   return ok(res, await service.listReplanCandidates({ search: req.query.search || '', page, limit, offset }));
 });
 
@@ -117,7 +117,7 @@ const replan = asyncHandler(async (req, res) =>
   ok(res, await service.replan(req.params.lenhId, req.body, req.user.id), 'Đã lập lại kế hoạch'));
 
 const giaCongList = asyncHandler(async (req, res) => {
-  const { page, limit, offset } = getPaging(req.query);
+  const { page, limit, offset } = getPaging(req.query, { tranToiDa: TRAN_TAI_HET });
   return ok(res, await service.listGiaCong({ search: req.query.search || '', page, limit, offset }));
 });
 
@@ -147,7 +147,7 @@ const giaCongTemHuy = asyncHandler(async (req, res) =>
     'Đã hủy tem gia công — số lượng quay lại phần chờ nhận'));
 
 const keHoachTamList = asyncHandler(async (req, res) => {
-  const { page, limit, offset } = getPaging(req.query);
+  const { page, limit, offset } = getPaging(req.query, { tranToiDa: TRAN_TAI_HET });
   return ok(res, await service.listKeHoachTam({ search: req.query.search || '', page, limit, offset }));
 });
 
