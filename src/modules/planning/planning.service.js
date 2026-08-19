@@ -12,6 +12,7 @@ const { buildMeta } = require('../../utils/pagination');
 const { layBarcodeTem } = require('../../utils/erpTemBarcode');
 const { STAGE_LABEL } = require('../../utils/stage'); // nhãn giai đoạn — dùng chung với dashboard
 const { kiemCap } = require('../../utils/phuongAnChuyen'); // luật PA in ↔ loại chuyền (chặn ở Release 1)
+const { tinhNangBat } = require('../../utils/caiDatTinhNang'); // công tắc bật/tắt luật trên (mig 087)
 const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
 const erpRepo = require('../erpsync/erpsync.repository'); // reopenReadyForPhanIn (mở lại READY)
@@ -285,6 +286,11 @@ async function traVeKyThuat({ dotVaiId, lyDo }, actorId) {
 // dòng nào sai, thay vì chỉ báo một câu chung chung rồi người dùng phải tự dò.
 // ⚠ Gom theo PHẦN IN (nhiều đợt vải có thể cùng 1 phần in) — không thì cùng một lỗi báo lặp N lần.
 async function kiemPainVsChuyen(dotVaiIds, chuyenId) {
+  // ⚠⚠ CÔNG TẮC Ở *Hệ thống > Cài đặt tính năng* (mig 087). TẮT ⇒ bỏ qua hoàn toàn, release lên
+  //   chuyền nào cũng được. Kiểm NGAY ĐẦU để khi tắt thì không tốn thêm query nào.
+  //   ⚠ Thiếu bảng cấu hình / DB lỗi ⇒ `tinhNangBat` trả mặc định **BẬT** ⇒ giữ nguyên luật.
+  if (!(await tinhNangBat('RELEASE1_KHOP_LOAI_CHUYEN'))) return;
+
   const rows = await repo.getPainVsChuyen(dotVaiIds, chuyenId);
   const loi = [];
   const daBao = new Set();

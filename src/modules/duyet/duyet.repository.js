@@ -60,6 +60,18 @@ async function timTheoId(id) {
   return rows[0] || null;
 }
 
+// MỌI yêu cầu đang CHỜ của 1 loại, cũ nhất trước — dùng khi TẮT tính năng duyệt (mig 087): hàng đợi
+// được duyệt sạch theo đúng thứ tự gửi.
+// ⚠ Không phân trang: hàng đợi chờ duyệt vốn nhỏ (đo prod 18/08 = 0 dòng; ước tính ~8 ca/ngày).
+async function dsDangCho(loai) {
+  const { rows } = await query(
+    `SELECT ${COT} ${FROM} WHERE yc.loai = $1 AND yc.trang_thai = 'CHO'
+      ORDER BY yc.created_date ASC`.replace(/\s+/g, ' '),
+    [loai]
+  );
+  return rows;
+}
+
 // Yêu cầu đang CHỜ của 1 đối tượng (chặn gửi trùng + để FE hiện "đang chờ duyệt").
 async function timDangCho(loai, bang, doiTuongId) {
   const { rows } = await query(
@@ -131,5 +143,5 @@ async function moLaiCho(id) {
 }
 
 module.exports = {
-  danhSach, demCho, timTheoId, timDangCho, mapDangCho, taoYeuCau, chotYeuCau, moLaiCho,
+  danhSach, demCho, timTheoId, timDangCho, dsDangCho, mapDangCho, taoYeuCau, chotYeuCau, moLaiCho,
 };

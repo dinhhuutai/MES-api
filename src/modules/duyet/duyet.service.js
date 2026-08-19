@@ -11,6 +11,23 @@ const hsktService = require('../hskt/hskt.service');
 // Nhãn phương án in (0..3 → chữ) — dùng CHUNG với hàng đợi duyệt để 2 nơi không hiện khác chữ.
 const nhanPain = (v) => LOAI_DUYET.DOI_PHUONG_AN_IN.nhanGiaTri(v);
 const { banThongBaoDuyet } = require('../thongbao/thongbao.service');
+// Công tắc bật/tắt tính năng duyệt (mig 087) — TẮT ⇒ ai đổi được thì đổi thẳng, không qua hàng đợi.
+const { tinhNangBat } = require('../../utils/caiDatTinhNang');
+
+// Tên tính năng ↔ loại duyệt. Khai ở ĐÂY (không nhét vào `utils/duyet.js`) để `utils/duyet.js` giữ
+// nguyên vai trò "danh mục thuần", không phụ thuộc bảng cấu hình.
+// ⚠ Thêm loại duyệt mới mà muốn tắt được thì khai thêm 1 dòng ở đây + 1 dòng ở `DANH_MUC_TINH_NANG`.
+const TINH_NANG_CUA_LOAI = { DOI_PHUONG_AN_IN: 'DUYET_DOI_PHUONG_AN_IN' };
+
+// `ly_do` NOT NULL (mig 086) mà tắt duyệt thì không bắt nhập lý do nữa ⇒ phải có câu thay thế.
+const LY_DO_KHI_TAT_DUYET = '(tính năng duyệt đang tắt — đổi thẳng, không yêu cầu lý do)';
+
+// Loại duyệt này có đang BẮT BUỘC duyệt không. Không khai công tắc ⇒ luôn bắt buộc (an toàn).
+async function batBuocDuyet(maLoai) {
+  const tn = TINH_NANG_CUA_LOAI[maLoai];
+  if (!tn) return true;
+  return tinhNangBat(tn);
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HÀNG ĐỢI DUYỆT (mig 086). Xem `utils/duyet.js` cho danh mục loại + luật quyền.
@@ -151,9 +168,13 @@ async function guiYeuCauDoiPain(user, { hsktId, phuongAnIn, lyDo }) {
   if (![1, 2, 3].includes(pa)) {
     throw new AppError('Phương án in không hợp lệ (1 Bàn / 2 Máy / 3 Robot)', { status: 422, errorCode: 'INVALID' });
   }
-  // ⚠ LÝ DO BẮT BUỘC (yêu cầu người dùng) — kiểm ở SERVICE, không tin FE.
+  // ⚠⚠ LÝ DO BẮT BUỘC — NHƯNG CHỈ KHI TÍNH NĂNG DUYỆT ĐANG BẬT (mig 087, chốt 19/08/2026).
+  //   Tắt duyệt = "bấm là đổi" (người dùng chọn) ⇒ bắt nhập lý do nữa thì tắt cũng như không.
+  //   ⚠ Vẫn kiểm ở SERVICE chứ không tin FE: FE có thể cầm cờ cũ (cache 60s) và gửi lý do rỗng khi
+  //   luật vẫn đang bật — lúc đó phải chặn thật.
+  const batBuoc = await batBuocDuyet(LOAI);
   const lyDoSach = String(lyDo || '').trim();
-  if (!lyDoSach) {
+  if (batBuoc && !lyDoSach) {
     throw new AppError('Nhập lý do đổi phương án in', { status: 422, errorCode: 'NO_LY_DO' });
   }
 
@@ -198,7 +219,10 @@ async function guiYeuCauDoiPain(user, { hsktId, phuongAnIn, lyDo }) {
     dsPhan.length > 1 ? `(${dsPhan.length} phần in dùng chung hồ sơ)` : null,
   ].filter(Boolean).join(' · ');
 
-  const tuDuyet = coQuyenDuyet(p, LOAI);
+  // ⚠⚠ TẮT TÍNH NĂNG DUYỆT ⇒ MỌI NGƯỜI GỬI ĐƯỢC ĐỀU ÁP DỤNG NGAY (không chỉ người có quyền duyệt).
+  //   Vẫn đi qua CHÍNH luồng này để hàng đợi có hồ sơ đầy đủ (1 dòng `DUYET`) — không có thay đổi
+  //   nào "đi cửa sau", và bật lại tính năng thì lịch sử vẫn liền mạch.
+  const tuDuyet = coQuyenDuyet(p, LOAI) || !batBuoc;
   const chung = {
     loai: LOAI,
     bang: 'ho_so_ky_thuat',
@@ -206,7 +230,11 @@ async function guiYeuCauDoiPain(user, { hsktId, phuongAnIn, lyDo }) {
     moTa,
     giaTriCu: { phuong_an_in: paCu },
     giaTriMoi: { phuong_an_in: pa },
-    lyDo: lyDoSach,
+    // ⚠⚠ `yeu_cau_duyet.ly_do` là **NOT NULL** (mig 086) ⇒ TUYỆT ĐỐI không ghi `null` khi tính năng
+    //   duyệt đang tắt (23502 not_null_violation ⇒ đổi phương án in hỏng hoàn toàn). Ghi câu giải
+    //   thích thay vì nới cột: người mở lịch sử sau này hiểu ngay vì sao dòng đó không có lý do, và
+    //   KHÔNG phải đụng schema đã lên production.
+    lyDo: lyDoSach || LY_DO_KHI_TAT_DUYET,
     nguoiGui: user.id,
   };
 
@@ -215,8 +243,10 @@ async function guiYeuCauDoiPain(user, { hsktId, phuongAnIn, lyDo }) {
     //   trước thì hàng đợi có dòng "đã duyệt" trong khi thực tế KHÔNG đổi được gì.
     const kq = await apDung({ loai: LOAI, doi_tuong_id: hsktId, gia_tri_moi: { phuong_an_in: pa } }, user.id);
     const id = await repo.taoYeuCau({
-      ...chung, trangThai: 'DUYET', nguoiDuyet: user.id,
-      tgDuyet: new Date(), ghiChuDuyet: 'Người gửi có quyền duyệt — áp dụng ngay',
+      ...chung, trangThai: 'DUYET', nguoiDuyet: user.id, tgDuyet: new Date(),
+      ghiChuDuyet: batBuoc
+        ? 'Người gửi có quyền duyệt — áp dụng ngay'
+        : 'Tính năng duyệt đang TẮT — áp dụng ngay',
     });
     // ⚠ Không `await`: gửi thông báo/push có thể mất vài giây × nhiều thiết bị, mà thay đổi đã xong.
     banThongBaoDuyet({ loai: LOAI, yeuCauId: id, su_kien: 'DA_DUYET', nguoiGui: user.id, moTa, ...ttb });
@@ -263,6 +293,49 @@ async function duyet(user, id, { ghiChu } = {}) {
   }
 }
 
+// ─── TẮT TÍNH NĂNG DUYỆT ⇒ DUYỆT SẠCH HÀNG ĐỢI (mig 087, người dùng chốt 19/08/2026) ────────────
+// Gọi từ `caidattinhnang.service` NGAY SAU khi lưu công tắc sang TẮT.
+//
+// ⚠⚠ KHÔNG KIỂM `coQuyenDuyet` — CỐ Ý: người bấm tắt có `WORKFLOW_MANAGE` (quyền cấu hình hệ thống)
+//   nhưng thường KHÔNG có `PA_IN_APPROVE`. Bản thân hành động tắt tính năng đã là quyết định "không
+//   cần duyệt nữa", nên đòi thêm quyền duyệt ở đây sẽ khiến thao tác tắt thất bại một nửa: công tắc
+//   đã tắt mà hàng đợi vẫn treo.
+//
+// ⚠⚠ GIỮ NGUYÊN KHUÔN AN TOÀN của `duyet()`: **chốt trạng thái TRƯỚC rồi mới áp dụng** (2 người bấm
+//   cùng lúc chỉ 1 lượt ăn), áp dụng lỗi thì `moLaiCho` để yêu cầu không kẹt ở "đã duyệt" trong khi
+//   dữ liệu không đổi.
+//
+// ⚠⚠ TUẦN TỰ, KHÔNG `Promise.all`: mỗi lần áp dụng tạo một PHIÊN BẢN HSKT mới và tắt bản cũ — chạy
+//   song song trên các yêu cầu cùng hồ sơ sẽ rẽ nhánh chuỗi phiên bản (đúng sự cố 04/08/2026).
+//
+// ⚠ LỖI TỪNG YÊU CẦU KHÔNG ĐƯỢC LÀM HỎNG CẢ THAO TÁC LƯU: gom vào `loi[]` trả cho FE hiện, công tắc
+//   vẫn tắt. Thường gặp nhất là `HSKT_DA_DOI` (hồ sơ đã sang phiên bản mới kể từ lúc gửi).
+async function duyetHetKhiTat(maLoai, actorId) {
+  const ds = await repo.dsDangCho(maLoai);
+  const kq = { tong: ds.length, da_duyet: 0, loi: [] };
+  for (const yc of ds) {
+    const chot = await repo.chotYeuCau(yc.id, {
+      trangThai: 'DUYET', nguoiDuyet: actorId,
+      ghiChu: 'Tự động duyệt do TẮT tính năng duyệt đổi phương án in',
+    });
+    if (!chot) continue; // người khác vừa xử lý xong yêu cầu này
+    try {
+      await apDung(yc, actorId);
+      kq.da_duyet += 1;
+      // Không `await`: người gửi + kỹ thuật vẫn nhận thông báo như khi được duyệt tay.
+      banThongBaoDuyet({
+        loai: yc.loai, yeuCauId: yc.id, su_kien: 'DA_DUYET',
+        nguoiGui: yc.nguoi_gui, nguoiDuyet: actorId, moTa: yc.mo_ta, ...(await nganCanhTb(yc)),
+      });
+    } catch (e) {
+      await repo.moLaiCho(yc.id);
+      kq.loi.push({ id: yc.id, mo_ta: yc.mo_ta, thong_diep: e.message });
+    }
+  }
+  if (kq.da_duyet) sockets.emit('duyet:updated', { loai: maLoai, trangThai: 'DUYET' });
+  return kq;
+}
+
 async function tuChoi(user, id, { lyDo } = {}) {
   const yc = await repo.timTheoId(id);
   if (!yc) throw new AppError('Yêu cầu không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
@@ -299,6 +372,8 @@ async function huy(user, id) {
 
 module.exports = {
   danhSach, demChoDuyet, guiYeuCauDoiPain, duyet, tuChoi, huy,
+  // Gọi từ trang Cài đặt tính năng khi TẮT công tắc duyệt (mig 087).
+  duyetHetKhiTat, TINH_NANG_CUA_LOAI,
   // Dùng ở màn READY / QC READY để gắn badge "đang chờ duyệt" cho ô Phương án in.
   mapDangCho: repo.mapDangCho,
 };

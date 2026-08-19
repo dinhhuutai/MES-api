@@ -27,6 +27,7 @@ const dashboardRoutes = require('./modules/dashboard/dashboard.routes');
 const erpsyncRoutes = require('./modules/erpsync/erpsync.routes');
 const hienThiPainRoutes = require('./modules/hienthipain/hienthipain.routes');
 const caiDatApiRoutes = require('./modules/caidatapi/caidatapi.routes');
+const caiDatTinhNangRoutes = require('./modules/caidattinhnang/caidattinhnang.routes');
 const thongBaoRoutes = require('./modules/thongbao/thongbao.routes');
 const siSoRoutes = require('./modules/siso/siso.routes');
 const duyetRoutes = require('./modules/duyet/duyet.routes');
@@ -76,6 +77,9 @@ app.use('/api/erp', erpsyncRoutes);
 app.use('/api/hien-thi-pain', hienThiPainRoutes);
 // Hệ thống > Cài đặt API (bật/tắt 3 API ERP ngay trên giao diện — mig 083)
 app.use('/api/cai-dat-api', caiDatApiRoutes);
+// Hệ thống > Cài đặt tính năng (bật/tắt luật nghiệp vụ: chặn Release 1 theo loại chuyền · duyệt
+// đổi phương án in — mig 087)
+app.use('/api/cai-dat-tinh-nang', caiDatTinhNangRoutes);
 // Thông báo (chuông cạnh avatar) + bật/tắt theo người & theo hệ thống + Web Push — mig 085
 app.use('/api/thong-bao', thongBaoRoutes);
 app.use('/api/si-so', siSoRoutes);
