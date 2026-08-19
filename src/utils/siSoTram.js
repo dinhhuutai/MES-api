@@ -48,6 +48,8 @@
 //   không viết comment `-- …` bên trong chuỗi SQL; chú thích để ngoài như file này.
 // ─────────────────────────────────────────────────────────────────────────────
 
+const { khongReadyTuDongSql } = require('./tech');
+
 const VN = "AT TIME ZONE 'Asia/Ho_Chi_Minh'";
 
 // Khách được miễn Khuôn — phải khớp Y HỆT `utils/tech.js` `KHUON_OPTIONAL_KH`, lệch là sĩ số đá nhau
@@ -201,11 +203,15 @@ const MOC_ROI_R1 = `CASE WHEN ls.trang_thai = 'RELEASE_1' THEN NULL
 
 const DV = {
   // READY (Kỹ thuật): vào = đợt vải lên READY, ra = kỹ thuật đủ mục (hoặc rời READY vì release thẳng).
+  // ⚠⚠ LOẠI PHẦN IN DO HỆ THỐNG TỰ XÁC NHẬN READY (ERP `KTCankiemtra=0`) — người dùng chốt
+  //   19/08/2026. Nhóm này đi thẳng Release 1, kỹ thuật không làm gì; tính vào đây là thổi phồng
+  //   khối lượng việc của tổ kỹ thuật. Luật + cách nhận diện ở `utils/tech.js khongReadyTuDongSql`.
+  //   Áp cho CẢ 3 nguồn READY (Kỹ thuật · QC · dòng chảy báo cáo) để 3 nơi không ra 3 số.
   READY_KT: `SELECT pin.id AS phan_in_id, dvs.tg_ready AS tg_vao,
       COALESCE(${MOC_KT_XONG}, roi.moc_roi) AS tg_ra, ${NHAN_TRONG}
     FROM phan_in pin ${JOIN_PIN}
     ${LAT_DOT_CUA_PIN('pin.id')} ${LAT_READY('pin.id')} ${LAT_ROI_READY('pin.id')}
-    WHERE pin.dang_hoat_dong`,
+    WHERE pin.dang_hoat_dong AND ${khongReadyTuDongSql('pin.id')}`,
 
   // QC chuẩn bị kỹ thuật: **HÀNG ĐỢI CỦA QC** — vào = KỸ THUẬT ĐÃ XÁC NHẬN XONG HẾT MỤC, ra = QC
   // xác nhận (hoặc rời READY vì đã release thẳng).
@@ -222,7 +228,7 @@ const DV = {
       COALESCE(rdy.moc_qc, roi.moc_roi) AS tg_ra, ${NHAN_TRONG}
     FROM phan_in pin ${JOIN_PIN}
     ${LAT_READY('pin.id')} ${LAT_ROI_READY('pin.id')}
-    WHERE pin.dang_hoat_dong`,
+    WHERE pin.dang_hoat_dong AND ${khongReadyTuDongSql('pin.id')}`,
 
   // READY theo nghĩa DÒNG CHẢY (vào = đợt vải lên READY, ra = QC xác nhận) — CHỈ dùng cho **Báo cáo**
   // (`CP_PHAN_IN.READY`), KHÔNG phải cho màn nào.
@@ -233,7 +239,7 @@ const DV = {
       COALESCE(rdy.moc_qc, roi.moc_roi) AS tg_ra, ${NHAN_TRONG}
     FROM phan_in pin
     ${LAT_DOT_CUA_PIN('pin.id')} ${LAT_READY('pin.id')} ${LAT_ROI_READY('pin.id')}
-    WHERE pin.dang_hoat_dong`,
+    WHERE pin.dang_hoat_dong AND ${khongReadyTuDongSql('pin.id')}`,
 
   // Release 1: đơn vị ĐỢT VẢI. Vào = đợt vải lên READY (có mặt trên màn Release 1);
   // ra = đã release HẾT số lượng (`con_release` = 0).
@@ -417,14 +423,24 @@ const DV = {
 //   `>= min(tg_vao)` — nên "Tồn đầu + Nhận − Làm được = Tồn cuối" không bao giờ vỡ vì phép gộp.
 // ⚠⚠ LOẠI đơn vị `tg_vao IS NULL` (chưa từng vào trạm) — giữ lại thì nó ép `tg_ra` của CẢ NHÓM
 //   thành NULL và phần in tồn ở trạm vĩnh viễn.
+//
+// ⚠⚠ `ma_chuyen`/`ma_loai_chuyen` CHỈ GOM TỪ ĐƠN VỊ **CÒN Ở TRẠM** (`tg_ra IS NULL`), lùi về gom tất
+//   cả khi mọi đơn vị đã rời (fix 19/08/2026 — người dùng bắt được qua chip loại chuyền).
+//   Lý do: gom từ MỌI lệnh thì phần in có lệnh Bàn đang chờ test + lệnh Máy ĐÃ test xong sẽ mang
+//   chuỗi `"BAN,MAY"` ⇒ lọt vào CẢ chip Máy, trong khi bảng chỉ vẽ nó ở dòng Bàn (dòng lệnh Máy đã
+//   bị ô tích "Chỉ chờ QA" ẩn đi) ⇒ chip Máy của sĩ số đếm THỪA. Đo prod: Máy 139 vs bảng 127.
+//   Nhánh `COALESCE` lùi là BẮT BUỘC: ô "Làm được"/"Tồn đầu" gồm phần in đã rời hết, không có nhánh
+//   này thì cột rỗng và chip lọc sẽ làm mất sạch hàng ở các ô đó.
 const gomTheoPin = (trong) => `SELECT x.phan_in_id, min(x.tg_vao) AS tg_vao,
   CASE WHEN count(*) FILTER (WHERE x.tg_ra IS NULL) = 0 THEN max(x.tg_ra) END AS tg_ra,
   count(*)::int AS so_don_vi,
   string_agg(DISTINCT x.ma_lenh_san_xuat, ', ') AS ma_lenh_san_xuat,
   string_agg(DISTINCT x.ten_chuyen, ', ') AS ten_chuyen,
   string_agg(DISTINCT x.ma_tem, ', ') AS ma_tem,
-  string_agg(DISTINCT x.ma_chuyen, ',') AS ma_chuyen,
-  string_agg(DISTINCT x.ma_loai_chuyen, ',') AS ma_loai_chuyen,
+  COALESCE(string_agg(DISTINCT x.ma_chuyen, ',') FILTER (WHERE x.tg_ra IS NULL),
+           string_agg(DISTINCT x.ma_chuyen, ',')) AS ma_chuyen,
+  COALESCE(string_agg(DISTINCT x.ma_loai_chuyen, ',') FILTER (WHERE x.tg_ra IS NULL),
+           string_agg(DISTINCT x.ma_loai_chuyen, ',')) AS ma_loai_chuyen,
   min(x.ngay_ke_hoach) AS ngay_ke_hoach, min(x.ngay_release) AS ngay_release
   FROM (${trong}) x
   WHERE x.phan_in_id IS NOT NULL AND x.tg_vao IS NOT NULL
@@ -453,6 +469,21 @@ const LAT_QC_DONE = `LEFT JOIN LATERAL (
     JOIN checkpoint xcp ON xcp.id = xkq.checkpoint_id
    WHERE xkq.phan_in_id = pin.id AND xkq.trang_thai = 'DAT' AND xcp.ma_checkpoint = 'QC_XAC_NHAN'
 ) qcd ON true`;
+
+// Ô tích "Chỉ chờ QA" ở màn Test Run - QA (19/08/2026).
+// ⚠⚠ `qa_done` là thuộc tính của LỆNH, không phải phần in ⇒ sau khi gom về phần in, luật phải GƯƠNG
+//   ĐÚNG cái bảng đang làm: bảng lọc `!r.qa_done` ở mức LỆNH rồi mới tách dòng theo phần in, nên
+//   phần in còn hiện khi CÓ ÍT NHẤT MỘT lệnh `RELEASE_1` chưa `TEST_QA` đạt. Lấy "mọi lệnh đều chưa
+//   QA" sẽ loại mất phần in vừa xong một lệnh nhưng còn lệnh khác đang chờ test.
+const LAT_CHO_QA = `LEFT JOIN LATERAL (
+  SELECT (count(*) > 0) AS cho_qa
+    FROM lenh_sx_dot_vai xlsd
+    JOIN lenh_san_xuat xls ON xls.id = xlsd.lenh_san_xuat_id AND xls.trang_thai = 'RELEASE_1'
+    JOIN dot_vai_ve xdvq ON xdvq.id = xlsd.dot_vai_ve_id
+   WHERE xdvq.phan_in_id = pin.id
+     AND NOT EXISTS (SELECT 1 FROM ket_qua_checkpoint xk JOIN checkpoint xc ON xc.id = xk.checkpoint_id
+                      WHERE xk.lenh_san_xuat_id = xls.id AND xc.ma_checkpoint = 'TEST_QA' AND xk.trang_thai = 'DAT')
+) cqa ON true`;
 
 // Mã gom set đang MỞ của phần in (ô lọc *Gom set* ở màn Kế hoạch tạm).
 const LAT_MA_SET = `LEFT JOIN LATERAL (
@@ -487,10 +518,11 @@ const TV = {
 
 const manTheoPin = (trong, { traVe = TV.KHONG } = {}) => `SELECT pin.id, ${COT_PIN_GOM}, g.tg_vao, g.tg_ra,
   COALESCE(qcd.qc_done, false) AS qc_done, gs.ma_set,
+  COALESCE(cqa.cho_qa, false) AS cho_qa,
   (${traVe}) AS tg_tra_ve, ((${traVe}) IS NOT NULL) AS bi_tra_ve
   FROM (${gomTheoPin(trong)}) g
   JOIN phan_in pin ON pin.id = g.phan_in_id
-  ${JOIN_PIN} ${LAT_DOT_CUA_PIN('pin.id')} ${LAT_HSKT('pin.id')} ${LAT_QC_DONE} ${LAT_MA_SET}`;
+  ${JOIN_PIN} ${LAT_DOT_CUA_PIN('pin.id')} ${LAT_HSKT('pin.id')} ${LAT_QC_DONE} ${LAT_MA_SET} ${LAT_CHO_QA}`;
 
 // ─── 11 MÀN XÁC NHẬN ─────────────────────────────────────────────────────────
 // `ma` khớp `TRANG_PAIN` (utils/phuongAnIn.js) để FE truyền đúng MỘT mã cho cả 2 tính năng.

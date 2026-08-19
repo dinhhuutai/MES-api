@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "nodemon src/index.js",
     "start": "node src/index.js",
-    "seed:admin": "node src/scripts/seedAdmin.js"
+    "seed:admin": "node src/scripts/seedAdmin.js",
+    "kiem:push": "node src/scripts/kiemWebPush.js"
   },
   "license": "UNLICENSED",
   "private": true,

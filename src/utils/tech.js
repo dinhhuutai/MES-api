@@ -64,7 +64,53 @@ function techDoneSqlByPin(pinExpr) {
   return techDoneSql(khach, dat('KHUON'), dat('FILM'), dat('MUC'));
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// TÊN NGƯỜI XÁC NHẬN READY — có ca KHÔNG PHẢI NGƯỜI (sửa 19/08/2026).
+//
+// `erpsync.simulateReadyDone` (ERP `KTCankiemtra=0`) đặt DAT hộ mà KHÔNG gán cho ai:
+// `nguoi_xac_nhan_id = NULL` + `ghi_chu` nêu lý do. Nếu cứ `LEFT JOIN nguoi_dung` như cũ thì cột
+// "Người" hiện Ô TRỐNG — người dùng không hiểu là chưa ai làm hay hệ thống làm.
+//
+// ⚠⚠ CHỈ DÙNG Ở QUERY ĐÃ LỌC `trang_thai='DAT'`. Dòng CHƯA xác nhận cũng có `nguoi_xac_nhan_id`
+//   NULL ⇒ áp vào danh sách chưa lọc sẽ hiện "Hệ thống (tự động)" cho mọi mục chưa ai đụng — sai nặng.
+// ⚠ Bám vào `ghi_chu IS NOT NULL` chứ không phải chỉ `ho_ten IS NULL`: dữ liệu CŨ (trước bản vá) cũng
+//   có dòng NULL người mà không có ghi chú — những dòng đó để trống như trước, không bịa nguồn gốc.
+const NHAN_HE_THONG = 'Hệ thống (tự động)';
+const nguoiXacNhanSql = (ndAlias, kqAlias) =>
+  `COALESCE(${ndAlias}.ho_ten, CASE WHEN ${kqAlias}.ghi_chu IS NOT NULL THEN '${NHAN_HE_THONG}' END)`;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// READY DO HỆ THỐNG TỰ XÁC NHẬN — LOẠI KHỎI MỌI SỐ LIỆU & DANH SÁCH CỦA READY
+// (người dùng chốt 19/08/2026).
+//
+// Đợt vải có ERP `KTCankiemtra = 0` đi THẲNG Release 1: `erpsync.simulateReadyDone` đặt hộ DAT cho
+// KHUON/FILM/MUC/QC_XAC_NHAN để phần in lọt qua guard release. **Kỹ thuật KHÔNG hề làm gì** ⇒ tính
+// vào số liệu READY là thổi phồng khối lượng việc của tổ kỹ thuật, và báo cáo/Excel READY nêu ra
+// những phần in chưa ai đụng tới.
+//
+// ⚠⚠ CĂN THEO MỐC `QC_XAC_NHAN` (người dùng chốt), KHÔNG phải "có bất kỳ mục nào tự động":
+//   QC là mốc kết thúc READY — chính là thứ dải "Theo dõi" dùng làm `tg_ra`. Bám theo nó thì phần in
+//   được NGƯỜI THẬT duyệt QC vẫn tính đủ, dù trước đó có mục nào đó do hệ thống đặt.
+//   Đo prod 19/08: 92 phần in có dòng tự động, trong đó **90 hoàn toàn tự động**, chỉ 2 ca hỗn hợp.
+//
+// ⚠⚠ NHẬN DIỆN = `nguoi_xac_nhan_id IS NULL` TRÊN DÒNG ĐÃ `DAT`, KHÔNG dùng `ghi_chu`:
+//   `ghi_chu` chỉ được ghi từ bản vá 19/08/2026 và **chưa deploy** — đo prod chỉ có **1 dòng** có
+//   `ghi_chu`, trong khi dấu vết thật là **366 dòng** `nguoi_xac_nhan_id IS NULL AND trang_thai='DAT'`.
+//   Dùng `ghi_chu` thì lọc gần như không ăn gì. Đã đối chiếu: 366/366 dòng NULL-người đều thuộc phần
+//   in có đợt vải `kt_can_kiem_tra = false` ⇒ không lẫn dòng nào của người thật.
+// ⚠ BẮT BUỘC kèm `trang_thai='DAT'`: dòng CHƯA ai xác nhận cũng có `nguoi_xac_nhan_id` NULL — thiếu
+//   điều kiện này là loại nhầm toàn bộ phần in đang chờ làm.
+// ⚠ Alias `zqc`/`zcp` đặt hiếm để không đụng alias của query lớn đang bọc ngoài.
+const readyTuDongSql = (pinExpr) => `EXISTS (SELECT 1 FROM ket_qua_checkpoint zqc
+  JOIN checkpoint zcp ON zcp.id = zqc.checkpoint_id AND zcp.ma_checkpoint = 'QC_XAC_NHAN'
+  WHERE zqc.phan_in_id = ${pinExpr} AND zqc.trang_thai = 'DAT' AND zqc.nguoi_xac_nhan_id IS NULL)`;
+
+// Điều kiện "phần in này ĐƯỢC tính vào số liệu READY".
+const khongReadyTuDongSql = (pinExpr) => `NOT ${readyTuDongSql(pinExpr)}`;
+
 module.exports = {
   KHUON_OPTIONAL_KH, KHUON_OPT_SQL_LIST, isKhuonOptional, laHangGiaCong,
   requiredTechItems, hienFilm, techDoneSql, techDoneSqlByPin,
+  NHAN_HE_THONG, nguoiXacNhanSql,
+  readyTuDongSql, khongReadyTuDongSql,
 };

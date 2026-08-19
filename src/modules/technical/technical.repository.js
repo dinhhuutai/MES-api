@@ -3,7 +3,7 @@
 const { query } = require('../../config/db');
 // Hiển thị theo PHƯƠNG ÁN IN — cấu hình động (mig 067), mặc định BẬT HẾT = không lọc.
 const { dkTrang } = require('../../utils/phuongAnIn');
-const { techDoneSql, KHUON_OPT_SQL_LIST } = require('../../utils/tech');
+const { techDoneSql, KHUON_OPT_SQL_LIST, nguoiXacNhanSql, khongReadyTuDongSql } = require('../../utils/tech');
 const { mauTim } = require('../../utils/timKiem');
 
 // Đọc cấu hình READY (version + trạm + checkpoint) trong 1 query (giảm round-trip tới DB ở xa).
@@ -225,7 +225,7 @@ async function historyByDate(date, maList) {
 async function listConfirmHistory({ date, search = '' }) {
   const sql = `
     SELECT kq.id AS ket_qua_id, kq.phan_in_id, cp.ma_checkpoint, cp.ten_checkpoint,
-           kq.gia_tri_text, kq.tg_xac_nhan, nx.ho_ten AS nguoi_xac_nhan,
+           kq.gia_tri_text, kq.tg_xac_nhan, ${nguoiXacNhanSql('nx', 'kq')} AS nguoi_xac_nhan, kq.ghi_chu,
            pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim,
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang
     FROM ket_qua_checkpoint kq
@@ -237,6 +237,7 @@ async function listConfirmHistory({ date, search = '' }) {
     JOIN khach_hang kh ON kh.id = dh.khach_hang_id
     LEFT JOIN nguoi_dung nx ON nx.id = kq.nguoi_xac_nhan_id
     WHERE t.ma_tram = 'READY' AND kq.trang_thai = 'DAT'
+      AND ${khongReadyTuDongSql('pin.id')}
       AND (kq.tg_xac_nhan AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
       AND ($2 = '' OR pin.ma_phan ~* $2 OR mh.ma_hang ~* $2
            OR kh.ten_khach_hang ~* $2 OR dh.ma_don_hang ~* $2
@@ -259,7 +260,7 @@ async function doneByDate(date, scope = 'tech') {
   let sql;
   if (scope === 'qc') {
     sql = `
-      SELECT kq.tg_xac_nhan AS tg, nx.ho_ten AS nguoi, ${info}
+      SELECT kq.tg_xac_nhan AS tg, ${nguoiXacNhanSql('nx', 'kq')} AS nguoi, kq.ghi_chu, ${info}
       FROM ket_qua_checkpoint kq
       JOIN checkpoint cp ON cp.id = kq.checkpoint_id
       JOIN tram t ON t.id = cp.tram_id
@@ -267,12 +268,13 @@ async function doneByDate(date, scope = 'tech') {
       ${joins}
       LEFT JOIN nguoi_dung nx ON nx.id = kq.nguoi_xac_nhan_id
       WHERE t.ma_tram = 'READY' AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT'
+        AND ${khongReadyTuDongSql('pin.id')}
         AND (kq.tg_xac_nhan AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
       ORDER BY kq.tg_xac_nhan DESC`;
   } else {
     sql = `
       WITH tech AS (
-        SELECT kq.phan_in_id, cp.ma_checkpoint, kq.tg_xac_nhan, kq.nguoi_xac_nhan_id
+        SELECT kq.phan_in_id, cp.ma_checkpoint, kq.tg_xac_nhan, kq.nguoi_xac_nhan_id, kq.ghi_chu
         FROM ket_qua_checkpoint kq
         JOIN checkpoint cp ON cp.id = kq.checkpoint_id
         JOIN tram t ON t.id = cp.tram_id
@@ -283,14 +285,15 @@ async function doneByDate(date, scope = 'tech') {
                bool_or(ma_checkpoint='KHUON') AS hk, bool_or(ma_checkpoint='FILM') AS hf, bool_or(ma_checkpoint='MUC') AS hm
         FROM tech GROUP BY phan_in_id
       )
-      SELECT a.tg_done AS tg, nx.ho_ten AS nguoi, ${info}
+      SELECT a.tg_done AS tg, ${nguoiXacNhanSql('nx', 'last')} AS nguoi, last.ghi_chu, ${info}
       FROM agg a
       JOIN phan_in pin ON pin.id = a.phan_in_id
       ${joins}
-      LEFT JOIN LATERAL (SELECT nguoi_xac_nhan_id FROM tech WHERE phan_in_id = a.phan_in_id
+      LEFT JOIN LATERAL (SELECT nguoi_xac_nhan_id, ghi_chu FROM tech WHERE phan_in_id = a.phan_in_id
                          ORDER BY tg_xac_nhan DESC NULLS LAST LIMIT 1) last ON true
       LEFT JOIN nguoi_dung nx ON nx.id = last.nguoi_xac_nhan_id
       WHERE (a.tg_done AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
+        AND ${khongReadyTuDongSql('pin.id')}
         AND ${techDoneSql('kh.ten_khach_hang', 'a.hk', 'a.hf', 'a.hm')}
       ORDER BY a.tg_done DESC`;
   }
@@ -408,7 +411,7 @@ async function getResults(tramId, phanInId) {
     `SELECT cp.id AS checkpoint_id, cp.ma_checkpoint, cp.ten_checkpoint, cp.bat_buoc, cp.thu_tu,
             cp.cau_hinh_json, cp.thoi_gian_quy_dinh_phut, cp.canh_bao_truoc_phut, lc.ma_loai AS loai_checkpoint,
             kq.id AS ket_qua_id, kq.trang_thai, kq.gia_tri_text, kq.gia_tri_json,
-            kq.nguoi_xac_nhan_id, kq.tg_xac_nhan, nx.ho_ten AS nguoi_xac_nhan_ten,
+            kq.nguoi_xac_nhan_id, kq.tg_xac_nhan, nx.ho_ten AS nguoi_xac_nhan_ten, kq.ghi_chu,
             (SELECT kh.ten_khach_hang FROM phan_in p JOIN ma_hang mh ON mh.id=p.ma_hang_id
                JOIN don_hang dh ON dh.id=mh.don_hang_id JOIN khach_hang kh ON kh.id=dh.khach_hang_id
                WHERE p.id=$2) AS ten_khach_hang
@@ -446,11 +449,16 @@ async function upsertResult(client, data) {
   const existing = await findResultId(client, data.phanInId, data.checkpointId);
   if (existing) {
     await client.query(
+      // ⚠⚠ XÓA `ghi_chu`: cột này chỉ mang dấu "Hệ thống tự xác nhận" của `simulateReadyDone`
+      //   (ERP KTCankiemtra=0). Khi NGƯỜI THẬT xác nhận đè lên thì dấu đó KHÔNG còn đúng nữa —
+      //   giữ lại là màn READY hiện tên người thật kèm ghi chú "hệ thống tự làm", mâu thuẫn nhau.
+      //   An toàn: đo prod 19/08 chỉ 1/7456 dòng có `ghi_chu`, không ai dùng cột này việc khác.
       `UPDATE ket_qua_checkpoint SET
          trang_thai = $2,
          gia_tri_text = COALESCE($3, gia_tri_text),
          nguoi_xac_nhan_id = COALESCE($4, nguoi_xac_nhan_id),
          tg_xac_nhan = COALESCE($5, tg_xac_nhan),
+         ghi_chu = NULL,
          updated_by = $6, updated_date = CURRENT_TIMESTAMP
        WHERE id = $1`,
       [existing.id, data.trangThai, data.giaTriText ?? null, data.nguoiXacNhanId ?? null,
@@ -486,8 +494,9 @@ async function getReadyEntryTime(phanInId) {
 // Hủy 1 kết quả checkpoint đã DAT (bấm nhầm) → trang_thai='HUY', xóa người/giờ xác nhận.
 async function cancelResult(client, phanInId, checkpointId, actorId) {
   const { rowCount } = await client.query(
+    // ⚠ Xóa cả `ghi_chu` — dấu "Hệ thống tự xác nhận" không được sống sót qua lần hủy.
     `UPDATE ket_qua_checkpoint SET trang_thai = 'HUY', nguoi_xac_nhan_id = NULL, tg_xac_nhan = NULL,
-       updated_by = $3, updated_date = CURRENT_TIMESTAMP
+       ghi_chu = NULL, updated_by = $3, updated_date = CURRENT_TIMESTAMP
      WHERE phan_in_id = $1 AND checkpoint_id = $2 AND trang_thai = 'DAT'`,
     [phanInId, checkpointId, actorId]
   );
@@ -551,7 +560,7 @@ async function listReopenCandidates({ search = '' }) {
 // Mở lại READY: hủy mọi xác nhận READY (Khuôn/Film/Mực/QC) của phần in + gắn cờ đợt mới phải làm lại READY/Test Run.
 async function reopenReadyResults(client, phanInId, actorId) {
   const { rowCount } = await client.query(
-    `UPDATE ket_qua_checkpoint SET trang_thai='HUY', nguoi_xac_nhan_id=NULL, tg_xac_nhan=NULL, updated_by=$2, updated_date=CURRENT_TIMESTAMP
+    `UPDATE ket_qua_checkpoint SET trang_thai='HUY', nguoi_xac_nhan_id=NULL, tg_xac_nhan=NULL, ghi_chu=NULL, updated_by=$2, updated_date=CURRENT_TIMESTAMP
      WHERE phan_in_id=$1 AND trang_thai='DAT' AND checkpoint_id IN (
        SELECT cp.id FROM checkpoint cp JOIN tram t ON t.id=cp.tram_id
        JOIN workflow_version wv ON wv.id=t.workflow_version_id AND wv.la_hien_hanh WHERE t.ma_tram='READY')`.replace(/\s+/g, ' '),
@@ -602,7 +611,7 @@ async function reopenReadyFull(phanInId, actorId, extraLog = {}) {
 async function confirmInfoByPins(phanInIds = []) {
   if (!phanInIds.length) return [];
   const { rows } = await query(
-    `SELECT k.phan_in_id, cp.ma_checkpoint, nd.ho_ten AS nguoi,
+    `SELECT k.phan_in_id, cp.ma_checkpoint, ${nguoiXacNhanSql('nd', 'k')} AS nguoi, k.ghi_chu,
             COALESCE(k.tg_xac_nhan, k.created_date) AS tg
      FROM ket_qua_checkpoint k
      JOIN checkpoint cp ON cp.id = k.checkpoint_id

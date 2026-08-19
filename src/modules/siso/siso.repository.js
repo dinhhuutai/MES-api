@@ -72,6 +72,10 @@ function dungLoc(loc = {}, bat = 3) {
 
   them(loc.gomSet, 'q.ma_set'); // ô lọc "Gom set" (màn Kế hoạch tạm)
 
+  // Ô tích "Chỉ chờ QA" (màn Test Run - QA, mặc định BẬT). Cột `cho_qa` tính ở tầng ngoài của
+  // `manTheoPin` — xem `LAT_CHO_QA` trong `utils/siSoTram.js`.
+  if (loc.choQa === '1' || loc.choQa === true || loc.choQa === 'true') dk.push('q.cho_qa = true');
+
   // Chip PHƯƠNG ÁN IN (màn Release 1) — số nguyên 0..3, so BẰNG chứ không regex.
   // ⚠ `0` = CHƯA XÁC ĐỊNH là giá trị THẬT ERP gửi ⇒ phải so `!== ''`, đừng dùng `if (val)`
   //   (`'0'` truthy nhưng số 0 thì không — dễ mắc nếu FE gửi kiểu số).

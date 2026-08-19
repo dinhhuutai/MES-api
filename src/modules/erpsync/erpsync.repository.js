@@ -280,16 +280,72 @@ async function readyCheckpointIds() {
 
 // KTCankiemtra=0 → GIẢ LẬP kỹ thuật đã xác nhận: đặt DAT cho KHUON/FILM/MUC + QC_XAC_NHAN
 // → phần in tech_done + qc_done → vào thẳng Release 1 (không cần thao tác READY).
-async function simulateReadyDone(pinId) {
+//
+// ⚠⚠ PHẢI ĐÁNH DẤU RÕ LÀ HỆ THỐNG TỰ LÀM (sửa 19/08/2026 — người dùng phát hiện qua phần in
+//   `VO-2606-003-A06-F06-C02`). Bản cũ chỉ `SET tg_xac_nhan=now()` nên khi đợt vải THỨ HAI có
+//   `KTCankiemtra=0` về, nó **đè mốc lên dòng người thật đã xác nhận ở đợt trước mà GIỮ NGUYÊN TÊN
+//   HỌ** ⇒ hệ thống nói "Khoa xác nhận khuôn/film/mực lúc 02:17 sáng" trong khi anh ta không hề bấm.
+//   Nay: xóa người xác nhận + ghi `ghi_chu` nêu rõ lý do + ghi `lich_su_trang_thai`.
+//
+// ⚠ MỐC `tg_xac_nhan` VẪN LÀ `now()` (người dùng chốt): đợt này không qua kỹ thuật nên mốc xác nhận
+//   đúng là THỜI ĐIỂM TỰ ĐỘNG XẢY RA. Mốc + người của lần làm THẬT trước đó không mất — chúng nằm ở
+//   `lich_su_trang_thai` (bảng này giữ TỪNG lần, không bị ghi đè).
+//
+// ⚠⚠ READY ghi ở MỨC PHẦN IN (`ket_qua_checkpoint` không có `dot_vai_ve_id`) vì khuôn/film/mực dùng
+//   chung cho mọi đợt vải ⇒ **không thể** có 2 mốc cho 2 đợt trên cùng bộ 4 dòng. Chỗ tách theo từng
+//   lần chính là `lich_su_trang_thai` bên dưới.
+//
+// `dotVaiIds` = đợt vải vừa kích hoạt lần tự động này — chỉ để ghi mã đợt vào ghi chú cho dễ truy vết.
+const GHI_CHU_TU_DONG = 'Hệ thống tự xác nhận — không qua kỹ thuật (ERP KTCankiemtra=0)';
+
+async function simulateReadyDone(pinId, dotVaiIds = []) {
   const cp = await readyCheckpointIds();
   const ids = ['KHUON', 'FILM', 'MUC', 'QC_XAC_NHAN'].map((m) => cp[m]).filter(Boolean);
   if (!ids.length) return;
+
+  // Mã đợt vải cho ghi chú — best-effort, thiếu cũng không sao (ghi chú vẫn nêu đủ lý do).
+  let ghiChu = GHI_CHU_TU_DONG;
+  const dsDot = (dotVaiIds || []).filter(Boolean);
+  if (dsDot.length) {
+    try {
+      const { rows } = await query(
+        'SELECT string_agg(COALESCE(barcode, ma_dot_vai), \', \') AS ds FROM dot_vai_ve WHERE id = ANY($1::uuid[])',
+        [dsDot]
+      );
+      if (rows[0] && rows[0].ds) ghiChu = `${GHI_CHU_TU_DONG} · đợt vải ${rows[0].ds}`;
+    } catch (e) { /* ghi chú là phần phụ — không chặn việc xác nhận */ }
+  }
+
+  // ⚠ Tra id trạng thái `DAT` theo MÃ, không hardcode UUID (mỗi môi trường một id).
+  //   Thiếu dòng này thì bỏ qua phần lịch sử, KHÔNG chặn việc đặt DAT — vào được Release 1 mới là chính.
+  let ttDat = null;
+  try {
+    const { rows } = await query("SELECT id FROM trang_thai WHERE ma_trang_thai = 'DAT' LIMIT 1");
+    ttDat = rows[0] ? rows[0].id : null;
+  } catch (e) { ttDat = null; }
+
   await withTransaction(async (client) => {
     for (const id of ids) {
-      await client.query(
-        `WITH upd AS (UPDATE ket_qua_checkpoint SET trang_thai='DAT', tg_xac_nhan=now(), updated_date=now() WHERE phan_in_id=$1 AND checkpoint_id=$2 RETURNING id) INSERT INTO ket_qua_checkpoint (checkpoint_id, phan_in_id, trang_thai, tg_xac_nhan) SELECT $2,$1,'DAT',now() WHERE NOT EXISTS (SELECT 1 FROM upd)`,
-        [pinId, id]
+      const { rows } = await client.query(
+        `WITH upd AS (UPDATE ket_qua_checkpoint SET trang_thai='DAT', tg_xac_nhan=now(), updated_date=now(), nguoi_xac_nhan_id=NULL, ghi_chu=$3 WHERE phan_in_id=$1 AND checkpoint_id=$2 RETURNING id) INSERT INTO ket_qua_checkpoint (checkpoint_id, phan_in_id, trang_thai, tg_xac_nhan, ghi_chu) SELECT $2,$1,'DAT',now(),$3 WHERE NOT EXISTS (SELECT 1 FROM upd) RETURNING id`,
+        [pinId, id, ghiChu]
       );
+      // `RETURNING` của CTE `upd` không ra ngoài — nhánh UPDATE trả rỗng, nên tra lại id để ghi lịch sử.
+      let kqId = rows[0] && rows[0].id;
+      if (!kqId) {
+        const r2 = await client.query(
+          'SELECT id FROM ket_qua_checkpoint WHERE phan_in_id=$1 AND checkpoint_id=$2 LIMIT 1', [pinId, id]
+        );
+        kqId = r2.rows[0] && r2.rows[0].id;
+      }
+      // ⚠ MỖI LẦN TỰ ĐỘNG = 1 DÒNG LỊCH SỬ RIÊNG ⇒ đợt sau không xóa dấu vết đợt trước.
+      //   `nguoi_thuc_hien_id` để NULL = hệ thống làm, không gán cho ai.
+      if (kqId && ttDat) {
+        await client.query(
+          'INSERT INTO lich_su_trang_thai (ket_qua_checkpoint_id, trang_thai_moi_id, ly_do, tg_thuc_hien) VALUES ($1,$2,$3,now())',
+          [kqId, ttDat, 'Tự động xác nhận — đợt vải không cần kỹ thuật kiểm tra']
+        );
+      }
     }
   });
 }

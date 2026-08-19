@@ -510,7 +510,7 @@ const PHAN_INFO_LATERAL = `
     JOIN don_hang dh ON dh.id = mh.don_hang_id
     JOIN khach_hang kh ON kh.id = dh.khach_hang_id
     LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id
-    WHERE lsd.lenh_san_xuat_id = ls.id
+    WHERE lsd.lenh_san_xuat_id = ls.id AND pin.dang_hoat_dong
     ORDER BY pin.ma_phan, dv.ma_dot_vai
     LIMIT 1
   ) info ON true`;
@@ -539,7 +539,7 @@ async function phanInRowsByLenh(lenhIds = []) {
      JOIN ma_hang mh ON mh.id = pin.ma_hang_id
      JOIN don_hang dh ON dh.id = mh.don_hang_id
      JOIN khach_hang kh ON kh.id = dh.khach_hang_id
-     WHERE lsd.lenh_san_xuat_id = ANY($1::uuid[])
+     WHERE lsd.lenh_san_xuat_id = ANY($1::uuid[]) AND pin.dang_hoat_dong
      ORDER BY lsd.lenh_san_xuat_id, pin.id, pin.ma_phan`.replace(/\s+/g, ' '),
     [lenhIds]
   );
@@ -555,6 +555,36 @@ const CHO_KY_THUAT_SQL = (lenhCol) => `EXISTS (
      AND NOT EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cq ON cq.id = kq.checkpoint_id
                       WHERE kq.phan_in_id = dk.phan_in_id AND cq.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT'))`;
 
+// ⚠⚠ PHẦN IN ĐÃ HỦY (xóa mềm, `dang_hoat_dong = false`) KHÔNG được hiện ở các màn mức lệnh
+//   (fix 19/08/2026 — người dùng bắt được qua chênh lệch số liệu). `PHAN_INFO_LATERAL`,
+//   `phanInRowsByLenh` và cột `so_phan_in` trước đây KHÔNG lọc cờ này ⇒ phần in đã hủy vẫn nằm trên
+//   bảng Test Run cho QA test, trong khi dải "Theo dõi" (lọc `pin.dang_hoat_dong`) đã bỏ chúng ⇒ 2 con
+//   số trên cùng màn lệch nhau. Đo prod: 2 lệnh HỖN HỢP (có phần in sống + phần in đã hủy), **0 lệnh
+//   toàn-hủy** ⇒ lọc ở mức DÒNG PHẦN IN là đủ, không lệnh nào biến mất khỏi bảng.
+// ⚠ `PHAN_INFO_LATERAL` là LEFT JOIN nên nếu về sau có lệnh toàn-hủy thì hàng vẫn còn, chỉ trống cột
+//   thông tin phần in — không mất dòng im lặng.
+
+// FROM + WHERE dùng CHUNG cho câu lấy dữ liệu và câu ĐẾM.
+// ⚠⚠ THỨ TỰ THAM SỐ: $1 = search · $2 = cnspId · $3 = qaId · $4 = limit · $5 = offset.
+//   `search` CỐ Ý đứng ĐẦU: câu đếm của Test Run không cần cnsp/qa (extraWhere rỗng) nên chỉ truyền
+//   ĐÚNG 1 tham số — Postgres ném `could not determine data type of parameter $1` nếu truyền thừa
+//   (đã kiểm thật). Trước 19/08/2026 thứ tự là cnsp/qa/search nên không tách được câu đếm.
+// ⚠ Câu đếm KHÔNG cần `PHAN_INFO_LATERAL`: nó là LEFT JOIN LATERAL ... LIMIT 1 nên không nhân cũng
+//   không loại dòng nào; bỏ đi thì đếm nhẹ hơn hẳn.
+const LENH_JOIN = `
+    FROM lenh_san_xuat ls
+    LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+    LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id`;
+
+const lenhWhere = (extraWhere, dkPain) => `
+    WHERE ls.trang_thai = 'RELEASE_1'
+      AND ${dkPain}
+      AND ($1 = '' OR ls.ma_lenh_san_xuat ~* $1 OR ${lenhPhanInMatch('ls.id', '$1')})
+      ${extraWhere}`;
+
+const lenhCountSql = (extraWhere, dkPain) =>
+  `SELECT count(*)::int AS total ${LENH_JOIN} ${lenhWhere(extraWhere, dkPain)}`;
+
 function lenhListSql(extraWhere, dkPain = 'TRUE') {
   return `
     SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.trang_thai, ls.ngay_ke_hoach,
@@ -565,37 +595,44 @@ function lenhListSql(extraWhere, dkPain = 'TRUE') {
            info.so_luong_don_hang, info.so_luong_vai_ve, info.ngay_vai_ve,
            (SELECT min(dvh.han_giao_hang) FROM lenh_sx_dot_vai lsh JOIN dot_vai_ve dvh ON dvh.id=lsh.dot_vai_ve_id WHERE lsh.lenh_san_xuat_id=ls.id) AS han_giao_hang,
            info.loai_dot_vai, info.nha_gia_cong,
-           EXISTS (SELECT 1 FROM ket_qua_checkpoint k WHERE k.lenh_san_xuat_id = ls.id AND k.checkpoint_id = $1 AND k.trang_thai='DAT') AS cnsp_done,
-           EXISTS (SELECT 1 FROM ket_qua_checkpoint k WHERE k.lenh_san_xuat_id = ls.id AND k.checkpoint_id = $2 AND k.trang_thai='DAT') AS qa_done,
+           EXISTS (SELECT 1 FROM ket_qua_checkpoint k WHERE k.lenh_san_xuat_id = ls.id AND k.checkpoint_id = $2 AND k.trang_thai='DAT') AS cnsp_done,
+           EXISTS (SELECT 1 FROM ket_qua_checkpoint k WHERE k.lenh_san_xuat_id = ls.id AND k.checkpoint_id = $3 AND k.trang_thai='DAT') AS qa_done,
            (SELECT count(*) FROM test_run tr WHERE tr.lenh_san_xuat_id = ls.id)::int AS so_lan_test,
            (SELECT count(*) FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id)::int AS so_dot_vai,
-           (SELECT count(DISTINCT dv.phan_in_id) FROM lenh_sx_dot_vai lsd2 JOIN dot_vai_ve dv ON dv.id = lsd2.dot_vai_ve_id WHERE lsd2.lenh_san_xuat_id = ls.id)::int AS so_phan_in,
+           (SELECT count(DISTINCT dv.phan_in_id) FROM lenh_sx_dot_vai lsd2 JOIN dot_vai_ve dv ON dv.id = lsd2.dot_vai_ve_id JOIN phan_in pin2 ON pin2.id = dv.phan_in_id AND pin2.dang_hoat_dong WHERE lsd2.lenh_san_xuat_id = ls.id)::int AS so_phan_in,
            ${CHO_KY_THUAT_SQL('ls.id')} AS cho_ky_thuat
-    FROM lenh_san_xuat ls
-    LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
-    LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
+    ${LENH_JOIN}
     ${PHAN_INFO_LATERAL}
-    WHERE ls.trang_thai = 'RELEASE_1'
-      AND ${dkPain}
-      AND ($3 = '' OR ls.ma_lenh_san_xuat ~* $3 OR ${lenhPhanInMatch('ls.id', '$3')})
-      ${extraWhere}
+    ${lenhWhere(extraWhere, dkPain)}
     ORDER BY ls.created_date DESC
     LIMIT $4 OFFSET $5`;
 }
 
+// ⚠⚠ TRẢ `total` THẬT (số lệnh của CẢ tập), KHÔNG phải số dòng của trang. Trước 19/08/2026 service
+//   đặt `meta.total = rows.length` ⇒ FE không thể biết còn trang nữa hay không: `taiHetTrang` thấy
+//   `items.length >= total` là dừng ngay sau trang đầu, và màn Test Run - QA chỉ hiện 200/658 lệnh.
 async function listTestRunCandidates({ cnspId, qaId, search = '', offset = 0, limit = 20 }) {
   const dkPain = await dkTrang('CL_TEST_RUN', 'lenh', 'ls.id');
-  const { rows } = await query(lenhListSql('', dkPain), [cnspId, qaId, mauTim(search), limit, offset]);
-  return rows;
+  const tim = mauTim(search);
+  const [data, count] = await Promise.all([
+    query(lenhListSql('', dkPain), [tim, cnspId, qaId, limit, offset]),
+    // extraWhere rỗng ⇒ câu đếm KHÔNG dùng $2/$3 ⇒ chỉ được truyền đúng 1 tham số.
+    query(lenhCountSql('', dkPain), [tim]),
+  ]);
+  return { rows: data.rows, total: count.rows[0].total };
 }
 
 async function listRelease2Candidates({ cnspId, qaId, search = '', offset = 0, limit = 20 }) {
   const extra = `
-    AND EXISTS (SELECT 1 FROM ket_qua_checkpoint k WHERE k.lenh_san_xuat_id = ls.id AND k.checkpoint_id = $1 AND k.trang_thai='DAT')
-    AND EXISTS (SELECT 1 FROM ket_qua_checkpoint k WHERE k.lenh_san_xuat_id = ls.id AND k.checkpoint_id = $2 AND k.trang_thai='DAT')`;
+    AND EXISTS (SELECT 1 FROM ket_qua_checkpoint k WHERE k.lenh_san_xuat_id = ls.id AND k.checkpoint_id = $2 AND k.trang_thai='DAT')
+    AND EXISTS (SELECT 1 FROM ket_qua_checkpoint k WHERE k.lenh_san_xuat_id = ls.id AND k.checkpoint_id = $3 AND k.trang_thai='DAT')`;
   const dkPain = await dkTrang('KH_RELEASE2', 'lenh', 'ls.id');
-  const { rows } = await query(lenhListSql(extra, dkPain), [cnspId, qaId, mauTim(search), limit, offset]);
-  return rows;
+  const tim = mauTim(search);
+  const [data, count] = await Promise.all([
+    query(lenhListSql(extra, dkPain), [tim, cnspId, qaId, limit, offset]),
+    query(lenhCountSql(extra, dkPain), [tim, cnspId, qaId]),
+  ]);
+  return { rows: data.rows, total: count.rows[0].total };
 }
 
 async function getLenhBasic(lenhId) {

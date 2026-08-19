@@ -363,7 +363,8 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
         // Đợt vải MỚI mới là lúc câu hỏi "kỹ thuật có cần kiểm tra lại không?" có nghĩa.
         if (laDotMoi) {
           try {
-            if (ktCan === 0) await repo.simulateReadyDone(pinId);              // giả lập KT xong → Release 1
+            // ⚠ Truyền đợt vải vừa nhận để ghi vào `ghi_chu` (biết ĐỢT NÀO kích hoạt lần tự động này).
+            if (ktCan === 0) await repo.simulateReadyDone(pinId, affectedDotVaiIds); // giả lập KT xong → Release 1
             // KTCankiemtra=1 & phần in đã xong READY một lần rồi (đợt trước ĐÃ RELEASE **hoặc** đã QC
             // xác nhận READY dù chưa release) → mở lại READY để kỹ thuật kiểm lại cho đợt vải mới.
             else if (await repo.canLamLaiReady(pinId, affectedDotVaiIds)) await repo.reopenReadyForPhanIn(pinId);

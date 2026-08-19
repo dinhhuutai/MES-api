@@ -674,7 +674,7 @@ async function attachPhanInList(rows, idKey = 'id') {
 // ----- TEST RUN -----
 async function listTestRunCandidates({ search, page, limit, offset }) {
   const { byMa } = await loadTestConfig();
-  const rows = await repo.listTestRunCandidates({ cnspId: byMa[CNSP_CP].id, qaId: byMa[QA_CP].id, search, offset, limit });
+  const { rows, total } = await repo.listTestRunCandidates({ cnspId: byMa[CNSP_CP].id, qaId: byMa[QA_CP].id, search, offset, limit });
   // Lệnh đang CHỜ KỸ THUẬT (đã bị QA trả về READY, `cho_ky_thuat` từ repo): gắn lý do + mục rớt để FE
   // hiện badge "Chờ kỹ thuật làm lại". Lấy theo đợt vải của lệnh (qc_tra_ve loai='TEST_RUN').
   const choKt = rows.filter((r) => r.cho_ky_thuat);
@@ -684,7 +684,9 @@ async function listTestRunCandidates({ search, page, limit, offset }) {
     const rm = await qaRepo.activeReturnsMap('TEST_RUN', allDv);
     choKt.forEach((r, i) => { r.tra_ve = (perLenh[i] || []).map((id) => rm[id]).find(Boolean) || null; });
   }
-  return { items: await attachPhanInList(rows), meta: buildMeta(page, limit, rows.length) };
+  // ⚠⚠ `total` là TỔNG THẬT từ repo, KHÔNG phải `rows.length` (số dòng của trang). Dùng `rows.length`
+  //   thì FE không bao giờ biết còn trang nữa — đúng lỗi khiến màn này chỉ hiện 200/658 lệnh.
+  return { items: await attachPhanInList(rows), meta: buildMeta(page, limit, total) };
 }
 
 async function getLenhDetail(lenhId) {
@@ -806,8 +808,8 @@ async function confirmTestBatch(lenhIds, which, actorId, extra = {}) {
 // ----- RELEASE 2 (Kế hoạch duyệt cuối) -----
 async function listRelease2Candidates({ search, page, limit, offset }) {
   const { byMa } = await loadTestConfig();
-  const rows = await repo.listRelease2Candidates({ cnspId: byMa[CNSP_CP].id, qaId: byMa[QA_CP].id, search, offset, limit });
-  return { items: await attachPhanInList(rows), meta: buildMeta(page, limit, rows.length) };
+  const { rows, total } = await repo.listRelease2Candidates({ cnspId: byMa[CNSP_CP].id, qaId: byMa[QA_CP].id, search, offset, limit });
+  return { items: await attachPhanInList(rows), meta: buildMeta(page, limit, total) };
 }
 
 async function approveRelease2(lenhId, actorId) {

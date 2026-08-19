@@ -16,7 +16,7 @@
 const { query } = require('../../config/db');
 const { slaStatus } = require('../../utils/sla');
 const { flowRowsCached } = require('./flowCache');
-const { KHUON_OPT_SQL_LIST } = require('../../utils/tech');
+const { KHUON_OPT_SQL_LIST, nguoiXacNhanSql, khongReadyTuDongSql } = require('../../utils/tech');
 const { mauTim } = require('../../utils/timKiem');
 const { CP_PHAN_IN } = require('../../utils/siSoTram');
 
@@ -551,7 +551,8 @@ async function runReadyDangO({ loc = {}, gioi_han }) {
 
   // 1) ĐANG ở READY hiện tại (snapshot) — luôn lấy.
   const pc = [];
-  const conds = ['pin.dang_hoat_dong', READY_MEMBER, `NOT ${QC_DONE_EXISTS}`];
+  // LOAI phan in do HE THONG tu xac nhan READY (ERP KTCankiemtra=0) - xem utils/tech.js.
+  const conds = ['pin.dang_hoat_dong', READY_MEMBER, `NOT ${QC_DONE_EXISTS}`, khongReadyTuDongSql('pin.id')];
   if (clean(loc.khach)) { pc.push(mauTim(loc.khach)); conds.push(`kh.ten_khach_hang ~* $${pc.length}`); }
   if (clean(loc.tim)) {
     pc.push(mauTim(loc.tim)); const i = pc.length;
@@ -571,7 +572,7 @@ async function runReadyDangO({ loc = {}, gioi_han }) {
   let done = [];
   if (ngay) {
     const dc = [];
-    const dconds = ["cp.ma_checkpoint = 'QC_XAC_NHAN'", "kq.trang_thai = 'DAT'", 'pin.dang_hoat_dong'];
+    const dconds = ["cp.ma_checkpoint = 'QC_XAC_NHAN'", "kq.trang_thai = 'DAT'", 'pin.dang_hoat_dong', khongReadyTuDongSql('pin.id')];
     const nc = ngayCond(READY_TS, ngay, true);
     if (nc) dconds.push(nc);
     if (clean(loc.khach)) { dc.push(mauTim(loc.khach)); dconds.push(`kh.ten_khach_hang ~* $${dc.length}`); }
@@ -584,7 +585,7 @@ async function runReadyDangO({ loc = {}, gioi_han }) {
              'Đã READY (QA)'::text AS tinh_trang, 'Đã QC'::text AS qc_ready,
              to_char(${READY_TS} AT TIME ZONE 'Asia/Ho_Chi_Minh', 'DD/MM/YYYY') AS ngay_ready,
              to_char(${READY_TS} AT TIME ZONE 'Asia/Ho_Chi_Minh', 'HH24:MI') AS gio_ready,
-             nx.ho_ten AS nguoi_ready
+             ${nguoiXacNhanSql('nx', 'kq')} AS nguoi_ready
       FROM ket_qua_checkpoint kq
       JOIN checkpoint cp ON cp.id = kq.checkpoint_id
       JOIN phan_in pin ON pin.id = kq.phan_in_id ${JOINS}
@@ -625,7 +626,7 @@ const COT_READY_HOAN_THANH = [
 // Danh sách phần in đã hoàn thành READY (QC xác nhận) — khớp sidebar "Đã hoàn thành" (scope QC) màn QC READY.
 async function runReadyHoanThanh({ loc = {}, gioi_han }) {
   const params = [];
-  const conds = ["cp.ma_checkpoint = 'QC_XAC_NHAN'", "kq.trang_thai = 'DAT'", 'pin.dang_hoat_dong'];
+  const conds = ["cp.ma_checkpoint = 'QC_XAC_NHAN'", "kq.trang_thai = 'DAT'", 'pin.dang_hoat_dong', khongReadyTuDongSql('pin.id')];
   const nc = ngayCond(READY_TS, loc.ngay, true);
   if (nc) conds.push(nc);
   if (clean(loc.tim)) {
@@ -636,7 +637,7 @@ async function runReadyHoanThanh({ loc = {}, gioi_han }) {
   const sql = `
     SELECT to_char(${READY_TS} AT TIME ZONE 'Asia/Ho_Chi_Minh', 'DD/MM/YYYY') AS ngay_hoan_thanh,
            to_char(${READY_TS} AT TIME ZONE 'Asia/Ho_Chi_Minh', 'HH24:MI') AS gio_hoan_thanh,
-           nx.ho_ten AS nguoi_xac_nhan,
+           ${nguoiXacNhanSql('nx', 'kq')} AS nguoi_xac_nhan,
            pin.ma_phan, mh.ma_hang, kh.ten_khach_hang, dh.ma_don_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.so_luong_don_hang,
            (SELECT COALESCE(sum(dv5.so_luong_vai_ve),0) FROM dot_vai_ve dv5 WHERE dv5.phan_in_id = pin.id AND dv5.trang_thai NOT IN ('DA_GOP','DA_HUY'))::int AS so_luong_vai_ve
     FROM ket_qua_checkpoint kq

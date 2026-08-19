@@ -12,7 +12,7 @@
 const { query } = require('../../config/db');
 const dashboardRepo = require('../dashboard/dashboard.repository');
 const { dominantStageScalar } = require('../../utils/stage');
-const { techDoneSql, techDoneSqlByPin, KHUON_OPT_SQL_LIST } = require('../../utils/tech');
+const { techDoneSql, techDoneSqlByPin, KHUON_OPT_SQL_LIST, khongReadyTuDongSql } = require('../../utils/tech');
 const { nguonPhanIn } = require('../../utils/siSoTram');
 
 // Cache ngắn kết quả stageCounts (đếm phần in theo giai đoạn — nguồn tin cậy như dashboard) để nhiều
@@ -110,9 +110,14 @@ const TODAY_TS = (col) => `(${col} AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = ${VN
 const TODAY_DT = (col) => `${col} = ${VN_TODAY}`;
 
 // Đếm ket_qua_checkpoint DAT hôm nay cho 1 mã checkpoint (mức phần in).
-const cpDoneToday = (maCp) =>
-  `SELECT count(*)::numeric AS v FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
-   WHERE cp.ma_checkpoint = '${maCp}' AND kq.trang_thai = 'DAT' AND ${TODAY_TS('kq.tg_xac_nhan')}`;
+// ⚠⚠ LOẠI phần in do HỆ THỐNG tự xác nhận READY (ERP `KTCankiemtra=0`) — người dùng chốt 19/08/2026.
+//   CHỈ áp cho 4 checkpoint của trạm READY; các trạm khác không liên quan. Xem `utils/tech.js`.
+const CP_READY = ['KHUON', 'FILM', 'MUC', 'QC_XAC_NHAN'];
+const cpDoneToday = (maCp) => {
+  const locTuDong = CP_READY.includes(maCp) ? ` AND ${khongReadyTuDongSql('kq.phan_in_id')}` : '';
+  return `SELECT count(*)::numeric AS v FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
+   WHERE cp.ma_checkpoint = '${maCp}' AND kq.trang_thai = 'DAT' AND ${TODAY_TS('kq.tg_xac_nhan')}${locTuDong}`;
+};
 
 // Đếm phần in đang HOẠT ĐỘNG, CHƯA QC-READY và CHƯA xác nhận mã checkpoint `maCp` (đang chờ mục đó).
 // KHUON: bỏ khách II/AD (Khuôn không bắt buộc nên không tính là "chờ khuôn").
@@ -229,18 +234,22 @@ const DEFS = [
         WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT')
       AND ${techDoneSqlByPin('pin.id')}`) },
   { ma: 'QA_DA_READY', ten: 'Đã QA xác nhận READY (hiện tại)', nhom: 'QA READY (hiện tại)', don_vi: 'phần',
-    mo_ta: 'Số phần in đã được QC/QA xác nhận READY (QC_XAC_NHAN=DAT). Hiện tại (đồng nghĩa "Phần in đã READY").',
+    mo_ta: 'Số phần in đã được QC/QA xác nhận READY (QC_XAC_NHAN=DAT). Hiện tại (đồng nghĩa "Phần in đã READY"). '
+      + 'KHÔNG tính phần in do hệ thống tự xác nhận (ERP KTCankiemtra=0).',
     run: () => scalar(`SELECT count(DISTINCT kq.phan_in_id)::numeric AS v FROM ket_qua_checkpoint kq
-      JOIN checkpoint cp ON cp.id = kq.checkpoint_id WHERE cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT'`) },
+      JOIN checkpoint cp ON cp.id = kq.checkpoint_id WHERE cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT'
+      AND ${khongReadyTuDongSql('kq.phan_in_id')}`) },
   { ma: 'QA_DA_READY_HOM_NAY', ten: 'Đã QA xác nhận READY hôm nay', nhom: 'QA READY (hiện tại)', don_vi: 'phần',
     mo_ta: 'Số phần in được QC/QA xác nhận READY (QC_XAC_NHAN=DAT) trong hôm nay.',
     run: () => scalar(cpDoneToday('QC_XAC_NHAN')) },
 
   // ---------- READY / DÒNG CHẢY (hiện tại) ----------
   { ma: 'PHAN_DA_READY', ten: 'Phần in đã READY', nhom: 'READY / dòng chảy (hiện tại)', don_vi: 'phần',
-    mo_ta: 'Số phần in đã hoàn tất READY (có QC_XAC_NHAN=DAT). Hiện tại, không theo thời gian.',
+    mo_ta: 'Số phần in đã hoàn tất READY (có QC_XAC_NHAN=DAT). Hiện tại, không theo thời gian. '
+      + 'KHÔNG tính phần in do hệ thống tự xác nhận (ERP KTCankiemtra=0).',
     run: () => scalar(`SELECT count(DISTINCT kq.phan_in_id)::numeric AS v FROM ket_qua_checkpoint kq
-      JOIN checkpoint cp ON cp.id = kq.checkpoint_id WHERE cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT'`) },
+      JOIN checkpoint cp ON cp.id = kq.checkpoint_id WHERE cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT'
+      AND ${khongReadyTuDongSql('kq.phan_in_id')}`) },
   { ma: 'PHAN_CHUA_READY', ten: 'Phần in chưa READY', nhom: 'READY / dòng chảy (hiện tại)', don_vi: 'phần',
     mo_ta: 'Số phần in CHƯA hoàn tất READY (chưa có QC_XAC_NHAN=DAT). Hiện tại.',
     run: () => scalar(`SELECT count(*)::numeric AS v FROM phan_in pin WHERE NOT EXISTS (
