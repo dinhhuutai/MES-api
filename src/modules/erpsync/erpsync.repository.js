@@ -3,6 +3,7 @@
 const { query, withTransaction } = require('../../config/db');
 // Số cuối `barcode_hskt` = phương án in (mig 064) — dùng chung với trang Hồ sơ kỹ thuật.
 const { applyPainToBarcode } = require('../../utils/hskt');
+const { tachDsMa, soMaVuaCot, NGAN_CACH } = require('../../utils/maPhanIn');
 
 // ----- Log đồng bộ -----
 async function createSyncLog({ nguon, fromDate, tuDong }, actorId) {
@@ -158,14 +159,52 @@ async function coCotSubPhanIn(client) {
   return _coSubPin;
 }
 
-// `tinhChatIn` = ERP `Tinhchatin`, `barcode` = ERP `barCode`. COALESCE khi update: ERP không gửi (null)
-// thì GIỮ giá trị cũ, tránh re-sync bằng payload cũ (chưa có trường này) xóa mất giá trị đã lưu.
+// Độ dài thật của cột `phan_in.barcode` — mig 055 tạo VARCHAR(60), mig 089 nới lên 255 để chứa DANH
+// SÁCH mã. Đọc từ `information_schema` (cache khi đã đọc được) thay vì giả định: môi trường chưa chạy
+// mig 089 vẫn phải sync được, chỉ là giữ được ít mã hơn.
+// ⚠ KHÔNG try/catch quanh INSERT để dò — hàm chạy TRONG transaction, lỗi `22001` abort cả transaction.
+let _daiBarcode = null;
+async function doDaiCotBarcode(client) {
+  if (_daiBarcode) return _daiBarcode;
+  const { rows } = await client.query(
+    `SELECT character_maximum_length AS dai FROM information_schema.columns
+      WHERE table_name='phan_in' AND column_name='barcode' LIMIT 1`);
+  _daiBarcode = (rows[0] && rows[0].dai) || 60;
+  return _daiBarcode;
+}
+
+// `tinhChatIn` = ERP `Tinhchatin`, `barcode` = ERP `BarcodePTHDH` (CÓ THỂ LÀ DANH SÁCH — xem
+// `utils/maPhanIn.js`). COALESCE khi update: ERP không gửi (null) thì GIỮ giá trị cũ, tránh re-sync
+// bằng payload cũ (chưa có trường này) xóa mất giá trị đã lưu.
+//
+// ⚠⚠ `barcode` **GỘP DỒN, KHÔNG GHI ĐÈ** (chốt 20/08/2026): ERP gửi nhiều mã cho cùng 1 phần in theo
+//   HAI cách — nhiều mã trong 1 dòng, **và** mã ĐƠN khác nhau qua từng lần sync (đo prod: 45 code phần
+//   kiểu này, vd `SL-2607-010-A08-F05-C01` nhận 3 mã vào 06/08 · 12/08 · 18/08). Ghi đè thì phiếu giấy
+//   in mã CŨ quét không ra. Hợp danh sách cũ + mới, khử trùng, GIỮ THỨ TỰ (mã cũ trước).
+// ⚠ Gộp NGAY TRONG SQL để giữ nguyên tử (không SELECT-rồi-UPDATE), và để không tốn thêm 1 round-trip
+//   mạng cho MỖI dòng ERP (25 ms/query — CLAUDE.md §11.5).
+// ⚠ `LIMIT $n` = số mã nhét vừa cột: tràn cột ném `22001` và làm HỎNG cả lượt sync của dòng đó, nên
+//   thà cắt bớt + cảnh báo. Với mig 089 (255 ⇒ 21 mã) thì thực tế không bao giờ chạm (tối đa đang là 3).
 async function upsertPhanIn(client, { maHangId, maPhan, mauVai, kichVai, kichPhim, soLuongDonHang, tinhChatIn, barcode, ddhSubId }) {
   const base = [maHangId, maPhan, mauVai || null, kichVai || null, kichPhim || null, soLuongDonHang ?? null, tinhChatIn || null];
   if (await hasBarcodeCol(client)) {
     // `ddh_sub_id` (mig 088) — thêm vào cùng nhánh có `barcode` vì 2 trường đi liền nhau: subID chính
     // là 3 số cuối của `BarcodePTHDH`. Thiếu migration ⇒ bỏ hẳn cột khỏi câu SQL, sync chạy như cũ.
     const coSub = await coCotSubPhanIn(client);
+    const soMaToiDa = soMaVuaCot(await doDaiCotBarcode(client));
+    const dsMoi = tachDsMa(barcode);
+    const bcVao = dsMoi.length ? dsMoi.slice(0, soMaToiDa).join(NGAN_CACH) : null;
+    const ds = [...base, bcVao, ...(coSub ? [ddhSubId || null] : [])];
+    const pLimit = `$${ds.length + 1}`;
+    ds.push(soMaToiDa);
+    const gopSql = `CASE WHEN EXCLUDED.barcode IS NULL THEN phan_in.barcode
+           WHEN phan_in.barcode IS NULL OR btrim(phan_in.barcode) = '' THEN EXCLUDED.barcode
+           ELSE array_to_string(ARRAY(
+                  SELECT btrim(mv.v)
+                    FROM unnest(string_to_array(phan_in.barcode || '${NGAN_CACH}' || EXCLUDED.barcode, '${NGAN_CACH}'))
+                         WITH ORDINALITY mv(v, o)
+                   WHERE btrim(mv.v) <> ''
+                   GROUP BY btrim(mv.v) ORDER BY min(mv.o) LIMIT ${pLimit}), '${NGAN_CACH}') END`;
     const { rows } = await client.query(
       `INSERT INTO phan_in (ma_hang_id, ma_phan, mau_vai, kich_vai, kich_phim, so_luong_don_hang, tinh_chat_in, barcode${coSub ? ', ddh_sub_id' : ''})
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8${coSub ? ',$9' : ''})
@@ -173,12 +212,20 @@ async function upsertPhanIn(client, { maHangId, maPhan, mauVai, kichVai, kichPhi
          mau_vai = EXCLUDED.mau_vai, kich_vai = EXCLUDED.kich_vai, kich_phim = EXCLUDED.kich_phim,
          so_luong_don_hang = EXCLUDED.so_luong_don_hang,
          tinh_chat_in = COALESCE(EXCLUDED.tinh_chat_in, phan_in.tinh_chat_in),
-         barcode = COALESCE(EXCLUDED.barcode, phan_in.barcode),
+         barcode = ${gopSql},
          ${coSub ? 'ddh_sub_id = COALESCE(EXCLUDED.ddh_sub_id, phan_in.ddh_sub_id),' : ''}
          updated_date = CURRENT_TIMESTAMP
-       RETURNING id`,
-      [...base, barcode || null, ...(coSub ? [ddhSubId || null] : [])]
+       RETURNING id, barcode`,
+      ds
     );
+    // Mã ERP vừa gửi mà KHÔNG nằm trong giá trị đã lưu ⇒ đã bị cắt vì chạm trần cột. Nói rõ ra: mã bị
+    // bỏ thì phiếu in mã đó quét không ra, mà đó là kiểu hỏng âm thầm rất khó lần.
+    const daLuu = tachDsMa(rows[0].barcode);
+    const bo = dsMoi.filter((m) => !daLuu.includes(m));
+    if (bo.length) {
+      console.warn(`[erp] ⚠ mã vạch phần in bị cắt (cột chứa tối đa ${soMaToiDa} mã) — ${maPhan}: bỏ ${bo.join(', ')}`
+        + '. Chạy database/migrations/089_phan_in_barcode_danh_sach.sql để nới cột.');
+    }
     return rows[0].id;
   }
   const { rows } = await client.query(

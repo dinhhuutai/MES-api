@@ -8,6 +8,7 @@ const env = require('../../config/env');
 const AppError = require('../../utils/AppError');
 const { buildMeta } = require('../../utils/pagination');
 const { apiBat } = require('../../utils/caiDatApi');
+const { chuanHoaDsMa } = require('../../utils/maPhanIn');
 const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
 const gomRepo = require('../gomset/gomset.repository');
@@ -63,11 +64,14 @@ const erpTinhChatIn = (r) => clean(field(r, 'tinhchatin', 'tinh_chat_in')) || nu
 const erpBarcode = (r) => clean(field(r, 'IDDotReady', 'iddotready', 'maquet', 'ma_quet', 'barCode', 'barcode', 'ma_vach', 'mavach')) || null;
 // Mã vạch HSKT (ERP BarcodeHKT) → ho_so_ky_thuat.barcode_hskt (quét HSKT).
 const erpBarcodeHskt = (r) => clean(field(r, 'BarcodeHKT', 'barcode_hkt', 'barcodehkt', 'barcode_hskt')) || null;
-// Mã vạch PHẦN IN (ERP `BarcodePTHDH`, bật từ 06/08/2026) → `phan_in.barcode` — TƯƠNG ĐƯƠNG code phần,
-// 1 mã ↔ 1 phần in. Dùng cột `phan_in.barcode` sẵn có (mig 055, bỏ trống từ mig 061) ⇒ KHÔNG cần migration.
+// Mã vạch PHẦN IN (ERP `BarcodePTHDH`, bật từ 06/08/2026) → `phan_in.barcode` — TƯƠNG ĐƯƠNG code phần.
+// Dùng cột `phan_in.barcode` sẵn có (mig 055, bỏ trống từ mig 061) ⇒ KHÔNG cần migration.
 // ⚠ Khác `erpBarcode` (IDDotReady, thuộc ĐỢT VẢI, dùng chung nhiều phần in) và khác `barcode_hskt`
-// (12 số, mức HỒ SƠ). Đối chiếu prod: 11 chữ số, 114/114 dòng duy nhất 1:1 với code_part.
-const erpBarcodePhanIn = (r) => clean(field(r, 'BarcodePTHDH', 'barcode_pt_hdh', 'barcodept')) || null;
+// (12 số, mức HỒ SƠ).
+// ⚠⚠ **CÓ THỂ LÀ DANH SÁCH nhiều mã ngăn bằng dấu phẩy** (chốt 20/08/2026 — ERP đã gửi kiểu này từ
+//   trước: đo prod 46 dòng raw, vd `26021555120,26022218120,26024144120`). `chuanHoaDsMa` cắt khoảng
+//   trắng + khử trùng + nối lại bằng dấu phẩy; luật đầy đủ ở `utils/maPhanIn.js`.
+const erpBarcodePhanIn = (r) => chuanHoaDsMa(clean(field(r, 'BarcodePTHDH', 'barcode_pt_hdh', 'barcodept')));
 // NHÀ GIA CÔNG (ERP `NGC`, bật 07/08/2026) → `dot_vai_ve.nha_gia_cong` (mig 072).
 // Đi theo TỪNG DÒNG nhận vải ⇒ thuộc ĐỢT VẢI, không phải phần in (1 phần in nhiều đợt có thể khác nhà).
 // Giá trị thật: mã ngắn 'KK'/'VS'/'II'/'DK'/'SL3'/'KN6' hoặc tên 'E SANG'; có dòng ERP gửi rỗng.

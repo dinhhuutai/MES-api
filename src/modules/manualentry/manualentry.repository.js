@@ -3,6 +3,7 @@
 const { query } = require('../../config/db');
 const AppError = require('../../utils/AppError');
 const { mauTim } = require('../../utils/timKiem');
+const { chuanHoaDsMa } = require('../../utils/maPhanIn');
 
 // ─── Tra cứu để chọn "có sẵn" ────────────────────────────────────────────────
 async function searchKhach(q, limit = 30) {
@@ -102,7 +103,8 @@ async function createChainTx(client, p, actorId) {
     }
     // 4) Phần in (luôn tạo mới)
     const ma = (p.phanIn?.ma_phan || '').trim() || genCode('PIN');
-    // `barcode` = mã vạch TDTHĐH (`BarcodePTHDH` của ERP) — mã của CHÍNH phần in, 11 số, 1 mã ↔ 1 phần in.
+    // `barcode` = mã vạch TDTHĐH (`BarcodePTHDH` của ERP) — mã của CHÍNH phần in, 11 số.
+    // ⚠ CÓ THỂ LÀ DANH SÁCH nhiều mã ngăn bằng dấu phẩy (`chuanHoaDsMa` — xem `utils/maPhanIn.js`).
     // ⚠ ĐỪNG nhầm với `dot_vai_ve.barcode` (`IDDotReady`) — mã đó ở mức ĐỢT VẢI và dùng chung nhiều phần in.
     // `ddh_sub_id` = ERP `DDHSUBID` — số dòng chi tiết đơn, ứng 1:1 với PHẦN IN (mig 088, trước ở đợt vải).
     // ⚠ Bằng 3 số cuối của `barcode` — nhập lệch nhau là ERP không đối soát được lượt in tem.
@@ -113,7 +115,7 @@ async function createChainTx(client, p, actorId) {
       [maHangId, ma, p.phanIn?.mau_vai || null, p.phanIn?.kich_vai || null, p.phanIn?.kich_phim || null,
         p.phanIn?.tinh_chat_in || null, p.phanIn?.do_in || null, p.phanIn?.mau_in || null,
         p.phanIn?.so_luong_don_hang ?? null, !!p.phanIn?.la_in_kieng, p.phanIn?.thoi_gian_cho_kho_phut ?? null,
-        p.phanIn?.barcode || null, p.phanIn?.ddh_sub_id || null, p.phanIn?.ghi_chu || null, actorId]
+        chuanHoaDsMa(p.phanIn?.barcode), p.phanIn?.ddh_sub_id || null, p.phanIn?.ghi_chu || null, actorId]
     );
     phanInId = r.rows[0].id;
     maPhan = r.rows[0].ma_phan;

@@ -5,6 +5,7 @@ const { query } = require('../../config/db');
 const { dkTrang } = require('../../utils/phuongAnIn');
 const { techDoneSql, KHUON_OPT_SQL_LIST, nguoiXacNhanSql, khongReadyTuDongSql } = require('../../utils/tech');
 const { mauTim } = require('../../utils/timKiem');
+const { sqlKhopMa } = require('../../utils/maPhanIn');
 
 // Đọc cấu hình READY (version + trạm + checkpoint) trong 1 query (giảm round-trip tới DB ở xa).
 async function loadReadyConfig() {
@@ -335,6 +336,7 @@ async function readyCancelState(phanInId) {
 // 14:48 chỉ thấy "Không thấy (QR)" nên tưởng máy quét hỏng, đi tìm nguyên nhân ở gom set).
 // Khớp CHÍNH XÁC theo `ma_phan`, `phan_in.barcode` (ERP BarcodePTHDH — mã vạch của chính phần in),
 // lùi về `dot_vai_ve.barcode` (đầu đọc quét mã vạch đợt vải).
+// ⚠ `phan_in.barcode` CÓ THỂ LÀ DANH SÁCH nhiều mã ⇒ so từng mã bằng `sqlKhopMa`, KHÔNG so nguyên chuỗi.
 // Trả 1 dòng hoặc rỗng; service dựng câu mô tả.
 async function traCuuMaQuet(code) {
   const sql = `
@@ -358,7 +360,7 @@ async function traCuuMaQuet(code) {
          AND k.trang_thai = 'DAT' LIMIT 1
     ) kq ON true
     LEFT JOIN nguoi_dung nd ON nd.id = kq.nguoi_xac_nhan_id
-    WHERE pin.ma_phan = $1 OR pin.barcode = $1
+    WHERE pin.ma_phan = $1 OR ${sqlKhopMa('pin.barcode', '$1')}
        OR EXISTS (SELECT 1 FROM dot_vai_ve dv WHERE dv.phan_in_id = pin.id AND dv.barcode = $1)
     ORDER BY pin.dang_hoat_dong DESC LIMIT 1`;
   const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [code]);

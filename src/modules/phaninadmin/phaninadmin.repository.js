@@ -1,6 +1,7 @@
 const { query } = require('../../config/db');
 const { mauTim } = require('../../utils/timKiem');
 const { dotStageCase, STAGE_LABEL } = require('../../utils/stage');
+const { chuanHoaDsMa } = require('../../utils/maPhanIn');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // QUẢN TRỊ PHẦN IN — tra cứu 1 phần in rồi xem/sửa MỌI thứ của nó.
@@ -148,6 +149,9 @@ function dungCauUpdate(bang, whitelist, id, patch, actorId) {
     if (v === '' || v === undefined) v = null;
     if (v !== null && kieu === 'int') { v = Number(v); if (!Number.isFinite(v)) continue; }
     if (v !== null && kieu === 'bool') v = !!v;
+    // Mã vạch TDTHĐH sửa tay CÓ THỂ LÀ DANH SÁCH (gõ `a, b` cho dễ đọc) ⇒ chuẩn hóa về đúng dạng
+    // đang lưu (bỏ khoảng trắng, khử trùng, ngăn bằng dấu phẩy) — cùng luật với đường ERP sync.
+    if (v !== null && bang === 'phan_in' && k === 'barcode') v = chuanHoaDsMa(v);
     val.push(v);
     set.push(`${k} = $${val.length}${kieu === 'date' ? '::date' : kieu === 'uuid' ? '::uuid' : ''}`);
     cu[k] = true;
