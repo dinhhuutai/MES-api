@@ -75,8 +75,14 @@ const erpNhaGiaCong = (r) => clean(field(r, 'NGC', 'nha_gia_cong', 'nhagiacong')
 
 // Mig 074 — 3 trường ERP bổ sung (đối chiếu 1318 dòng raw 10/08/2026, xem ghi chú trong migration):
 //   · DDHID    → 1:1 với ĐƠN HÀNG        → `don_hang.ddh_id`
-//   · DDHSUBID → số dòng chi tiết đơn; ⚠ KHÔNG duy nhất theo mã hàng (198 cặp lệch) → `dot_vai_ve.ddh_sub_id`
+//   · DDHSUBID → số dòng chi tiết đơn     → **`phan_in.ddh_sub_id`** (ĐỔI ở mig 088)
 //   · Duan     → duy nhất theo ĐỢT VẢI    → `dot_vai_ve.du_an`
+//
+// ⚠⚠ MIG 088 ĐẢO LẠI CHỖ ĐẶT `DDHSUBID`. Ghi chú cũ ("KHÔNG duy nhất theo mã hàng, 198 cặp lệch ⇒
+//   để ở đợt vải") SAI vì so nhầm đơn vị: DDHSUBID ứng với PHẦN IN, không phải mã hàng. Bằng chứng
+//   đo trên raw (prod 19/08/2026): **3 số cuối của `BarcodePTHDH` = DDHSUBID ở 1821/1821 dòng, 0 lệch**,
+//   và không mã vạch nào mang 2 subID. 48 `code_part` có nhiều mã vạch phần in ⇒ ERP coi là nhiều
+//   phần in còn MES gộp làm một (định danh bằng `ma_phan`) — đó mới là nguồn của "198 cặp lệch".
 // (IDDotReady đã map sẵn vào `dot_vai_ve.barcode` từ mig 061 — `erpBarcode` ở trên, KHÔNG thêm cột.)
 const erpDdhId = (r) => clean(field(r, 'DDHID', 'ddh_id', 'ddhid')) || null;
 const erpDdhSubId = (r) => clean(field(r, 'DDHSUBID', 'ddh_sub_id', 'ddhsubid')) || null;
@@ -217,12 +223,16 @@ async function processRow(r, maPhan, maDotVai, loaiDotVaiId, tgChuyenReady) {
       // mã đó thuộc ĐỢT VẢI và đã chuyển sang `dot_vai_ve.barcode` từ mig 061.
       // `upsertPhanIn` dùng COALESCE ⇒ lần sync mà ERP không gửi trường này thì GIỮ giá trị cũ.
       barcode: erpBarcodePhanIn(r),
+      // ⚠⚠ `DDHSUBID` THUỘC PHẦN IN (mig 088) — chuyển từ `dot_vai_ve` sang đây. Nó ứng 1:1 với
+      //   `BarcodePTHDH` ngay bên trên: **3 số cuối của mã vạch CHÍNH LÀ subID** (đo prod: 1821/1821
+      //   dòng khớp, 0 lệch). Đó cũng là lý do 2 trường này đi liền nhau ở đây.
+      ddhSubId: erpDdhSubId(r),
     });
     const { id: dotVaiId, inserted } = await repo.upsertDotVai(client, {
       maDotVai, phanInId: pinId, loaiDotVaiId,
       ngayVaiVe: erpNgayVaiVe(r), hanGiao: toDate(r.due_date), soLuong: r.received_qty ?? null,
       tgChuyenReady: tgChuyenReady || null, barcode: erpBarcode(r), inset: erpInset(r),
-      nhaGiaCong: erpNhaGiaCong(r), ddhSubId: erpDdhSubId(r), duAn: erpDuAn(r),
+      nhaGiaCong: erpNhaGiaCong(r), duAn: erpDuAn(r),
     });
     return { inserted, dotVaiId, pinId };
   });

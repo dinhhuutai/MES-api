@@ -134,7 +134,8 @@ async function hasNgcCol(client) {
   return _hasNgcCol;
 }
 
-// Cột mig 074: `don_hang.ddh_id` (ERP DDHID) + `dot_vai_ve.ddh_sub_id`/`du_an` (DDHSUBID/Duan).
+// Cột mig 074: `don_hang.ddh_id` (ERP DDHID) + `dot_vai_ve.du_an` (Duan).
+// ⚠ `ddh_sub_id` ĐÃ RỜI khỏi `dot_vai_ve` (mig 088) — nay nằm ở `phan_in`, xem `coCotSubPhanIn`.
 // Dò TRƯỚC khi dựng SQL, cache khi ĐÃ có ⇒ chạy migration xong nhận ngay, khỏi restart BE.
 let _co074 = null;
 async function co074(client) {
@@ -145,22 +146,38 @@ async function co074(client) {
   return _co074;
 }
 
+// Cột mig 088: `phan_in.ddh_sub_id` (ERP DDHSUBID — ứng 1:1 với PHẦN IN, xem migration để biết
+// bằng chứng). Dò riêng vì 074 và 088 là 2 migration độc lập: môi trường có thể có 074 mà chưa 088.
+// ⚠ Gộp chung một cờ là một trong hai nhánh sẽ chết — đúng bẫy đã mắc với mig 077/079.
+let _coSubPin = null;
+async function coCotSubPhanIn(client) {
+  if (_coSubPin) return true;
+  const { rows } = await client.query(
+    `SELECT 1 FROM information_schema.columns WHERE table_name='phan_in' AND column_name='ddh_sub_id' LIMIT 1`);
+  _coSubPin = rows.length > 0;
+  return _coSubPin;
+}
+
 // `tinhChatIn` = ERP `Tinhchatin`, `barcode` = ERP `barCode`. COALESCE khi update: ERP không gửi (null)
 // thì GIỮ giá trị cũ, tránh re-sync bằng payload cũ (chưa có trường này) xóa mất giá trị đã lưu.
-async function upsertPhanIn(client, { maHangId, maPhan, mauVai, kichVai, kichPhim, soLuongDonHang, tinhChatIn, barcode }) {
+async function upsertPhanIn(client, { maHangId, maPhan, mauVai, kichVai, kichPhim, soLuongDonHang, tinhChatIn, barcode, ddhSubId }) {
   const base = [maHangId, maPhan, mauVai || null, kichVai || null, kichPhim || null, soLuongDonHang ?? null, tinhChatIn || null];
   if (await hasBarcodeCol(client)) {
+    // `ddh_sub_id` (mig 088) — thêm vào cùng nhánh có `barcode` vì 2 trường đi liền nhau: subID chính
+    // là 3 số cuối của `BarcodePTHDH`. Thiếu migration ⇒ bỏ hẳn cột khỏi câu SQL, sync chạy như cũ.
+    const coSub = await coCotSubPhanIn(client);
     const { rows } = await client.query(
-      `INSERT INTO phan_in (ma_hang_id, ma_phan, mau_vai, kich_vai, kich_phim, so_luong_don_hang, tinh_chat_in, barcode)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+      `INSERT INTO phan_in (ma_hang_id, ma_phan, mau_vai, kich_vai, kich_phim, so_luong_don_hang, tinh_chat_in, barcode${coSub ? ', ddh_sub_id' : ''})
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8${coSub ? ',$9' : ''})
        ON CONFLICT (ma_phan) DO UPDATE SET
          mau_vai = EXCLUDED.mau_vai, kich_vai = EXCLUDED.kich_vai, kich_phim = EXCLUDED.kich_phim,
          so_luong_don_hang = EXCLUDED.so_luong_don_hang,
          tinh_chat_in = COALESCE(EXCLUDED.tinh_chat_in, phan_in.tinh_chat_in),
          barcode = COALESCE(EXCLUDED.barcode, phan_in.barcode),
+         ${coSub ? 'ddh_sub_id = COALESCE(EXCLUDED.ddh_sub_id, phan_in.ddh_sub_id),' : ''}
          updated_date = CURRENT_TIMESTAMP
        RETURNING id`,
-      [...base, barcode || null]
+      [...base, barcode || null, ...(coSub ? [ddhSubId || null] : [])]
     );
     return rows[0].id;
   }
@@ -209,7 +226,8 @@ async function getLoaiDotVaiId(maLoai) {
 // Đợt đã tồn tại (re-sync idempotent theo ma_dot_vai) → GIỮ NGUYÊN `so_luong_vai_ve`, chỉ cập nhật
 //  ngày/hạn/loại/barcode/inset/NGC (ERP trả lại cùng dòng mỗi 5 phút; ghi đè SL sẽ xóa mất số đã sửa tay).
 // `tgChuyenReady`: Date = đợt vào READY ngay (mig 056); null = CHỜ chuyển (pending). Re-sync GIỮ NGUYÊN mốc cũ.
-async function upsertDotVai(client, { maDotVai, phanInId, loaiDotVaiId, ngayVaiVe, hanGiao, soLuong, tgChuyenReady, barcode, inset, nhaGiaCong, ddhSubId, duAn }) {
+// ⚠ `ddhSubId` ĐÃ RỬI khỏi hàm này (mig 088): DDHSUBID thuộc PHẦN IN, ghi ở `upsertPhanIn`.
+async function upsertDotVai(client, { maDotVai, phanInId, loaiDotVaiId, ngayVaiVe, hanGiao, soLuong, tgChuyenReady, barcode, inset, nhaGiaCong, duAn }) {
   // Cột `nha_gia_cong` (mig 072) — dò TRƯỚC khi dựng câu SQL. ⚠ KHÔNG try/catch quanh INSERT:
   // hàm chạy trong transaction, lỗi 42703 làm ABORT cả transaction (cùng bẫy đã ghi ở `createTem`).
   const coNGC = await hasNgcCol(client);
@@ -219,11 +237,11 @@ async function upsertDotVai(client, { maDotVai, phanInId, loaiDotVaiId, ngayVaiV
     await client.query(
       `UPDATE dot_vai_ve SET loai_dot_vai_id = COALESCE($2, loai_dot_vai_id),
          ngay_vai_ve = $3, han_giao_hang = $4, barcode = COALESCE($5, barcode),
-         inset = COALESCE($6, inset)${coNGC ? ', nha_gia_cong = COALESCE($7, nha_gia_cong)' : ''}${co74 ? `, ddh_sub_id = COALESCE($${coNGC ? 8 : 7}, ddh_sub_id), du_an = COALESCE($${coNGC ? 9 : 8}, du_an)` : ''},
+         inset = COALESCE($6, inset)${coNGC ? ', nha_gia_cong = COALESCE($7, nha_gia_cong)' : ''}${co74 ? `, du_an = COALESCE($${coNGC ? 8 : 7}, du_an)` : ''},
          updated_date = CURRENT_TIMESTAMP
        WHERE ma_dot_vai = $1`,
       [maDotVai, loaiDotVaiId || null, ngayVaiVe || null, hanGiao || null, barcode || null, inset ?? null,
-        ...(coNGC ? [nhaGiaCong || null] : []), ...(co74 ? [ddhSubId || null, duAn || null] : [])]
+        ...(coNGC ? [nhaGiaCong || null] : []), ...(co74 ? [duAn || null] : [])]
     );
     return { id: existing.rows[0].id, inserted: false };
   }
@@ -231,10 +249,10 @@ async function upsertDotVai(client, { maDotVai, phanInId, loaiDotVaiId, ngayVaiV
   let sl = soLuong == null ? null : Number(soLuong);
   if (sl != null && sl < 0) sl = 0;
   const { rows } = await client.query(
-    `INSERT INTO dot_vai_ve (phan_in_id, loai_dot_vai_id, ma_dot_vai, ngay_vai_ve, han_giao_hang, so_luong_vai_ve, trang_thai, tg_chuyen_ready, barcode, inset${coNGC ? ', nha_gia_cong' : ''}${co74 ? ', ddh_sub_id, du_an' : ''})
-     VALUES ($1,$2,$3,$4,$5,$6,'NHAN_VAI',$7,$8,$9${coNGC ? ',$10' : ''}${co74 ? (coNGC ? ',$11,$12' : ',$10,$11') : ''}) RETURNING id`,
+    `INSERT INTO dot_vai_ve (phan_in_id, loai_dot_vai_id, ma_dot_vai, ngay_vai_ve, han_giao_hang, so_luong_vai_ve, trang_thai, tg_chuyen_ready, barcode, inset${coNGC ? ', nha_gia_cong' : ''}${co74 ? ', du_an' : ''})
+     VALUES ($1,$2,$3,$4,$5,$6,'NHAN_VAI',$7,$8,$9${coNGC ? ',$10' : ''}${co74 ? (coNGC ? ',$11' : ',$10') : ''}) RETURNING id`,
     [phanInId, loaiDotVaiId || null, maDotVai, ngayVaiVe || null, hanGiao || null, sl, tgChuyenReady || null, barcode || null, inset ?? null,
-      ...(coNGC ? [nhaGiaCong || null] : []), ...(co74 ? [ddhSubId || null, duAn || null] : [])]
+      ...(coNGC ? [nhaGiaCong || null] : []), ...(co74 ? [duAn || null] : [])]
   );
   return { id: rows[0].id, inserted: true };
 }

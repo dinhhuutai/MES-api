@@ -7,7 +7,8 @@
     "dev": "nodemon src/index.js",
     "start": "node src/index.js",
     "seed:admin": "node src/scripts/seedAdmin.js",
-    "kiem:push": "node src/scripts/kiemWebPush.js"
+    "kiem:push": "node src/scripts/kiemWebPush.js",
+    "lay:subid": "node src/scripts/layDdhSubId.js"
   },
   "license": "UNLICENSED",
   "private": true,

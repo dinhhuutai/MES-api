@@ -125,12 +125,15 @@ async function getDotVaiList(phanInId) {
 const COT_PHAN_IN = {
   mau_vai: 'text', kich_vai: 'text', kich_phim: 'text', tinh_chat_in: 'text',
   do_in: 'text', mau_in: 'text', ghi_chu: 'text', barcode: 'text',
+  // ⚠ `ddh_sub_id` chuyển từ đợt vải sang phần in (mig 088) — ứng 1:1 với phần in, và bằng 3 số cuối
+  //   của `barcode` (BarcodePTHDH). Sửa lệch nhau là ERP không đối soát được lượt in tem.
+  ddh_sub_id: 'text',
   so_luong_don_hang: 'int', thoi_gian_cho_kho_phut: 'int',
   la_in_kieng: 'bool',
 };
 const COT_DOT_VAI = {
   ma_dot_vai: 'text', barcode: 'text', nha_gia_cong: 'text', ghi_chu: 'text',
-  du_an: 'text', ddh_sub_id: 'text',
+  du_an: 'text',
   so_luong_vai_ve: 'int', so_luong_thieu: 'int', so_luong_hu: 'int', inset: 'int',
   ngay_vai_ve: 'date', han_giao_hang: 'date',
   can_lam_lai_ready: 'bool', kt_can_kiem_tra: 'bool',

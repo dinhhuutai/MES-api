@@ -842,6 +842,10 @@ async function duLieuGhiInTem(capTem = []) {
   // TỔ IN (mig 084) — gửi `ma_to` lên ERP qua `@pToin`. Chưa chạy migration ⇒ trả NULL, service
   // chuẩn hóa thành '' ⇒ đúng bằng hiện trạng trước mig này.
   const coTo = await phieuCoCotToIn();
+  // ⚠ `ddh_sub_id` đọc từ **PHẦN IN** (mig 088), không còn ở `dot_vai_ve`: DDHSUBID ứng 1:1 với phần
+  //   in (= 3 số cuối của `BarcodePTHDH`). Lệnh gom set vẫn lấy đúng subID của phần in mà lượt in
+  //   chỉ định qua `dotVaiId`, vì LATERAL `info` đã lọc theo đợt vải đó rồi mới lấy `pin.*`.
+  // ⚠ KHÔNG đặt comment `--` bên trong chuỗi SQL dưới đây — nó bị `.replace(/\s+/g,' ')` gộp 1 dòng.
   const sql = `
     WITH inp AS (SELECT * FROM unnest($1::uuid[], $2::uuid[]) AS x(tem_id, dot_vai_id))
     SELECT t.id AS tem_id, t.ma_tem, t.so_luong, t.ma_ngay_ca, t.gc_mau_vai,
@@ -873,7 +877,7 @@ async function duLieuGhiInTem(capTem = []) {
         SELECT COALESCE(t.ngay_ca, (t.created_date ${VN})::date) AS ngay
       ) nen
       LEFT JOIN LATERAL (
-        SELECT dv.barcode, dv.ddh_sub_id, dh.ddh_id, pin.ma_phan, (ldv.ma_loai = 'BO_SUNG') AS la_bo_sung
+        SELECT dv.barcode, pin.ddh_sub_id, dh.ddh_id, pin.ma_phan, (ldv.ma_loai = 'BO_SUNG') AS la_bo_sung
         FROM lenh_sx_dot_vai lsd
         JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
         JOIN phan_in pin ON pin.id = dv.phan_in_id
