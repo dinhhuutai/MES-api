@@ -174,6 +174,9 @@ const keHoachTamHistory = asyncHandler(async (req, res) =>
 const keHoachTamDone = asyncHandler(async (req, res) =>
   ok(res, await service.keHoachTamDone(req.query.date || new Date().toISOString().slice(0, 10))));
 
+const keHoachTamTheoDoi = asyncHandler(async (req, res) =>
+  ok(res, await service.keHoachTamTheoDoi(req.query)));
+
 const replanBatch = asyncHandler(async (req, res) =>
   ok(res, await service.replanBatch(req.body.lenhIds, req.body, req.user.id), 'Lập lại kế hoạch hàng loạt'));
 
@@ -232,7 +235,7 @@ module.exports = {
   release2Candidates, approveRelease2, approveRelease2Batch, skipTestRun, testRunHistory,
   replanCandidates, replan, replanDetail, replanBatch, planHistory,
   giaCongList, giaCongToOqc, giaCongHistory, giaCongTemCancelable, giaCongTemHuy, giaCongTraLai,
-  keHoachTamList, keHoachTamSet, keHoachTamConfirm, keHoachTamUpdate, keHoachTamDelete, keHoachTamHistory, keHoachTamDone,
+  keHoachTamList, keHoachTamSet, keHoachTamConfirm, keHoachTamUpdate, keHoachTamDelete, keHoachTamHistory, keHoachTamDone, keHoachTamTheoDoi,
   cancelableLenh, cancelLenh, returnTestRunToReady,
   release1Done, release2Done, replanDone, testCnspDone, testQaDone,
 };

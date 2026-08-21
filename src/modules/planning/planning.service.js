@@ -1199,6 +1199,17 @@ async function keHoachTamHistory(date) {
 }
 async function keHoachTamDone(date) { return repo.keHoachTamDoneByDate(date); }
 
+// "Danh sách kế hoạch tạm" (21/08/2026) — mọi đợt vải TỪNG đi qua kế hoạch tạm + tình trạng hiện tại.
+// ⚠ Trả kèm `tong` theo từng tình trạng để FE dựng chip mà không phải đếm lại (và để biết ngay
+//   "lập N đợt → M đã thực sự release"). Xem `repo.keHoachTamTheoDoi` cho vì sao phải đọc `audit_log`.
+async function keHoachTamTheoDoi(q = {}) {
+  const items = await repo.keHoachTamTheoDoi({
+    search: q.search || '', tuNgay: q.tuNgay || '', denNgay: q.denNgay || '',
+  });
+  const dem = items.reduce((a, r) => ({ ...a, [r.tinh_trang]: (a[r.tinh_trang] || 0) + 1 }), {});
+  return { items, meta: { total: items.length, theo_tinh_trang: dem } };
+}
+
 // ----- GIA CÔNG: màn Kế hoạch nhận lại hàng gia công rồi chuyển OQC -----
 async function listGiaCong({ search, page, limit, offset }) {
   const { rows, total } = await repo.listGiaCongLenh({ search, offset, limit });
@@ -1595,7 +1606,7 @@ module.exports = {
   listRelease2Candidates, approveRelease2, approveRelease2Batch, skipTestRun, testRunHistory,
   listReplanCandidates, replan, replanBatch, planHistory,
   listGiaCong, confirmGiaCongToOqc, giaCongHistory, listGiaCongTemCancelable, cancelGiaCongTem, traLaiNhaGiaCong,
-  listKeHoachTam, keHoachTamSet, confirmKeHoachTam, updateKeHoachTam, deleteKeHoachTam, keHoachTamHistory, keHoachTamDone,
+  listKeHoachTam, keHoachTamSet, confirmKeHoachTam, updateKeHoachTam, deleteKeHoachTam, keHoachTamHistory, keHoachTamDone, keHoachTamTheoDoi,
   listCancelableLenh, rollbackLenh,
   release1Done, release2Done, replanDone, testCnspDone, testQaDone,
   releaseList,

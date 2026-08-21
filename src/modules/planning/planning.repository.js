@@ -947,6 +947,82 @@ async function keHoachTamDoneByDate(date) {
   return rows;
 }
 
+// ─── THEO DÕI KẾ HOẠCH TẠM (21/08/2026) ─────────────────────────────────────
+// "Danh sách kế hoạch tạm" — giống *Danh sách release* nhưng cho màn Kế hoạch tạm: liệt kê MỌI đợt
+// vải TỪNG đi qua kế hoạch tạm, đánh dấu cái nào **đã Release 1 thật sự**, cái nào **chưa release vì
+// chưa Ready**. Trả lời câu "tôi lập kế hoạch N đợt, giờ bao nhiêu đã thực sự chạy".
+//
+// ⚠⚠⚠ KHÔNG THỂ LẤY TỪ BẢNG `ke_hoach_tam`: dòng ở đó BỊ XÓA ngay khi xác nhận Release 1 ⇒ đo prod
+//   21/08 thấy 126 dòng và **0 dòng nào đã release**. Nguồn "từng đi qua" duy nhất là
+//   `audit_log` (`ten_bang='ke_hoach_tam'`, `id_ban_ghi` = **dot_vai_ve_id** kiểu VARCHAR ⇒ so `dv.id::text`).
+// ⚠⚠ MỐC VÀO DÙNG `LUU_KE_HOACH_TAM` — hành động này ghi TRONG `repo.upsertKeHoachTam` nên LUÔN có.
+//   ĐỪNG suy "còn ở màn hay không" từ audit: có 2 đường xóa KHÔNG ghi audit (`releaseSet` và nhánh
+//   `da_don` của `confirmKeHoachTam`) ⇒ TÌNH TRẠNG phải hỏi CHÍNH bảng `ke_hoach_tam` + bảng lệnh.
+// ⚠ Đo prod: 866 đã release · 125 chưa Ready · 1 đã Ready chưa bấm · 0 bỏ kế hoạch.
+const KHT_TD_TINH_TRANG = `CASE
+  WHEN live.con AND qc.done THEN 'SAN_SANG'
+  WHEN live.con THEN 'CHO_READY'
+  WHEN lsx.co THEN 'DA_RELEASE'
+  ELSE 'DA_XOA' END`;
+
+async function keHoachTamTheoDoi({ search = '', tuNgay = '', denNgay = '', limit = 2000 }) {
+  const dkPain = await dkTrang('KH_TAM', 'pin', 'pin.id');
+  const SEARCH = `($1 = '' OR pin.ma_phan ~* $1 OR kh.ten_khach_hang ~* $1 OR mh.ma_hang ~* $1
+                  OR pin.mau_vai ~* $1 OR dv.ma_dot_vai ~* $1 OR dh.ma_don_hang ~* $1 OR cs.ten_chuyen ~* $1)`;
+  // Ngày lọc = NGÀY KH SẢN XUẤT: dòng còn sống lấy từ bảng, dòng đã release lấy từ payload audit
+  // (payload chỉ lưu chuyen_id/ngay_ke_hoach/so_luong/ma_lenh), cuối cùng lùi về ngày của LỆNH.
+  const NGAY_KH = `COALESCE(kht.ngay_ke_hoach, (k.pl->>'ngay_ke_hoach')::date, lsx.ngay_ke_hoach)`;
+  const sql = `WITH k AS (
+      SELECT a.id_ban_ghi AS dv_text,
+             min(a.thoi_gian) FILTER (WHERE a.hanh_dong = 'LUU_KE_HOACH_TAM') AS lap_dau,
+             max(a.thoi_gian) FILTER (WHERE a.hanh_dong = 'XAC_NHAN_KE_HOACH_TAM') AS moc_xac_nhan,
+             (array_agg(a.gia_tri_moi ORDER BY a.thoi_gian DESC))[1] AS pl,
+             (array_agg(a.nguoi_thuc_hien_id ORDER BY a.thoi_gian))[1] AS nguoi_lap_id
+        FROM audit_log a WHERE a.ten_bang = 'ke_hoach_tam' GROUP BY a.id_ban_ghi
+       HAVING min(a.thoi_gian) FILTER (WHERE a.hanh_dong = 'LUU_KE_HOACH_TAM') IS NOT NULL)
+    SELECT dv.id AS dot_vai_ve_id, dv.ma_dot_vai, dv.barcode, dv.so_luong_vai_ve, dv.han_giao_hang,
+           dv.nha_gia_cong, ldv.ten_loai AS loai_dot_vai,
+           pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim,
+           pin.tinh_chat_in, pin.so_luong_don_hang,
+           mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
+           ${hsktCols('pin.id')},
+           ${KHT_TD_TINH_TRANG} AS tinh_trang,
+           k.lap_dau AS tg_lap_ke_hoach, k.moc_xac_nhan AS tg_xac_nhan,
+           nd.ho_ten AS nguoi_lap,
+           COALESCE(kht.so_luong, (k.pl->>'so_luong')::int) AS so_luong_ke_hoach,
+           COALESCE(cs.ten_chuyen, csx.ten_chuyen) AS ten_chuyen,
+           ${NGAY_KH} AS ngay_ke_hoach,
+           lsx.ma_lenh_san_xuat, lsx.so_luong_release, lsx.tg_release
+      FROM k
+      JOIN dot_vai_ve dv ON dv.id::text = k.dv_text AND dv.trang_thai <> 'DA_HUY'
+      JOIN phan_in pin ON pin.id = dv.phan_in_id AND pin.dang_hoat_dong
+      JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+      JOIN don_hang dh ON dh.id = mh.don_hang_id
+      JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+      LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id
+      LEFT JOIN nguoi_dung nd ON nd.id = k.nguoi_lap_id
+      LEFT JOIN ke_hoach_tam kht ON kht.dot_vai_ve_id = dv.id AND kht.trang_thai = 'CHO'
+      LEFT JOIN chuyen_san_xuat cs ON cs.id = kht.chuyen_id
+      LEFT JOIN chuyen_san_xuat csx ON csx.id = (k.pl->>'chuyen_id')::uuid
+      LEFT JOIN LATERAL (SELECT ls.ma_lenh_san_xuat, ls.so_luong_release, ls.created_date AS tg_release,
+                                ls.ngay_ke_hoach, true AS co
+                           FROM lenh_sx_dot_vai l JOIN lenh_san_xuat ls ON ls.id = l.lenh_san_xuat_id
+                          WHERE l.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY'
+                          ORDER BY ls.created_date DESC LIMIT 1) lsx ON true
+      CROSS JOIN LATERAL (SELECT EXISTS (SELECT 1 FROM ke_hoach_tam t
+                            WHERE t.dot_vai_ve_id = dv.id AND t.trang_thai = 'CHO') AS con) live
+      CROSS JOIN LATERAL (SELECT EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
+                            WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN'
+                              AND kq.trang_thai = 'DAT') AS done) qc
+     WHERE ${dkPain} AND ${SEARCH}
+       AND ($2 = '' OR ${NGAY_KH} >= $2::date)
+       AND ($3 = '' OR ${NGAY_KH} <= $3::date)
+     ORDER BY ${NGAY_KH} NULLS LAST, kh.ten_khach_hang, pin.ma_phan
+     LIMIT $4`;
+  const { rows } = await query(sql.replace(/\s+/g, ' '), [mauTim(search), tuNgay || '', denNgay || '', limit]);
+  return rows;
+}
+
 async function listKeHoachTamRows({ search = '', offset = 0, limit = 200 }) {
   const dkPain = await dkTrang('KH_TAM', 'pin', 'pin.id');
   const SEARCH = `($1 = '' OR pin.ma_phan ~* $1 OR kh.ten_khach_hang ~* $1
@@ -1734,7 +1810,7 @@ module.exports = {
   phanInRowsByLenh,
   listGiaCongLenh, getGiaCongLenh, listGiaCongHistory,
   listGiaCongTemCancelable, getGiaCongTem, cancelGiaCongTemTx, logGiaCongTraLai,
-  upsertKeHoachTam, listKeHoachTamRows, getKeHoachTam, getOpenSetOfDotVai, updateKeHoachTam, deleteKeHoachTam, deleteKeHoachTamByDotVai,
+  upsertKeHoachTam, listKeHoachTamRows, keHoachTamTheoDoi, getKeHoachTam, getOpenSetOfDotVai, updateKeHoachTam, deleteKeHoachTam, deleteKeHoachTamByDotVai,
   lenhMoiNhatCuaDotVai,
   logKeHoachTam, keHoachTamHistoryByDate, keHoachTamDoneByDate,
   listCancelableLenh, getLenhForCancel, cancelLenhOrder, cancelReadyQcForDotVai, logLenhCancel,

@@ -86,6 +86,8 @@ router.get('/ke-hoach-tam', rbac('RELEASE1', 'RELEASE2'), c.keHoachTamList);
 // ĐẶT TRƯỚC các route có tham số để 'history'/'done' không bị hiểu thành :id.
 router.get('/ke-hoach-tam/history', rbac('RELEASE1', 'RELEASE2'), c.keHoachTamHistory);
 router.get('/ke-hoach-tam/done', rbac('RELEASE1', 'RELEASE2'), c.keHoachTamDone);
+// Danh sach ke hoach tam (da release 1 that su / chua release vi chua Ready). Route TINH -> dat truoc '/:id'.
+router.get('/ke-hoach-tam/danh-sach', rbac('RELEASE1', 'RELEASE2'), c.keHoachTamTheoDoi);
 // Lập kế hoạch tạm cho CẢ GOM SET chưa đủ Ready (đặt trước ':id' để 'set' không bị hiểu thành id).
 router.post('/ke-hoach-tam/set/:setId', rbac('RELEASE1', 'RELEASE2'), c.keHoachTamSet);
 router.post('/ke-hoach-tam/:id/xac-nhan', rbac('RELEASE1', 'RELEASE2'), c.keHoachTamConfirm);
