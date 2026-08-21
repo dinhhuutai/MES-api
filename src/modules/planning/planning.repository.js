@@ -125,6 +125,7 @@ async function getDotVaiForCompose(dotVaiIds) {
   const { rows } = await query(
     `SELECT dv.id::text AS id, dv.phan_in_id::text AS phan_in_id, dv.ma_dot_vai,
             pin.mau_vai, dv.can_lam_lai_ready, pin.la_in_kieng,
+            ldv.ma_loai AS ma_loai_dot_vai,
             COALESCE(dv.so_luong_vai_ve,0)::int AS so_luong,
             COALESCE((SELECT SUM(COALESCE(lsd.so_luong,0)) FROM lenh_sx_dot_vai lsd
                       JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
@@ -132,6 +133,7 @@ async function getDotVaiForCompose(dotVaiIds) {
             EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
                     WHERE kq.phan_in_id = dv.phan_in_id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT') AS qc_done
      FROM dot_vai_ve dv JOIN phan_in pin ON pin.id = dv.phan_in_id
+     LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id
      WHERE dv.id = ANY($1::uuid[])`,
     [dotVaiIds]
   );
@@ -621,12 +623,26 @@ const demNeuCan = async (rows, { sql, params, offset, limit }) => {
   return r[0].total;
 };
 
+// ⚠⚠ CHỈ TRẢ LỆNH **CHƯA QA XÁC NHẬN ĐẠT** (chốt 20/08/2026 — bỏ ô tích "Chỉ chờ QA" ở FE, gộp hẳn
+//   màn CNSP vào màn QA): "QA chưa xác nhận, hoặc xác nhận TEST LỖI" đều là CHƯA XONG. Test lỗi thì
+//   `returnTestRunToReady` hủy kết quả `TEST_QA` nên `qa_done` về false ⇒ lệnh tự hiện lại, không cần
+//   điều kiện riêng.
+// ⚠ Lọc Ở BACKEND chứ không lọc ở FE: có vậy `meta.total`, phân trang và dải "Theo dõi" mới cùng một
+//   tập với bảng. Lọc ở FE thì `total` đếm cả lệnh đã QA xong ⇒ 2 con số trên cùng màn đá nhau.
+// ⚠⚠ CÂU ĐẾM DÙNG SỐ THAM SỐ KHÁC câu lấy dữ liệu: Postgres đòi MỌI tham số truyền vào phải XUẤT HIỆN
+//   trong câu SQL (thừa 1 cái là `42P18 could not determine data type of parameter`). Câu đếm không có
+//   cột `cnsp_done` nên không dùng `$2` ⇒ `qaId` phải vào đúng `$2`, còn câu lấy dữ liệu là `$3`.
+//   Dùng chung một hàm dựng để 2 chỗ không lệch luật.
+const chuaQaDat = (p) => `AND NOT EXISTS (SELECT 1 FROM ket_qua_checkpoint k
+      WHERE k.lenh_san_xuat_id = ls.id AND k.checkpoint_id = ${p} AND k.trang_thai = 'DAT')`;
+
 async function listTestRunCandidates({ cnspId, qaId, search = '', offset = 0, limit = 20 }) {
   const dkPain = await dkTrang('CL_TEST_RUN', 'lenh', 'ls.id');
   const tim = mauTim(search);
-  const data = await query(lenhListSql('', dkPain), [tim, cnspId, qaId, limit, offset]);
-  // extraWhere rỗng ⇒ câu đếm KHÔNG dùng $2/$3 ⇒ chỉ được truyền đúng 1 tham số.
-  const total = await demNeuCan(data.rows, { sql: lenhCountSql('', dkPain), params: [tim], offset, limit });
+  const data = await query(lenhListSql(chuaQaDat('$3'), dkPain), [tim, cnspId, qaId, limit, offset]);
+  const total = await demNeuCan(data.rows, {
+    sql: lenhCountSql(chuaQaDat('$2'), dkPain), params: [tim, qaId], offset, limit,
+  });
   return { rows: data.rows, total };
 }
 
@@ -1255,6 +1271,72 @@ async function getLenhForReplan(lenhId) {
   return rows[0] || null;
 }
 
+// ĐỢT VẢI của lệnh kèm SL RELEASE đang giữ + trần được phép nâng lên (cho màn Lập kế hoạch lại).
+// ⚠⚠ `toi_da` = SL vải về − SL đã release bởi các lệnh KHÁC (loại lệnh HUY, loại CHÍNH lệnh này):
+//   1 đợt vải có thể release thành NHIỀU lệnh (release theo số lượng), nâng SL ở đây mà không trừ
+//   phần lệnh khác đang giữ là **release vượt số vải thực có**.
+// ⚠ Trả `so_luong` (phần lệnh này đang giữ) để FE đổ sẵn — đúng con số đã nhập lúc Release 1.
+async function getReplanDotVai(lenhId) {
+  const { rows } = await query(
+    `SELECT lsd.dot_vai_ve_id AS dot_vai_id, dv.ma_dot_vai, pin.ma_phan, pin.mau_vai,
+            COALESCE(lsd.so_luong, 0)::int AS so_luong,
+            COALESCE(dv.so_luong_vai_ve, 0)::int AS so_luong_vai_ve,
+            COALESCE((SELECT SUM(COALESCE(l2.so_luong, 0)) FROM lenh_sx_dot_vai l2
+                       JOIN lenh_san_xuat s2 ON s2.id = l2.lenh_san_xuat_id
+                      WHERE l2.dot_vai_ve_id = dv.id AND s2.trang_thai <> 'HUY'
+                        AND l2.lenh_san_xuat_id <> $1), 0)::int AS da_release_khac
+       FROM lenh_sx_dot_vai lsd
+       JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+       JOIN phan_in pin ON pin.id = dv.phan_in_id
+      WHERE lsd.lenh_san_xuat_id = $1
+      ORDER BY pin.ma_phan, dv.ma_dot_vai`.replace(/\s+/g, ' '),
+    [lenhId]
+  );
+  return rows.map((r) => ({ ...r, toi_da: Math.max(0, r.so_luong_vai_ve - r.da_release_khac) }));
+}
+
+// Ghi SL RELEASE mới cho từng (lệnh, đợt vải) rồi tính lại `lenh_san_xuat.so_luong_release = Σ`.
+// ⚠⚠ CÙNG LUẬT với `manualentry.repository.updateReleaseTx` (trang *Cập nhật SL nhận vải / release*)
+//   — nhưng thêm TRẦN TRÊN (`toi_da`) mà hàm kia không có, vì màn này cho NÂNG số lượng lên.
+//   Guard `BELOW_PRINTED` giữ nguyên cho chắc, dù lệnh replan luôn chưa có phiếu nên `printed` = 0.
+// ⚠ Chạy TRONG transaction của `replan` để đổi chuyền/ngày/SL là một thao tác duy nhất.
+async function updateReleaseTx(client, lenhId, items, actorId) {
+  const cu = (await client.query(
+    'SELECT dot_vai_ve_id, COALESCE(so_luong,0)::int AS so_luong FROM lenh_sx_dot_vai WHERE lenh_san_xuat_id = $1',
+    [lenhId]
+  )).rows;
+  const mapCu = new Map(cu.map((r) => [r.dot_vai_ve_id, r.so_luong]));
+  const moi = new Map(mapCu);
+  for (const it of items) moi.set(it.dotVaiId, it.soLuong);
+  const tong = [...moi.values()].reduce((a, b) => a + b, 0);
+
+  const printed = (await client.query(
+    `SELECT COALESCE(SUM(t.so_luong), 0)::int AS v FROM phieu_san_xuat ps JOIN tem t ON t.phieu_san_xuat_id = ps.id
+      WHERE ps.lenh_san_xuat_id = $1 AND t.trang_thai <> 'HUY'`.replace(/\s+/g, ' '), [lenhId]
+  )).rows[0].v;
+  if (tong < printed) {
+    throw new AppError(`SL release mới (${tong}) nhỏ hơn SL đã in (${printed}) — không cho giảm dưới mức đã in`,
+      { status: 409, errorCode: 'BELOW_PRINTED' });
+  }
+
+  for (const it of items) {
+    if (!mapCu.has(it.dotVaiId)) {
+      throw new AppError('Đợt vải không thuộc lệnh này', { status: 422, errorCode: 'DOT_VAI_LA' });
+    }
+    if (mapCu.get(it.dotVaiId) === it.soLuong) continue;
+    await client.query(
+      `UPDATE lenh_sx_dot_vai SET so_luong = $1, updated_date = CURRENT_TIMESTAMP, updated_by = $2
+        WHERE lenh_san_xuat_id = $3 AND dot_vai_ve_id = $4`.replace(/\s+/g, ' '),
+      [it.soLuong, actorId, lenhId, it.dotVaiId]
+    );
+  }
+  await client.query(
+    'UPDATE lenh_san_xuat SET so_luong_release = $1, updated_date = CURRENT_TIMESTAMP, updated_by = $2 WHERE id = $3',
+    [tong, actorId, lenhId]
+  );
+  return tong;
+}
+
 // Cập nhật kế hoạch của lệnh. `tgBdKh`/`tgKtKh` = giờ bắt đầu/kết thúc theo kế hoạch (mig gốc 001,
 // cùng 2 cột mà Release 1 / Tạo đợt SX ghi) — service đã ghép sẵn ngày + giờ trước khi gọi.
 async function updateLenhPlan(client, lenhId, { chuyenId, ngayKeHoach, tgBdKh, tgKtKh }, actorId) {
@@ -1462,9 +1544,18 @@ const DONE_INFO = `info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_
 //   về pool Release 1 ⇒ để nó trong "Đã hoàn thành" là đếm khống. Ca thật 12/08: sidebar hiện **57**
 //   trong khi số lệnh thật còn sống là **53** — đúng 4 lệnh (LSX0819/0862/0863/0864) vừa bị hủy khi
 //   trả 5 phần in SD-2607-001-A19 về Kỹ thuật. Người dùng đối chiếu với màn khác thấy lệch 4.
+// Số phần in KHÁC NHAU của 1 lệnh — để `attachPhanInList` biết lệnh nào là GOM SET.
+// ⚠ Cùng biểu thức với `lenhListSql`; sidebar "Đã hoàn thành" trước đây thiếu nó nên chỉ hiện phần in
+//   ĐẠI DIỆN (`PHAN_INFO_LATERAL` `LIMIT 1`) ⇒ số phần in trên sidebar THẤP HƠN dải "Theo dõi".
+const SO_PHAN_IN_SQL = `(SELECT count(DISTINCT dvx.phan_in_id) FROM lenh_sx_dot_vai lsdx
+    JOIN dot_vai_ve dvx ON dvx.id = lsdx.dot_vai_ve_id
+    JOIN phan_in pinx ON pinx.id = dvx.phan_in_id AND pinx.dang_hoat_dong
+   WHERE lsdx.lenh_san_xuat_id = ls.id)::int AS so_phan_in`;
+
 async function release1DoneByDate(date) {
   const sql = `
     SELECT ls.created_date AS tg, nd.ho_ten AS nguoi, ls.ma_lenh_san_xuat AS ma,
+           ls.id AS lenh_id, ${SO_PHAN_IN_SQL},
            ls.so_luong_release AS so_luong, ${DONE_INFO}
     FROM lenh_san_xuat ls
     LEFT JOIN nguoi_dung nd ON nd.id = ls.created_by
@@ -1480,6 +1571,7 @@ async function release1DoneByDate(date) {
 async function planDoneByDate(date, hanhDong) {
   const sql = `
     SELECT a.thoi_gian AS tg, nd.ho_ten AS nguoi, ls.ma_lenh_san_xuat AS ma,
+           ls.id AS lenh_id, ${SO_PHAN_IN_SQL},
            ls.so_luong_release AS so_luong, ${DONE_INFO}
     FROM audit_log a
     JOIN lenh_san_xuat ls ON ls.id = a.id_ban_ghi::uuid
@@ -1496,6 +1588,7 @@ async function planDoneByDate(date, hanhDong) {
 async function testDoneByDate(date, maCheckpoint) {
   const sql = `
     SELECT l.tg_thuc_hien AS tg, nd.ho_ten AS nguoi, ls.ma_lenh_san_xuat AS ma, ls.id AS lenh_id,
+           ${SO_PHAN_IN_SQL},
            ls.so_luong_release AS so_luong, cs.ten_chuyen, ${DONE_INFO}
     FROM lich_su_trang_thai l
     JOIN ket_qua_checkpoint kq ON kq.id = l.ket_qua_checkpoint_id
@@ -1637,7 +1730,7 @@ module.exports = {
   listTestRunCandidates, listRelease2Candidates, getLenhBasic, getLenhDotVai, dotVaiIdsByLenh, getTestRuns,
   getLenhTestStatus, insertTestRun, insertTestRunTx, upsertLenhResult, insertStatusLog, setLenhTrangThai,
   testRunHistoryByDate, testRunsByLenh,
-  listReplanCandidates, getLenhForReplan, updateLenhPlan, logPlanChange, planHistoryByDate,
+  listReplanCandidates, getLenhForReplan, getReplanDotVai, updateReleaseTx, updateLenhPlan, logPlanChange, planHistoryByDate,
   phanInRowsByLenh,
   listGiaCongLenh, getGiaCongLenh, listGiaCongHistory,
   listGiaCongTemCancelable, getGiaCongTem, cancelGiaCongTemTx, logGiaCongTraLai,

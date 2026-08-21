@@ -470,20 +470,12 @@ const LAT_QC_DONE = `LEFT JOIN LATERAL (
    WHERE xkq.phan_in_id = pin.id AND xkq.trang_thai = 'DAT' AND xcp.ma_checkpoint = 'QC_XAC_NHAN'
 ) qcd ON true`;
 
-// Ô tích "Chỉ chờ QA" ở màn Test Run - QA (19/08/2026).
-// ⚠⚠ `qa_done` là thuộc tính của LỆNH, không phải phần in ⇒ sau khi gom về phần in, luật phải GƯƠNG
-//   ĐÚNG cái bảng đang làm: bảng lọc `!r.qa_done` ở mức LỆNH rồi mới tách dòng theo phần in, nên
-//   phần in còn hiện khi CÓ ÍT NHẤT MỘT lệnh `RELEASE_1` chưa `TEST_QA` đạt. Lấy "mọi lệnh đều chưa
-//   QA" sẽ loại mất phần in vừa xong một lệnh nhưng còn lệnh khác đang chờ test.
-const LAT_CHO_QA = `LEFT JOIN LATERAL (
-  SELECT (count(*) > 0) AS cho_qa
-    FROM lenh_sx_dot_vai xlsd
-    JOIN lenh_san_xuat xls ON xls.id = xlsd.lenh_san_xuat_id AND xls.trang_thai = 'RELEASE_1'
-    JOIN dot_vai_ve xdvq ON xdvq.id = xlsd.dot_vai_ve_id
-   WHERE xdvq.phan_in_id = pin.id
-     AND NOT EXISTS (SELECT 1 FROM ket_qua_checkpoint xk JOIN checkpoint xc ON xc.id = xk.checkpoint_id
-                      WHERE xk.lenh_san_xuat_id = xls.id AND xc.ma_checkpoint = 'TEST_QA' AND xk.trang_thai = 'DAT')
-) cqa ON true`;
+// ⚠⚠ ĐÃ GỠ `LAT_CHO_QA` + cột `cho_qa` (20/08/2026) cùng với ô tích "Chỉ chờ QA" ở màn Test Run - QA.
+//   Lý do KHÔNG chỉ là "ô tích không còn": mốc RA của trạm `CL_TEST_RUN` vốn đã là *TEST_QA đạt hoặc
+//   lệnh rời chặng RELEASE_1* ⇒ ô **Tồn** tự bằng đúng tập bảng đang hiện, lọc thêm `cho_qa` là thừa.
+//   Tệ hơn: nó làm HỎNG 2 ô còn lại — phần in VÀO rồi RA ngay trong kỳ sẽ có `cho_qa = false` nên bị
+//   loại khỏi CẢ "Nhận trong kỳ" LẪN "Làm được trong kỳ" ⇒ "Làm được" gần như luôn ra 0.
+//   Gỡ luôn được một LATERAL khỏi MỌI truy vấn sĩ số của cả 12 màn. Đừng nối lại.
 
 // Mã gom set đang MỞ của phần in (ô lọc *Gom set* ở màn Kế hoạch tạm).
 const LAT_MA_SET = `LEFT JOIN LATERAL (
@@ -518,11 +510,10 @@ const TV = {
 
 const manTheoPin = (trong, { traVe = TV.KHONG } = {}) => `SELECT pin.id, ${COT_PIN_GOM}, g.tg_vao, g.tg_ra,
   COALESCE(qcd.qc_done, false) AS qc_done, gs.ma_set,
-  COALESCE(cqa.cho_qa, false) AS cho_qa,
   (${traVe}) AS tg_tra_ve, ((${traVe}) IS NOT NULL) AS bi_tra_ve
   FROM (${gomTheoPin(trong)}) g
   JOIN phan_in pin ON pin.id = g.phan_in_id
-  ${JOIN_PIN} ${LAT_DOT_CUA_PIN('pin.id')} ${LAT_HSKT('pin.id')} ${LAT_QC_DONE} ${LAT_MA_SET} ${LAT_CHO_QA}`;
+  ${JOIN_PIN} ${LAT_DOT_CUA_PIN('pin.id')} ${LAT_HSKT('pin.id')} ${LAT_QC_DONE} ${LAT_MA_SET}`;
 
 // ─── 11 MÀN XÁC NHẬN ─────────────────────────────────────────────────────────
 // `ma` khớp `TRANG_PAIN` (utils/phuongAnIn.js) để FE truyền đúng MỘT mã cho cả 2 tính năng.

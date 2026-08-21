@@ -116,6 +116,9 @@ const approveRelease2Batch = asyncHandler(async (req, res) =>
 const replan = asyncHandler(async (req, res) =>
   ok(res, await service.replan(req.params.lenhId, req.body, req.user.id), 'Đã lập lại kế hoạch'));
 
+const replanDetail = asyncHandler(async (req, res) =>
+  ok(res, await service.getReplanDetail(req.params.lenhId)));
+
 const giaCongList = asyncHandler(async (req, res) => {
   const { page, limit, offset } = getPaging(req.query, { tranToiDa: TRAN_TAI_HET });
   return ok(res, await service.listGiaCong({ search: req.query.search || '', page, limit, offset }));
@@ -227,7 +230,7 @@ module.exports = {
   testRunCandidates, lenhDetail, recordTestRun,
   confirmCNSP, confirmQA, cancelCNSP, cancelQA, confirmCNSPBatch, confirmQABatch,
   release2Candidates, approveRelease2, approveRelease2Batch, skipTestRun, testRunHistory,
-  replanCandidates, replan, replanBatch, planHistory,
+  replanCandidates, replan, replanDetail, replanBatch, planHistory,
   giaCongList, giaCongToOqc, giaCongHistory, giaCongTemCancelable, giaCongTemHuy, giaCongTraLai,
   keHoachTamList, keHoachTamSet, keHoachTamConfirm, keHoachTamUpdate, keHoachTamDelete, keHoachTamHistory, keHoachTamDone,
   cancelableLenh, cancelLenh, returnTestRunToReady,

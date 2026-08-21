@@ -25,6 +25,19 @@ const CNSP_CP = 'TEST_CNSP';
 const QA_CP = 'TEST_QA';
 const SL_NHO_BO_TEST = 100; // đợt SX tổng SL < ngưỡng này → bỏ Test Run (điểm 5). Ngưỡng cấu hình được sau.
 
+// ⚠⚠ LOẠI ĐỢT VẢI BỎ HẲN TEST RUN (chốt 21/08/2026) — ERP `loaikd`: 5I = BO_SUNG · 6I = MAU_SO_LUONG.
+//   Hàng bổ sung / mẫu số lượng là chạy tiếp thứ ĐÃ IN RỒI ⇒ Release 1 coi như Release 2, đợt SX vào
+//   thẳng "chờ sản xuất".
+// ⚠⚠ LUẬT NÀY THẮNG TUYỆT ĐỐI — kể cả đợt bật cờ `can_lam_lai_ready` (người dùng chốt sau khi đã xem
+//   số đo: prod 21/08 có 127/591 đợt BO_SUNG đang bật cờ đó). KHÁC HẲN 2 luật đi tắt cũ (SL < 100 /
+//   đang in tem) vốn vẫn chừa ngoại lệ cho cờ làm lại — đừng "sửa cho nhất quán" bằng cách nhét
+//   `&& !can_lam_lai_ready` vào đây.
+// ⚠ So theo MÃ danh mục (`loai_dot_vai.ma_loai`), KHÔNG so tên hiển thị. Danh mục còn mã `MAU` (3I/khác
+//   → SO_LUONG) — CỐ Ý không đưa vào: whitelist ERP `LAY_LOAIKD` chỉ nhận 3I/5I/6I nên `MAU` không có
+//   dữ liệu, và nó là loại khác hẳn "mẫu số lượng".
+const LOAI_BO_TEST_RUN = new Set(['BO_SUNG', 'MAU_SO_LUONG']);
+const boTestTheoLoai = (dv) => LOAI_BO_TEST_RUN.has(dv?.ma_loai_dot_vai);
+
 // ⚠ Bọc CACHE RAM (`utils/wfCache.js`, TTL 60s): bản gốc chạy **3 query TUẦN TỰ** (version → trạm →
 //   checkpoint) và được gọi ở 8 chỗ ⇒ ~75 ms độ trễ mạng thừa cho mỗi request dùng nó. Cấu hình này
 //   chỉ đổi khi sửa workflow, mà lúc đó `wfconfig` gọi `xoaCache()`.
@@ -406,8 +419,9 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
   }
 
   // ĐI TẮT TEST RUN (nhất quán createDotSanXuat / CLAUDE.md §5): bỏ Test Run khi
-  //   (phần in ĐANG IN TEM trên chuyền — phiếu DANG_CHAY) HOẶC (SL release của lệnh < 100),
-  //   TRỪ đợt bật cờ LÀM LẠI (can_lam_lai_ready → ép full flow).
+  //   (a) LOẠI ĐỢT VẢI là BO_SUNG (5I) / MAU_SO_LUONG (6I) — thắng tuyệt đối, xem LOAI_BO_TEST_RUN; HOẶC
+  //   (b) (phần in ĐANG IN TEM trên chuyền — phiếu DANG_CHAY) HOẶC (SL release của lệnh < 100),
+  //       TRỪ đợt bật cờ LÀM LẠI (can_lam_lai_ready → ép full flow).
   // KHÔNG còn bỏ Test Run chỉ vì "cùng phần in đã test xong ở đợt trước" — đợt MỚI vẫn phải Test Run.
   const { version } = await loadTestConfig();
   const compose = await repo.getDotVaiForCompose(plan.map((p) => p.dvId));
@@ -419,7 +433,7 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
     for (const { dvId, qty } of plan) {
       const dv = cById[dvId];
       const dangChay = dv ? dangChaySet.has(dv.phan_in_id) : false;
-      const diTat = (dangChay || qty < SL_NHO_BO_TEST) && !dv?.can_lam_lai_ready;
+      const diTat = boTestTheoLoai(dv) || ((dangChay || qty < SL_NHO_BO_TEST) && !dv?.can_lam_lai_ready);
       const trangThai = diTat ? 'RELEASE_2' : 'RELEASE_1';
       const maLenh = await repo.nextMaLenhTx(client);
       const id = await repo.createLenh(client, {
@@ -509,14 +523,17 @@ async function createDotSanXuat({ items, chuyenId, ngayKeHoach, tgBdKh, tgKtKh }
     return { ...(await getLenhDetail(gc.id)), gia_cong: true, so_luong_release: tongSL };
   }
 
-  // ĐI TẮT TEST RUN (điểm 5): bỏ Test Run khi (phần in ĐANG IN TEM) HOẶC (tổng SL < 100),
-  // TRỪ khi có đợt bật cờ LÀM LẠI (đổi HSKT → ép full flow).
+  // ĐI TẮT TEST RUN (điểm 5): bỏ Test Run khi
+  //   (a) LOẠI ĐỢT VẢI là BO_SUNG (5I) / MAU_SO_LUONG (6I) — thắng tuyệt đối, xem LOAI_BO_TEST_RUN; HOẶC
+  //   (b) (phần in ĐANG IN TEM) HOẶC (tổng SL < 100), TRỪ khi có đợt bật cờ LÀM LẠI (ép full flow).
+  // ⚠ Nhánh (a) dùng `every`: 1 đợt SX gộp NHIỀU đợt vải (cùng phần in) nên chỉ bỏ Test Run khi MỌI đợt
+  //   đều thuộc loại bỏ test. Trộn lẫn 1 đợt SO_LUONG (3I) là có hàng mới thật sự trong lệnh ⇒ vẫn test.
   const phanInIds = [...new Set(info.map((r) => r.phan_in_id))];
   const dangChaySet = new Set(await repo.phanInDangChay(phanInIds));
   const dangChay = phanInIds.some((pid) => dangChaySet.has(pid));
   const slNho = tongSL < SL_NHO_BO_TEST;
   const lamLai = plan.some((p) => byId[p.dotVaiId]?.can_lam_lai_ready);
-  const diTat = (dangChay || slNho) && !lamLai;
+  const diTat = plan.every((p) => boTestTheoLoai(byId[p.dotVaiId])) || ((dangChay || slNho) && !lamLai);
   const trangThai = diTat ? 'RELEASE_2' : 'RELEASE_1';
 
   // IN KIẾNG (điểm 16): phần in in kiếng → tạo THÊM đợt SX ép ủi (giai_doan EP_UI) ở holding CHO_IN_XONG,
@@ -1347,7 +1364,7 @@ function gioCua(v) {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
-async function replan(lenhId, { chuyenId, ngayKeHoach, lyDo, tgBdKh, tgKtKh }, actorId) {
+async function replan(lenhId, { chuyenId, ngayKeHoach, lyDo, tgBdKh, tgKtKh, slRelease }, actorId) {
   if (!ngayKeHoach) throw new AppError('Chọn ngày sản xuất theo kế hoạch', { status: 422, errorCode: 'NO_NGAY' });
   // Lý do KHÔNG bắt buộc (chốt 2026-08-14) — dời ngày/chuyền là việc điều độ hằng ngày, bắt nhập lý do
   // mỗi lần chỉ khiến người dùng gõ cho có. Vẫn ghi vào audit khi có nhập.
@@ -1376,19 +1393,60 @@ async function replan(lenhId, { chuyenId, ngayKeHoach, lyDo, tgBdKh, tgKtKh }, a
   };
   const bdMoi = doiGio(tgBdKh, lenh.tg_bd_kh);
   const ktMoi = doiGio(tgKtKh, lenh.tg_kt_kh);
+
+  // SỐ LƯỢNG RELEASE (20/08/2026) — sửa ngay tại màn Lập kế hoạch lại thay vì phải chạy vòng sang
+  // *Hệ thống > Cập nhật SL nhận vải / release*. Không gửi `slRelease` ⇒ giữ nguyên như cũ.
+  // ⚠⚠ TRẦN TRÊN theo TỪNG ĐỢT VẢI: `so_luong_vai_ve` − SL các lệnh KHÁC đang giữ. 1 đợt vải release
+  //   được thành nhiều lệnh nên không kiểm cái này là **release vượt số vải thực có**.
+  // ⚠ Chặn ≤ 0: lệnh release 0 mét là dữ liệu vô nghĩa (muốn bỏ hẳn thì dùng *Hủy lệnh sản xuất*).
+  const dsDot = await repo.getReplanDotVai(lenhId);
+  const items = [];
+  if (slRelease && typeof slRelease === 'object') {
+    for (const d of dsDot) {
+      const v = slRelease[d.dot_vai_id];
+      if (v === undefined || v === null || v === '') continue;
+      const n = Number(v);
+      if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
+        throw new AppError(`SL release của đợt ${d.ma_dot_vai} phải là số nguyên lớn hơn 0`,
+          { status: 422, errorCode: 'SL_KHONG_HOP_LE' });
+      }
+      if (n > d.toi_da) {
+        throw new AppError(`SL release của đợt ${d.ma_dot_vai} tối đa ${d.toi_da} `
+          + `(SL vải về ${d.so_luong_vai_ve}, các lệnh khác đang giữ ${d.da_release_khac})`,
+          { status: 422, errorCode: 'VUOT_SL_VAI' });
+      }
+      if (n !== d.so_luong) items.push({ dotVaiId: d.dot_vai_id, soLuong: n });
+    }
+  }
+  const slCu = dsDot.reduce((a, d) => a + d.so_luong, 0);
+
+  let slMoi = slCu;
   await withTransaction(async (client) => {
     await repo.updateLenhPlan(client, lenhId,
       { chuyenId: newChuyen, ngayKeHoach, tgBdKh: bdMoi, tgKtKh: ktMoi }, actorId);
+    if (items.length) slMoi = await repo.updateReleaseTx(client, lenhId, items, actorId);
     await repo.logPlanChange(client, lenhId, 'REPLAN',
       { chuyen_id: lenh.chuyen_id || null, ngay_ke_hoach: toDateStr(lenh.ngay_ke_hoach),
-        gio_bd: gioCua(lenh.tg_bd_kh), gio_kt: gioCua(lenh.tg_kt_kh) },
+        gio_bd: gioCua(lenh.tg_bd_kh), gio_kt: gioCua(lenh.tg_kt_kh),
+        ...(items.length ? { so_luong_release: slCu } : {}) },
       { chuyen_id: newChuyen || null, ngay_ke_hoach: ngayMoi, ly_do: lyDoSach,
-        gio_bd: gioCua(bdMoi), gio_kt: gioCua(ktMoi) },
+        gio_bd: gioCua(bdMoi), gio_kt: gioCua(ktMoi),
+        ...(items.length ? { so_luong_release: slMoi } : {}) },
       actorId);
   });
   sockets.emit('workflow:updated', { lenhId, stage: 'RELEASE_2', replan: true });
   sockets.emit('dashboard:refresh', {});
-  return { id: lenhId };
+  // Đổi SL release là đổi con số mà màn Sản xuất / dashboard đang đọc ⇒ báo luôn cho chúng tải lại.
+  if (items.length) sockets.emit('production:updated', { lenhId });
+  return { id: lenhId, so_luong_release: slMoi };
+}
+
+// Chi tiết 1 lệnh cho màn Lập kế hoạch lại: kế hoạch hiện tại + DANH SÁCH ĐỢT VẢI kèm SL release.
+// ⚠ FE đổ sẵn mọi ô từ đây ⇒ người dùng sửa 1 thứ thì không phải nhập lại những thứ còn nguyên.
+async function getReplanDetail(lenhId) {
+  const lenh = await repo.getLenhForReplan(lenhId);
+  if (!lenh) throw new AppError('Lệnh sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  return { ...lenh, dot_vai: await repo.getReplanDotVai(lenhId) };
 }
 
 // Lập lại kế hoạch hàng loạt — áp cùng chuyền/ngày/lý do cho nhiều lệnh.
@@ -1503,9 +1561,13 @@ async function releaseList(date, mode = 'KE_HOACH') {
 }
 
 // ----- Danh sách "đã hoàn thành" theo ngày (cho DonePanel bên trái) -----
-async function release1Done(date) { return repo.release1DoneByDate(date); }
-async function release2Done(date) { return repo.planDoneByDate(date, 'RELEASE_2'); }
-async function replanDone(date) { return repo.planDoneByDate(date, 'REPLAN'); }
+// ⚠⚠ `attachPhanInList` là BẮT BUỘC ở các sidebar mức LỆNH (fix 20/08/2026): `PHAN_INFO_LATERAL` chỉ
+//   `LIMIT 1` nên lệnh GOM SET chỉ hiện phần in ĐẠI DIỆN ⇒ sidebar "Đã hoàn thành" đếm THIẾU phần in
+//   so với dải "Theo dõi". Đo prod 20/08 (Test Run - QA): 81 lệnh QA xong chứa **104 phần in thật**,
+//   nhưng sidebar chỉ hiện **77** — đúng 18 lệnh gom set bị giấu bớt thành viên.
+async function release1Done(date) { return attachPhanInList(await repo.release1DoneByDate(date), 'lenh_id'); }
+async function release2Done(date) { return attachPhanInList(await repo.planDoneByDate(date, 'RELEASE_2'), 'lenh_id'); }
+async function replanDone(date) { return attachPhanInList(await repo.planDoneByDate(date, 'REPLAN'), 'lenh_id'); }
 // Gắn các LẦN TEST (kết quả + nguyên nhân nếu lỗi) vào từng dòng → cột "Lần test 1..N" ở sidebar/Excel.
 async function attachTestRuns(rows) {
   const ids = [...new Set(rows.map((r) => r.lenh_id).filter(Boolean))];
@@ -1519,12 +1581,15 @@ async function attachTestRuns(rows) {
   return rows.map((r) => ({ ...r, tests: byLenh[r.lenh_id] || [] }));
 }
 
-async function testCnspDone(date) { return attachTestRuns(await repo.testDoneByDate(date, CNSP_CP)); }
-async function testQaDone(date) { return attachTestRuns(await repo.testDoneByDate(date, QA_CP)); }
+// ⚠ `attachPhanInList` chạy SAU `attachTestRuns`: nó tạo object MỚI (`{...r, phan_in_list}`) nên mọi
+//   thứ sửa tại chỗ trên `rows` phải xong trước — đúng bẫy đã ghi ở `listTestRunCandidates`.
+async function testCnspDone(date) { return attachPhanInList(await attachTestRuns(await repo.testDoneByDate(date, CNSP_CP)), 'lenh_id'); }
+async function testQaDone(date) { return attachPhanInList(await attachTestRuns(await repo.testDoneByDate(date, QA_CP)), 'lenh_id'); }
 
 module.exports = {
   listRelease1Candidates, autoPlanCandidates, createRelease1, traVeKyThuat, createDotSanXuat, release1History, listReleaseSets, releaseSet,
   listGopCandidates, gopDotVai, gopHistory,
+  getReplanDetail,
   listTestRunCandidates, getLenhDetail, recordTestRun, confirmTest, confirmTestBatch, cancelTest,
   returnTestRunToReady,
   listRelease2Candidates, approveRelease2, approveRelease2Batch, skipTestRun, testRunHistory,

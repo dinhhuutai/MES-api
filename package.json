@@ -8,7 +8,8 @@
     "start": "node src/index.js",
     "seed:admin": "node src/scripts/seedAdmin.js",
     "kiem:push": "node src/scripts/kiemWebPush.js",
-    "lay:subid": "node src/scripts/layDdhSubId.js"
+    "lay:subid": "node src/scripts/layDdhSubId.js",
+    "lay:ddhid": "node src/scripts/layDdhId.js"
   },
   "license": "UNLICENSED",
   "private": true,

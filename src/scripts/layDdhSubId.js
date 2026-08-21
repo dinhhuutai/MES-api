@@ -77,8 +77,11 @@ const lui = (d, n) => {
 
   // ─── Phần in còn thiếu ────────────────────────────────────────────────────
   const { rows: thieu } = await query(
+    // ⚠ Trả MỐC dạng CHUỖI 'YYYY-MM-DD' theo giờ VN — xem ghi chú cùng chỗ ở `layDdhId.js`:
+    //   node-pg parse timestamptz thành `Date`, `String(...).slice(0,10)` ra "Fri Jul 31" và
+    //   `lui()` ném **Invalid time value**. Lỗi này chưa lộ vì prod đang đủ subID nên script thoát sớm.
     `SELECT p.id, p.ma_phan, p.barcode,
-            COALESCE(dv.som_nhat, p.created_date) AS moc
+            ((COALESCE(dv.som_nhat, p.created_date) AT TIME ZONE 'Asia/Ho_Chi_Minh')::date)::text AS moc
        FROM phan_in p
        LEFT JOIN LATERAL (SELECT min(COALESCE(d.ngay_vai_ve, d.created_date)) AS som_nhat
                             FROM dot_vai_ve d WHERE d.phan_in_id = p.id) dv ON true

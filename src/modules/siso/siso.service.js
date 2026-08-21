@@ -34,10 +34,9 @@ const layLoc = (q = {}) => LOC_KEYS.reduce((a, k) => (q[k] ? { ...a, [k]: q[k] }
 //   dải số không nhúc nhích và rất khó đoán ra.
 const LOC_TRANG_KEYS = [...LOC_KEYS, 'phuongAnIn', 'loaiChuyen', 'maChuyen',
   // Ô TÍCH của trang (18/08/2026): "Chỉ hiện … bị trả về" · "Đã Ready / Chờ Ready" · ô lọc "Gom set".
-  'biTraVe', 'daReady', 'choReady', 'gomSet',
-  // Ô tích "Chỉ chờ QA" (Test Run - QA, 19/08/2026) — mặc định BẬT trên màn nên phải có ở đây,
-  // thiếu là 4 số đếm cả lệnh đã QA xong trong khi bảng bên dưới đã ẩn chúng.
-  'choQa'];
+  // ⚠ ĐÃ GỠ khóa `choQa` (20/08/2026) cùng ô tích "Chỉ chờ QA" ở màn Test Run - QA — xem
+  //   `utils/siSoTram.js` (chỗ `LAT_CHO_QA` cũ) để biết vì sao lọc thêm nó làm hỏng ô "Làm được".
+  'biTraVe', 'daReady', 'choReady', 'gomSet'];
 const layLocTrang = (q = {}) => LOC_TRANG_KEYS.reduce((a, k) => {
   const v = q[`t_${k}`];
   return v !== undefined && v !== null && v !== '' ? { ...a, [k]: v } : a;

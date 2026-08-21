@@ -66,6 +66,8 @@ router.get('/release2/done', rbac('RELEASE2'), c.release2Done);
 router.get('/replan/done', rbac('RELEASE1', 'RELEASE2'), c.replanDone);
 router.get('/replan/candidates', rbac('RELEASE1', 'RELEASE2'), c.replanCandidates);
 router.post('/replan/batch', rbac('RELEASE1', 'RELEASE2'), c.replanBatch);
+// ⚠ Route TĨNH (`/done`, `/candidates`, `/batch`) đã đặt TRƯỚC — 2 route `:lenhId` phải ở CUỐI.
+router.get('/replan/:lenhId', rbac('RELEASE1', 'RELEASE2'), c.replanDetail);
 router.post('/replan/:lenhId', rbac('RELEASE1', 'RELEASE2'), c.replan);
 
 // Gia công: Kế hoạch nhận lại hàng gia công → chuyển OQC
