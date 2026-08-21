@@ -110,12 +110,22 @@ function nguon(maTrang) {
   return m;
 }
 
+// Chọn ĐƠN VỊ ĐẾM (phần in · đợt vải · lệnh SX · tem) — nút toggle trên dải "Theo dõi".
+// ⚠ Đơn vị lạ / màn không hỗ trợ ⇒ LÙI VỀ MẶC ĐỊNH của màn, KHÔNG ném lỗi: đây là số liệu phụ,
+//   và người dùng có thể còn giữ lựa chọn cũ trong localStorage sau khi ta đổi danh mục đơn vị.
+// ⚠ Mọi đơn vị trả CÙNG bộ cột (`COT_DS`) nên phần còn lại của repository không cần biết gì thêm.
+function chonDonVi(m, donVi) {
+  const ma = m.donVis[donVi] ? donVi : m.macDinh;
+  return { ma, nhan: m.donVis[ma].nhan, sql: m.donVis[ma].sql };
+}
+
 // 4 ô trong 1 LƯỢT QUERY — mạng tới DB là nút cổ chai (~25ms/lượt, DATABASE.md §7) nên đừng bắn 4 lần.
-async function demSiSo(maTrang, { tu, den, loc, locTrang }) {
+async function demSiSo(maTrang, { tu, den, loc, locTrang, donVi }) {
   const m = nguon(maTrang);
+  const dv = chonDonVi(m, donVi);
   const { dk, params } = dungLocKep(loc, locTrang);
   const dem = Object.keys(O_SI_SO).map((k) => `count(*) FILTER (WHERE ${dkO(k)})::int AS ${k}`).join(', ');
-  const sql = `WITH ${CTE_KY}, q AS (${m.sql}) SELECT ${dem} FROM q WHERE ${NEN}${dk}`;
+  const sql = `WITH ${CTE_KY}, q AS (${dv.sql}) SELECT ${dem} FROM q WHERE ${NEN}${dk}`;
   const { rows } = await query(sql.replace(/\s+/g, ' '), [tu, den, ...params]);
   const r = rows[0] || {};
   return {
@@ -134,13 +144,14 @@ const COT_DS = `q.id, q.ten_khach_hang, q.ma_don_hang, q.ma_hang, q.ma_phan, q.m
   q.ma_chuyen, q.ma_loai_chuyen, q.qc_done, q.bi_tra_ve, q.ma_set`;
 
 // Danh sách chi tiết của MỘT ô. `limit = 0` ⇒ lấy HẾT (dùng cho xuất Excel).
-async function chiTiet(maTrang, o, { tu, den, loc, locTrang, page = 1, limit = 20 }) {
+async function chiTiet(maTrang, o, { tu, den, loc, locTrang, donVi, page = 1, limit = 20 }) {
   const m = nguon(maTrang);
   if (!O_SI_SO[o]) throw Object.assign(new Error(`Ô "${o}" không hợp lệ`), { code: 'O_LA' });
+  const dv = chonDonVi(m, donVi);
   const { dk, params } = dungLocKep(loc, locTrang);
   const p = [tu, den, ...params];
   const than = `FROM q WHERE ${NEN} AND (${dkO(o)})${dk}`;
-  const dau = `WITH ${CTE_KY}, q AS (${m.sql})`;
+  const dau = `WITH ${CTE_KY}, q AS (${dv.sql})`;
 
   const dem = await query(`${dau} SELECT count(*)::int AS n ${than}`.replace(/\s+/g, ' '), p);
   const total = dem.rows[0] ? dem.rows[0].n : 0;
@@ -156,4 +167,4 @@ async function chiTiet(maTrang, o, { tu, den, loc, locTrang, page = 1, limit = 2
   return { items: ds.rows, total };
 }
 
-module.exports = { demSiSo, chiTiet, nguon };
+module.exports = { demSiSo, chiTiet, nguon, chonDonVi };

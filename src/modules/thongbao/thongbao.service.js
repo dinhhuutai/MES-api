@@ -170,11 +170,17 @@ async function layCaiDatCuaToi(user) {
   return {
     co_quyen: tb.coQuyenNhan(user.permissions),
     push_nen_he_thong: heThong.PUSH_NEN !== false,
-    loai: Object.entries(tb.LOAI_TB).map(([ma, v]) => ({
-      ma_loai: ma, ten: v.ten, mo_ta: v.mo_ta,
-      bat: cuaNguoi[ma] !== false,
-      he_thong_bat: heThong[ma] !== false,
-    })),
+    // ⚠⚠ CHỈ LIỆT KÊ LOẠI NGƯỜI NÀY THẬT SỰ NHẬN ĐƯỢC (21/08/2026): từ khi chuông hiện ở MỌI tài
+    //   khoản, nếu vẫn đổ đủ 6 loại thì người ngoài diện nhận sẽ thấy một loạt toggle bật/tắt mà
+    //   bật lên cũng chẳng bao giờ có thông báo nào — đúng kiểu "nút bấm cho vui".
+    //   Danh sách rỗng ⇒ FE hiện câu giải thích thay vì bảng toggle trống.
+    loai: Object.entries(tb.LOAI_TB)
+      .filter(([ma]) => tb.coQuyenNhanLoai(user.permissions || [], ma))
+      .map(([ma, v]) => ({
+        ma_loai: ma, ten: v.ten, mo_ta: v.mo_ta,
+        bat: cuaNguoi[ma] !== false,
+        he_thong_bat: heThong[ma] !== false,
+      })),
   };
 }
 

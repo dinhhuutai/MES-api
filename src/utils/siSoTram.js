@@ -258,7 +258,7 @@ const DV = {
   //   `tg_ra >= tg_vao`. Ưu tiên nhánh "đã release hết" trước — đó mới là rời THẬT khỏi chặng.
   // ⚠ Điều kiện "đang ở Kế hoạch tạm" đọc TRẠNG THÁI SỐNG (`kht.id IS NOT NULL`), không phải mốc lịch
   //   sử ⇒ xóa kế hoạch tạm là đợt **tự quay lại** ô Tồn ngay, không cần bản ghi "vào lại".
-  RELEASE_1: `SELECT dv.phan_in_id, dv.tg_chuyen_ready AS tg_vao,
+  RELEASE_1: `SELECT dv.phan_in_id, dv.ma_dot_vai, dv.tg_chuyen_ready AS tg_vao,
       COALESCE(
         CASE WHEN COALESCE(dv.so_luong_vai_ve,0) - COALESCE(rel.da_release,0) <= 0
              THEN rel.tg_release_cuoi END,
@@ -288,7 +288,7 @@ const DV = {
   // ⚠ `GREATEST(moc_vao, …)` giữ bất biến `tg_ra >= tg_vao`; thứ tự lùi: audit XÁC NHẬN/XÓA → mốc tạo
   //   lệnh của đợt (đường `releaseSet`) → chính `moc_vao` (đã rời nhưng không rõ lúc nào ⇒ coi như rời
   //   ngay, 4 số vẫn cân). Đối chiếu prod 18/08: tồn cuối **156 = 156** phần in trên màn.
-  KE_HOACH_TAM: `SELECT dv.phan_in_id, kt.moc_vao AS tg_vao,
+  KE_HOACH_TAM: `SELECT dv.phan_in_id, dv.ma_dot_vai, kt.moc_vao AS tg_vao,
       CASE WHEN kht.id IS NOT NULL THEN NULL
            ELSE GREATEST(kt.moc_vao, COALESCE(kt.moc_ra, rel.tg_release_cuoi)) END AS tg_ra,
       NULL::text AS ma_lenh_san_xuat, cs.ten_chuyen,
@@ -431,7 +431,23 @@ const DV = {
 //   bị ô tích "Chỉ chờ QA" ẩn đi) ⇒ chip Máy của sĩ số đếm THỪA. Đo prod: Máy 139 vs bảng 127.
 //   Nhánh `COALESCE` lùi là BẮT BUỘC: ô "Làm được"/"Tồn đầu" gồm phần in đã rời hết, không có nhánh
 //   này thì cột rỗng và chip lọc sẽ làm mất sạch hàng ở các ô đó.
-const gomTheoPin = (trong) => `SELECT x.phan_in_id, min(x.tg_vao) AS tg_vao,
+// ⚠⚠ TỔNG QUÁT HÓA 21/08/2026 — gom được về BẤT KỲ đơn vị nào (phần in · đợt vải · lệnh · tem),
+//   phục vụ nút chuyển đơn vị trên dải "Theo dõi". LUẬT GỘP Ở TRÊN GIỮ NGUYÊN 100% cho mọi đơn vị.
+// ⚠ `khoa` là CỘT MÃ (`x.ma_lenh_san_xuat` / `x.ma_tem` / `x.ma_dot_vai`) chứ không phải uuid — 3 mã
+//   này đều có UNIQUE index (đã đối chiếu prod) nên gom theo mã là chuẩn xác, mà lại KHÔNG phải thêm
+//   cột uuid vào cả 12 nguồn (nguồn nào cũng đã sẵn `ma_lenh_san_xuat`/`ma_tem` nhờ `NHAN_TRONG`).
+// ⚠⚠ `pin_ids` LÀ CỘT MỚI BẮT BUỘC: gom theo lệnh/tem thì 1 dòng ứng NHIỀU phần in, tầng ngoài phải
+//   `unnest` ra mới lấy được khách/đơn/mã hàng/màu/kích. Consumer cũ (`CP_PHAN_IN` → báo cáo) chỉ
+//   SELECT đúng `phan_in_id, tg_vao, tg_ra` nên thêm cột này KHÔNG ảnh hưởng gì (đã rà 2 file).
+// ⚠ `so_phan_in` = count DISTINCT phần in ⇒ ở đơn vị PHẦN IN luôn ra 1 (khớp `1 AS so_phan_in` cũ),
+//   ở đơn vị LỆNH/TEM là số phần in gom set thật ⇒ badge "gom set N" trên bảng modal tự đúng.
+// ⚠⚠ `canPinIds = false` cho nhánh GOM VỀ PHẦN IN: ở đó `pin_ids` luôn là mảng 1 phần tử (chính khóa
+//   gom) và `so_phan_in` luôn = 1, mà `manTheoPin` KHÔNG dùng cột nào trong hai cột đó. Quan trọng
+//   hơn: nhánh này là đường NÓNG — `CP_PHAN_IN` dùng cho MỌI metric/dataset báo cáo — nên đừng bắt
+//   nó gánh thêm `array_agg(DISTINCT …)` + `count(DISTINCT …)` (2 phép sort/dedup) chỉ để bỏ đi.
+const gomTheo = (khoa, alias, trong, canPinIds = true) => `SELECT ${khoa} AS ${alias},
+  ${canPinIds ? 'array_agg(DISTINCT x.phan_in_id) AS pin_ids, count(DISTINCT x.phan_in_id)::int AS so_phan_in,' : ''}
+  min(x.tg_vao) AS tg_vao,
   CASE WHEN count(*) FILTER (WHERE x.tg_ra IS NULL) = 0 THEN max(x.tg_ra) END AS tg_ra,
   count(*)::int AS so_don_vi,
   string_agg(DISTINCT x.ma_lenh_san_xuat, ', ') AS ma_lenh_san_xuat,
@@ -443,8 +459,12 @@ const gomTheoPin = (trong) => `SELECT x.phan_in_id, min(x.tg_vao) AS tg_vao,
            string_agg(DISTINCT x.ma_loai_chuyen, ',')) AS ma_loai_chuyen,
   min(x.ngay_ke_hoach) AS ngay_ke_hoach, min(x.ngay_release) AS ngay_release
   FROM (${trong}) x
-  WHERE x.phan_in_id IS NOT NULL AND x.tg_vao IS NOT NULL
-  GROUP BY x.phan_in_id`;
+  WHERE ${khoa} IS NOT NULL AND x.phan_in_id IS NOT NULL AND x.tg_vao IS NOT NULL
+  GROUP BY ${khoa}`;
+
+// Bản gom về PHẦN IN — giữ NGUYÊN tên cột `phan_in_id` vì `CP_PHAN_IN` (báo cáo) đang đọc đúng tên đó,
+// và KHÔNG sinh `pin_ids`/`so_phan_in` ⇒ câu SQL của đường phần in **y hệt trước 21/08/2026**.
+const gomTheoPin = (trong) => gomTheo('x.phan_in_id', 'phan_in_id', trong, false);
 
 // Bộ cột hiển thị chuẩn — MỌI màn trả CÙNG bộ này ⇒ FE dựng 1 bảng + 1 hàm Excel.
 // ⚠ `so_phan_in` LUÔN = 1: đơn vị đếm nay là PHẦN IN nên badge "gom set N" không còn nghĩa; số
@@ -515,61 +535,125 @@ const manTheoPin = (trong, { traVe = TV.KHONG } = {}) => `SELECT pin.id, ${COT_P
   JOIN phan_in pin ON pin.id = g.phan_in_id
   ${JOIN_PIN} ${LAT_DOT_CUA_PIN('pin.id')} ${LAT_HSKT('pin.id')} ${LAT_QC_DONE} ${LAT_MA_SET}`;
 
+// ─── TẦNG NGOÀI CHO ĐƠN VỊ KHÁC PHẦN IN (đợt vải · lệnh SX · tem) — 21/08/2026 ───────────────
+// ⚠⚠ TRẢ ĐÚNG BỘ CỘT NHƯ `manTheoPin` (xem `COT_DS` ở siso.repository) ⇒ repository/service/FE
+//   KHÔNG phải biết đang đếm theo đơn vị nào, chỉ đổi đúng chuỗi SQL. Thiếu 1 cột là bộ lọc của
+//   trang im lặng không ăn (bẫy đã ghi ở `COT_DS`).
+// ⚠⚠ 1 LỆNH / 1 TEM CÓ THỂ ỨNG NHIỀU PHẦN IN (gom set) ⇒ phải `unnest(pin_ids)` rồi GROUP BY lại.
+//   Các cột mức PHẦN IN vì thế là **GỘP** (`string_agg DISTINCT`), không phải giá trị của một phần
+//   in đại diện — đúng tinh thần "đừng lấy `LIMIT 1` rồi giấu mất phần in thứ hai" (§6).
+// ⚠ Dùng lại NGUYÊN `JOIN_PIN` + 4 LATERAL của bản theo phần in ⇒ 2 đường không thể lệch luật.
+// ⚠ `phuong_an_in` lấy `min` (chip PA in so BẰNG một số): lệnh gom set mà 2 phần in khác PA thì chip
+//   chỉ khớp PA nhỏ hơn — chấp nhận, vì PA là thuộc tính của PHẦN IN chứ không của lệnh.
+// ⚠ `traVe` xuất hiện 2 lần y như `manTheoPin` (1 lần lấy mốc, 1 lần suy cờ) — giữ đối xứng để sửa
+//   luật chỉ phải sửa 1 chỗ; Postgres tự gộp 2 subquery giống hệt nhau.
+const manTheoDonVi = (khoa, trong, { traVe = TV.KHONG, laDotVai = false } = {}) => `SELECT g.dv_id AS id,
+  string_agg(DISTINCT kh.ten_khach_hang, ', ') AS ten_khach_hang,
+  string_agg(DISTINCT dh.ma_don_hang, ', ') AS ma_don_hang,
+  string_agg(DISTINCT mh.ma_hang, ', ') AS ma_hang,
+  string_agg(DISTINCT pin.ma_phan, ', ') AS ma_phan,
+  string_agg(DISTINCT pin.mau_vai, ', ') AS mau_vai,
+  string_agg(DISTINCT pin.kich_vai, ', ') AS kich_vai,
+  string_agg(DISTINCT pin.kich_phim, ', ') AS kich_phim,
+  string_agg(DISTINCT pin.tinh_chat_in, ', ') AS tinh_chat_in,
+  sum(pin.so_luong_don_hang)::int AS so_luong_don_hang,
+  string_agg(DISTINCT dvs.ten_loai_dot_vai, ', ') AS ten_loai_dot_vai,
+  min(hs.phuong_an_in)::int AS phuong_an_in,
+  string_agg(DISTINCT dvs.nha_gia_cong, ', ') AS nha_gia_cong,
+  sum(dvs.so_luong_vai_ve)::int AS so_luong_vai_ve,
+  min(dvs.han_giao_hang) AS han_giao_hang, min(dvs.ngay_vai_ve) AS ngay_vai_ve,
+  min(dvs.tg_len_mes) AS tg_len_mes,
+  ${laDotVai ? 'g.dv_id' : "string_agg(DISTINCT dvs.ma_dot_vai, ', ')"} AS ma_dot_vai,
+  g.ma_lenh_san_xuat, g.ten_chuyen, g.ngay_ke_hoach, g.ngay_release, g.ma_tem, g.so_phan_in,
+  g.ma_chuyen, g.ma_loai_chuyen, g.tg_vao, g.tg_ra,
+  bool_or(COALESCE(qcd.qc_done, false)) AS qc_done,
+  string_agg(DISTINCT gs.ma_set, ', ') AS ma_set,
+  max(${traVe}) AS tg_tra_ve, (max(${traVe}) IS NOT NULL) AS bi_tra_ve
+  FROM (${gomTheo(khoa, 'dv_id', trong)}) g
+  CROSS JOIN LATERAL unnest(g.pin_ids) AS u(pin_id)
+  JOIN phan_in pin ON pin.id = u.pin_id
+  ${JOIN_PIN} ${LAT_DOT_CUA_PIN('pin.id')} ${LAT_HSKT('pin.id')} ${LAT_QC_DONE} ${LAT_MA_SET}
+  GROUP BY g.dv_id, g.ma_lenh_san_xuat, g.ten_chuyen, g.ngay_ke_hoach, g.ngay_release, g.ma_tem,
+    g.so_phan_in, g.ma_chuyen, g.ma_loai_chuyen, g.tg_vao, g.tg_ra`;
+
+// ─── DANH MỤC ĐƠN VỊ ĐẾM ─────────────────────────────────────────────────────
+// ⚠⚠ TOGGLE ĐỔI ĐƠN VỊ (21/08/2026, người dùng chốt) — mỗi màn khai những đơn vị NÓ THẬT SỰ CÓ, và
+//   MẶC ĐỊNH = đơn vị mà BẢNG bên dưới đang vẽ, để 2 con số trên cùng màn không đá nhau.
+// ⚠⚠ ĐÁNH ĐỔI ĐÃ BÁO VÀ NGƯỜI DÙNG CHẤP NHẬN: mỗi màn một đơn vị thì 12 con số KHÔNG so trực tiếp
+//   với nhau được nữa (đó chính là lý do chốt "mọi màn theo phần in" hồi 16/08). Muốn so ngang thì
+//   bấm toggle về "phần in" ở mọi màn — đơn vị đó vẫn còn nguyên ở CẢ 12 màn.
+// ⚠ 2 màn READY chỉ có PHẦN IN: `ket_qua_checkpoint` không có `dot_vai_ve_id` (khuôn/film/mực dùng
+//   chung mọi đợt vải) và lúc đó chưa có lệnh/tem ⇒ không có gì để chọn, FE tự ẩn nút.
+// ⚠⚠ Ở 4 màn THEO TEM, đơn vị "phần in" là SUY ĐOÁN qua lệnh: bảng `tem` KHÔNG lưu phần in/đợt vải
+//   (DATABASE.md §4) nên tem của lệnh GOM SET bị quy cho MỌI phần in trong lệnh ⇒ số phần in PHÓNG
+//   ĐẠI. Đo prod 21/08: OQC có 3 tem mà ra 5 phần in. Muốn chính xác phải thêm `tem.dot_vai_ve_id`.
+const DON_VI = {
+  pin: { nhan: 'phần in', khoa: 'x.phan_in_id' },
+  dot_vai: { nhan: 'đợt vải', khoa: 'x.ma_dot_vai' },
+  lenh: { nhan: 'lệnh SX', khoa: 'x.ma_lenh_san_xuat' },
+  tem: { nhan: 'tem', khoa: 'x.ma_tem' },
+};
+
+// Dựng 1 màn: sinh sẵn SQL cho MỌI đơn vị màn đó hỗ trợ (chỉ là chuỗi, không tốn gì lúc nạp module).
+const man = (ten, quyen, trong, { traVe = TV.KHONG, dv = ['pin'], macDinh = 'pin' } = {}) => ({
+  ten,
+  quyen,
+  macDinh,
+  // 2 khóa cũ `donVi`/`nhan` = đơn vị MẶC ĐỊNH — giữ để chỗ nào chưa truyền `donVi` vẫn chạy như xưa.
+  donVi: macDinh,
+  nhan: DON_VI[macDinh].nhan,
+  donVis: Object.fromEntries(dv.map((k) => [k, {
+    nhan: DON_VI[k].nhan,
+    sql: k === 'pin'
+      ? manTheoPin(trong, { traVe })
+      : manTheoDonVi(DON_VI[k].khoa, trong, { traVe, laDotVai: k === 'dot_vai' }),
+  }])),
+});
+
 // ─── 11 MÀN XÁC NHẬN ─────────────────────────────────────────────────────────
 // `ma` khớp `TRANG_PAIN` (utils/phuongAnIn.js) để FE truyền đúng MỘT mã cho cả 2 tính năng.
 // ⚠ `donVi`/`nhan` nay GIỐNG NHAU ở cả 11 màn — giữ 2 khóa này để FE không phải sửa, và để sau muốn
 //   đổi lại đơn vị của một màn nào đó thì có sẵn chỗ.
+// ⚠ Cột `Mặc định` dưới đây = ĐƠN VỊ MÀ BẢNG CỦA MÀN ĐANG VẼ (người dùng chốt 21/08/2026):
+//     READY · QC READY      → phần in  (bảng 1 dòng / phần in; không có đơn vị nào khác)
+//     Release 1 · KH tạm    → đợt vải  (bảng 1 dòng / đợt vải)
+//     Test Run · Release 2 · Xác nhận chạy · Gia công → LỆNH SX (đơn vị điều hành: xếp chuyền theo lệnh)
+//     KCS · Sửa · OQC · Giao → tem     (bảng 1 dòng / tem)
 const MAN = {
-  KT_READY: {
-    ten: 'Xác nhận READY (Kỹ thuật)', donVi: 'pin', nhan: 'phần in',
-    quyen: ['READY_VIEW', 'READY_KHUON', 'READY_FILM', 'READY_MUC'],
-    sql: manTheoPin(DV.READY_KT, { traVe: TV.PHAN_IN }),
-  },
-  CL_QC_READY: {
-    ten: 'QC chuẩn bị kỹ thuật', donVi: 'pin', nhan: 'phần in', quyen: ['READY_QC'],
-    sql: manTheoPin(DV.READY_QC, { traVe: TV.PHAN_IN }),
-  },
-  KH_RELEASE1: {
-    ten: 'Release 1', donVi: 'pin', nhan: 'phần in', quyen: ['RELEASE1'],
-    sql: manTheoPin(DV.RELEASE_1, { traVe: TV.DOT_VAI_TEST_RUN }),
-  },
-  CL_TEST_RUN: {
-    ten: 'Test Run - QA', donVi: 'pin', nhan: 'phần in', quyen: ['TESTRUN_QA'],
-    sql: manTheoPin(DV.TEST_RUN),
-  },
-  KH_RELEASE2: {
-    ten: 'Release 2', donVi: 'pin', nhan: 'phần in', quyen: ['RELEASE2'],
-    sql: manTheoPin(DV.RELEASE_2),
-  },
+  KT_READY: man('Xác nhận READY (Kỹ thuật)',
+    ['READY_VIEW', 'READY_KHUON', 'READY_FILM', 'READY_MUC'], DV.READY_KT,
+    { traVe: TV.PHAN_IN, dv: ['pin'], macDinh: 'pin' }),
+
+  CL_QC_READY: man('QC chuẩn bị kỹ thuật', ['READY_QC'], DV.READY_QC,
+    { traVe: TV.PHAN_IN, dv: ['pin'], macDinh: 'pin' }),
+
+  KH_RELEASE1: man('Release 1', ['RELEASE1'], DV.RELEASE_1,
+    { traVe: TV.DOT_VAI_TEST_RUN, dv: ['dot_vai', 'pin'], macDinh: 'dot_vai' }),
+
+  CL_TEST_RUN: man('Test Run - QA', ['TESTRUN_QA'], DV.TEST_RUN,
+    { dv: ['lenh', 'pin'], macDinh: 'lenh' }),
+
+  KH_RELEASE2: man('Release 2', ['RELEASE2'], DV.RELEASE_2,
+    { dv: ['lenh', 'pin'], macDinh: 'lenh' }),
+
   // ⚠ Quyền khớp menu (`constants/modules.js`: Kế hoạch tạm mở cho RELEASE1 hoặc RELEASE2).
-  KH_TAM: {
-    ten: 'Kế hoạch tạm', donVi: 'pin', nhan: 'phần in', quyen: ['RELEASE1', 'RELEASE2'],
-    sql: manTheoPin(DV.KE_HOACH_TAM),
-  },
-  SX_CHO_CHAY: {
-    ten: 'Xác nhận chạy', donVi: 'pin', nhan: 'phần in', quyen: ['PROD_RUN', 'PROD_MONITOR'],
-    sql: manTheoPin(DV.SAN_XUAT),
-  },
-  KH_GIA_CONG: {
-    ten: 'Gia công', donVi: 'pin', nhan: 'phần in', quyen: ['RELEASE1', 'RELEASE2'],
-    sql: manTheoPin(DV.GIA_CONG),
-  },
-  SX_KCS: {
-    ten: 'KCS (kiểm)', donVi: 'pin', nhan: 'phần in', quyen: ['KCS'],
-    sql: manTheoPin(DV.KIEM, { traVe: TV.TEM_OQC }),
-  },
-  SX_SUA: {
-    ten: 'Sửa', donVi: 'pin', nhan: 'phần in', quyen: ['SUA'],
-    sql: manTheoPin(DV.SUA),
-  },
-  CL_OQC: {
-    ten: 'OQC', donVi: 'pin', nhan: 'phần in', quyen: ['OQC'],
-    sql: manTheoPin(DV.OQC),
-  },
-  GH_TEM: {
-    ten: 'Giao hàng', donVi: 'pin', nhan: 'phần in', quyen: ['DELIVERY'],
-    sql: manTheoPin(DV.GIAO),
-  },
+  KH_TAM: man('Kế hoạch tạm', ['RELEASE1', 'RELEASE2'], DV.KE_HOACH_TAM,
+    { dv: ['dot_vai', 'pin'], macDinh: 'dot_vai' }),
+
+  SX_CHO_CHAY: man('Xác nhận chạy', ['PROD_RUN', 'PROD_MONITOR'], DV.SAN_XUAT,
+    { dv: ['lenh', 'pin'], macDinh: 'lenh' }),
+
+  KH_GIA_CONG: man('Gia công', ['RELEASE1', 'RELEASE2'], DV.GIA_CONG,
+    { dv: ['lenh', 'pin'], macDinh: 'lenh' }),
+
+  SX_KCS: man('KCS (kiểm)', ['KCS'], DV.KIEM,
+    { traVe: TV.TEM_OQC, dv: ['tem', 'pin'], macDinh: 'tem' }),
+
+  SX_SUA: man('Sửa', ['SUA'], DV.SUA, { dv: ['tem', 'pin'], macDinh: 'tem' }),
+
+  CL_OQC: man('OQC', ['OQC'], DV.OQC, { dv: ['tem', 'pin'], macDinh: 'tem' }),
+
+  GH_TEM: man('Giao hàng', ['DELIVERY'], DV.GIAO, { dv: ['tem', 'pin'], macDinh: 'tem' }),
 };
 
 // ─── NGUỒN MỐC MỨC PHẦN IN CHO BÁO CÁO ──────────────────────────────────────

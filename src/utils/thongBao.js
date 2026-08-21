@@ -40,6 +40,19 @@ const DEN_READY = 'READY Kỹ thuật';
 //   · `nguoiGuiNhan: true` = gửi cho ĐÍCH DANH người gửi yêu cầu (báo kết quả duyệt), không theo quyền.
 const QUYEN_KY_THUAT = ['READY_KHUON', 'READY_FILM', 'READY_MUC', 'READY_TECH'];
 
+// ⚠⚠ `quyenGui` = NHÓM NGƯỜI LÀM ra sự việc (chốt 21/08/2026, người dùng: *"chỉ hiện thông báo cho
+//   người làm và người nhận thôi — Release 1 trả về kỹ thuật thì Release với Kỹ thuật đều thấy;
+//   Test Run trả về thì QC với Kỹ thuật đều thấy"*).
+//   Trước đây CHỈ có `quyenNhan` (bên nhận việc) ⇒ người vừa bấm trả về KHÔNG hề thấy thông báo nào
+//   về chính thao tác của mình, không theo dõi được việc mình đã đẩy đi.
+// ⚠ Người thấy loại X = `quyenNhan(X) ∪ quyenGui(X)` — xem `coQuyenNhanLoai`.
+// ⚠⚠ Mã quyền lấy ĐÚNG theo `rbac(...)` gác route của hành động đó, đừng đoán:
+//     `POST /planning/release1/tra-ve-ky-thuat`      → RELEASE1
+//     `POST /production/lenh/:id/tra-ve-ky-thuat`    → PROD_RUN   (màn Xác nhận chạy CŨNG ghi loai='RELEASE1')
+//     `POST /planning/test-run/:id/tra-ve-ky-thuat`  → TESTRUN_QA
+//     `POST /ready/:phanInId/tra-ve`                 → READY_QC
+const GUI_TRA_VE_RELEASE1 = ['RELEASE1', 'PROD_RUN'];
+
 const LOAI_TB = {
   TRA_VE_QC: {
     ten: 'QC chuẩn bị kỹ thuật trả về',
@@ -47,6 +60,7 @@ const LOAI_TB = {
     loaiTraVe: 'READY',
     nguon: 'QC_TRA_VE',
     quyenNhan: QUYEN_KY_THUAT,
+    quyenGui: ['READY_QC'], // QC là người bấm trả về
     nhanTram: 'QC chuẩn bị kỹ thuật',
     tuTram: 'QC chuẩn bị kỹ thuật',
     denTram: DEN_READY,
@@ -57,6 +71,7 @@ const LOAI_TB = {
     loaiTraVe: 'RELEASE1',
     nguon: 'QC_TRA_VE',
     quyenNhan: QUYEN_KY_THUAT,
+    quyenGui: GUI_TRA_VE_RELEASE1, // Kế hoạch (Release 1 / KH tạm) HOẶC Sản xuất (Xác nhận chạy)
     nhanTram: 'Release 1 (Kế hoạch)',
     tuTram: 'Release 1',
     denTram: DEN_READY,
@@ -67,6 +82,7 @@ const LOAI_TB = {
     loaiTraVe: 'TEST_RUN_KT',
     nguon: 'QC_TRA_VE',
     quyenNhan: QUYEN_KY_THUAT,
+    quyenGui: ['TESTRUN_QA'], // QA là người bấm trả về
     nhanTram: 'Test Run - QA',
     tuTram: 'Test Run - QA',
     denTram: DEN_READY,
@@ -84,6 +100,8 @@ const LOAI_TB = {
     // ⚠⚠ ĐẾN NGƯỜI DUYỆT, không phải kỹ thuật: kế hoạch đang BỊ CHẶN release cho tới khi có người
     //   bấm duyệt ⇒ báo nhầm người là hàng nằm chờ mà không ai biết.
     quyenNhan: ['PA_IN_APPROVE'],
+    // Người LÀM = người gửi yêu cầu (kỹ thuật / QC bấm đổi phương án in ở màn READY).
+    quyenGui: ['READY_KHUON', 'READY_FILM', 'READY_MUC', 'READY_QC'],
     tuTram: 'Yêu cầu đổi phương án in',
     denTram: 'người duyệt',
   },
@@ -112,6 +130,7 @@ const LOAI_TB = {
     loaiDuyet: 'DOI_PHUONG_AN_IN',
     suKien: 'DA_DUYET',
     quyenNhan: QUYEN_KY_THUAT,
+    quyenGui: ['PA_IN_APPROVE'], // Người LÀM = người bấm duyệt
     tuTram: 'Duyệt phương án in',
     denTram: 'Kỹ thuật',
   },
@@ -223,7 +242,10 @@ async function heThongBat(maLoai) {
 //   lọc "còn hoạt động" + "chưa tắt loại này ở trang cá nhân" — người tắt rồi thì không nhận.
 async function nguoiNhan(maLoai, { boQuaUserId, userIds } = {}) {
   const cfg = LOAI_TB[maLoai] || {};
-  const quyen = cfg.quyenNhan || [];
+  // ⚠⚠ ĐẨY CHO CẢ NGƯỜI LÀM (21/08/2026): phải GIỐNG HỆT `coQuyenNhanLoai` (nhận ∪ làm), nếu không
+  //   nhóm người làm sẽ THẤY thông báo trong danh sách nhưng KHÔNG BAO GIỜ nhận sự kiện realtime
+  //   ⇒ số trên chuông chỉ nhảy sau khi F5 — đúng cái lỗi đã mắc hồi 18/08 với `boQuaUserId`.
+  const quyen = [...(cfg.quyenNhan || []), ...(cfg.quyenGui || [])];
 
   // Nhánh gửi đích danh — không tra quyền, chỉ lọc hoạt động + cấu hình cá nhân.
   if (Array.isArray(userIds)) {
@@ -307,14 +329,23 @@ const coQuyenNhanLoai = (perms = [], maLoai) => {
   const v = LOAI_TB[maLoai];
   if (!v) return false;
   if (perms.includes('*')) return true;
-  return (v.quyenNhan || []).some((q) => perms.includes(q));
+  // ⚠⚠ NGƯỜI NHẬN **HỢP** NGƯỜI LÀM (21/08/2026): bên nhận việc cần biết để làm, bên gây ra sự việc
+  //   cần theo dõi thứ mình vừa đẩy đi. Trước đây chỉ xét `quyenNhan` nên người vừa bấm "Trả về
+  //   Kỹ thuật" không thấy thông báo nào về chính thao tác của mình.
+  return [...(v.quyenNhan || []), ...(v.quyenGui || [])].some((q) => perms.includes(q));
 };
 
-// Có thấy CÁI CHUÔNG không = nhận được ÍT NHẤT 1 loại.
-// ⚠ Giữ nguyên tên `coQuyenNhan` (đang dùng ở controller/service) nhưng nay xét MỌI loại, không
-//   chỉ bộ quyền kỹ thuật — nếu không thì người duyệt (chỉ có `PA_IN_APPROVE`) sẽ bị ẩn mất chuông
-//   dù chính họ là người phải nhận yêu cầu chờ duyệt.
-const coQuyenNhan = (perms = []) => Object.keys(LOAI_TB).some((ma) => coQuyenNhanLoai(perms, ma));
+// ⚠⚠⚠ CHUÔNG HIỆN Ở **MỌI** TÀI KHOẢN (người dùng chốt 21/08/2026) — hàm này nay LUÔN trả `true`.
+//   Trước đây nó ẩn chuông của ai không thuộc diện nhận (đo prod 21/08: chỉ **29/310** tài khoản
+//   thấy chuông; ca thật `011600486` — Kế hoạch, chỉ có `READY_VIEW` — không thấy gì và tưởng lỗi).
+// ⚠⚠ ẨN/HIỆN CHUÔNG ĐÃ TÁCH HẲN KHỎI LỌC NỘI DUNG — đừng gộp lại: việc "ai thấy thông báo NÀO" do
+//   `coQuyenNhanLoai` (nhận ∪ làm) lo, chạy trong `maLoaiBatCuaNguoi` ⇒ người không liên quan thấy
+//   chuông RỖNG chứ KHÔNG thấy thông báo của người khác.
+// ⚠⚠ AN TOÀN VÌ MỌI CỬA VÀO REPO ĐỀU CHẶN MẢNG RỖNG (`if (!loaiBat.length) return []/0`) — đã rà
+//   đủ 7 hàm. Nếu sau này thêm hàm truy vấn mới mà QUÊN guard đó thì mảng rỗng sẽ thành "không lọc"
+//   và **lộ thông báo của cả nhà máy**. Thêm hàm mới là phải guard.
+// ⚠ Giữ nguyên TÊN hàm (4 chỗ trong service + FE đọc cờ `co_quyen`) để không phải sửa lan man.
+const coQuyenNhan = () => true;
 
 module.exports = {
   LOAI_TB, CO_HE_THONG, QUYEN_NHAN, LOAI_QC, LOAI_DUYET_TB, duongDanDoiPa,

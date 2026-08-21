@@ -42,10 +42,15 @@ const layLocTrang = (q = {}) => LOC_TRANG_KEYS.reduce((a, k) => {
   return v !== undefined && v !== null && v !== '' ? { ...a, [k]: v } : a;
 }, {});
 
+// Danh sách đơn vị đếm của 1 màn — FE dựng nút chuyển đổi từ đây (màn 1 đơn vị thì tự ẩn nút).
+const dsDonVi = (m) => Object.entries(m.donVis).map(([ma, d]) => ({ ma, nhan: d.nhan }));
+
 // Danh mục cho FE dựng UI (tên màn, đơn vị, nhãn 4 ô, danh sách loại ngày phụ).
 function danhMuc() {
   return {
-    man: Object.entries(MAN).map(([ma, m]) => ({ ma, ten: m.ten, don_vi: m.donVi, nhan: m.nhan })),
+    man: Object.entries(MAN).map(([ma, m]) => ({
+      ma, ten: m.ten, don_vi: m.donVi, nhan: m.nhan, mac_dinh: m.macDinh, don_vis: dsDonVi(m),
+    })),
     o: Object.entries(O_SI_SO).map(([ma, o]) => ({ ma, ten: o.ten })),
     loai_ngay: Object.entries(LOAI_NGAY).map(([ma, l]) => ({ ma, ten: l.ten })),
   };
@@ -54,14 +59,23 @@ function danhMuc() {
 async function siSo(maTrang, q) {
   if (!MAN[maTrang]) throw new AppError('Màn hình không có sĩ số', { status: 404, errorCode: 'MAN_LA' });
   const { tu, den, denHienThi } = chuanHoaKy(q);
-  const so = await repo.demSiSo(maTrang, { tu, den, loc: layLoc(q), locTrang: layLocTrang(q) });
   const m = MAN[maTrang];
+  // ⚠ Đơn vị đếm do FE gửi (`donVi`); lạ / màn không hỗ trợ ⇒ repo tự lùi về mặc định của màn.
+  const dv = repo.chonDonVi(m, q.donVi);
+  const so = await repo.demSiSo(maTrang, {
+    tu, den, loc: layLoc(q), locTrang: layLocTrang(q), donVi: dv.ma,
+  });
   // ⚠ Bất biến PHẢI đúng theo mô hình khoảng [tg_vao, tg_ra). Lệch = có mục `tg_ra < tg_vao`
   //   (dữ liệu bẩn) lọt qua — trả cờ để FE hiện dấu hỏi thay vì im lặng cho số sai.
   const can = so.ton_dau + so.nhan - so.lam_duoc === so.ton_cuoi;
   // ⚠⚠ Nhãn đơn vị PHẢI là `don_vi_nhan`, KHÔNG được đặt tên `nhan` — trùng khóa với số "Nhận trong
   //   kỳ" ở `so.nhan` và sẽ ĐÈ MẤT nó (lỗi thật đã bắt được lúc kiểm: ô Nhận in ra chữ "đợt vải").
-  return { ...so, can, tu, den: denHienThi, don_vi: m.donVi, don_vi_nhan: m.nhan, ten_man: m.ten };
+  // ⚠ Trả về ĐƠN VỊ ĐÃ CHỌN THẬT (`dv`), không phải mặc định của màn — FE cần biết mình đang xem
+  //   theo gì để tô đúng nút toggle (lựa chọn cũ trong localStorage có thể đã bị lùi về mặc định).
+  return {
+    ...so, can, tu, den: denHienThi, ten_man: m.ten,
+    don_vi: dv.ma, don_vi_nhan: dv.nhan, don_vis: dsDonVi(m), don_vi_mac_dinh: m.macDinh,
+  };
 }
 
 async function chiTiet(maTrang, o, q) {
@@ -70,10 +84,14 @@ async function chiTiet(maTrang, o, q) {
   const { tu, den } = chuanHoaKy(q);
   // `limit=0` = lấy HẾT (xuất Excel). Trần 500 cho lượt phân trang thường.
   const limit = String(q.limit) === '0' ? 0 : Math.min(500, Math.max(1, Number(q.limit) || 20));
+  const dv = repo.chonDonVi(MAN[maTrang], q.donVi);
   const { items, total } = await repo.chiTiet(maTrang, o, {
-    tu, den, loc: layLoc(q), locTrang: layLocTrang(q), page: Number(q.page) || 1, limit,
+    tu, den, loc: layLoc(q), locTrang: layLocTrang(q), donVi: dv.ma, page: Number(q.page) || 1, limit,
   });
-  return { items, meta: { total, page: Number(q.page) || 1, limit }, o, ten_o: O_SI_SO[o].ten };
+  return {
+    items, meta: { total, page: Number(q.page) || 1, limit }, o, ten_o: O_SI_SO[o].ten,
+    don_vi: dv.ma, don_vi_nhan: dv.nhan,
+  };
 }
 
 module.exports = { siSo, chiTiet, danhMuc };

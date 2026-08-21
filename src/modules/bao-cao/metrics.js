@@ -15,15 +15,33 @@ const { dominantStageScalar } = require('../../utils/stage');
 const { techDoneSql, techDoneSqlByPin, KHUON_OPT_SQL_LIST, khongReadyTuDongSql } = require('../../utils/tech');
 const { nguonPhanIn } = require('../../utils/siSoTram');
 
-// Cache ngắn kết quả stageCounts (đếm phần in theo giai đoạn — nguồn tin cậy như dashboard) để nhiều
-// metric "phần in đang ở trạm" dùng chung 1 lần chạy trong cùng lượt compute (tránh chạy lặp query nặng).
-let _scPromise = null; let _scAt = 0;
-async function stageCountsCached() {
-  if (_scPromise && Date.now() - _scAt < 2000) return _scPromise;
-  _scPromise = dashboardRepo.stageCounts();
-  _scAt = Date.now();
-  return _scPromise;
+// ─── CACHE 3 TRUY VẤN NẶNG DÙNG CHUNG NHIỀU METRIC ──────────────────────────
+// ⚠⚠ TTL NÂNG 2s → 30s (21/08/2026, người dùng báo "xem trước / tải Excel bị chậm").
+//   Đo prod trên báo cáo BC0010 *Open Kỹ Thuật*: `metrics.compute` **8,2 giây** trong khi khối danh
+//   sách chỉ 147ms. Thủ phạm là 3 truy vấn dưới đây — mỗi cái quét TOÀN BỘ phần in rồi suy
+//   `dominantStageScalar` (2,9s + 2,1s + 1,2s) và còn tranh CPU của DB khi chạy song song.
+//   Với TTL 2s thì **xem trước xong bấm tải Excel là tính lại từ đầu** (lượt render nào cũng > 2s
+//   nên cache CHẮC CHẮN đã hết hạn) ⇒ người dùng chờ 2 lần. 30s đủ phủ thao tác "xem rồi tải".
+// ⚠ Đánh đổi: số trên báo cáo có thể cũ tối đa 30 giây. Chấp nhận được vì đây là KPI tổng hợp,
+//   không phải màn thao tác. Muốn tươi tuyệt đối thì hạ `TTL_NANG_MS`, KHÔNG bỏ cache.
+// ⚠⚠ PHẢI XÓA CACHE KHI LỖI (`nhoNang` tự `catch`): cache lưu PROMISE, mà promise bị reject được
+//   giữ lại thì MỌI lượt render trong 30s kế tiếp cùng hỏng theo. Với TTL 2s cũ thì lỗi này thoáng
+//   qua nên không ai để ý; nâng lên 30s là nó thành sự cố thật.
+const TTL_NANG_MS = 30 * 1000;
+const _nho = new Map(); // ten -> { promise, at }
+function nhoNang(ten, chay) {
+  const c = _nho.get(ten);
+  if (c && Date.now() - c.at < TTL_NANG_MS) return c.promise;
+  const promise = Promise.resolve()
+    .then(chay)
+    .catch((e) => { _nho.delete(ten); throw e; });
+  _nho.set(ten, { promise, at: Date.now() });
+  return promise;
 }
+
+// stageCounts (đếm phần in theo giai đoạn — nguồn tin cậy như dashboard): nhiều metric
+// "phần in đang ở trạm" dùng chung 1 lần chạy.
+const stageCountsCached = () => nhoNang('stageCounts', () => dashboardRepo.stageCounts());
 // Số PHẦN IN đang ở giai đoạn (gộp nhiều stage key). PHẦN IN rời rạc theo dominant nên CỘNG được.
 const pinAtStage = (keys) => async () => {
   const sc = await stageCountsCached();
@@ -33,9 +51,8 @@ const pinAtStage = (keys) => async () => {
 // TỔNG SL ĐẶT (SLĐH = phan_in.so_luong_don_hang) theo GIAI ĐOẠN DOMINANT — CÙNG membership & dominant với
 // stageCounts (mỗi phần in 1 trạm) ⇒ Σ mọi trạm = tổng SLĐH active, khớp ô giai đoạn dashboard. Cache 2s
 // (query nặng: dominant per phần in) dùng chung cho mọi metric SLDON_O_*.
-let _sldPromise = null; let _sldAt = 0;
-async function slDonByStageCached() {
-  if (_sldPromise && Date.now() - _sldAt < 2000) return _sldPromise;
+function slDonByStageCached() {
+  return nhoNang('slDonByStage', async () => {
   const sql = `SELECT (${dominantStageScalar('pin.id')}) AS stage, COALESCE(sum(pin.so_luong_don_hang),0)::numeric AS sl
     FROM phan_in pin
     JOIN ma_hang mh ON mh.id = pin.ma_hang_id
@@ -44,13 +61,11 @@ async function slDonByStageCached() {
       AND (EXISTS (SELECT 1 FROM dot_vai_ve dr WHERE dr.phan_in_id=pin.id AND dr.trang_thai NOT IN ('DA_GOP','DA_HUY') AND dr.tg_chuyen_ready IS NOT NULL)
            OR NOT EXISTS (SELECT 1 FROM dot_vai_ve da WHERE da.phan_in_id=pin.id AND da.trang_thai NOT IN ('DA_GOP','DA_HUY')))
     GROUP BY 1`;
-  _sldPromise = query(sql.replace(/\s+/g, ' ')).then((r) => {
+    const r = await query(sql.replace(/\s+/g, ' '));
     const m = {};
     r.rows.forEach((x) => { m[x.stage] = Number(x.sl) || 0; });
     return m;
   });
-  _sldAt = Date.now();
-  return _sldPromise;
 }
 const slDonAtStage = (keys) => async () => {
   const m = await slDonByStageCached();
@@ -69,20 +84,23 @@ const CP_GROUP_CASE = `CASE (${dominantStageScalar('pin.id')})
     WHEN 'CHO_KHO' THEN 'CHO_KHO' WHEN 'KCS' THEN 'KIEM'
     WHEN 'SUA' THEN 'SUA' WHEN 'OQC' THEN 'OQC' WHEN 'DANG_GIAO' THEN 'FINISH'
     ELSE NULL END`;
-let _cpgPromise = null; let _cpgAt = 0;
-async function cpGroupCounts() {
-  if (_cpgPromise && Date.now() - _cpgAt < 2000) return _cpgPromise;
-  _cpgPromise = (async () => {
-    const sql = `SELECT grp, count(DISTINCT phan_in_id)::int AS phan, count(DISTINCT ma_hang_id)::int AS ma, count(DISTINCT don_hang_id)::int AS don
-      FROM (SELECT pin.id AS phan_in_id, mh.id AS ma_hang_id, dh.id AS don_hang_id, ${CP_GROUP_CASE} AS grp
-            FROM phan_in pin JOIN ma_hang mh ON mh.id = pin.ma_hang_id JOIN don_hang dh ON dh.id = mh.don_hang_id
-            WHERE pin.dang_hoat_dong) x
-      WHERE grp IS NOT NULL GROUP BY grp`;
+function cpGroupCounts() {
+  return nhoNang('cpGroupCounts', async () => {
+    // ⚠⚠⚠ `AS MATERIALIZED` LÀ BẮT BUỘC, KHÔNG PHẢI CHO ĐẸP (fix 21/08/2026, đo bằng EXPLAIN):
+    //   viết subquery thường thì Postgres ĐẨY điều kiện `grp IS NOT NULL` xuống Seq Scan ⇒ cái CASE
+    //   `dominantStageScalar` khổng lồ bị tính **HAI LẦN cho MỖI dòng** (1 lần ở Filter, 1 lần ở
+    //   SELECT) — plan cũ: `Buffers: shared hit=604969` cho vỏn vẹn 2090 phần in.
+    //   `MATERIALIZED` chặn đẩy điều kiện ⇒ tính đúng 1 lần/dòng. Đo prod: **2383ms → 1078ms**,
+    //   kết quả GIỐNG HỆT (đã đối chiếu từng nhóm). ĐỪNG gỡ từ khóa này.
+    const sql = `WITH x AS MATERIALIZED (
+        SELECT pin.id AS phan_in_id, mh.id AS ma_hang_id, dh.id AS don_hang_id, ${CP_GROUP_CASE} AS grp
+          FROM phan_in pin JOIN ma_hang mh ON mh.id = pin.ma_hang_id JOIN don_hang dh ON dh.id = mh.don_hang_id
+         WHERE pin.dang_hoat_dong)
+      SELECT grp, count(DISTINCT phan_in_id)::int AS phan, count(DISTINCT ma_hang_id)::int AS ma, count(DISTINCT don_hang_id)::int AS don
+        FROM x WHERE grp IS NOT NULL GROUP BY grp`;
     const { rows } = await query(sql.replace(/\s+/g, ' ').trim());
     return Object.fromEntries(rows.map((r) => [r.grp, r]));
-  })();
-  _cpgAt = Date.now();
-  return _cpgPromise;
+  });
 }
 const cpGroupAt = (cpMa, level) => async () => {
   const g = await cpGroupCounts();
