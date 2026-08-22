@@ -1205,6 +1205,7 @@ async function keHoachTamDone(date) { return repo.keHoachTamDoneByDate(date); }
 async function keHoachTamTheoDoi(q = {}) {
   const items = await repo.keHoachTamTheoDoi({
     search: q.search || '', tuNgay: q.tuNgay || '', denNgay: q.denNgay || '',
+    loaiNgay: q.loaiNgay || 'NGAY_KE_HOACH',
   });
   const dem = items.reduce((a, r) => ({ ...a, [r.tinh_trang]: (a[r.tinh_trang] || 0) + 1 }), {});
   return { items, meta: { total: items.length, theo_tinh_trang: dem } };

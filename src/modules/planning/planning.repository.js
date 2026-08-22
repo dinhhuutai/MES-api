@@ -965,13 +965,26 @@ const KHT_TD_TINH_TRANG = `CASE
   WHEN lsx.co THEN 'DA_RELEASE'
   ELSE 'DA_XOA' END`;
 
-async function keHoachTamTheoDoi({ search = '', tuNgay = '', denNgay = '', limit = 2000 }) {
+// 2 CHẾ ĐỘ NGÀY (bám *Danh sách release*, 21/08/2026):
+//   NGAY_KE_HOACH = ngày hàng dự kiến LÊN CHUYỀN · NGAY_LAP = ngày BẤM lưu kế hoạch tạm ("release tạm").
+// ⚠ 2 mốc này lệch nhau rất xa (kế hoạch tạm vốn để lập SỚM) ⇒ đừng gộp làm một như bên Release 1.
+const KHT_TD_LOAI_NGAY = ['NGAY_KE_HOACH', 'NGAY_LAP'];
+
+async function keHoachTamTheoDoi({ search = '', tuNgay = '', denNgay = '', loaiNgay = 'NGAY_KE_HOACH', limit = 2000 }) {
   const dkPain = await dkTrang('KH_TAM', 'pin', 'pin.id');
   const SEARCH = `($1 = '' OR pin.ma_phan ~* $1 OR kh.ten_khach_hang ~* $1 OR mh.ma_hang ~* $1
                   OR pin.mau_vai ~* $1 OR dv.ma_dot_vai ~* $1 OR dh.ma_don_hang ~* $1 OR cs.ten_chuyen ~* $1)`;
   // Ngày lọc = NGÀY KH SẢN XUẤT: dòng còn sống lấy từ bảng, dòng đã release lấy từ payload audit
   // (payload chỉ lưu chuyen_id/ngay_ke_hoach/so_luong/ma_lenh), cuối cùng lùi về ngày của LỆNH.
   const NGAY_KH = `COALESCE(kht.ngay_ke_hoach, (k.pl->>'ngay_ke_hoach')::date, lsx.ngay_ke_hoach)`;
+  // ⚠⚠ Cột LỌC do `loaiNgay` quyết định — whitelist ở `KHT_TD_LOAI_NGAY`, giá trị lạ lùi về
+  //   NGAY_KE_HOACH (KHÔNG nội suy chuỗi client vào SQL).
+  // ⚠ `lap_dau` là timestamptz ⇒ phải quy về ngày GIỜ VN trước khi so, nếu không mốc trước 07:00
+  //   sáng bị lùi 1 ngày (bẫy múi giờ §6).
+  const loai = KHT_TD_LOAI_NGAY.includes(loaiNgay) ? loaiNgay : 'NGAY_KE_HOACH';
+  const COT_NGAY = loai === 'NGAY_LAP'
+    ? `((k.lap_dau AT TIME ZONE 'Asia/Ho_Chi_Minh')::date)`
+    : NGAY_KH;
   const sql = `WITH k AS (
       SELECT a.id_ban_ghi AS dv_text,
              min(a.thoi_gian) FILTER (WHERE a.hanh_dong = 'LUU_KE_HOACH_TAM') AS lap_dau,
@@ -1015,9 +1028,9 @@ async function keHoachTamTheoDoi({ search = '', tuNgay = '', denNgay = '', limit
                             WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN'
                               AND kq.trang_thai = 'DAT') AS done) qc
      WHERE ${dkPain} AND ${SEARCH}
-       AND ($2 = '' OR ${NGAY_KH} >= $2::date)
-       AND ($3 = '' OR ${NGAY_KH} <= $3::date)
-     ORDER BY ${NGAY_KH} NULLS LAST, kh.ten_khach_hang, pin.ma_phan
+       AND ($2 = '' OR ${COT_NGAY} >= $2::date)
+       AND ($3 = '' OR ${COT_NGAY} <= $3::date)
+     ORDER BY ${COT_NGAY} NULLS LAST, kh.ten_khach_hang, pin.ma_phan
      LIMIT $4`;
   const { rows } = await query(sql.replace(/\s+/g, ' '), [mauTim(search), tuNgay || '', denNgay || '', limit]);
   return rows;
