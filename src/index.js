@@ -41,9 +41,24 @@ async function start() {
     console.log(`[erp] Nhận vải : ${env.erp.phieuNhanVaiUrl}`);
     console.log(`[erp] Mã tem   : ${env.erp.barcodeTemUrl}`
       + (process.env.ERP_BARCODE_TEM_URL ? '' : '   ⚠ CHƯA đặt ERP_BARCODE_TEM_URL trong .env — đang suy theo gốc URL nhận vải'));
+    // Mã tem 17 (sửa đạt) / 13 (gia công về) xin từ endpoint RIÊNG — thiếu là 2 công đoạn đó lấy
+    // nhầm dãy số của tem 15. In cùng chỗ để 1 lần nhìn là thấy đủ mọi đường đi tới ERP.
+    console.log(`[erp] Mã tem 17: ${env.erp.barcodeTem17Url}`
+      + (process.env.ERP_BARCODE_TEM_17_URL ? '' : '   ⚠ CHƯA đặt ERP_BARCODE_TEM_17_URL — đang suy theo gốc URL nhận vải'));
+    console.log(`[erp] Mã tem 13: ${env.erp.barcodeTem13Url}`
+      + (process.env.ERP_BARCODE_TEM_13_URL ? '' : '   ⚠ CHƯA đặt ERP_BARCODE_TEM_13_URL — đang suy theo gốc URL nhận vải'));
     console.log(`[erp] Ghi in tem: ${env.erp.ghiInTemUrl}`
       + (env.erp.ghiInTemEnabled ? '' : '   (ĐANG TẮT qua ERP_GHI_IN_TEM_ENABLED=false)')
       + (process.env.ERP_GHI_IN_TEM_URL ? '' : '   ⚠ CHƯA đặt ERP_GHI_IN_TEM_URL trong .env — đang suy theo gốc URL nhận vải'));
+    // 3 API thêm 04/09/2026 — in cùng chỗ để vẫn nhìn 1 lần là thấy đủ mọi đường đi tới ERP.
+    console.log(`[erp] ID phiếu giao : ${env.erp.layIdPhieuGiaoUrl}`
+      + (process.env.ERP_LAY_ID_PHIEU_GIAO_URL ? '' : '   ⚠ CHƯA đặt ERP_LAY_ID_PHIEU_GIAO_URL — đang suy theo gốc URL nhận vải'));
+    console.log(`[erp] Gửi phiếu giao: ${env.erp.guiPhieuGiaoUrl}`
+      + (env.erp.guiPhieuGiaoEnabled ? '' : '   (ĐANG TẮT qua ERP_GUI_PHIEU_GIAO_ENABLED=false)')
+      + (process.env.ERP_GUI_PHIEU_GIAO_URL ? '' : '   ⚠ CHƯA đặt ERP_GUI_PHIEU_GIAO_URL — đang suy theo gốc URL nhận vải'));
+    console.log(`[erp] Gửi PL lỗi   : ${env.erp.guiPhanLoaiLoiUrl}`
+      + (env.erp.guiPhanLoaiLoiEnabled ? '' : '   (ĐANG TẮT qua ERP_GUI_PHAN_LOAI_LOI_ENABLED=false)')
+      + (process.env.ERP_GUI_PHAN_LOAI_LOI_URL ? '' : '   ⚠ CHƯA đặt ERP_GUI_PHAN_LOAI_LOI_URL — đang suy theo gốc URL nhận vải'));
     // ⚠ Web Push (mig 085): thiếu VAPID key / chưa cài `web-push` thì TỰ TẮT — chuông và popup khi
     //   app đang mở vẫn chạy, chỉ mất phần "báo cả khi đóng app". In ra để khỏi phải đi dò vì sao.
     const tt = webPush.trangThai();

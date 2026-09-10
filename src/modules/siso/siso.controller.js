@@ -34,4 +34,10 @@ const chiTiet = asyncHandler(async (req, res) => {
   return ok(res, await service.chiTiet(req.params.maTrang, req.params.o, req.query));
 });
 
-module.exports = { danhMuc, siSo, chiTiet };
+// Tóm tắt 1 ô theo NGÀY GIAO (popover khi hover ô "Tồn cuối"). Cùng guard quyền với 2 route trên.
+const tomTatNgayGiao = asyncHandler(async (req, res) => {
+  if (!guard(req, res)) return undefined;
+  return ok(res, await service.tomTatNgayGiao(req.params.maTrang, req.params.o, req.query));
+});
+
+module.exports = { danhMuc, siSo, chiTiet, tomTatNgayGiao };

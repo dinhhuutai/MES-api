@@ -57,7 +57,7 @@ const savePhanCong = asyncHandler(async (req, res) =>
 
 const stopLine = asyncHandler(async (req, res) =>
   ok(res, await service.stopLine(req.params.phieuId, req.body.lyDo, req.user.id, req.body.gioBd || null,
-    req.body.lyDoId || null), 'Đã ngừng chuyền'));
+    req.body.lyDoId || null, req.body.gioKt || null), 'Đã ngừng chuyền'));
 
 // ─── Danh mục lý do ngừng chuyền (mig 076) ───────────────────────────────────
 const lyDoNgungList = asyncHandler(async (req, res) =>
@@ -132,6 +132,18 @@ const cancelableTem = asyncHandler(async (req, res) => {
 const cancelPrintTem = asyncHandler(async (req, res) =>
   ok(res, await service.cancelPrintTem(req.params.temId, req.body.lyDo, req.user.id), 'Đã hủy lệnh in tem'));
 
+// DANH SÁCH TEM ĐÃ IN (xem thông tin tem, không cần in). `laGiaCong` do ROUTE quyết, không nhận từ
+// query — xem ghi chú ở `service.listTemDaIn`.
+const dsTemDaIn = (laGiaCong) => asyncHandler(async (req, res) => {
+  const { page, limit, offset } = getPaging(req.query, { tranToiDa: TRAN_TAI_HET });
+  const q = req.query;
+  return ok(res, await service.listTemDaIn({
+    search: q.search || '', ngayTu: q.ngayTu || '', ngayDen: q.ngayDen || '',
+    khach: q.khach || '', don: q.don || '', maHang: q.maHang || '', codePhan: q.codePhan || '',
+    maTem: q.maTem || '', chuyen: q.chuyen || '', page, limit, offset,
+  }, laGiaCong));
+});
+
 // Đóng lệnh sản xuất (= Chạy hoàn tất)
 const closeCandidates = asyncHandler(async (req, res) => ok(res, await service.listCloseCandidates()));
 
@@ -174,6 +186,7 @@ module.exports = {
   toInList, toInCreate, toInUpdate, toInToggle,
   lyDoBoSungList, lyDoBoSungCreate, lyDoBoSungUpdate, lyDoBoSungToggle, luuLyDoBoSungDotVai,
   cancelableTem, cancelPrintTem,
+  temDaInSX: dsTemDaIn(false), temDaInGiaCong: dsTemDaIn(true),
   closeCandidates, closeProduction,
   reopenCandidates, reopenProduction, pauseLenhChay, doiChuyen,
   undoStartCandidates, undoStartProduction,

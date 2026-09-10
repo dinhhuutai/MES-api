@@ -100,6 +100,34 @@ function dominantStageScalar(pinId) {
   return `COALESCE((SELECT z.stage FROM (SELECT (${dotStageCase('s')}) AS stage, array_position(${ORDER_SQL_ARRAY}, (${dotStageCase('s')})) AS rnk FROM (${dotSource(pinId)}) s) z ORDER BY z.rnk LIMIT 1), ${readyFallback(pinId)})`;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GIAI ĐOẠN HIỆN TẠI CỦA MỘT **LỆNH CHƯA VÀO SẢN XUẤT** (chưa có `phieu_san_xuat`).
+// Dùng ở cột "Giai đoạn" màn *Lập kế hoạch lại* — trước 04/09/2026 màn đó suy từ mỗi
+// `lenh_san_xuat.trang_thai` (`RELEASE_1` → luôn ghi "Test Run") nên hiện **trạm đã đi qua gần nhất**
+// chứ không phải trạm ĐANG Ở: lệnh đã test xong vẫn ghi "Test Run", lệnh bị Test Run trả về Kỹ thuật
+// (còn `RELEASE_1` nhưng phần in đã bị hủy QC) cũng ghi "Test Run" trong khi nó đang nằm ở READY.
+//
+// ⚠⚠ ĐÂY LÀ BẢN RÚT GỌN CỦA `dotStageCase`, CHỈ ĐÚNG KHI LỆNH CHƯA CÓ PHIẾU SẢN XUẤT — mọi nhánh
+//   tem/phiếu của `dotStageCase` khi đó không bao giờ đúng nên lược bỏ được, và query nhẹ hơn hẳn
+//   (màn replan gửi SQL gộp 1 dòng, IPS-safe). **Đừng dùng cho màn có lệnh đã in tem.**
+// ⚠ Thứ tự nhánh GIỮ Y HỆT `dotStageCase` để 2 hàm không bao giờ ra 2 kết quả khác nhau trên cùng
+//   một lệnh; sửa luật ở `dotStageCase` thì soát lại hàm này.
+// ⚠ Lệnh GOM SET: "còn phần in nào chưa QC" ⇒ cả lệnh coi như đang ở READY (đúng với `cho_ky_thuat`
+//   mà màn Test Run đang dùng để khóa thao tác) — không thể vẽ 1 lệnh ở 2 trạm cùng lúc.
+function lenhStageCase(lenhCol, trangThaiCol) {
+  const kqLenh = (ma) => `EXISTS(SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id=k.checkpoint_id WHERE k.lenh_san_xuat_id=${lenhCol} AND c.ma_checkpoint='${ma}' AND k.trang_thai='DAT')`;
+  const conPinChuaQc = `EXISTS(SELECT 1 FROM lenh_sx_dot_vai lg JOIN dot_vai_ve dg ON dg.id=lg.dot_vai_ve_id WHERE lg.lenh_san_xuat_id=${lenhCol} AND NOT EXISTS(SELECT 1 FROM ket_qua_checkpoint kg JOIN checkpoint cg ON cg.id=kg.checkpoint_id WHERE kg.phan_in_id=dg.phan_in_id AND cg.ma_checkpoint='QC_XAC_NHAN' AND kg.trang_thai='DAT'))`;
+  const duMucKt = `EXISTS(SELECT 1 FROM lenh_sx_dot_vai lt JOIN dot_vai_ve dt ON dt.id=lt.dot_vai_ve_id WHERE lt.lenh_san_xuat_id=${lenhCol} AND ${techDoneSqlByPin('dt.phan_in_id')})`;
+  return `CASE
+      WHEN ${trangThaiCol}='GIA_CONG' THEN 'GIA_CONG'
+      WHEN ${trangThaiCol}='RELEASE_1' AND ${conPinChuaQc} THEN
+        CASE WHEN ${duMucKt} THEN 'READY_QA' ELSE 'READY_KT' END
+      WHEN ${trangThaiCol}='RELEASE_2' THEN 'CHO_SAN_XUAT'
+      WHEN ${kqLenh('TEST_CNSP')} AND ${kqLenh('TEST_QA')} THEN 'RELEASE_2'
+      WHEN ${kqLenh('TEST_CNSP')} THEN 'TESTRUN_QA'
+      ELSE 'TESTRUN_CNSP' END`;
+}
+
 // Điều kiện WHERE cho 1 chip (orders). stage='' | 'ALL' → null (không lọc giai đoạn).
 function chipCondition(chip, pinId = 'pin.id') {
   const stages = CHIP_STAGES[chip];
@@ -109,5 +137,5 @@ function chipCondition(chip, pinId = 'pin.id') {
 
 module.exports = {
   STAGE_ORDER, ORDER_SQL_ARRAY, CHIP_STAGES, STAGE_LABEL,
-  dotStageCase, readyFallback, dotSource, dominantStageScalar, chipCondition,
+  dotStageCase, readyFallback, dotSource, dominantStageScalar, chipCondition, lenhStageCase,
 };

@@ -38,6 +38,25 @@ function baseMaTem(code) {
   return c.replace(/^\d+-/, '');
 }
 
+// ⚠⚠⚠ DANH SÁCH `ma_tem` ỨNG VIÊN CHO 1 MÃ QUÉT — **DÙNG CÁI NÀY, ĐỪNG DÙNG `baseMaTem` MỘT MÌNH**
+//   khi tra cứu tem theo mã quét (chốt 06/09/2026).
+//
+// Từ 06/09/2026 tem 17 (sửa đạt) và tem 13 (gia công về) **XIN MÃ RIÊNG của ERP** thay vì suy từ mã
+// tem 15 ⇒ `baseMaTem('172608059999')` cho ra `152608059999` là một mã **KHÁC HẲN** (có thể không
+// tồn tại, tệ hơn là trùng tem của lô khác). Nhưng dữ liệu CŨ + nhãn `16…` (hàng lỗi chuyển sửa,
+// vốn không phải dòng tem riêng) thì vẫn phải suy về tem gốc.
+// ⇒ Trả CẢ HAI, **NGUYÊN VĂN ĐỨNG TRƯỚC**; bên gọi thử lần lượt theo thứ tự này.
+//   · '172608059999' → ['172608059999', '152608059999']   (mã mới ra ngay ứng viên đầu)
+//   · '162608057689' → ['162608057689', '152608057689']   (nhãn 16 rơi xuống ứng viên thứ 2)
+//   · '17-TEM00030-1'→ ['17-TEM00030', 'TEM00030']
+function maTemUngVien(code) {
+  const nguyen = String(code || '').trim().replace(/-\d+$/, ''); // bỏ hậu tố lần giao
+  const goc = baseMaTem(code);
+  const out = [];
+  for (const x of [nguyen, goc]) if (x && !out.includes(x)) out.push(x);
+  return out;
+}
+
 // Chuẩn hóa TỪ KHÓA TÌM KIẾM tem: người dùng cầm nhãn giấy in `16…`/`17…` gõ vào ô tìm thì phải ra
 // đúng tem đang lưu `15…`. Bỏ 2 SỐ ĐẦU rồi để `ILIKE '%…%'` khớp phần còn lại ⇒ khớp mọi công đoạn
 // mà không phải thêm nhánh OR nào vào SQL (query giữ nguyên độ nặng — quan trọng vì IPS, xem §9).
@@ -47,4 +66,4 @@ const timTem = (search) => {
   return laMaErp(s) ? s.slice(2) : s;
 };
 
-module.exports = { temCode, baseMaTem, timTem, laMaErp, MA_ERP_RE };
+module.exports = { temCode, baseMaTem, maTemUngVien, timTem, laMaErp, MA_ERP_RE };

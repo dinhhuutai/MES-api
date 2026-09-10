@@ -16,7 +16,8 @@
 
 const { withTransaction } = require('../../config/db');
 const AppError = require('../../utils/AppError');
-const { baseMaTem } = require('../../utils/temPrefix');
+const { maTemUngVien } = require('../../utils/temPrefix');
+const { guiPhanLoaiLoi } = require('../../utils/erpApiChung');
 const repo = require('./phanloailoi.repository');
 const qualityRepo = require('./quality.repository');
 
@@ -28,11 +29,12 @@ const soNguyen = (v) => {
 async function danhSach(q) { return repo.listTheoNgay(q); }
 
 // Quét mã vạch / gõ tay → trả thông tin tem + phiếu đã có (nếu có).
-// `baseMaTem` quy mọi tiền tố công đoạn (13/15/16/17) + hậu tố lần giao về mã gốc đang lưu.
+// ⚠ `maTemUngVien` thử ĐÚNG NGUYÊN VĂN trước rồi mới tới mã gốc suy ra — bắt buộc từ 06/09/2026 vì
+//   tem 17/13 nay có mã RIÊNG của ERP, không còn suy được từ mã tem 15 (xem `utils/temPrefix.js`).
 async function traTem(code) {
-  const ma = baseMaTem(code);
-  if (!ma) throw new AppError('Chưa nhập mã tem', { status: 422, errorCode: 'NO_CODE' });
-  const tem = await repo.timTemDePhanLoai(ma);
+  const ds = maTemUngVien(code);
+  if (!ds.length) throw new AppError('Chưa nhập mã tem', { status: 422, errorCode: 'NO_CODE' });
+  const tem = await repo.timTemDePhanLoai(ds);
   if (!tem) throw new AppError(`Không tìm thấy tem "${code}"`, { status: 404, errorCode: 'NOT_FOUND' });
   if (tem.trang_thai === 'HUY') throw new AppError(`Tem ${tem.ma_tem} đã bị HỦY`, { status: 409, errorCode: 'TEM_HUY' });
   const phieu = await repo.getPhieuTheoTem(tem.tem_id);
@@ -94,7 +96,42 @@ async function luu(temId, { dong = [], ghiChu = '' } = {}, actorId) {
     );
   });
 
+  // ─── ĐẨY SANG ERP (API `ERP_GUI_PHAN_LOAI_LOI`, 04/09/2026) ────────────────
+  // ⚠⚠ CỐ Ý KHÔNG `await`: phiếu đã ghi xong vào MES rồi, ERP chỉ là bên nhận tin. Timeout 10s × 3
+  //   lần ⇒ xấu nhất ~33s — chặn response từng ấy là hỏng thao tác của người phân loại.
+  //   `guiPhanLoaiLoi` không bao giờ ném lỗi; hỏng thì đã có vết ở *Cài đặt API > Lịch sử*.
+  guiErpPhanLoaiLoi(temId, { rows, tongSua, tongHuy, slHu, ghiChu }, actorId);
+
   return { tem_id: temId, tong_sua: tongSua, tong_huy: tongHuy, sl_hu: slHu };
+}
+
+// Dựng payload rồi bắn sang ERP. Tách hàm riêng để `luu` không phình và để chỗ này chịu trách nhiệm
+// đọc thêm dữ liệu mô tả (mã tem / mã lỗi / tên biện pháp) mà bảng chi tiết chỉ lưu id.
+// ⚠ Bọc try/catch toàn bộ: kể cả câu đọc dữ liệu mô tả hỏng cũng KHÔNG được kéo theo lỗi cho `luu`.
+async function guiErpPhanLoaiLoi(temId, { rows, tongSua, tongHuy, slHu, ghiChu }, actorId) {
+  try {
+    const ct = await repo.chiTietGuiErp(temId, rows);
+    if (!ct) return;
+    await guiPhanLoaiLoi({
+      BarcodeIn: ct.ma_tem,
+      Ngay: ct.ngay_phan_loai,
+      Soluonghu: slHu,
+      Soluongsua: tongSua,
+      Soluonghuy: tongHuy,
+      Ghichu: ghiChu || '',
+      ChiTiet: ct.dong.map((d) => ({
+        MaLoi: d.ma_loi || '',
+        TenLoi: d.ten_loi || '',
+        MaBienPhap: d.ma_bien_phap || '',
+        TenBienPhap: d.ten_bien_phap || '',
+        Soluongsua: d.so_luong_sua,
+        Soluonghuy: d.so_luong_huy,
+        Ghichu: d.ghi_chu || '',
+      })),
+    }, { temId, actorId });
+  } catch (e) {
+    console.error(`[gui-erp-phan-loai-loi] ✗ Không gửi được (tem ${temId}): ${e.message}`);
+  }
 }
 
 // ─── Danh mục biện pháp xử lý ────────────────────────────────────────────────

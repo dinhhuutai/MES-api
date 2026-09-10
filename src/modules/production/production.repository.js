@@ -6,6 +6,8 @@ const { lenhPhanInMatch } = require('../../utils/search');
 // Hiển thị theo PHƯƠNG ÁN IN — cấu hình động từng trang (mig 067), mặc định BẬT HẾT = không lọc.
 const { dkTrang } = require('../../utils/phuongAnIn');
 const { mauTim } = require('../../utils/timKiem');
+// Gõ mã trên nhãn (`16…`/`17…`) phải tra ra tem gốc (`15…`) — xem `utils/temPrefix.js`.
+const { timTem } = require('../../utils/temPrefix');
 // Ghi vết lượt gọi API ERP (nguồn cho nút "Lịch sử" ở trang Cài đặt API).
 const { ghiLog } = require('../../utils/erpApiLog');
 
@@ -26,6 +28,7 @@ const PHAN_INFO_LATERAL = `
   LEFT JOIN LATERAL (
     SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang,
            pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.ma_phan, pin.so_luong_don_hang,
+           pin.tinh_chat_in,
            dv.han_giao_hang, dv.so_luong_vai_ve, dv.nha_gia_cong
     FROM lenh_sx_dot_vai lsd
     JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
@@ -162,12 +165,45 @@ async function createPhieuDone(client, { lenhId, chuyenId, maPhieu, soLuong }, a
 
 // GIA CÔNG: tem tạo THẲNG ở CHO_OQC, seed sl_kcs_dat = SL (coi như đã KCS đạt) ⇒ con_oqc = SL > 0.
 // KHÔNG dùng createTem (set 'IN') và KHÔNG dựa recomputeTemStage (bỏ qua tem 'IN'). Nguồn OQC = KCS.
-async function createTemGiaCongOqc(client, { phieuId, maTem, soLuong }, actorId) {
+//
+// ⚠⚠ `dotVaiVeId` (mig 095) = ĐỢT VẢI của tem này ⇒ suy ra CODE PHẦN. Bắt buộc phải ghi thì màn
+//   *Gia công* mới biết lượt nhận vừa rồi thuộc code phần nào, và mới trừ đúng phần còn lại của
+//   RIÊNG code phần đó (yêu cầu 09/09/2026). Thiếu cột (chưa chạy mig 095) ⇒ bỏ qua, lùi về nhận ở
+//   MỨC LỆNH y như trước.
+// ⚠ DÒ CỘT chứ KHÔNG try/catch quanh INSERT: hàm này chạy TRONG transaction, lỗi 42703 làm ABORT cả
+//   transaction nên câu "thử lại" sẽ chết tiếp với 25P02 (bẫy đã ghi ở mig 066).
+let coCotTemDotVai = null;
+async function temCoCotDotVai(client) {
+  if (coCotTemDotVai) return true; // chỉ cache khi ĐÃ có ⇒ chạy migration xong nhận ngay, khỏi restart
   const { rows } = await client.query(
-    `INSERT INTO tem (phieu_san_xuat_id, ma_tem, so_luong, trang_thai, sl_kcs_dat, created_by)
-     VALUES ($1,$2,$3,'CHO_OQC',$3,$4) RETURNING id`,
-    [phieuId, maTem, soLuong, actorId]
+    `SELECT count(*)::int AS n FROM information_schema.columns
+      WHERE table_schema='public' AND table_name='tem' AND column_name='dot_vai_ve_id'`.replace(/\s+/g, ' ')
   );
+  coCotTemDotVai = rows[0].n === 1;
+  return coCotTemDotVai;
+}
+
+// ⚠⚠ `soLuong` = SL **ĐẠT** (phần dùng được, đi tiếp OQC) · `slHuy` = SL **HỦY** (hàng hỏng nhà gia
+//   công trả về, loại hẳn). `tem.so_luong` = ĐẠT + HỦY vì đó là lượng vải THỰC SỰ nhận về — nhờ vậy
+//   `GIA_CONG_DA_CHUYEN` (Σ `so_luong`) trừ đúng phần còn phải nhận. Sổ cái khi đó:
+//     con_kcs = (đạt+hủy) − (đạt + 0 + hủy) = 0   ⇒ KHÔNG lọt màn KCS (đúng: gia công không qua KCS)
+//     con_oqc = (đạt + 0) − 0 − 0 = đạt           ⇒ CHỈ phần đạt đi OQC
+//   ⇒ đặt `sl_kcs_huy` sai (vd nhét hủy vào `so_luong` mà quên cột hủy) là tem kẹt ở màn KCS.
+async function createTemGiaCongOqc(client, { phieuId, maTem, soLuong, slHuy = 0, dotVaiVeId = null }, actorId) {
+  const coCot = await temCoCotDotVai(client);
+  const huy = Math.max(0, Math.trunc(Number(slHuy) || 0));
+  const tong = (Number(soLuong) || 0) + huy;
+  const { rows } = coCot
+    ? await client.query(
+      `INSERT INTO tem (phieu_san_xuat_id, ma_tem, so_luong, trang_thai, sl_kcs_dat, sl_kcs_huy, dot_vai_ve_id, created_by)
+       VALUES ($1,$2,$3,'CHO_OQC',$4,$5,$6,$7) RETURNING id`,
+      [phieuId, maTem, tong, soLuong, huy, dotVaiVeId, actorId]
+    )
+    : await client.query(
+      `INSERT INTO tem (phieu_san_xuat_id, ma_tem, so_luong, trang_thai, sl_kcs_dat, sl_kcs_huy, created_by)
+       VALUES ($1,$2,$3,'CHO_OQC',$4,$5,$6) RETURNING id`,
+      [phieuId, maTem, tong, soLuong, huy, actorId]
+    );
   return rows[0].id;
 }
 
@@ -454,6 +490,73 @@ async function listCancelableTem({ search = '', offset = 0, limit = 50 }) {
   const [data, count] = await Promise.all([
     query(dataSql.replace(/\s+/g, ' '), [tim, limit, offset]),
     query(countSql.replace(/\s+/g, ' '), [tim]),
+  ]);
+  return { rows: data.rows, total: count.rows[0].total };
+}
+
+// ─── DANH SÁCH TEM ĐÃ IN (04/09/2026) — xem thông tin tem mà KHÔNG phải in ra giấy ─────────────
+// Dùng chung 2 trang: *Sản xuất › Danh sách tem in* (tem sản xuất 15/16) và
+// *Kế hoạch › Danh sách tem gia công* (tem 13 — tem "TH VỀ" của lệnh gia công).
+// Phân biệt bằng `laGiaCong`: tem thuộc lệnh trên chuyền loại `GIA_CONG` hay không.
+//
+// ⚠ Bộ lọc rời từng trường (khách · đơn · mã hàng · code phần · mã tem · chuyền) chồng AND với ô tìm
+//   chung — cùng khuôn `dungLoc` của các màn khác. Ô nào không nhập thì KHÔNG sinh điều kiện (giữ
+//   query gọn, IPS-safe) — đúng bài học ở `quality.listCandByCon`.
+// ⚠ MÃ TEM tìm bằng `timTem()`: người dùng gõ mã trên nhãn (`16…`/`17…`) mà DB lưu mã gốc `15…`.
+// ⚠ KHÔNG viết comment `--` trong 2 chuỗi SQL bên dưới (chúng bị gộp 1 dòng).
+async function listTemDaIn({
+  laGiaCong = false, search = '', ngayTu = '', ngayDen = '',
+  khach = '', don = '', maHang = '', codePhan = '', maTem = '', chuyen = '',
+  offset = 0, limit = 20,
+}) {
+  const dk = [];
+  const p = [];
+  const them = (val, bieuThuc) => {
+    if (!val) return;
+    p.push(mauTim(val));
+    dk.push(bieuThuc(`$${p.length}`));
+  };
+  them(search, (n) => `(t.ma_tem ~* ${n} OR ls.ma_lenh_san_xuat ~* ${n} OR ${lenhPhanInMatch('ls.id', n)})`);
+  them(khach, (n) => `info.ten_khach_hang ~* ${n}`);
+  them(don, (n) => `info.ma_don_hang ~* ${n}`);
+  them(maHang, (n) => `info.ma_hang ~* ${n}`);
+  them(codePhan, (n) => `info.ma_phan ~* ${n}`);
+  them(chuyen, (n) => `(cs.ma_chuyen ~* ${n} OR cs.ten_chuyen ~* ${n})`);
+  if (maTem) { p.push(`%${timTem(maTem)}%`); dk.push(`t.ma_tem ILIKE $${p.length}`); }
+  const VN2 = "AT TIME ZONE 'Asia/Ho_Chi_Minh'";
+  if (ngayTu) { p.push(ngayTu); dk.push(`((t.created_date ${VN2})::date) >= $${p.length}::date`); }
+  if (ngayDen) { p.push(ngayDen); dk.push(`((t.created_date ${VN2})::date) <= $${p.length}::date`); }
+
+  const FROM = `
+    FROM tem t
+    JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+    JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+    LEFT JOIN chuyen_san_xuat cs ON cs.id = COALESCE(ps.chuyen_id, ls.chuyen_id)
+    LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
+    ${PHAN_INFO_LATERAL}
+    WHERE COALESCE(lc.ma_loai,'') ${laGiaCong ? '=' : '<>'} 'GIA_CONG'
+      ${dk.length ? `AND ${dk.join(' AND ')}` : ''}`;
+  const dataSql = `
+    SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.created_date, t.ma_ngay_ca,
+           to_char(t.gio_sx_bd, 'HH24:MI') AS gio_sx_bd, to_char(t.gio_sx_kt, 'HH24:MI') AS gio_sx_kt,
+           t.btp_truoc, t.btp_cuoi, t.gc_mau_vai,
+           t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy, t.sl_sua_dat, t.sl_sua_huy,
+           t.sl_oqc_dat, t.sl_da_giao, t.sl_chenh_lech,
+           ls.id AS lenh_id, ls.ma_lenh_san_xuat, ps.id AS phieu_id,
+           cs.ma_chuyen, cs.ten_chuyen, lc.ma_loai AS ma_loai_chuyen,
+           info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan,
+           info.mau_vai, info.kich_vai, info.kich_phim, info.tinh_chat_in,
+           info.so_luong_don_hang, info.han_giao_hang, info.nha_gia_cong,
+           (SELECT nd.ho_ten FROM log_tem lt LEFT JOIN nguoi_dung nd ON nd.id = lt.nguoi_in_id
+             WHERE lt.tem_id = t.id ORDER BY lt.tg_in LIMIT 1) AS nguoi_in,
+           (SELECT count(*) FROM log_tem lt2 WHERE lt2.tem_id = t.id)::int AS so_lan_in
+    ${FROM}
+    ORDER BY t.created_date DESC
+    LIMIT $${p.length + 1} OFFSET $${p.length + 2}`;
+  const countSql = `SELECT count(*)::int AS total ${FROM}`;
+  const [data, count] = await Promise.all([
+    query(dataSql.replace(/\s+/g, ' '), [...p, limit, offset]),
+    query(countSql.replace(/\s+/g, ' '), p),
   ]);
   return { rows: data.rows, total: count.rows[0].total };
 }
@@ -834,7 +937,11 @@ async function capIdMes() {
 //   · Ngayct = ngày in tem  · Tugio/Dengio = ngày của `ma_ngay_ca` (cột `ngay_ca` đã tách sẵn) + giờ SX
 //   · `gio_kt < gio_bd` ⇒ ca ĐÊM ⇒ Dengio +1 ngày
 //   · `ngay_ca` NULL (mã ngày ca sai định dạng) ⇒ lùi về ngày in tem, KHÔNG bịa ngày
-async function duLieuGhiInTem(capTem = []) {
+// `ngayCt` (tùy chọn, 'YYYY-MM-DD' — thêm 04/09/2026): NGÀY CHỨNG TỪ do người in tự đặt, dùng khi
+// muốn ghi lượt in vào một ngày khác hôm nay (in bù, chốt sổ cuối ngày…). Bỏ trống ⇒ `now()` như cũ.
+// ⚠ Ép `::date` rồi `to_char` để chuỗi sai định dạng bị Postgres từ chối ngay tại đây, không lọt sang
+//   ERP thành ngày rác; và KHÔNG nội suy chuỗi client vào SQL (luôn qua tham số).
+async function duLieuGhiInTem(capTem = [], ngayCt = null) {
   if (!capTem.length) return [];
   const temIds = capTem.map((x) => x.temId);
   const dotVaiIds = capTem.map((x) => x.dotVaiId || null);
@@ -845,10 +952,18 @@ async function duLieuGhiInTem(capTem = []) {
   // ⚠ `ddh_sub_id` đọc từ **PHẦN IN** (mig 088), không còn ở `dot_vai_ve`: DDHSUBID ứng 1:1 với phần
   //   in (= 3 số cuối của `BarcodePTHDH`). Lệnh gom set vẫn lấy đúng subID của phần in mà lượt in
   //   chỉ định qua `dotVaiId`, vì LATERAL `info` đã lọc theo đợt vải đó rồi mới lấy `pin.*`.
+  // ⚠⚠ `so_luong` PHẢI LẤY `sl_kcs_dat` CHO TEM CON (nhãn 17, mig 091): tem con cố ý có
+  //   `so_luong = 0` (nó KHÔNG in thêm mét vải nào) nên gửi thẳng cột đó là ERP nhận `Soluong = 0`.
+  //   Số lượng thật của lô sửa đạt nằm ở `sl_kcs_dat` — cùng khuôn tem 13 gia công.
+  // ⚠ Mọi trường KHÔNG CÓ dữ liệu (ngày ca / giờ SX / chuyền trưởng / tổ in / bàn in… của tem 13,
+  //   tem 17) trả về NULL và `chuanHoa` của `utils/erpGhiInTem.js` đổi thành GIÁ TRỊ RỖNG đúng kiểu
+  //   (chuỗi `''`, số `0`, ngày `null`) — ĐỂ TRỐNG, không bịa và không chặn lượt gửi.
   // ⚠ KHÔNG đặt comment `--` bên trong chuỗi SQL dưới đây — nó bị `.replace(/\s+/g,' ')` gộp 1 dòng.
   const sql = `
     WITH inp AS (SELECT * FROM unnest($1::uuid[], $2::uuid[]) AS x(tem_id, dot_vai_id))
-    SELECT t.id AS tem_id, t.ma_tem, t.so_luong, t.ma_ngay_ca, t.gc_mau_vai,
+    SELECT t.id AS tem_id, t.ma_tem, t.ma_ngay_ca, t.gc_mau_vai,
+           (t.tem_goc_id IS NOT NULL) AS la_tem_sua,
+           CASE WHEN t.tem_goc_id IS NOT NULL THEN t.sl_kcs_dat ELSE t.so_luong END AS so_luong,
            info.ma_phan,
            ls.ma_lenh_san_xuat, cs.ma_chuyen,
            ${coTo ? 'ti.ma_to' : 'NULL::varchar'} AS ma_to,
@@ -858,7 +973,7 @@ async function duLieuGhiInTem(capTem = []) {
            info.barcode AS id_dot_nhan_vai, info.ddh_sub_id, info.ddh_id, info.la_bo_sung,
            (SELECT count(*) FROM lenh_sx_dot_vai l2
              WHERE l2.lenh_san_xuat_id = COALESCE(ls.lenh_lien_ket_id, ls.id))::int AS so_dot_cua_lenh,
-           to_char(now() ${VN}, 'YYYY/MM/DD') AS ngay_ct,
+           to_char(COALESCE($3::date, (now() ${VN})::date), 'YYYY/MM/DD') AS ngay_ct,
            CASE WHEN t.gio_sx_bd IS NULL THEN NULL
                 ELSE to_char(nen.ngay + t.gio_sx_bd, 'YYYY/MM/DD HH24:MI:SS') END AS tu_gio,
            CASE WHEN t.gio_sx_kt IS NULL THEN NULL
@@ -888,7 +1003,7 @@ async function duLieuGhiInTem(capTem = []) {
           AND (inp.dot_vai_id IS NULL OR dv.id = inp.dot_vai_id)
         ORDER BY dv.ma_dot_vai LIMIT 1
       ) info ON true`;
-  const { rows } = await query(sql.replace(/\s+/g, ' '), [temIds, dotVaiIds]);
+  const { rows } = await query(sql.replace(/\s+/g, ' '), [temIds, dotVaiIds, ngayCt || null]);
   return rows;
 }
 
@@ -1432,13 +1547,33 @@ async function lyDoBoSungByLenh(lenhId) {
   return rows;
 }
 
-async function startNgung({ phieuId, lenhId, chuyenId, lyDo, lyDoId, gioBd }, actorId) {
+// ⚠⚠ GHI LUÔN GIỜ KẾT THÚC NGAY LÚC TẠO (chốt 04/09/2026, `gioKt`): sự cố đã xong rồi mới ngồi ghi lại
+//   là chuyện thường ở xưởng — trước đây bắt buộc 2 bước (bấm Ngừng → sau đó bấm Hoạt động lại) nên
+//   người dùng phải ghi vào lúc đã qua rồi bấm tiếp ngay, số phút ra sai.
+//   Bỏ trống `gioKt` ⇒ hành vi CŨ y nguyên: bản ghi ở `DANG_NGUNG`, chờ bấm "Chuyền hoạt động lại".
+// ⚠ Giờ kết thúc ghép NGÀY theo chính mốc bắt đầu vừa tính (`BD_TU_GIO`), sớm hơn thì +1 ngày (ca đêm)
+//   — cùng luật với `KT_TU_GIO` của `resumeNgung`, chỉ khác là ở đây `tg_bd_ngung` chưa nằm trong bảng
+//   nên phải nội suy lại biểu thức thay vì đọc cột.
+// ⚠⚠ THỨ TỰ THAM SỐ CỐ ĐỊNH: `$6` = **giờ BẮT ĐẦU** vì hằng `BD_TU_GIO` (dùng chung) đã khóa vào `$6`;
+//   giờ KẾT THÚC phải nhận `$7`. Đổi chỗ 2 cái là mốc bắt đầu tính theo giờ kết thúc — sai âm thầm.
+const KT_LUC_TAO = (bd) => `(CASE
+    WHEN $7::text IS NULL THEN NULL
+    WHEN (((${bd} ${VN_TZ})::date + $7::time) ${VN_TZ}) < ${bd}
+      THEN (((${bd} ${VN_TZ})::date + 1 + $7::time) ${VN_TZ})
+    ELSE (((${bd} ${VN_TZ})::date + $7::time) ${VN_TZ}) END)`;
+
+async function startNgung({ phieuId, lenhId, chuyenId, lyDo, lyDoId, gioBd, gioKt }, actorId) {
   const coCot = lyDoId ? await coCotLyDoNgung() : false;
   const cot = coCot ? ', ly_do_id' : '';
-  const gt = coCot ? ', $7' : '';
-  const sql = `INSERT INTO ngung_chuyen (phieu_san_xuat_id, lenh_san_xuat_id, chuyen_id, ly_do, tg_bd_ngung, trang_thai, created_by${cot})
-     VALUES ($1,$2,$3,$4,${BD_TU_GIO},'DANG_NGUNG',$5${gt}) RETURNING id`;
-  const params = [phieuId, lenhId || null, chuyenId || null, lyDo || null, actorId, gioBd || null];
+  const gt = coCot ? ', $8' : '';
+  const kt = KT_LUC_TAO(BD_TU_GIO);
+  const sql = `INSERT INTO ngung_chuyen (phieu_san_xuat_id, lenh_san_xuat_id, chuyen_id, ly_do, tg_bd_ngung, tg_kt_ngung, so_phut, trang_thai, created_by${cot})
+     VALUES ($1,$2,$3,$4,${BD_TU_GIO},${kt},
+       CASE WHEN $7::text IS NULL THEN NULL
+            ELSE GREATEST(0, ROUND(EXTRACT(EPOCH FROM (${kt} - ${BD_TU_GIO})) / 60.0))::int END,
+       CASE WHEN $7::text IS NULL THEN 'DANG_NGUNG' ELSE 'DA_HOAT_DONG_LAI' END,
+       $5${gt}) RETURNING id`;
+  const params = [phieuId, lenhId || null, chuyenId || null, lyDo || null, actorId, gioBd || null, gioKt || null];
   if (coCot) params.push(lyDoId);
   const { rows } = await query(sql.replace(/\s+/g, ' '), params);
   return rows[0].id;
@@ -1530,13 +1665,13 @@ module.exports = {
   setPhieuChuyen, getChuyenById, logDoiChuyen,
   getLenhDotVaiList, phanInRowsByLenh, insertVaiHuy, listVaiHuyByLenh,
   getActivePhieu, getPhieuById, getTemsByPhieu, getTemContext, cancelTem, getTemLabelData, caPartsForTem,
-  listCancelableTem, getTemForCancel, logTemCancel, logCloseProduction,
+  listCancelableTem, listTemDaIn, getTemForCancel, logTemCancel, logCloseProduction,
   listReopenCandidates, getPhieuFull, reopenPhieuTx, logReopenProduction, logPauseLenhChay,
   cancelPhieuStart, logUndoStart, logChayDacBiet,
   listTemLogByPhieu, nextReprint, logReprint,
   nextMaTem, nextMaTemNhieu, createTem, goiYTemMeta, logTemPrint, finishPhieu,
   capIdMes, duLieuGhiInTem, logGhiInTem,
-  nextMaPhieuTx, nextMaTemTx, createPhieuDone, createTemGiaCongOqc,
+  nextMaPhieuTx, nextMaTemTx, createPhieuDone, createTemGiaCongOqc, temCoCotDotVai,
   setPhieuTruong, upsertPhanCong, getPhanCongByPhieu,
   monitorRunning, monitorQueue, downstreamSlaAfterProduction, listXePhoi, listCurrentPhoi, listTemChoPhoi, addTemToXe, adjustPhoi,
   listDryingTems, confirmDry, getTemBasic,

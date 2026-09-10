@@ -7,7 +7,7 @@ const { dkTrang } = require('../../utils/phuongAnIn');
 const { mauTim } = require('../../utils/timKiem');
 // Giai đoạn HIỆN TẠI của phần in — dùng CHUNG hàm với dashboard/Đơn hàng (`dominantStageScalar`)
 // để "Danh sách release" và các màn khác không bao giờ ra 2 con số đá nhau.
-const { dominantStageScalar, STAGE_LABEL } = require('../../utils/stage');
+const { dominantStageScalar, STAGE_LABEL, lenhStageCase } = require('../../utils/stage');
 
 // SL vải đã ĐƯA VÀO đợt SX của 1 đợt vải = Σ lenh_sx_dot_vai.so_luong các lệnh non-HUY gắn đợt đó
 // (mig 052: SL đưa vào theo TỪNG đợt nằm ở junction — đúng cả khi 1 lệnh gồm nhiều đợt).
@@ -670,20 +670,27 @@ async function getLenhBasic(lenhId) {
   return rows[0] || null;
 }
 
-// ----- LẬP KẾ HOẠCH LẠI (lệnh đang Test Run (RELEASE_1) hoặc đã RELEASE_2, chưa bắt đầu sản xuất) -----
+// ----- LẬP KẾ HOẠCH LẠI (lệnh chưa bắt đầu sản xuất: Test Run (RELEASE_1) · RELEASE_2 · GIA_CONG) -----
+// ⚠⚠ **GIA_CONG PHẢI CÓ MẶT** (chốt 04/09/2026): hàng gửi đi gia công cũng cần dời ngày / đổi chuyền /
+//   sửa SL như mọi lệnh khác, mà trước đây danh sách chỉ lọc `RELEASE_1`/`RELEASE_2` nên **không có
+//   đường nào lập lại kế hoạch cho nó** — muốn sửa phải hủy lệnh rồi release lại từ đầu.
+// ⚠ Điều kiện "chưa có phiếu sản xuất" GIỮ NGUYÊN cho cả 3 trạng thái ⇒ lệnh gia công **đã nhận hàng
+//   về một phần** (mỗi lượt nhận sinh 1 phiếu + 1 tem) sẽ KHÔNG hiện ở đây — đúng, vì lúc đó đã có
+//   tem đi tiếp sang OQC, đổi chuyền/SL sẽ làm sai sổ cái. Xem `GIA_CONG_DA_CHUYEN`.
 async function listReplanCandidates({ search = '', offset = 0, limit = 50 }) {
   const dkPain = await dkTrang('KH_REPLAN', 'lenh', 'ls.id');
   const FROM = `
     FROM lenh_san_xuat ls
     LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
     ${PHAN_INFO_LATERAL}
-    WHERE ls.trang_thai IN ('RELEASE_1','RELEASE_2')
+    WHERE ls.trang_thai IN ('RELEASE_1','RELEASE_2','GIA_CONG')
       AND ${dkPain}
       AND NOT EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = ls.id)
       AND ($1 = '' OR ls.ma_lenh_san_xuat ~* $1 OR ${lenhPhanInMatch('ls.id', '$1')})`;
   const dataSql = `
     SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.ngay_ke_hoach, ls.chuyen_id, ls.trang_thai,
            ls.tg_bd_kh, ls.tg_kt_kh,
+           (${lenhStageCase('ls.id', 'ls.trang_thai')}) AS giai_doan_hien_tai,
            cs.ma_chuyen, cs.ten_chuyen,
            info.ten_khach_hang, info.ma_don_hang, info.ma_hang,
            info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan, info.tinh_chat_in,
@@ -757,16 +764,40 @@ async function listGiaCongHistory(date) {
            COALESCE(a.gia_tri_moi->>'ly_do', a.gia_tri_moi->>'ghi_chu') AS ly_do,
            a.gia_tri_moi->>'ma_tem' AS ma_tem,
            (a.gia_tri_moi->>'so_luong')::int AS so_luong_lan_nay,
+           (a.gia_tri_moi->>'so_luong_huy')::int AS so_luong_huy,
            (a.gia_tri_moi->>'con_lai')::int AS con_lai,
+           (a.gia_tri_moi->>'sl_release_phan')::int AS sl_release_phan,
+           (a.gia_tri_moi->>'da_chuyen_phan')::int AS da_chuyen_phan,
+           (a.gia_tri_moi->>'con_lai_phan')::int AS con_lai_phan,
            cs.ma_chuyen, cs.ten_chuyen,
-           info.ten_khach_hang, info.ma_don_hang, info.ma_hang,
-           info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan, info.tinh_chat_in,
-           info.so_luong_don_hang, info.han_giao_hang, info.loai_dot_vai, info.nha_gia_cong
+           COALESCE(pn.ten_khach_hang, info.ten_khach_hang) AS ten_khach_hang,
+           COALESCE(pn.ma_don_hang, info.ma_don_hang) AS ma_don_hang,
+           COALESCE(pn.ma_hang, info.ma_hang) AS ma_hang,
+           COALESCE(pn.mau_vai, info.mau_vai) AS mau_vai,
+           COALESCE(pn.kich_vai, info.kich_vai) AS kich_vai,
+           COALESCE(pn.kich_phim, info.kich_phim) AS kich_phim,
+           COALESCE(pn.ma_phan, info.ma_phan) AS ma_phan,
+           COALESCE(pn.tinh_chat_in, info.tinh_chat_in) AS tinh_chat_in,
+           COALESCE(pn.so_luong_don_hang, info.so_luong_don_hang) AS so_luong_don_hang,
+           COALESCE(pn.so_luong_vai_ve, info.so_luong_vai_ve) AS so_luong_vai_ve,
+           info.han_giao_hang, info.loai_dot_vai,
+           COALESCE(pn.nha_gia_cong, info.nha_gia_cong) AS nha_gia_cong
     FROM audit_log a
     JOIN lenh_san_xuat ls ON ls.id = a.id_ban_ghi::uuid
     LEFT JOIN nguoi_dung nd ON nd.id = a.nguoi_thuc_hien_id
     LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
     ${PHAN_INFO_LATERAL}
+    LEFT JOIN LATERAL (
+      SELECT pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
+             pin.so_luong_don_hang, dv.so_luong_vai_ve, dv.nha_gia_cong,
+             mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang
+        FROM dot_vai_ve dv
+        JOIN phan_in pin ON pin.id = dv.phan_in_id
+        LEFT JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+        LEFT JOIN don_hang dh ON dh.id = mh.don_hang_id
+        LEFT JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+       WHERE dv.id = NULLIF(a.gia_tri_moi->>'dot_vai_ve_id','')::uuid
+    ) pn ON true
     WHERE a.ten_bang = 'lenh_san_xuat'
       AND a.hanh_dong IN ('GIA_CONG_CHUYEN_OQC','OQC_TRA_VE_GIA_CONG','GIA_CONG_TRA_LAI')
       AND (a.thoi_gian AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
@@ -780,6 +811,98 @@ async function listGiaCongHistory(date) {
 const GIA_CONG_DA_CHUYEN = `(SELECT COALESCE(SUM(t.so_luong),0)::int FROM phieu_san_xuat ps
   JOIN tem t ON t.phieu_san_xuat_id = ps.id AND t.trang_thai <> 'HUY'
   WHERE ps.lenh_san_xuat_id = ls.id)`;
+
+// ─── GIA CÔNG THEO TỪNG CODE PHẦN (09/09/2026, mig 095) ───────────────────────────────────────────
+// Trả 1 dòng cho mỗi (LỆNH × PHẦN IN) kèm SL release / đã nhận / còn lại của RIÊNG phần in đó.
+//
+// ⚠⚠ NỀN CỦA CẢ TÍNH NĂNG: `tem.dot_vai_ve_id` (mig 095). Không có cột đó thì không có cách nào biết
+//   tem vừa nhận thuộc code phần nào — đó chính là giới hạn "tem không lưu phần in" của DATABASE.md §4.
+// ⚠⚠ TEM MỒ CÔI (`dot_vai_ve_id` NULL — tem gia công tạo TRƯỚC mig 095, hoặc lệnh nhiều đợt vải nên
+//   backfill cố ý không đoán) được QUY VỀ PHẦN IN ĐẠI DIỆN (`ma_phan` nhỏ nhất). Nhờ vậy
+//   **Σ đã-nhận của các phần in LUÔN bằng đã-nhận của cả lệnh** — không thủng số, không có SL biến mất
+//   khỏi màn mà chẳng ai thấy. Đừng bỏ nhánh này đi.
+// ⚠ SL release của phần in = Σ `lenh_sx_dot_vai.so_luong` các đợt vải của nó ⇒ Σ theo phần in = đúng
+//   `lenh_san_xuat.so_luong_release`.
+// ⚠ KHÔNG đặt comment `--` trong chuỗi SQL (bị gộp 1 dòng cho IPS — §9).
+// ⚠⚠ DÒ CỘT `tem.dot_vai_ve_id` (mig 095) TRƯỚC KHI DỰNG SQL — KHÔNG try/catch quanh SELECT.
+//   Chưa chạy migration ⇒ câu dưới sẽ ném 42703 và làm HỎNG CẢ MÀN *Gia công*. Thiếu cột thì coi
+//   MỌI tem là mồ côi ⇒ dồn hết về phần in đại diện ⇒ màn chạy y như trước (nhận ở mức lệnh).
+let coCotTemDotVai = null;
+async function temCoCotDotVai() {
+  if (coCotTemDotVai) return true; // cache khi ĐÃ có ⇒ chạy migration xong nhận ngay, khỏi restart BE
+  const { rows } = await query(
+    `SELECT count(*)::int AS n FROM information_schema.columns
+      WHERE table_schema='public' AND table_name='tem' AND column_name='dot_vai_ve_id'`.replace(/\s+/g, ' ')
+  );
+  coCotTemDotVai = rows[0].n === 1;
+  return coCotTemDotVai;
+}
+
+async function giaCongPhanInRows(lenhIds) {
+  if (!lenhIds || !lenhIds.length) return [];
+  const coCot = await temCoCotDotVai();
+  // Thiếu cột ⇒ KHÔNG có tem nào quy được về phần in ⇒ `da_pin` rỗng, tất cả rơi vào `mo_coi`.
+  const DA_PIN = coCot
+    ? `SELECT ps.lenh_san_xuat_id AS lenh_id, dv.phan_in_id, COALESCE(SUM(t.so_luong),0)::int AS sl,
+              COALESCE(SUM(t.sl_kcs_huy),0)::int AS sl_huy
+         FROM phieu_san_xuat ps
+         JOIN tem t ON t.phieu_san_xuat_id = ps.id AND t.trang_thai <> 'HUY' AND t.dot_vai_ve_id IS NOT NULL
+         JOIN dot_vai_ve dv ON dv.id = t.dot_vai_ve_id
+        WHERE ps.lenh_san_xuat_id = ANY($1::uuid[])
+        GROUP BY ps.lenh_san_xuat_id, dv.phan_in_id`
+    : 'SELECT NULL::uuid AS lenh_id, NULL::uuid AS phan_in_id, 0::int AS sl, 0::int AS sl_huy WHERE false';
+  const DK_MO_COI = coCot ? 'AND t.dot_vai_ve_id IS NULL' : '';
+  const sql = `
+    WITH pin AS (
+      SELECT lsd.lenh_san_xuat_id AS lenh_id, dv.phan_in_id, pin.ma_phan,
+             (array_agg(dv.id ORDER BY dv.created_date, dv.id))[1] AS dot_vai_ve_id,
+             COALESCE(SUM(lsd.so_luong), 0)::int AS sl_release_phan,
+             kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang,
+             pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in, pin.so_luong_don_hang,
+             COALESCE(SUM(dv.so_luong_vai_ve), 0)::int AS so_luong_vai_ve,
+             min(dv.han_giao_hang) AS han_giao_hang,
+             (array_agg(ldv.ten_loai))[1] AS loai_dot_vai,
+             (array_agg(dv.nha_gia_cong) FILTER (WHERE dv.nha_gia_cong IS NOT NULL))[1] AS nha_gia_cong
+        FROM lenh_sx_dot_vai lsd
+        JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+        JOIN phan_in pin ON pin.id = dv.phan_in_id
+        LEFT JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+        LEFT JOIN don_hang dh ON dh.id = mh.don_hang_id
+        LEFT JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+        LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id
+       WHERE lsd.lenh_san_xuat_id = ANY($1::uuid[])
+       GROUP BY lsd.lenh_san_xuat_id, dv.phan_in_id, pin.ma_phan, kh.ten_khach_hang, dh.ma_don_hang,
+                mh.ma_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in, pin.so_luong_don_hang
+    ), dai_dien AS (
+      SELECT lenh_id, (array_agg(phan_in_id ORDER BY ma_phan))[1] AS phan_in_id FROM pin GROUP BY lenh_id
+    ), da_pin AS (
+      ${DA_PIN}
+    ), mo_coi AS (
+      SELECT ps.lenh_san_xuat_id AS lenh_id, COALESCE(SUM(t.so_luong),0)::int AS sl,
+             COALESCE(SUM(t.sl_kcs_huy),0)::int AS sl_huy
+        FROM phieu_san_xuat ps
+        JOIN tem t ON t.phieu_san_xuat_id = ps.id AND t.trang_thai <> 'HUY' ${DK_MO_COI}
+       WHERE ps.lenh_san_xuat_id = ANY($1::uuid[])
+       GROUP BY ps.lenh_san_xuat_id
+    )
+    SELECT p.*,
+           (COALESCE(dp.sl, 0)
+          + CASE WHEN p.phan_in_id = dd.phan_in_id THEN COALESCE(mc.sl, 0) ELSE 0 END)::int AS da_chuyen_phan,
+           (COALESCE(dp.sl_huy, 0)
+          + CASE WHEN p.phan_in_id = dd.phan_in_id THEN COALESCE(mc.sl_huy, 0) ELSE 0 END)::int AS da_huy_phan
+      FROM pin p
+      JOIN dai_dien dd ON dd.lenh_id = p.lenh_id
+      LEFT JOIN da_pin dp ON dp.lenh_id = p.lenh_id AND dp.phan_in_id = p.phan_in_id
+      LEFT JOIN mo_coi mc ON mc.lenh_id = p.lenh_id
+     ORDER BY p.lenh_id, p.ma_phan`;
+  const { rows } = await query(sql.replace(/\s+/g, ' '), [lenhIds]);
+  return rows.map((r) => ({
+    ...r,
+    da_chuyen_phan: Number(r.da_chuyen_phan) || 0,
+    da_huy_phan: Number(r.da_huy_phan) || 0,
+    con_lai_phan: Math.max(0, (Number(r.sl_release_phan) || 0) - (Number(r.da_chuyen_phan) || 0)),
+  }));
+}
 
 // Lệnh gia công (để chuyển OQC): SL + đợt vải junction + SL đã chuyển/còn lại.
 async function getGiaCongLenh(lenhId) {
@@ -1321,6 +1444,18 @@ async function cancelTestResults(client, lenhId, actorId) {
   );
 }
 
+// Lệnh đã có kết quả Test Run nào chưa (TEST_CNSP hoặc TEST_QA còn DAT)?
+// Dùng ở `rollbackLenh` đích TEST_RUN: có kết quả thì phải gỡ, không thì mới là NOOP thật.
+async function coKetQuaTest(lenhId) {
+  const { rows } = await query(
+    `SELECT EXISTS (SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id = k.checkpoint_id
+       WHERE k.lenh_san_xuat_id = $1 AND k.trang_thai = 'DAT'
+         AND c.ma_checkpoint IN ('TEST_CNSP','TEST_QA')) AS e`.replace(/\s+/g, ' '),
+    [lenhId]
+  );
+  return !!rows[0].e;
+}
+
 async function phanInIdsByLenh(lenhId) {
   const { rows } = await query(
     `SELECT DISTINCT dv.phan_in_id FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
@@ -1433,6 +1568,17 @@ async function updateLenhPlan(client, lenhId, { chuyenId, ngayKeHoach, tgBdKh, t
     `UPDATE lenh_san_xuat SET chuyen_id = $2, ngay_ke_hoach = $3, tg_bd_kh = $4, tg_kt_kh = $5,
        updated_by = $6, updated_date = CURRENT_TIMESTAMP WHERE id = $1`,
     [lenhId, chuyenId, ngayKeHoach || null, tgBdKh || null, tgKtKh || null, actorId]
+  );
+}
+
+// Đổi CHẶNG của lệnh trong cùng transaction với `updateLenhPlan` — dùng khi đổi chuyền ở màn *Lập kế
+// hoạch lại* làm lệnh phải chuyển giữa dòng chảy in trong xưởng (`RELEASE_1`/`RELEASE_2`) và gia công
+// ngoài (`GIA_CONG`). Xem `planning.service.chuyenChangTheoChuyen` để biết luật chọn chặng.
+// ⚠ KHÔNG dùng cho hủy lệnh (đó là `cancelLenhOrder`, còn phải dọn phiếu/tem/gom set).
+async function setLenhTrangThaiTx(client, lenhId, trangThai, actorId) {
+  await client.query(
+    `UPDATE lenh_san_xuat SET trang_thai = $2, updated_by = $3, updated_date = CURRENT_TIMESTAMP WHERE id = $1`,
+    [lenhId, trangThai, actorId]
   );
 }
 
@@ -1819,16 +1965,16 @@ module.exports = {
   listTestRunCandidates, listRelease2Candidates, getLenhBasic, getLenhDotVai, dotVaiIdsByLenh, getTestRuns,
   getLenhTestStatus, insertTestRun, insertTestRunTx, upsertLenhResult, insertStatusLog, setLenhTrangThai,
   testRunHistoryByDate, testRunsByLenh,
-  listReplanCandidates, getLenhForReplan, getReplanDotVai, updateReleaseTx, updateLenhPlan, logPlanChange, planHistoryByDate,
+  listReplanCandidates, getLenhForReplan, getReplanDotVai, updateReleaseTx, updateLenhPlan, setLenhTrangThaiTx, logPlanChange, planHistoryByDate,
   phanInRowsByLenh,
-  listGiaCongLenh, getGiaCongLenh, listGiaCongHistory,
+  listGiaCongLenh, getGiaCongLenh, listGiaCongHistory, giaCongPhanInRows,
   listGiaCongTemCancelable, getGiaCongTem, cancelGiaCongTemTx, logGiaCongTraLai,
   upsertKeHoachTam, listKeHoachTamRows, keHoachTamTheoDoi, getKeHoachTam, getOpenSetOfDotVai, updateKeHoachTam, deleteKeHoachTam, deleteKeHoachTamByDotVai,
   lenhMoiNhatCuaDotVai,
   logKeHoachTam, keHoachTamHistoryByDate, keHoachTamDoneByDate,
   listCancelableLenh, getLenhForCancel, cancelLenhOrder, cancelReadyQcForDotVai, logLenhCancel,
   cancelPhieuTemByLenhTx,
-  cancelReadyItemsByPhanIn, cancelTestResults, phanInIdsByLenh, lenhChoKyThuat,
+  cancelReadyItemsByPhanIn, cancelTestResults, coKetQuaTest, phanInIdsByLenh, lenhChoKyThuat,
   listReleasableSets, getOpenSetMembers, getSetForRelease, getSetMembersForRelease, markSetReleased, logGomSetReleased,
   dongSetDaReleaseHet,
 };

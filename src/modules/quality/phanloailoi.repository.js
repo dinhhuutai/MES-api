@@ -14,6 +14,8 @@ const { query } = require('../../config/db');
 const { mauTim } = require('../../utils/timKiem');
 const { timTem } = require('../../utils/temPrefix');
 const { dkTrang } = require('../../utils/phuongAnIn');
+// Dùng CHUNG biểu thức `con_kcs` với quality.repository (kẹp về 0 cho TEM CON — mig 091).
+const { conKcsSql } = require('./quality.repository');
 
 // Thông tin phần in / đơn hàng của 1 tem — cùng khuôn `TEM_INFO_LATERAL` của quality.repository.
 const INFO = `
@@ -36,7 +38,7 @@ const CHI_SO = `
   t.so_luong, t.sl_chenh_lech, t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy,
   t.sl_sua_dat, t.sl_sua_huy, t.sl_oqc_dat, t.sl_da_giao,
   (t.sl_kcs_sua + t.sl_kcs_huy) AS sl_hu,
-  (t.so_luong + COALESCE(t.sl_chenh_lech,0) - (t.sl_kcs_dat + t.sl_kcs_sua + t.sl_kcs_huy)) AS con_kcs`;
+  ${conKcsSql()} AS con_kcs`;
 
 // ─── Danh sách tem ĐÃ PHÂN LOẠI theo ngày (bảng chính của trang) ─────────────
 async function listTheoNgay({ ngay = '', search = '', page = 1, limit = 20 } = {}) {
@@ -88,20 +90,31 @@ async function listTheoNgay({ ngay = '', search = '', page = 1, limit = 20 } = {
 }
 
 // ─── Tra 1 TEM để mở SidePanel phân loại (quét mã vạch / gõ tay) ─────────────
-// `baseMaTem` đã quy mọi tiền tố công đoạn về mã gốc trước khi gọi vào đây.
-async function timTemDePhanLoai(maTem) {
+// ⚠⚠ NHẬN **DANH SÁCH ỨNG VIÊN** (`maTemUngVien`), không nhận 1 mã: từ 06/09/2026 tem 17/13 có mã
+//   RIÊNG của ERP nên `baseMaTem` một mình không còn đủ — phải thử ĐÚNG NGUYÊN VĂN trước.
+//   `array_position` giữ đúng thứ tự ưu tiên đó (ANY(...) thì mất thứ tự).
+// ⚠ Quét nhãn 17 (tem con) ở màn này thì mở TEM GỐC (`COALESCE(tem_goc_id, id)`): số lượng HƯ để
+//   phân loại nằm ở tem gốc, tem con chỉ mang phần đã sửa đạt.
+async function timTemDePhanLoai(dsMa) {
+  const ds = Array.isArray(dsMa) ? dsMa : [dsMa];
   const sql = `
+    WITH uv AS (
+      SELECT COALESCE(t0.tem_goc_id, t0.id) AS id
+        FROM tem t0 WHERE t0.ma_tem = ANY($1::text[])
+       ORDER BY array_position($1::text[], t0.ma_tem) LIMIT 1
+    )
     SELECT t.id AS tem_id, t.ma_tem, t.trang_thai, t.created_date AS tg_in, ${CHI_SO},
            ls.ma_lenh_san_xuat, cs.ten_chuyen, ps.id AS phieu_id,
            info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan,
            info.mau_vai, info.kich_vai, info.kich_phim, info.tinh_chat_in, info.han_giao_hang
-    FROM tem t
+    FROM uv
+    JOIN tem t ON t.id = uv.id
     JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
     JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
     LEFT JOIN chuyen_san_xuat cs ON cs.id = ps.chuyen_id
     ${INFO}
-    WHERE t.ma_tem = $1 LIMIT 1`;
-  const { rows } = await query(sql.replace(/\s+/g, ' '), [maTem]);
+    LIMIT 1`;
+  const { rows } = await query(sql.replace(/\s+/g, ' '), [ds]);
   return rows[0] || null;
 }
 
@@ -207,8 +220,44 @@ const existsMaBienPhap = async (ma) => (
   await query('SELECT 1 FROM bien_phap_xu_ly WHERE ma_bien_phap = $1', [ma])
 ).rows.length > 0;
 
+// Dữ liệu MÔ TẢ để dựng payload gửi ERP (`ERP_GUI_PHAN_LOAI_LOI`, 04/09/2026).
+// Bảng chi tiết chỉ lưu `loai_loi_id`/`bien_phap_id`, mà ERP cần MÃ + TÊN ⇒ tra thêm ở đây.
+// ⚠ Đọc theo `rows` VỪA LƯU (truyền vào) chứ không đọc lại bảng: gọi ngay sau transaction nên chắc
+//   chắn khớp, và khỏi phụ thuộc thứ tự commit.
+// ⚠ Trả `null` khi không thấy tem — bên gọi bỏ qua lần gửi, KHÔNG ném lỗi.
+async function chiTietGuiErp(temId, rows = []) {
+  const { rows: t } = await query(
+    `SELECT ma_tem, to_char((now() AT TIME ZONE 'Asia/Ho_Chi_Minh'), 'YYYY/MM/DD HH24:MI:SS') AS ngay_phan_loai
+       FROM tem WHERE id = $1`, [temId]
+  );
+  if (!t.length) return null;
+  const loaiIds = [...new Set(rows.map((r) => r.loaiLoiId).filter(Boolean))];
+  const bpIds = [...new Set(rows.map((r) => r.bienPhapId).filter(Boolean))];
+  const { rows: ll } = loaiIds.length
+    ? await query('SELECT id, ma_loi, ten_loi FROM loai_loi WHERE id = ANY($1::uuid[])', [loaiIds])
+    : { rows: [] };
+  const { rows: bp } = bpIds.length
+    ? await query('SELECT id, ma_bien_phap, ten_bien_phap FROM bien_phap_xu_ly WHERE id = ANY($1::uuid[])', [bpIds])
+    : { rows: [] };
+  const mLl = new Map(ll.map((x) => [x.id, x]));
+  const mBp = new Map(bp.map((x) => [x.id, x]));
+  return {
+    ma_tem: t[0].ma_tem,
+    ngay_phan_loai: t[0].ngay_phan_loai,
+    dong: rows.map((r) => ({
+      ma_loi: mLl.get(r.loaiLoiId)?.ma_loi || null,
+      ten_loi: mLl.get(r.loaiLoiId)?.ten_loi || null,
+      ma_bien_phap: mBp.get(r.bienPhapId)?.ma_bien_phap || null,
+      ten_bien_phap: mBp.get(r.bienPhapId)?.ten_bien_phap || null,
+      so_luong_sua: r.soLuongSua || 0,
+      so_luong_huy: r.soLuongHuy || 0,
+      ghi_chu: r.ghiChu || null,
+    })),
+  };
+}
+
 module.exports = {
   listTheoNgay, timTemDePhanLoai, getPhieuTheoTem,
-  upsertPhieuTx, replaceChiTietTx, datChiaSuaHuyTx,
+  upsertPhieuTx, replaceChiTietTx, datChiaSuaHuyTx, chiTietGuiErp,
   listBienPhap, createBienPhap, updateBienPhap, setBienPhapActive, existsMaBienPhap,
 };

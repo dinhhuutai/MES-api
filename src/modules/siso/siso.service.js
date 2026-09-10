@@ -43,7 +43,11 @@ const layLocTrang = (q = {}) => LOC_TRANG_KEYS.reduce((a, k) => {
 }, {});
 
 // Danh sách đơn vị đếm của 1 màn — FE dựng nút chuyển đổi từ đây (màn 1 đơn vị thì tự ẩn nút).
-const dsDonVi = (m) => Object.entries(m.donVis).map(([ma, d]) => ({ ma, nhan: d.nhan }));
+// ⚠ `la_so_luong` = đơn vị này CỘNG số lượng (pcs) thay vì đếm đối tượng ⇒ FE hiện đơn vị đo
+//   sau con số và KHÔNG dùng nó cho câu "N đợt vải".
+const dsDonVi = (m) => Object.entries(m.donVis).map(([ma, d]) => ({
+  ma, nhan: d.nhan, la_so_luong: !!d.do, don_vi_so: d.donViSo || null,
+}));
 
 // Danh mục cho FE dựng UI (tên màn, đơn vị, nhãn 4 ô, danh sách loại ngày phụ).
 function danhMuc() {
@@ -75,6 +79,7 @@ async function siSo(maTrang, q) {
   return {
     ...so, can, tu, den: denHienThi, ten_man: m.ten,
     don_vi: dv.ma, don_vi_nhan: dv.nhan, don_vis: dsDonVi(m), don_vi_mac_dinh: m.macDinh,
+    la_so_luong: !!dv.do, don_vi_so: dv.donViSo || null,
   };
 }
 
@@ -90,8 +95,27 @@ async function chiTiet(maTrang, o, q) {
   });
   return {
     items, meta: { total, page: Number(q.page) || 1, limit }, o, ten_o: O_SI_SO[o].ten,
-    don_vi: dv.ma, don_vi_nhan: dv.nhan,
+    don_vi: dv.ma, don_vi_nhan: dv.nhan, la_so_luong: !!dv.do, don_vi_so: dv.donViSo || null,
   };
 }
 
-module.exports = { siSo, chiTiet, danhMuc };
+// Tóm tắt 1 ô theo NGÀY GIAO — nguồn cho popover khi hover ô "Tồn cuối" (Release 1 / Release 2).
+async function tomTatNgayGiao(maTrang, o, q) {
+  if (!MAN[maTrang]) throw new AppError('Màn hình không có sĩ số', { status: 404, errorCode: 'MAN_LA' });
+  if (!O_SI_SO[o]) throw new AppError('Ô sĩ số không hợp lệ', { status: 422, errorCode: 'O_LA' });
+  const { tu, den } = chuanHoaKy(q);
+  const dv = repo.chonDonVi(MAN[maTrang], q.donVi);
+  const rows = await repo.tomTatTheoNgayGiao(maTrang, o, {
+    tu, den, loc: layLoc(q), locTrang: layLocTrang(q), donVi: dv.ma,
+  });
+  return {
+    items: rows, o, ten_o: O_SI_SO[o].ten,
+    don_vi: dv.ma, don_vi_nhan: dv.nhan, la_so_luong: !!dv.do, don_vi_so: dv.donViSo || null,
+    // Tổng để FE tự đối chiếu với con số trên ô — lệch là biết ngay có gì sai.
+    tong: rows.reduce((a, r) => ({
+      so_doi_tuong: a.so_doi_tuong + r.so_doi_tuong, sl_vai: a.sl_vai + r.sl_vai, sl_dh: a.sl_dh + r.sl_dh,
+    }), { so_doi_tuong: 0, sl_vai: 0, sl_dh: 0 }),
+  };
+}
+
+module.exports = { siSo, chiTiet, danhMuc, tomTatNgayGiao };

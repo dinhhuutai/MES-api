@@ -9,13 +9,30 @@ const { mauTim } = require('../../utils/timKiem');
 
 // SỔ CÁI SỐ LƯỢNG tem (migration 043): SL còn lại từng công đoạn (dùng cho lọc + hiển thị).
 // con_kcs tính theo TỔNG CẦN KIỂM = so_luong + sl_chenh_lech (dư/thiếu — mig 044).
-const CON_KCS = '((t.so_luong + t.sl_chenh_lech) - (t.sl_kcs_dat + t.sl_kcs_sua + t.sl_kcs_huy))';
+//
+// ⚠⚠⚠ TEM CON (nhãn 17 — hàng sửa đạt, mig 091, `tem_goc_id IS NOT NULL`) CÓ `so_luong = 0` vì nó
+//   KHÔNG in thêm mét vải nào (chốt với người dùng 05/09/2026) — số lượng nằm ở `sl_kcs_dat`. Nhờ vậy
+//   22 câu `SUM(tem.so_luong)` ("SL đã in", rải khắp 9 module) tự động đúng, không phải sửa chỗ nào.
+//   Đổi lại `con_kcs` của nó ra ÂM ⇒ **phải kẹp về 0** bằng `conKcsSql()`. An toàn: `con_kcs` không
+//   bị cộng tổng ở bất kỳ đâu, chỉ dùng làm điều kiện `> 0` và hiển thị (đã rà 05/09/2026).
+// ⚠ Tem con vốn đã không lọt màn KCS (`listKcsCand` còn đòi `trang_thai='DA_KHO'`), nhưng để số âm
+//   hiện lên bảng/báo cáo là mời gọi hiểu nhầm — kẹp ở NGUỒN, đừng vá từng màn.
+const conKcsSql = (a = 't.') =>
+  `(CASE WHEN ${a}tem_goc_id IS NOT NULL THEN 0 ELSE (${a}so_luong + ${a}sl_chenh_lech) - (${a}sl_kcs_dat + ${a}sl_kcs_sua + ${a}sl_kcs_huy) END)`;
+const CON_KCS = conKcsSql();
 const CON_SUA = '(t.sl_kcs_sua - (t.sl_sua_dat + t.sl_sua_huy))';
-const CON_OQC = '((t.sl_kcs_dat + t.sl_sua_dat) - t.sl_oqc_dat)';
+// ⚠⚠ TRỪ `sl_sua_tach` (mig 091) — BẮT BUỘC, giữ bất biến `con_oqc = con_oqc_kcs + con_oqc_sua`.
+//   Thiếu là tem GỐC vẫn lọt `listOqcCand` (lọc `CON_OQC > 0`) trong khi CẢ HAI nguồn đã về 0 ⇒ hàng
+//   ma trên màn OQC, bấm vào không có gì để xác nhận. Cùng lý do phải trừ ở nhánh `CHO_OQC` của
+//   `recomputeTemStageMany` (bên dưới) — không thì tem gốc kẹt trạng thái `CHO_OQC` vĩnh viễn.
+const CON_OQC = '((t.sl_kcs_dat + t.sl_sua_dat) - t.sl_oqc_dat - t.sl_sua_tach)';
 const CON_GIAO = '(t.sl_oqc_dat - t.sl_da_giao)';
 // Tách theo NGUỒN ở OQC (mig 047): phần chờ OQC từ KCS-đạt (tem 15-) vs Sửa-đạt (tem 17-).
 const CON_OQC_KCS = '(t.sl_kcs_dat - (t.sl_oqc_dat - t.sl_oqc_dat_sua))';
-const CON_OQC_SUA = '(t.sl_sua_dat - t.sl_oqc_dat_sua)';
+// ⚠⚠ TRỪ `sl_sua_tach` (mig 091): phần sửa-đạt đã TÁCH ra thành tem con thì tem GỐC không được hiện
+//   lại ở OQC nữa, nếu không **số lượng bị đếm 2 lần** (một ở tem gốc, một ở tem con).
+//   Dữ liệu trước mig 091 có `sl_sua_tach = 0` ⇒ công thức trả về ĐÚNG NHƯ CŨ, không nắn gì.
+const CON_OQC_SUA = '(t.sl_sua_dat - t.sl_oqc_dat_sua - t.sl_sua_tach)';
 
 // Đánh dấu bản ghi KCS/Sửa/OQC đã bị HỦY XÁC NHẬN trong audit_log (không xóa cứng).
 // `table` là literal nội bộ ('kcs'|'sua'|'oqc'), không nhận từ user → nội suy an toàn.
@@ -26,6 +43,7 @@ const notCancelledQc = (alias, table) => `NOT ${cancelledQc(alias, table)}`;
 const TEM_CTX = `
   SELECT t.id AS tem_id, t.ma_tem, t.so_luong, t.trang_thai, t.da_qua_phoi, t.sl_chenh_lech, t.created_date AS ngay_in_tem,
          t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy, t.sl_sua_dat, t.sl_sua_huy, t.sl_oqc_dat, t.sl_da_giao,
+         (t.tem_goc_id IS NOT NULL) AS la_tem_sua,
          ${CON_KCS} AS con_kcs, ${CON_SUA} AS con_sua, ${CON_OQC} AS con_oqc, ${CON_GIAO} AS con_giao,
          ${CON_OQC_KCS} AS con_oqc_kcs, ${CON_OQC_SUA} AS con_oqc_sua,
          ls.ma_lenh_san_xuat, cs.ma_chuyen, cs.ten_chuyen,
@@ -167,12 +185,12 @@ async function getTemLedger(temId) {
   const { rows } = await query(
     `SELECT id, ma_tem, so_luong, trang_thai, da_qua_phoi, phieu_san_xuat_id, sl_chenh_lech,
             sl_kcs_dat, sl_kcs_sua, sl_kcs_huy, sl_sua_dat, sl_sua_huy, sl_oqc_dat, sl_da_giao,
-            sl_oqc_dat_sua,
-            ((so_luong + sl_chenh_lech) - (sl_kcs_dat+sl_kcs_sua+sl_kcs_huy)) AS con_kcs,
+            sl_oqc_dat_sua, tem_goc_id, sl_sua_tach,
+            ${conKcsSql('')} AS con_kcs,
             (sl_kcs_sua - (sl_sua_dat+sl_sua_huy)) AS con_sua,
-            ((sl_kcs_dat+sl_sua_dat) - sl_oqc_dat) AS con_oqc,
+            ((sl_kcs_dat+sl_sua_dat) - sl_oqc_dat - sl_sua_tach) AS con_oqc,
             (sl_kcs_dat - (sl_oqc_dat - sl_oqc_dat_sua)) AS con_oqc_kcs,
-            (sl_sua_dat - sl_oqc_dat_sua) AS con_oqc_sua,
+            (sl_sua_dat - sl_oqc_dat_sua - sl_sua_tach) AS con_oqc_sua,
             (sl_oqc_dat - sl_da_giao) AS con_giao
      FROM tem WHERE id = $1`,
     [temId]
@@ -195,6 +213,69 @@ async function addSuaLedger(client, temId, { dat = 0, huy = 0 }, actorId) {
     [temId, dat, huy, actorId]
   );
 }
+// ─── TEM CON (nhãn 17 — hàng sửa đạt), mig 091 ────────────────────────────────────────────────
+// Phần sửa ĐẠT được TÁCH ra thành một dòng tem riêng để OQC/Giao thao tác như tem thường, thay vì
+// nằm ẩn trong `con_oqc_sua` của tem gốc.
+//
+// ⚠⚠⚠ TEM CON CÓ `so_luong = 0` — số lượng nằm ở `sl_kcs_dat`. Nó KHÔNG in thêm mét vải nào (chỉ là
+//   phần hàng CŨ được dán nhãn lại) ⇒ **22 câu `SUM(tem.so_luong)`** ("SL đã in", rải khắp 9 module:
+//   guard 110% SL release · `getRun` · `monitorRunning` · dashboard · báo cáo) **tự động đúng, không
+//   phải sửa chỗ nào**. Đặt `so_luong = SL` là phải đi chặn `tem_goc_id IS NULL` ở cả 22 chỗ đó và
+//   để lại bẫy vĩnh viễn cho mọi câu SUM viết sau này. (Người dùng chốt 05/09/2026.)
+// ⚠ Tiền lệ: `createTemGiaCongOqc` cũng seed `sl_kcs_dat` để `con_oqc > 0` — cùng một khuôn.
+
+// MỖI TEM GỐC CHỈ CÓ ĐÚNG 1 TEM CON. Sửa từng phần nhiều lần thì CỘNG DỒN vào tem con đã có —
+// tạo mỗi lượt 1 tem sẽ trùng `ma_tem` (cột có UNIQUE index).
+async function getTemConCuaGoc(temGocId, client) {
+  const run = client ? client.query.bind(client) : query;
+  const { rows } = await run(
+    'SELECT id, ma_tem, trang_thai, sl_kcs_dat, sl_oqc_dat, sl_da_giao FROM tem WHERE tem_goc_id = $1 LIMIT 1',
+    [temGocId]
+  );
+  return rows[0] || null;
+}
+
+async function taoTemCon(client, { temGocId, phieuId, maTem, soLuong }, actorId) {
+  const { rows } = await client.query(
+    `INSERT INTO tem (phieu_san_xuat_id, ma_tem, so_luong, trang_thai, sl_kcs_dat, tem_goc_id, created_by)
+     VALUES ($1,$2,0,'CHO_OQC',$3,$4,$5) RETURNING id`,
+    [phieuId, maTem, soLuong, temGocId, actorId]
+  );
+  return rows[0].id;
+}
+
+// Cộng/trừ số lượng của tem con. ⚠ Cộng vào tem đang `HUY` (bị hủy hết ở lần trước) thì phải BẬT LẠI
+// `CHO_OQC` — nếu không, lần sửa mới sẽ ghi số vào một tem mà mọi danh sách đều lọc bỏ (`trang_thai
+// <> 'HUY'`) ⇒ hàng biến mất khỏi OQC mà không báo gì.
+async function congSlTemCon(client, temConId, delta, actorId) {
+  await client.query(
+    `UPDATE tem SET sl_kcs_dat = sl_kcs_dat + $2,
+       trang_thai = CASE WHEN $2 > 0 AND trang_thai = 'HUY' THEN 'CHO_OQC' ELSE trang_thai END,
+       updated_by=$3, updated_date=CURRENT_TIMESTAMP WHERE id=$1`,
+    [temConId, delta, actorId]
+  );
+}
+
+// Tem GỐC: phần `sl_sua_dat` đã tách sang tem con ⇒ `con_oqc_sua` về 0, không bị đếm 2 lần.
+async function congSuaTach(client, temId, delta, actorId) {
+  await client.query(
+    `UPDATE tem SET sl_sua_tach = sl_sua_tach + $2, updated_by=$3, updated_date=CURRENT_TIMESTAMP WHERE id=$1`,
+    [temId, delta, actorId]
+  );
+}
+
+// Tem con hết số lượng ⇒ HỦY hẳn (không xóa cứng — `claude_agent_mes` không có DELETE trên `tem`,
+// và giữ dòng thì còn tra được lịch sử). Chỉ hủy khi thật sự sạch sổ cái.
+async function huyTemConNeuRong(client, temConId, actorId) {
+  const { rows } = await client.query(
+    `UPDATE tem SET trang_thai='HUY', updated_by=$2, updated_date=CURRENT_TIMESTAMP
+      WHERE id=$1 AND sl_kcs_dat <= 0 AND sl_oqc_dat = 0 AND sl_da_giao = 0 AND trang_thai <> 'HUY'
+      RETURNING id`,
+    [temConId, actorId]
+  );
+  return rows.length > 0;
+}
+
 // Cộng dồn OQC-đạt (→ chờ giao). `nguonSua` true ⇒ phần nguồn SỬA (cộng cả sub-counter sl_oqc_dat_sua).
 async function addOqcLedger(client, temId, dat, actorId, nguonSua = false) {
   await client.query(
@@ -232,11 +313,14 @@ const recomputeTemStage = (client, temId, actorId) => recomputeTemStageMany(clie
 async function recomputeTemStageMany(client, temIds, actorId) {
   if (!temIds || temIds.length === 0) return;
   await client.query(
+    // ⚠ Nhánh 'DA_KHO' dùng `conKcsSql('')` để TEM CON (mig 091, so_luong=0 ⇒ con_kcs âm) không rơi
+    //   nhầm. Thực tế nhánh âm cũng cho ra false nên kết quả không đổi, nhưng để nguyên biểu thức thô
+    //   thì mỗi nơi tính con_kcs một kiểu — sớm muộn có chỗ đọc ra số âm rồi xử lý sai.
     `UPDATE tem SET trang_thai = CASE
         WHEN trang_thai IN ('IN','DANG_PHOI','HUY') THEN trang_thai
-        WHEN ((so_luong+sl_chenh_lech)-(sl_kcs_dat+sl_kcs_sua+sl_kcs_huy)) > 0 THEN 'DA_KHO'
+        WHEN ${conKcsSql('')} > 0 THEN 'DA_KHO'
         WHEN (sl_kcs_sua-(sl_sua_dat+sl_sua_huy)) > 0 THEN 'CHO_SUA'
-        WHEN ((sl_kcs_dat+sl_sua_dat)-sl_oqc_dat) > 0 THEN 'CHO_OQC'
+        WHEN ((sl_kcs_dat+sl_sua_dat)-sl_oqc_dat-sl_sua_tach) > 0 THEN 'CHO_OQC'
         WHEN (sl_oqc_dat-sl_da_giao) > 0 THEN 'OQC_DAT'
         WHEN sl_da_giao > 0 THEN 'DA_GIAO'
         ELSE 'LOAI' END,
@@ -611,10 +695,16 @@ async function temDoneByDate(table, date) {
   const qtyCol = table === 'sua' ? 'so_luong_sua_dat' : 'so_luong_dat';
   const kiemCol = table === 'sua' ? 'so_luong_sua' : 'so_luong_kiem'; // SL đã kiểm (cho in tem KCS)
   // OQC: thêm nguồn (KCS/Sửa) + SL chuyền qua giao từ nguồn đó (sl_qua_giao). Sửa: thêm SL sửa hủy.
-  const oqcCols = table === 'oqc' ? ', x.nguon, x.sl_qua_giao' : '';
+  // ⚠ `la_tem_sua` (mig 091): tem CON mang số lượng ở `sl_kcs_dat` nên `oqc.nguon` của nó là 'KCS';
+  //   chỉ cột này mới phân biệt được để hiện đúng nhãn 17 (đừng suy từ chuỗi `ma_tem`).
+  const oqcCols = table === 'oqc' ? ', x.nguon, x.sl_qua_giao, (t.tem_goc_id IS NOT NULL) AS la_tem_sua' : '';
   // Sửa: + SL sửa hủy, + `sua_id` (khóa để ghi người sửa) và NGƯỜI SỬA (mig 080 — thiếu cột thì trả NULL).
+  // ⚠⚠ `ma_tem_17` = mã THẬT của tem con (nhãn sửa đạt). Từ 06/09/2026 mã này do ERP cấp riêng
+  //   (`/barcode-tem-17`) nên **KHÔNG suy được** bằng `temCode(ma_goc, 17)` ở FE nữa — trang Sửa
+  //   phải hiện/in đúng cột này. Dữ liệu CŨ chưa có tem con ⇒ NULL ⇒ FE lùi về cách suy như trước.
   const suaCols = table === 'sua'
     ? `, x.so_luong_sua_huy, x.id AS sua_id, ${await coCotNguoiSua() ? 'x.nguoi_sua, x.nguoi_sua_id' : 'NULL::text AS nguoi_sua, NULL::uuid AS nguoi_sua_id'}`
+      + ', (SELECT tc.ma_tem FROM tem tc WHERE tc.tem_goc_id = t.id LIMIT 1) AS ma_tem_17'
     : '';
   const sql = `
     SELECT x.created_date AS tg, nd.ho_ten AS nguoi, t.ma_tem AS ma, t.id AS tem_id,
@@ -905,7 +995,7 @@ async function getTemSuaRows(temIds, client) {
   const { rows } = await run(
     `SELECT t.id AS tem_id, t.ma_tem, t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy, t.sl_sua_dat, t.sl_sua_huy,
             (t.sl_kcs_sua - (t.sl_sua_dat + t.sl_sua_huy)) AS con_sua,
-            ((t.so_luong + t.sl_chenh_lech) - (t.sl_kcs_dat + t.sl_kcs_sua + t.sl_kcs_huy)) AS con_kcs
+            ${conKcsSql()} AS con_kcs
      FROM tem t WHERE t.id = ANY($1::uuid[])`.replace(/\s+/g, ' '),
     [temIds]
   );
@@ -978,12 +1068,16 @@ async function logGopTem(client, targetTemId, maTem, nguon, actorId) {
 }
 
 module.exports = {
+  // ⚠ Export để `phanloailoi.repository` dùng CHUNG một luật con_kcs (kẹp 0 cho tem con mig 091) —
+  //   viết lại biểu thức ở file khác là sớm muộn 2 màn ra 2 con số.
+  conKcsSql,
   insertQcTraVe, activeReturnsMap, resolveReturns, resolveReturnsMany, listQcTraVe,
   listTemSua, listTemSuaDaHuy, getTemSuaRow, getTemSuaRows, applyTemSuaLedgerMany, logTemSuaMany,
   getTemsForMerge, addTemSoLuong, logGopTem,
   listCancelKcs, listCancelSua, listCancelOqc, getCancelKcsRow, getCancelSuaRow, getCancelOqcRow, logCancelQc,
   listKcsCand, listSuaCand, listOqcCand, caPartsForTems, prevConfirmerByTems, getTemBasic, setTemTrangThai, setTemStatusQty,
   getTemLedger, addKcsLedger, addSuaLedger, addOqcLedger, addGiaoLedger, reduceKcsDat, reduceSuaDat,
+  getTemConCuaGoc, taoTemCon, congSlTemCon, congSuaTach, huyTemConNeuRong,
   recomputeTemStage, recomputeTemStageMany,
   temTimeline,
   nextMaTem, createChildTem, insertTemSplit, getTemForSplit,

@@ -135,7 +135,8 @@ async function listVaiVe({ search = '', filters = {}, stage = '', offset = 0, li
     LEFT JOIN LATERAL (
       WITH tp AS (
         SELECT tm.id, tm.ma_tem, tm.so_luong, tm.trang_thai, tm.created_date,
-               tm.sl_kcs_sua, tm.sl_kcs_dat, tm.sl_sua_dat, tm.sl_oqc_dat, tm.sl_oqc_dat_sua, tm.sl_da_giao
+               tm.sl_kcs_sua, tm.sl_kcs_dat, tm.sl_sua_dat, tm.sl_oqc_dat, tm.sl_oqc_dat_sua, tm.sl_da_giao,
+               tm.sl_sua_tach
         FROM tem tm
         JOIN phieu_san_xuat ps ON ps.id=tm.phieu_san_xuat_id
         JOIN lenh_san_xuat ls ON ls.id=ps.lenh_san_xuat_id AND ls.trang_thai<>'HUY'
@@ -154,7 +155,7 @@ async function listVaiVe({ search = '', filters = {}, stage = '', offset = 0, li
             'kcs_dat', k.so_luong_dat, 'kcs_loi', k.so_luong_loi, 'sua_dat', s.so_luong_sua_dat, 'oqc_ket_qua', o.ket_qua,
             'sl_sua', tp2.sl_kcs_sua,
             'con_oqc_kcs', (tp2.sl_kcs_dat - (tp2.sl_oqc_dat - tp2.sl_oqc_dat_sua)),
-            'con_oqc_sua', (tp2.sl_sua_dat - tp2.sl_oqc_dat_sua),
+            'con_oqc_sua', (tp2.sl_sua_dat - tp2.sl_oqc_dat_sua - tp2.sl_sua_tach),
             'giao_kcs', (tp2.sl_oqc_dat - tp2.sl_oqc_dat_sua),
             'giao_sua', tp2.sl_oqc_dat_sua
           ) ORDER BY tp2.created_date, tp2.ma_tem)
@@ -819,7 +820,33 @@ async function softDeleteDotVaiTx(client, dotVaiId, actorId) {
     "UPDATE dot_vai_ve SET trang_thai='DA_HUY', updated_by=$2, updated_date=CURRENT_TIMESTAMP WHERE id=$1",
     [dotVaiId, actorId]
   );
-  return { ok: true, ma: dv.ma_dot_vai, ma_phan: dv.ma_phan, trang_thai_cu: dv.trang_thai, don_dep: donDep };
+
+  // ⚠⚠ HẾT ĐỢT VẢI SỐNG ⇒ PHẦN IN RA KHỎI DÒNG CHẢY LUÔN (chốt 04/09/2026).
+  // Trước đây hủy đợt vải chỉ đổi `dot_vai_ve.trang_thai`, phần in vẫn `dang_hoat_dong=true` ⇒
+  // `dominantStageScalar` không còn đợt nào để xét nên rơi vào `readyFallback` và phần in **nằm lại
+  // màn READY vĩnh viễn** (không có vải, không có gì để làm) — kỹ thuật thấy hàng ma.
+  // ⚠ Chỉ xóa mềm khi KHÔNG còn đợt vải nào ngoài đợt vừa hủy ở trạng thái sống; đợt `DA_GOP` không
+  //   tính là sống (SL của nó đã dồn sang đợt khác — đợt nhận mới là đợt sống).
+  // ⚠ An toàn: đợt ĐÃ RELEASE bị chặn hủy ngay từ guard trên ⇒ không thể xóa mềm phần in đang chạy.
+  const conDot = await client.query(
+    `SELECT 1 FROM dot_vai_ve d2 WHERE d2.phan_in_id = (SELECT phan_in_id FROM dot_vai_ve WHERE id=$1)
+       AND d2.id <> $1 AND d2.trang_thai NOT IN ('DA_HUY','DA_GOP') LIMIT 1`.replace(/\s+/g, ' '),
+    [dotVaiId]
+  );
+  let phanInDaHuy = false;
+  if (!conDot.rows.length) {
+    const r = await client.query(
+      `UPDATE phan_in SET dang_hoat_dong=false, updated_by=$2, updated_date=CURRENT_TIMESTAMP
+        WHERE id = (SELECT phan_in_id FROM dot_vai_ve WHERE id=$1) AND dang_hoat_dong RETURNING id`.replace(/\s+/g, ' '),
+      [dotVaiId, actorId]
+    );
+    phanInDaHuy = r.rowCount > 0;
+  }
+
+  return {
+    ok: true, ma: dv.ma_dot_vai, ma_phan: dv.ma_phan, trang_thai_cu: dv.trang_thai,
+    don_dep: donDep, phan_in_da_huy: phanInDaHuy,
+  };
 }
 
 // Gỡ mọi "xác nhận / hiển thị" bám theo 1 đợt vải + trả SNAPSHOT để mở lại được.
@@ -874,7 +901,8 @@ async function listDeletedDotVai(q) {
            ldv.ten_loai AS loai_dot_vai, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim,
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang, pin.dang_hoat_dong AS phan_in_con_hoat_dong,
            a.thoi_gian AS tg_huy, nd.ho_ten AS nguoi_huy, a.gia_tri_moi->>'ly_do' AS ly_do,
-           COALESCE(a.gia_tri_moi->>'trang_thai_cu', 'NHAN_VAI') AS trang_thai_cu
+           COALESCE(a.gia_tri_moi->>'trang_thai_cu', 'NHAN_VAI') AS trang_thai_cu,
+           COALESCE((a.gia_tri_moi->>'phan_in_da_huy')::boolean, false) AS pin_huy_theo_dot
     FROM dot_vai_ve dv
     JOIN phan_in pin ON pin.id=dv.phan_in_id
     JOIN ma_hang mh ON mh.id=pin.ma_hang_id
@@ -904,10 +932,23 @@ async function restoreDotVaiTx(client, dotVaiId, actorId) {
       WHERE dv.id=$1`.replace(/\s+/g, ' '), [dotVaiId]);
   const dv = rows[0];
   if (!dv || dv.trang_thai !== 'DA_HUY') return { ok: false, ly_do: 'Đợt vải không ở trạng thái đã hủy' };
-  if (!dv.dang_hoat_dong) {
-    return { ok: false, ma: dv.ma_dot_vai, ly_do: `Phần in ${dv.ma_phan} đang bị hủy — mở phần in trước` };
-  }
   const log = dv.huy_log || {};
+  // ⚠⚠ PHẦN IN BỊ XÓA MỀM **THEO CHÍNH LẦN HỦY ĐỢT NÀY** ⇒ mở đợt là bật lại phần in luôn, KHÔNG bắt
+  //   người dùng chạy sang tab "Mở phần in" (họ đâu có hủy phần in bao giờ — hệ thống tự hủy vì hết vải).
+  //   Phân biệt bằng cờ `phan_in_da_huy` trong audit: hủy PHẦN IN (tab riêng) không có cờ này nên vẫn
+  //   bị chặn như cũ — mở đợt vải trong một phần in do người dùng cố ý hủy là sinh dữ liệu mồ côi.
+  let phanInMoLai = false;
+  if (!dv.dang_hoat_dong) {
+    if (!log.phan_in_da_huy) {
+      return { ok: false, ma: dv.ma_dot_vai, ly_do: `Phần in ${dv.ma_phan} đang bị hủy — mở phần in trước` };
+    }
+    const r = await client.query(
+      `UPDATE phan_in SET dang_hoat_dong=true, updated_by=$2, updated_date=CURRENT_TIMESTAMP
+        WHERE id = (SELECT phan_in_id FROM dot_vai_ve WHERE id=$1) AND NOT dang_hoat_dong RETURNING id`.replace(/\s+/g, ' '),
+      [dotVaiId, actorId]
+    );
+    phanInMoLai = r.rowCount > 0;
+  }
   const tt = log.trang_thai_cu || 'NHAN_VAI';
   await client.query(
     'UPDATE dot_vai_ve SET trang_thai=$2, updated_by=$3, updated_date=CURRENT_TIMESTAMP WHERE id=$1',
@@ -916,7 +957,10 @@ async function restoreDotVaiTx(client, dotVaiId, actorId) {
   // Dựng lại đúng những gì lúc hủy đã gỡ (snapshot trong audit). Dữ liệu hủy TRƯỚC bản này không có
   // `don_dep` → bỏ qua, đợt vẫn mở lại bình thường (chỉ là không tự vào lại trạm/gom set).
   const khoiPhuc = await khoiPhucDotVaiTx(client, dotVaiId, log.don_dep, actorId);
-  return { ok: true, ma: dv.ma_dot_vai, ma_phan: dv.ma_phan, trang_thai: tt, khoi_phuc: khoiPhuc };
+  return {
+    ok: true, ma: dv.ma_dot_vai, ma_phan: dv.ma_phan, trang_thai: tt,
+    khoi_phuc: khoiPhuc, phan_in_mo_lai: phanInMoLai,
+  };
 }
 
 // Đảo lại `donDepDotVaiTx` theo snapshot. Mọi bước đều idempotent / bỏ qua khi không còn hợp lệ.

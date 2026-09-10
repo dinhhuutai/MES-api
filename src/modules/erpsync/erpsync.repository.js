@@ -92,13 +92,24 @@ async function upsertKhachHang(client, { ma, ten }) {
   return rows[0].id;
 }
 
-async function upsertDonHang(client, { maDon, khachHangId, ddhId }) {
+// ⚠ 2 cột tùy chọn dò RIÊNG vì là 2 migration độc lập (074 `ddh_id` · 090 `bo_phan_bh`) — gộp 1 cờ
+//   thì môi trường có cái này thiếu cái kia sẽ chết một nhánh (đúng bẫy đã mắc với mig 077/079).
+// ⚠ `COALESCE(EXCLUDED.x, don_hang.x)`: ERP gửi rỗng thì GIỮ giá trị đang có, không xóa mất.
+async function upsertDonHang(client, { maDon, khachHangId, ddhId, boPhanBh }) {
   const co = await co074(client);
+  const coBp = await coCotBoPhanBh(client);
+  const cot = [co ? 'ddh_id' : null, coBp ? 'bo_phan_bh' : null].filter(Boolean);
+  const params = [khachHangId, maDon];
+  if (co) params.push(ddhId || null);
+  if (coBp) params.push(boPhanBh || null);
+  const giaTri = cot.map((_, i) => `$${3 + i}`);
+  const setCot = cot.map((c) => `${c} = COALESCE(EXCLUDED.${c}, don_hang.${c})`);
   const { rows } = await client.query(
-    `INSERT INTO don_hang (khach_hang_id, ma_don_hang${co ? ', ddh_id' : ''}) VALUES ($1,$2${co ? ',$3' : ''})
-     ON CONFLICT (ma_don_hang) DO UPDATE SET khach_hang_id = EXCLUDED.khach_hang_id${co ? ', ddh_id = COALESCE(EXCLUDED.ddh_id, don_hang.ddh_id)' : ''}
-     RETURNING id`,
-    [khachHangId, maDon, ...(co ? [ddhId || null] : [])]
+    `INSERT INTO don_hang (khach_hang_id, ma_don_hang${cot.length ? `, ${cot.join(', ')}` : ''})
+     VALUES ($1,$2${giaTri.length ? `,${giaTri.join(',')}` : ''})
+     ON CONFLICT (ma_don_hang) DO UPDATE SET khach_hang_id = EXCLUDED.khach_hang_id${setCot.length ? `, ${setCot.join(', ')}` : ''}
+     RETURNING id`.replace(/\s+/g, ' '),
+    params
   );
   return rows[0].id;
 }
@@ -150,6 +161,17 @@ async function co074(client) {
 // Cột mig 088: `phan_in.ddh_sub_id` (ERP DDHSUBID — ứng 1:1 với PHẦN IN, xem migration để biết
 // bằng chứng). Dò riêng vì 074 và 088 là 2 migration độc lập: môi trường có thể có 074 mà chưa 088.
 // ⚠ Gộp chung một cờ là một trong hai nhánh sẽ chết — đúng bẫy đã mắc với mig 077/079.
+// Cột mig 090: `don_hang.bo_phan_bh` (ERP `bophanbh` — bộ phận bán hàng, 1:1 với đơn hàng).
+// Dò riêng, cache khi ĐÃ có ⇒ chạy migration xong nhận ngay, khỏi restart BE.
+let _coBpBh = null;
+async function coCotBoPhanBh(client) {
+  if (_coBpBh) return true;
+  const { rows } = await client.query(
+    `SELECT 1 FROM information_schema.columns WHERE table_name='don_hang' AND column_name='bo_phan_bh' LIMIT 1`);
+  _coBpBh = rows.length > 0;
+  return _coBpBh;
+}
+
 let _coSubPin = null;
 async function coCotSubPhanIn(client) {
   if (_coSubPin) return true;

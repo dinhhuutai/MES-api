@@ -92,6 +92,20 @@ const TRUONG_TEM = Object.freeze([
   { ma: 'ty_le_sua_dat', ten: '% sửa đạt — tem Sửa', kieu: 'chu', nhom: 'Sửa' },
   { ma: 'nguoi_xn_sua', ten: 'Người xác nhận sửa (hệ thống) — tem Sửa', kieu: 'chu', nhom: 'Sửa' },
   { ma: 'tg_sua', ten: 'Giờ xác nhận sửa — tem Sửa', kieu: 'ngay', nhom: 'Sửa' },
+  // ─── NHÓM "GIA CÔNG" — CHỈ CÓ GIÁ TRỊ Ở VỊ TRÍ IN `GIA_CONG_IN_TEM_VE` (tem 13 "TH VỀ") ────────
+  // ⚠⚠ Tem 13 KHÔNG dựng từ bản ghi `tem` — nó ghép từ dữ liệu LỆNH GIA CÔNG ở trình duyệt
+  //   (`GiaCongPage.buildVeLabel`), nên `getTemLabelData` KHÔNG hề biết mấy trường này. Nút in KHÁC
+  //   kéo vào sẽ ra RỖNG. Thêm trường mới ở đây thì PHẢI thêm ở `buildVeLabel` — thiếu là ô trống
+  //   trên tem mà không báo lỗi gì.
+  // ⚠ Hàng gia công về NHIỀU LẦN, mỗi lần 1 tem riêng ⇒ `so_luong` (SL in của tem) = SL của ĐÚNG
+  //   lần nhận đó; 3 trường dưới cho biết lần này nằm ở đâu trong tổng đơn.
+  { ma: 'so_luong_release', ten: 'SL release của đợt SX (pcs) — tem Gia công', kieu: 'so', nhom: 'Gia công' },
+  { ma: 'da_chuyen', ten: 'SL đã nhận về cộng dồn — tem Gia công', kieu: 'so', nhom: 'Gia công' },
+  { ma: 'con_lai', ten: 'SL còn phải nhận — tem Gia công', kieu: 'so', nhom: 'Gia công' },
+  { ma: 'tg_nhan', ten: 'Giờ nhận hàng về — tem Gia công', kieu: 'ngay', nhom: 'Gia công' },
+  { ma: 'nguoi_nhan', ten: 'Người nhận hàng về — tem Gia công', kieu: 'chu', nhom: 'Gia công' },
+  // ⚠ `so_luong` của tem 13 = SL **ĐẠT** (phần đi tiếp OQC); phần hỏng nhà gia công trả về nằm ở đây.
+  { ma: 'so_luong_huy', ten: 'SL hủy của lượt nhận — tem Gia công', kieu: 'so', nhom: 'Gia công' },
 
   { ma: 'created_date', ten: 'Ngày giờ in tem', kieu: 'ngay', nhom: 'Thời gian' },
   { ma: 'tg_bd_in', ten: 'Giờ bắt đầu in (phiếu)', kieu: 'ngay', nhom: 'Thời gian' },

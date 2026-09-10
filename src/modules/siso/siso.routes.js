@@ -12,6 +12,9 @@ router.use(auth);
 // ⚠ Route TĨNH `/danh-muc` phải đứng TRƯỚC `/:maTrang`.
 router.get('/danh-muc', c.danhMuc);
 router.get('/:maTrang', c.siSo);
+// ⚠ Route 3 đoạn `/:maTrang/:o/ngay-giao` phải đặt TRƯỚC `/:maTrang/:o` — Express khớp theo thứ tự,
+//   để sau thì `/:o` sẽ nuốt mất (`o` = "ton_cuoi", phần "ngay-giao" bị bỏ ⇒ trả nhầm danh sách).
+router.get('/:maTrang/:o/ngay-giao', c.tomTatNgayGiao);
 router.get('/:maTrang/:o', c.chiTiet);
 
 module.exports = router;

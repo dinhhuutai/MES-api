@@ -24,6 +24,7 @@ const qualityRoutes = require('./modules/quality/quality.routes');
 const deliveryRoutes = require('./modules/delivery/delivery.routes');
 const wfconfigRoutes = require('./modules/wfconfig/wfconfig.routes');
 const dashboardRoutes = require('./modules/dashboard/dashboard.routes');
+const kpiReadyRoutes = require('./modules/kpiready/kpiready.routes');
 const erpsyncRoutes = require('./modules/erpsync/erpsync.routes');
 const hienThiPainRoutes = require('./modules/hienthipain/hienthipain.routes');
 const caiDatApiRoutes = require('./modules/caidatapi/caidatapi.routes');
@@ -32,6 +33,8 @@ const thongBaoRoutes = require('./modules/thongbao/thongbao.routes');
 const siSoRoutes = require('./modules/siso/siso.routes');
 const duyetRoutes = require('./modules/duyet/duyet.routes');
 const mauTemRoutes = require('./modules/mautem/mautem.routes');
+// Thiết kế PHIẾU (mig 094) — cùng khuôn mẫu tem, nhưng bố cục có VÙNG LẶP DÒNG.
+const mauPhieuRoutes = require('./modules/mauphieu/mauphieu.routes');
 const presenceRoutes = require('./modules/presence/presence.routes');
 const phienRoutes = require('./modules/phien/phien.routes');
 const financeRoutes = require('./modules/finance/finance.routes');
@@ -72,6 +75,9 @@ app.use('/api/quality', qualityRoutes);
 app.use('/api/giao-hang', deliveryRoutes);
 app.use('/api/wf', wfconfigRoutes);
 app.use('/api/dashboard', dashboardRoutes);
+// Dashboard > KPI READY (5 KPI + bảng theo dõi phần in qua 23 cột checklist) + trang chọn đơn
+// hàng lấy số liệu ở Hệ thống — mig 093.
+app.use('/api/kpi-ready', kpiReadyRoutes);
 app.use('/api/erp', erpsyncRoutes);
 // Hệ thống > Hiển thị theo phương án in (bật/tắt Máy/Bàn/Robot/Khác cho từng trang — mig 067)
 app.use('/api/hien-thi-pain', hienThiPainRoutes);
@@ -85,6 +91,7 @@ app.use('/api/thong-bao', thongBaoRoutes);
 app.use('/api/si-so', siSoRoutes);
 app.use('/api/duyet', duyetRoutes);
 app.use('/api/mau-tem', mauTemRoutes);
+app.use('/api/mau-phieu', mauPhieuRoutes);
 app.use('/api/presence', presenceRoutes);
 app.use('/api/phien', phienRoutes);
 app.use('/api/tai-chinh', financeRoutes);

@@ -155,7 +155,10 @@ async function savePhanCong(phieuId, { caTruongId, chuyenTruong, thoIn, toInId, 
 // danh mục / chọn "Khác"). Ít nhất một trong hai phải có.
 // ⚠ Cột `ngung_chuyen.ly_do` (TEXT) VẪN LÀ NGUỒN HIỂN THỊ — service tự ghép "Tên lý do — ghi chú" vào
 //   đó, nên mọi màn đang đọc `ly_do` (sidebar, Theo dõi chuyền, lịch sử) không phải sửa gì.
-async function stopLine(phieuId, lyDo, actorId, gioBd = null, lyDoId = null) {
+// `gioKt` (tùy chọn, 'HH:MM' — thêm 04/09/2026) = ghi LUÔN giờ kết thúc ngay lúc tạo, cho ca "sự cố đã
+// xong rồi mới ngồi ghi lại". Có `gioKt` ⇒ bản ghi vào thẳng `DA_HOAT_DONG_LAI` kèm `so_phut`; bỏ trống
+// ⇒ y như cũ (`DANG_NGUNG`, chờ bấm "Chuyền hoạt động lại").
+async function stopLine(phieuId, lyDo, actorId, gioBd = null, lyDoId = null, gioKt = null) {
   const phieu = await repo.getPhieuById(phieuId);
   if (!phieu) throw new AppError('Phiếu sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   if (phieu.trang_thai !== 'DANG_CHAY') throw new AppError('Phiếu không ở trạng thái đang chạy', { status: 409, errorCode: 'WRONG_STAGE' });
@@ -175,7 +178,7 @@ async function stopLine(phieuId, lyDo, actorId, gioBd = null, lyDoId = null) {
   const lenh = await repo.getLenhBasic(phieu.lenh_san_xuat_id);
   await repo.startNgung({
     phieuId, lenhId: phieu.lenh_san_xuat_id, chuyenId: lenh?.chuyen_id,
-    lyDo: noiDung, lyDoId: dm ? lyDoId : null, gioBd,
+    lyDo: noiDung, lyDoId: dm ? lyDoId : null, gioBd, gioKt,
   }, actorId);
   sockets.emit('production:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'ngung' });
   sockets.emit('dashboard:refresh', {});
@@ -384,11 +387,12 @@ const temMeta = (b = {}) => {
 // ⚠ `Toin` gửi null — danh mục TỔ IN thuộc phase 2 (bảng `to_in` + gắn tổ cho chuyền/user +
 //   ô chọn lúc in tem + phân quyền theo tổ). Mẫu ERP cho thấy proc nhận null bình thường.
 // ─────────────────────────────────────────────────────────────────────────────
-async function guiGhiInTem(items, actorId) {
+// `ngayCt` = NGÀY CHỨNG TỪ người in tự đặt ở khối "Ngày ca / giờ SX" (mặc định hôm nay, sửa được).
+async function guiGhiInTem(items, actorId, ngayCt = null) {
   try {
     const list = (items || []).filter((x) => x && x.temId);
     if (!list.length) return;
-    const rows = await repo.duLieuGhiInTem(list.map((x) => ({ temId: x.temId, dotVaiId: x.dotVaiId || null })));
+    const rows = await repo.duLieuGhiInTem(list.map((x) => ({ temId: x.temId, dotVaiId: x.dotVaiId || null })), ngayCt);
     const theoTem = new Map(rows.map((r) => [r.tem_id, r]));
 
     for (const it of list) {
@@ -493,7 +497,7 @@ async function printTem(phieuId, soLuong, actorId, body) {
   });
   await tracking.moveByLenh(phieu.lenh_san_xuat_id, 'CHO_KHO', actorId); // in tem → xe phơi → CHỜ KHÔ
   // Báo ERP — CỐ Ý không `await` (xem ghi chú ở `guiGhiInTem`): người in không phải chờ.
-  guiGhiInTem([{ temId: newTemId, dotVaiId: null, soLuongHuy: 0, soLuongThieu: 0 }], actorId);
+  guiGhiInTem([{ temId: newTemId, dotVaiId: null, soLuongHuy: 0, soLuongThieu: 0 }], actorId, body?.ngayCt || null);
   sockets.emit('production:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'tem' });
   sockets.emit('drying:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'auto-phoi' });
   const run = await getRun(phieu.lenh_san_xuat_id);
@@ -613,7 +617,7 @@ async function printTemBatch(phieuId, items, actorId, body) {
       temId: o.tem_id, dotVaiId: o.dot_vai_id,
       soLuongHuy: v ? v.huy : 0, soLuongThieu: v ? v.thieu : 0,
     };
-  }), actorId);
+  }), actorId, body?.ngayCt || null);
   sockets.emit('production:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'tem', so_tem: out.length });
   sockets.emit('drying:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'auto-phoi' });
   const run = await getRun(phieu.lenh_san_xuat_id);
@@ -737,6 +741,14 @@ async function confirmDry(temId, actorId) {
 async function listCancelableTem({ search, page, limit, offset }) {
   const { rows, total } = await repo.listCancelableTem({ search, offset, limit });
   return { items: rows, meta: buildMeta(page, limit, total) };
+}
+
+// DANH SÁCH TEM ĐÃ IN — xem thông tin tem không cần in ra giấy (2 trang, xem `repo.listTemDaIn`).
+// `laGiaCong` do ROUTE quyết định (mỗi module 1 route + 1 quyền riêng), KHÔNG nhận từ query string:
+// để client tự chọn thì người chỉ có quyền Kế hoạch sẽ xem được cả tem sản xuất.
+async function listTemDaIn(q, laGiaCong = false) {
+  const { rows, total } = await repo.listTemDaIn({ ...q, laGiaCong, offset: q.offset, limit: q.limit });
+  return { items: rows, meta: buildMeta(q.page, q.limit, total) };
 }
 
 // Hủy 1 lệnh in tem: đánh dấu tem HỦY (loại khỏi tổng đã in ⇒ trả SL release về) + gỡ xe phơi.
@@ -1006,7 +1018,7 @@ module.exports = {
   dsLyDoNgung, taoLyDoNgung, suaLyDoNgung, doiTrangThaiLyDoNgung,
   dsToIn, taoToIn, suaToIn, doiTrangThaiToIn,
   dsLyDoBoSung, taoLyDoBoSung, suaLyDoBoSung, doiTrangThaiLyDoBoSung, luuLyDoBoSungDotVai,
-  listCancelableTem, cancelPrintTem,
+  listCancelableTem, listTemDaIn, cancelPrintTem,
   listCloseCandidates, closeProduction,
   listReopenCandidates, reopenProduction, pauseLenhChay, doiChuyen,
   listUndoStartCandidates, undoStartProduction,

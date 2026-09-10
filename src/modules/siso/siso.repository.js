@@ -116,15 +116,22 @@ function nguon(maTrang) {
 // ⚠ Mọi đơn vị trả CÙNG bộ cột (`COT_DS`) nên phần còn lại của repository không cần biết gì thêm.
 function chonDonVi(m, donVi) {
   const ma = m.donVis[donVi] ? donVi : m.macDinh;
-  return { ma, nhan: m.donVis[ma].nhan, sql: m.donVis[ma].sql };
+  const d = m.donVis[ma];
+  return { ma, nhan: d.nhan, sql: d.sql, do: d.do || null, donViSo: d.donViSo || null };
 }
 
 // 4 ô trong 1 LƯỢT QUERY — mạng tới DB là nút cổ chai (~25ms/lượt, DATABASE.md §7) nên đừng bắn 4 lần.
+// ⚠⚠ ĐƠN VỊ SỐ LƯỢNG (`sl_vai` · `sl_dh`, thêm 04/09/2026): 4 ô **CỘNG một cột** thay vì đếm dòng.
+//   Bất biến `Tồn đầu + Nhận − Làm được = Tồn cuối` VẪN ĐÚNG vì mỗi đối tượng góp CÙNG một con số
+//   vào mọi ô mà nó thuộc về — y hệt lúc mỗi đối tượng góp 1 đơn vị.
+//   `COALESCE(sum(...), 0)`: `sum` trên tập rỗng trả NULL, để nguyên là FE hiện ô trống thay vì 0.
 async function demSiSo(maTrang, { tu, den, loc, locTrang, donVi }) {
   const m = nguon(maTrang);
   const dv = chonDonVi(m, donVi);
   const { dk, params } = dungLocKep(loc, locTrang);
-  const dem = Object.keys(O_SI_SO).map((k) => `count(*) FILTER (WHERE ${dkO(k)})::int AS ${k}`).join(', ');
+  const dem = Object.keys(O_SI_SO).map((k) => (dv.do
+    ? `COALESCE(sum(${dv.do}) FILTER (WHERE ${dkO(k)}), 0)::int AS ${k}`
+    : `count(*) FILTER (WHERE ${dkO(k)})::int AS ${k}`)).join(', ');
   const sql = `WITH ${CTE_KY}, q AS (${dv.sql}) SELECT ${dem} FROM q WHERE ${NEN}${dk}`;
   const { rows } = await query(sql.replace(/\s+/g, ' '), [tu, den, ...params]);
   const r = rows[0] || {};
@@ -167,4 +174,28 @@ async function chiTiet(maTrang, o, { tu, den, loc, locTrang, donVi, page = 1, li
   return { items: ds.rows, total };
 }
 
-module.exports = { demSiSo, chiTiet, nguon, chonDonVi };
+// ─── TÓM TẮT MỘT Ô THEO **NGÀY GIAO** (04/09/2026) ───────────────────────────
+// Hover vào ô (mặc định: Tồn cuối) ⇒ hiện "ngày giao nào còn bao nhiêu"; bấm 1 dòng ⇒ mở danh sách
+// chi tiết đã lọc sẵn theo đúng ngày giao đó (FE truyền `ngayTu`/`ngayDen` = ngày đó, `loaiNgay=HAN_GIAO`).
+// ⚠ CÙNG `q` + CÙNG bộ lọc + CÙNG điều kiện ô với `demSiSo` ⇒ Σ các dòng LUÔN bằng đúng con số trên ô
+//   (không có chuyện 2 số đá nhau). Chỉ khác: thêm `GROUP BY ngày giao`.
+// ⚠ Trả CẢ `so_doi_tuong` (đếm dòng) LẪN 2 cột số lượng ⇒ FE hiện được cả 3 mà không phải gọi lại
+//   khi người dùng đổi đơn vị đo. Dòng KHÔNG có hạn giao gom vào `han_giao_hang = NULL`, đứng cuối.
+async function tomTatTheoNgayGiao(maTrang, o, { tu, den, loc, locTrang, donVi }) {
+  const m = nguon(maTrang);
+  if (!O_SI_SO[o]) throw Object.assign(new Error(`Ô "${o}" không hợp lệ`), { code: 'O_LA' });
+  const dv = chonDonVi(m, donVi);
+  const { dk, params } = dungLocKep(loc, locTrang);
+  const sql = `WITH ${CTE_KY}, q AS (${dv.sql})
+    SELECT (q.han_giao_hang)::date AS han_giao_hang,
+           count(*)::int AS so_doi_tuong,
+           COALESCE(sum(COALESCE(q.so_luong_vai_ve,0)),0)::int AS sl_vai,
+           COALESCE(sum(COALESCE(q.so_luong_don_hang,0)),0)::int AS sl_dh
+      FROM q WHERE ${NEN} AND (${dkO(o)})${dk}
+     GROUP BY (q.han_giao_hang)::date
+     ORDER BY (q.han_giao_hang)::date NULLS LAST`;
+  const { rows } = await query(sql.replace(/\s+/g, ' '), [tu, den, ...params]);
+  return rows;
+}
+
+module.exports = { demSiSo, chiTiet, nguon, chonDonVi, tomTatTheoNgayGiao };

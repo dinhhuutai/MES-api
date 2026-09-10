@@ -123,15 +123,23 @@ async function softDeleteDotVai(dotVaiIds, lyDo, actorId) {
   await withTransaction(async (client) => {
     for (const id of dotVaiIds) {
       const r = await repo.softDeleteDotVaiTx(client, id, actorId);
-      if (r.ok) done.push({ id, ma: r.ma, ma_phan: r.ma_phan, trang_thai_cu: r.trang_thai_cu, don_dep: r.don_dep });
-      else loi.push({ id, ma: r.ma || null, ly_do: r.ly_do });
+      if (r.ok) {
+        done.push({
+          id, ma: r.ma, ma_phan: r.ma_phan, trang_thai_cu: r.trang_thai_cu,
+          don_dep: r.don_dep, phan_in_da_huy: r.phan_in_da_huy,
+        });
+      } else loi.push({ id, ma: r.ma || null, ly_do: r.ly_do });
     }
   });
   for (const d of done) {
     // `don_dep` = snapshot những thứ đã gỡ theo đợt (tồn trạm / gom set / cờ QC trả về / kết quả
     // checkpoint) — `reopenDotVai` đọc lại đúng chỗ này để dựng nguyên trạng.
-    await repo.logSoftDeleteDotVai(d.id,
-      { ma_dot_vai: d.ma, ma_phan: d.ma_phan, trang_thai_cu: d.trang_thai_cu, don_dep: d.don_dep }, lyDo, actorId);
+    // ⚠ `phan_in_da_huy` = phần in bị xóa mềm THEO lần hủy này (hết đợt vải sống) ⇒ mở đợt là bật lại
+    //   phần in luôn. Thiếu cờ này thì `restoreDotVaiTx` chặn với lý do "mở phần in trước".
+    await repo.logSoftDeleteDotVai(d.id, {
+      ma_dot_vai: d.ma, ma_phan: d.ma_phan, trang_thai_cu: d.trang_thai_cu,
+      don_dep: d.don_dep, phan_in_da_huy: d.phan_in_da_huy || false,
+    }, lyDo, actorId);
   }
   // Hủy đợt vải kéo theo tồn trạm + thành viên gom set ⇒ báo cho các màn đang mở tải lại.
   if (done.length) { sockets.emit('dashboard:refresh', {}); sockets.emit('workflow:updated', { stage: 'HUY_DOT_VAI' }); sockets.emit('ready:confirmed', {}); }
@@ -150,8 +158,12 @@ async function reopenDotVai(dotVaiIds, actorId) {
   await withTransaction(async (client) => {
     for (const id of dotVaiIds) {
       const r = await repo.restoreDotVaiTx(client, id, actorId);
-      if (r.ok) done.push({ id, ma: r.ma, ma_phan: r.ma_phan, trang_thai: r.trang_thai, khoi_phuc: r.khoi_phuc });
-      else loi.push({ id, ma: r.ma || null, ly_do: r.ly_do });
+      if (r.ok) {
+        done.push({
+          id, ma: r.ma, ma_phan: r.ma_phan, trang_thai: r.trang_thai,
+          khoi_phuc: r.khoi_phuc, phan_in_mo_lai: r.phan_in_mo_lai,
+        });
+      } else loi.push({ id, ma: r.ma || null, ly_do: r.ly_do });
     }
   });
   for (const d of done) {

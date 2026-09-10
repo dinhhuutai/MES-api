@@ -124,9 +124,20 @@ const giaCongList = asyncHandler(async (req, res) => {
   return ok(res, await service.listGiaCong({ search: req.query.search || '', page, limit, offset }));
 });
 
-// Nhận hàng gia công (có thể NHIỀU LẦN): body `so_luong` = SL của lần nhận này; bỏ trống = nhận nốt phần còn lại.
+// Nhận hàng gia công (có thể NHIỀU LẦN). 2 dạng body:
+//  · `items: [{ dot_vai_ve_id, so_luong }]` — nhận theo TỪNG CODE PHẦN (tối đa 2/lượt, đường của nút
+//    "In tem" ở màn Gia công). Đây là đường chính từ 09/09/2026.
+//  · `so_luong` — nhận ở MỨC LỆNH như trước; bỏ trống = nhận nốt phần còn lại (nút hàng loạt).
 const giaCongToOqc = asyncHandler(async (req, res) => {
-  const r = await service.confirmGiaCongToOqc(req.params.lenhId, { soLuong: req.body?.so_luong }, req.user.id);
+  // `so_luong` = SL ĐẠT (đi tiếp OQC) · `so_luong_huy` = SL HỦY (loại hẳn). Cả hai đều trừ vào phần
+  // còn phải nhận của code phần đó — xem `nhanGiaCongTheoPhanIn`.
+  const items = Array.isArray(req.body?.items)
+    ? req.body.items.map((x) => ({
+      dotVaiId: x?.dot_vai_ve_id, soLuong: x?.so_luong, soLuongHuy: x?.so_luong_huy,
+    }))
+    : null;
+  const r = await service.confirmGiaCongToOqc(req.params.lenhId,
+    { soLuong: req.body?.so_luong, items }, req.user.id);
   return ok(res, r, r.hoan_tat
     ? 'Đã chuyển gia công sang OQC — lệnh nhận đủ số lượng'
     : `Đã chuyển ${r.so_luong} sang OQC — còn lại ${r.con_lai}`);

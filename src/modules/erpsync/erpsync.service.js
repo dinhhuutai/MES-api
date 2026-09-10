@@ -91,6 +91,8 @@ const erpNhaGiaCong = (r) => clean(field(r, 'NGC', 'nha_gia_cong', 'nhagiacong')
 const erpDdhId = (r) => clean(field(r, 'DDHID', 'ddh_id', 'ddhid')) || null;
 const erpDdhSubId = (r) => clean(field(r, 'DDHSUBID', 'ddh_sub_id', 'ddhsubid')) || null;
 const erpDuAn = (r) => clean(field(r, 'Duan', 'du_an', 'duan')) || null;
+// BỘ PHẬN BÁN HÀNG (mig 090) — theo ĐƠN HÀNG. Giá trị thật trên prod: `THLA` · `DAMY`.
+const erpBoPhanBh = (r) => clean(field(r, 'bophanbh', 'bo_phan_bh', 'BoPhanBH')) || null;
 const toIntOrNull = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
 // Pain = phương án in (1 Bàn / 2 Máy / 3 Robot).
 const erpPain = (r) => toIntOrNull(field(r, 'Pain', 'pain', 'phuong_an_in'));
@@ -216,7 +218,9 @@ async function fetchErpAttempt(baseUrl, fromDate) {
 async function processRow(r, maPhan, maDotVai, loaiDotVaiId, tgChuyenReady) {
   return withTransaction(async (client) => {
     const khId = await repo.upsertKhachHang(client, { ma: clean(r.customer_name), ten: clean(r.customer_name) });
-    const donId = await repo.upsertDonHang(client, { maDon: clean(r.order_name), khachHangId: khId, ddhId: erpDdhId(r) });
+    const donId = await repo.upsertDonHang(client, {
+      maDon: clean(r.order_name), khachHangId: khId, ddhId: erpDdhId(r), boPhanBh: erpBoPhanBh(r),
+    });
     const mhId = await repo.upsertMaHang(client, { donHangId: donId, maHang: clean(r.item_name), tenMaHang: clean(r.item_name) });
     const pinId = await repo.upsertPhanIn(client, {
       maHangId: mhId, maPhan,

@@ -23,7 +23,19 @@ const { query } = require('../config/db');
 
 // `ten_bang` của từng API. `ERP_GHI_IN_TEM` cố ý giữ 'tem' + `id_ban_ghi = tem.id` để dòng lịch sử
 // còn LIÊN KẾT được với tem (và tương thích với các dòng đã ghi từ 14/08/2026).
-const TEN_BANG = { ERP_BARCODE_TEM: 'erp_api', ERP_GHI_IN_TEM: 'tem' };
+// ⚠ 3 API thêm 04/09/2026: `ERP_GUI_PHIEU_GIAO` gắn `giao_hang`+id phiếu, `ERP_GUI_PHAN_LOAI_LOI` gắn
+//   `tem`+id tem để dòng lịch sử còn liên kết được với bản ghi; API XIN SỐ thì lúc gọi chưa có bản ghi
+//   nào nên để `erp_api` (cùng lý do với `ERP_BARCODE_TEM`).
+const TEN_BANG = {
+  ERP_BARCODE_TEM: 'erp_api',
+  // 2 API mã tem riêng (06/09/2026) — lúc gọi thì tem CHƯA tồn tại nên không gắn được vào bảng `tem`.
+  ERP_BARCODE_TEM_17: 'erp_api',
+  ERP_BARCODE_TEM_13: 'erp_api',
+  ERP_GHI_IN_TEM: 'tem',
+  ERP_LAY_ID_PHIEU_GIAO: 'erp_api',
+  ERP_GUI_PHIEU_GIAO: 'giao_hang',
+  ERP_GUI_PHAN_LOAI_LOI: 'tem',
+};
 
 // Cắt bớt phản hồi ERP trước khi lưu — tránh 1 lần lỗi bất thường nhồi cả trang HTML vào audit_log.
 const DAI_TOI_DA_PHAN_HOI = 2000;

@@ -390,9 +390,13 @@ const DV = {
   //   KHÔNG có dòng `kcs` nào (§5) ⇒ không có mốc vào, thiếu COALESCE là biến mất khỏi sĩ số OQC.
   OQC: NGUON_TEM({
     tgVao: 'COALESCE(LEAST(kc.moc_dat, sa.moc_dat), t.created_date)',
-    tgRa: `CASE WHEN (COALESCE(t.sl_kcs_dat,0)+COALESCE(t.sl_sua_dat,0)) - COALESCE(t.sl_oqc_dat,0) <= 0
+    // ⚠⚠ TRỪ `sl_sua_tach` (mig 091) ở CẢ `dk` LẪN `tgRa` — phần sửa đạt đã tách sang TEM CON.
+    //   Thiếu ở `dk`: tem gốc chỉ có hàng sửa (đã tách hết) vẫn lọt phạm vi OQC, mà mọi dòng `oqc`
+    //   lại nằm trên tem CON ⇒ `moc_oqc` NULL ⇒ **kẹt "đang ở OQC" VĨNH VIỄN**, ô Tồn phình mãi.
+    //   Thiếu ở `tgRa`: tem gốc đã tách xong vẫn bị coi là còn hàng chờ ⇒ không bao giờ rời trạm.
+    tgRa: `CASE WHEN (COALESCE(t.sl_kcs_dat,0)+COALESCE(t.sl_sua_dat,0)-COALESCE(t.sl_sua_tach,0)) - COALESCE(t.sl_oqc_dat,0) <= 0
                 THEN oq.moc_oqc END`,
-    dk: "t.trang_thai <> 'HUY' AND (COALESCE(t.sl_kcs_dat,0)+COALESCE(t.sl_sua_dat,0)) > 0",
+    dk: "t.trang_thai <> 'HUY' AND (COALESCE(t.sl_kcs_dat,0)+COALESCE(t.sl_sua_dat,0)-COALESCE(t.sl_sua_tach,0)) > 0",
     them: `LEFT JOIN LATERAL (SELECT min(xk.created_date) FILTER (WHERE COALESCE(xk.so_luong_dat,0) > 0)
                AS moc_dat FROM kcs xk WHERE xk.tem_id = t.id) kc ON true
            LEFT JOIN LATERAL (SELECT min(xs.created_date) FILTER (WHERE COALESCE(xs.so_luong_sua_dat,0) > 0)
@@ -587,11 +591,29 @@ const manTheoDonVi = (khoa, trong, { traVe = TV.KHONG, laDotVai = false } = {}) 
 // ⚠⚠ Ở 4 màn THEO TEM, đơn vị "phần in" là SUY ĐOÁN qua lệnh: bảng `tem` KHÔNG lưu phần in/đợt vải
 //   (DATABASE.md §4) nên tem của lệnh GOM SET bị quy cho MỌI phần in trong lệnh ⇒ số phần in PHÓNG
 //   ĐẠI. Đo prod 21/08: OQC có 3 tem mà ra 5 phần in. Muốn chính xác phải thêm `tem.dot_vai_ve_id`.
+//
+// ⚠⚠⚠ 2 ĐƠN VỊ ĐO THEO **SỐ LƯỢNG** (04/09/2026, người dùng yêu cầu ở màn Release 1 / Release 2):
+//   `sl_vai` (SL vải) và `sl_dh` (SL đơn hàng) — ⚠ CẢ HAI đơn vị đều là **pcs** (người dùng chốt lại
+//   09/09/2026: `dot_vai_ve.so_luong_vai_ve` đếm TẤM, không phải mét — nhãn cũ ghi "(m)" là SAI).
+//   Khác hẳn 4 đơn vị trên ở chỗ 4 ô KHÔNG
+//   đếm số đối tượng nữa mà **CỘNG một cột số lượng** (`sum` thay cho `count(*)`) — xem `do` bên dưới
+//   và `demSiSo` ở `siso.repository`. Bất biến `Tồn đầu + Nhận − Làm được = Tồn cuối` vẫn đúng vì
+//   mỗi đối tượng đóng góp CÙNG một con số vào mọi ô mà nó thuộc về.
+// ⚠⚠ CẢ HAI ĐỀU GOM VỀ **PHẦN IN** (`khoa: 'x.phan_in_id'`), KHÔNG gom theo lệnh/tem — nếu gom theo
+//   lệnh thì `manTheoDonVi` phải `unnest(pin_ids)` rồi `sum`, mà một phần in nằm trong nhiều lệnh sẽ
+//   được cộng NHIỀU LẦN ⇒ tổng phóng đại. Gom về phần in thì mỗi phần in đúng một dòng, một lần cộng.
+// ⚠ `so_luong_vai_ve` = Σ SL vải về của MỌI đợt vải còn hiệu lực của phần in (`LAT_DOT_CUA_PIN`) —
+//   đây là "số lượng tấm vải đưa vào SX" theo cách gọi của người dùng. Nó KHÔNG phải
+//   `lenh_san_xuat.so_luong_release`: ở Release 1 thì phần in còn CHƯA có lệnh nào, mà đó lại chính
+//   là màn cần con số này nhất.
+// ⚠ Số lượng có thể NULL (phần in chưa có đợt vải) ⇒ `COALESCE(...,0)` ngay trong biểu thức đo.
 const DON_VI = {
   pin: { nhan: 'phần in', khoa: 'x.phan_in_id' },
   dot_vai: { nhan: 'đợt vải', khoa: 'x.ma_dot_vai' },
   lenh: { nhan: 'lệnh SX', khoa: 'x.ma_lenh_san_xuat' },
   tem: { nhan: 'tem', khoa: 'x.ma_tem' },
+  sl_vai: { nhan: 'SL vải (pcs)', khoa: 'x.phan_in_id', do: 'COALESCE(q.so_luong_vai_ve,0)', donViSo: 'pcs' },
+  sl_dh: { nhan: 'SL đơn hàng (pcs)', khoa: 'x.phan_in_id', do: 'COALESCE(q.so_luong_don_hang,0)', donViSo: 'pcs' },
 };
 
 // Dựng 1 màn: sinh sẵn SQL cho MỌI đơn vị màn đó hỗ trợ (chỉ là chuỗi, không tốn gì lúc nạp module).
@@ -604,7 +626,11 @@ const man = (ten, quyen, trong, { traVe = TV.KHONG, dv = ['pin'], macDinh = 'pin
   nhan: DON_VI[macDinh].nhan,
   donVis: Object.fromEntries(dv.map((k) => [k, {
     nhan: DON_VI[k].nhan,
-    sql: k === 'pin'
+    // `do` = biểu thức CỘNG cho 4 ô (đơn vị số lượng); thiếu ⇒ đếm số đối tượng như cũ.
+    do: DON_VI[k].do || null,
+    donViSo: DON_VI[k].donViSo || null,
+    // 2 đơn vị số lượng gom về PHẦN IN nên dùng chung đúng câu SQL của đơn vị `pin`.
+    sql: DON_VI[k].khoa === 'x.phan_in_id'
       ? manTheoPin(trong, { traVe })
       : manTheoDonVi(DON_VI[k].khoa, trong, { traVe, laDotVai: k === 'dot_vai' }),
   }])),
@@ -627,14 +653,16 @@ const MAN = {
   CL_QC_READY: man('QC chuẩn bị kỹ thuật', ['READY_QC'], DV.READY_QC,
     { traVe: TV.PHAN_IN, dv: ['pin'], macDinh: 'pin' }),
 
+  // ⚠ 2 màn Release có thêm **SL vải (pcs)** + **SL đơn hàng (pcs)** — người dùng cần theo dõi khối
+  //   lượng chứ không chỉ số đầu mục (04/09/2026). Thứ tự trong `dv` = thứ tự nút toggle xoay vòng.
   KH_RELEASE1: man('Release 1', ['RELEASE1'], DV.RELEASE_1,
-    { traVe: TV.DOT_VAI_TEST_RUN, dv: ['dot_vai', 'pin'], macDinh: 'dot_vai' }),
+    { traVe: TV.DOT_VAI_TEST_RUN, dv: ['dot_vai', 'pin', 'sl_vai', 'sl_dh'], macDinh: 'dot_vai' }),
 
   CL_TEST_RUN: man('Test Run - QA', ['TESTRUN_QA'], DV.TEST_RUN,
     { dv: ['lenh', 'pin'], macDinh: 'lenh' }),
 
   KH_RELEASE2: man('Release 2', ['RELEASE2'], DV.RELEASE_2,
-    { dv: ['lenh', 'pin'], macDinh: 'lenh' }),
+    { dv: ['lenh', 'pin', 'sl_vai', 'sl_dh'], macDinh: 'lenh' }),
 
   // ⚠ Quyền khớp menu (`constants/modules.js`: Kế hoạch tạm mở cho RELEASE1 hoặc RELEASE2).
   KH_TAM: man('Kế hoạch tạm', ['RELEASE1', 'RELEASE2'], DV.KE_HOACH_TAM,

@@ -2,6 +2,9 @@
 
 const express = require('express');
 const c = require('./planning.controller');
+// Danh sách tem GIA CÔNG dùng chung truy vấn với trang tem của Sản xuất (`listTemDaIn`) — chỉ khác
+// quyền, nên gọi thẳng controller bên đó thay vì chép một bản y hệt sang `planning.controller`.
+const prodController = require('../production/production.controller');
 const auth = require('../../middlewares/auth');
 const rbac = require('../../middlewares/rbac');
 
@@ -75,6 +78,11 @@ router.get('/gia-cong', rbac('RELEASE1', 'RELEASE2'), c.giaCongList);
 // ĐẶT TRƯỚC route có tham số để 'history'/'tem' không bị hiểu thành :lenhId.
 router.get('/gia-cong/history', rbac('RELEASE1', 'RELEASE2'), c.giaCongHistory);
 // Hủy tem gia công (tab ở trang "Hủy lệnh xác nhận") — SL quay lại phần chờ nhận của lệnh.
+// Danh sách tem GIA CÔNG đã in (tem 13 "TH VỀ") — trang *Kế hoạch › Danh sách tem gia công*.
+// ⚠ Dùng chung `production.controller.temDaInGiaCong` (1 truy vấn cho cả 2 trang) nhưng ĐI QUA
+//   route của Kế hoạch để giữ đúng quyền `RELEASE1`/`RELEASE2` — người chỉ có quyền Sản xuất
+//   không xem được tem gia công và ngược lại.
+router.get('/gia-cong/tem/danh-sach', rbac('RELEASE1', 'RELEASE2'), prodController.temDaInGiaCong);
 router.get('/gia-cong/tem/cancelable', rbac('RELEASE1', 'RELEASE2'), c.giaCongTemCancelable);
 router.post('/gia-cong/tem/:temId/huy', rbac('RELEASE1', 'RELEASE2'), c.giaCongTemHuy);
 router.post('/gia-cong/:lenhId/chuyen-oqc', rbac('RELEASE1', 'RELEASE2'), c.giaCongToOqc);

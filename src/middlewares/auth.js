@@ -4,6 +4,7 @@ const { verify } = require('../utils/jwt');
 const { fail } = require('../utils/response');
 const { lyDoChan } = require('../utils/phienCache');
 const phienRepo = require('../modules/phien/phien.repository');
+const { laChiXem, canChan } = require('../utils/chiXem');
 
 // ─── Ghi "hoạt động cuối" của phiên, GIÃN CÁCH ───────────────────────────────
 // Cột `phien_dang_nhap.tg_hoat_dong_cuoi` chỉ để người quản lý biết máy nào còn dùng, máy nào bỏ
@@ -54,7 +55,26 @@ module.exports = async function auth(req, res, next) {
     roles: payload.roles || [],
     permissions: payload.permissions || [],
     jti: payload.jti || null,
+    // Cờ tài khoản CHỈ XEM (mig 096) — service nào cần thì đọc thẳng ở đây,
+    // KHÔNG tự đi dò lại trong mảng permissions.
+    chiXem: laChiXem(payload.permissions || []),
   };
+
+  // ⚠⚠ CHỐT CHẶN "CHỈ XEM" — đặt ở ĐÂY vì mọi route đã xác thực đều đi qua `auth`
+  // (33/34 module dùng `router.use(auth)`; route duy nhất không qua auth là
+  // `POST /login`). Chặn theo PHƯƠNG THỨC HTTP nên endpoint ghi thêm về sau
+  // **mặc định đã an toàn**, không phải nhớ khai thêm ở đâu. Luật + danh sách
+  // ngoại lệ: `utils/chiXem.js`.
+  if (canChan(req)) {
+    return fail(
+      res,
+      'Tài khoản chỉ xem — không thực hiện được thao tác này.',
+      'CHI_XEM',
+      [],
+      403
+    );
+  }
+
   chamPhienGianCach(payload.jti);
   return next();
 };

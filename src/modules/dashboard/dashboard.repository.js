@@ -6,7 +6,7 @@ const { dotStageCase, readyFallback, ORDER_SQL_ARRAY } = require('../../utils/st
 const { techDoneSql } = require('../../utils/tech');
 // Hiển thị theo PHƯƠNG ÁN IN — cấu hình động từng trang (mig 067), mặc định BẬT HẾT = không lọc.
 const { dkTrang } = require('../../utils/phuongAnIn');
-const { baseMaTem } = require('../../utils/temPrefix');
+const { maTemUngVien } = require('../../utils/temPrefix');
 const { mauTim } = require('../../utils/timKiem');
 
 // "Đủ mục KT" (READY) trong flowRows: dùng cờ hk/hf/hm của CTE `kt` + tên khách của đợt (b.ten_khach_hang).
@@ -275,9 +275,9 @@ async function stageCounts() {
       count(*) FILTER (WHERE t.trang_thai IN ('IN','DANG_PHOI'))::int AS cho_kho,
       count(*) FILTER (WHERE t.trang_thai = 'DA_KHO')::int AS kcs,
       count(*) FILTER (WHERE t.trang_thai = 'CHO_SUA')::int AS sua,
-      count(*) FILTER (WHERE (COALESCE(t.sl_kcs_dat,0)+COALESCE(t.sl_sua_dat,0)) > COALESCE(t.sl_oqc_dat,0))::int AS oqc,
-      COALESCE(SUM((COALESCE(t.sl_kcs_dat,0)+COALESCE(t.sl_sua_dat,0)) - COALESCE(t.sl_oqc_dat,0))
-               FILTER (WHERE (COALESCE(t.sl_kcs_dat,0)+COALESCE(t.sl_sua_dat,0)) > COALESCE(t.sl_oqc_dat,0)),0)::int AS oqc_pcs,
+      count(*) FILTER (WHERE (COALESCE(t.sl_kcs_dat,0)+COALESCE(t.sl_sua_dat,0)-COALESCE(t.sl_sua_tach,0)) > COALESCE(t.sl_oqc_dat,0))::int AS oqc,
+      COALESCE(SUM((COALESCE(t.sl_kcs_dat,0)+COALESCE(t.sl_sua_dat,0)-COALESCE(t.sl_sua_tach,0)) - COALESCE(t.sl_oqc_dat,0))
+               FILTER (WHERE (COALESCE(t.sl_kcs_dat,0)+COALESCE(t.sl_sua_dat,0)-COALESCE(t.sl_sua_tach,0)) > COALESCE(t.sl_oqc_dat,0)),0)::int AS oqc_pcs,
       count(*) FILTER (WHERE COALESCE(t.sl_oqc_dat,0) > COALESCE(t.sl_da_giao,0))::int AS dg_tem,
       COALESCE(SUM(COALESCE(t.sl_oqc_dat,0)-COALESCE(t.sl_da_giao,0)) FILTER (WHERE COALESCE(t.sl_oqc_dat,0) > COALESCE(t.sl_da_giao,0)),0)::int AS dg_pcs,
       count(*) FILTER (WHERE COALESCE(t.sl_da_giao,0) > 0 AND COALESCE(t.sl_oqc_dat,0) = COALESCE(t.sl_da_giao,0))::int AS gd_tem,
@@ -340,7 +340,7 @@ async function chartDetail() {
   } catch (e) {
     // Chưa chạy mig 047 (thiếu sl_oqc_dat_sua) → gộp chung nguồn.
     const fb = `SELECT
-        COALESCE(SUM(GREATEST((COALESCE(t.sl_kcs_dat,0)+COALESCE(t.sl_sua_dat,0)) - COALESCE(t.sl_oqc_dat,0),0)),0)::int AS tong_cho,
+        COALESCE(SUM(GREATEST((COALESCE(t.sl_kcs_dat,0)+COALESCE(t.sl_sua_dat,0)-COALESCE(t.sl_sua_tach,0)) - COALESCE(t.sl_oqc_dat,0),0)),0)::int AS tong_cho,
         COALESCE(SUM(COALESCE(t.sl_oqc_dat,0)),0)::int AS tong_dat
       FROM tem t JOIN phieu_san_xuat ps ON ps.id=t.phieu_san_xuat_id
       JOIN lenh_san_xuat ls ON ls.id=ps.lenh_san_xuat_id AND ls.trang_thai<>'HUY' WHERE t.trang_thai<>'HUY'`;
@@ -450,15 +450,17 @@ async function tinhTrangActiveRows() {
 async function resolveScanCode(code) {
   const c = String(code || '').trim();
   if (!c) return { type: null };
-  // Đưa về đúng `ma_tem` đang lưu: mã ERP 12 số thì quy 2 số đầu về `15`; mã cũ thì bỏ tiền tố `15-`.
-  const base = baseMaTem(c);
+  // Đưa về đúng `ma_tem` đang lưu. ⚠ THỬ NGUYÊN VĂN TRƯỚC rồi mới tới mã gốc suy ra: từ 06/09/2026
+  // tem 17 (sửa đạt) / 13 (gia công về) có mã RIÊNG của ERP nên `baseMaTem` một mình sẽ tra hụt —
+  // tệ hơn là trúng tem của lô khác (xem `utils/temPrefix.js`).
+  const dsMa = maTemUngVien(c);
   const h = await query('SELECT barcode_hskt FROM ho_so_ky_thuat WHERE barcode_hskt=$1 AND dang_hoat_dong=true LIMIT 1', [c]);
   if (h.rows[0]) return { type: 'HSKT', barcode_hskt: h.rows[0].barcode_hskt };
   let p = await query('SELECT ma_phan FROM phan_in WHERE ma_phan=$1 AND dang_hoat_dong LIMIT 1', [c]);
   if (p.rows[0]) return { type: 'PHAN_IN', ma_phan: p.rows[0].ma_phan };
   p = await query('SELECT pin.ma_phan FROM dot_vai_ve dv JOIN phan_in pin ON pin.id=dv.phan_in_id WHERE dv.barcode=$1 AND pin.dang_hoat_dong LIMIT 1', [c]);
   if (p.rows[0]) return { type: 'PHAN_IN', ma_phan: p.rows[0].ma_phan };
-  p = await query('SELECT pin.ma_phan FROM tem t JOIN phieu_san_xuat ps ON ps.id=t.phieu_san_xuat_id JOIN lenh_san_xuat ls ON ls.id=ps.lenh_san_xuat_id JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id=ls.id JOIN dot_vai_ve dv ON dv.id=lsd.dot_vai_ve_id JOIN phan_in pin ON pin.id=dv.phan_in_id WHERE t.ma_tem=$1 LIMIT 1', [base]);
+  p = await query('SELECT pin.ma_phan FROM tem t JOIN phieu_san_xuat ps ON ps.id=t.phieu_san_xuat_id JOIN lenh_san_xuat ls ON ls.id=ps.lenh_san_xuat_id JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id=ls.id JOIN dot_vai_ve dv ON dv.id=lsd.dot_vai_ve_id JOIN phan_in pin ON pin.id=dv.phan_in_id WHERE t.ma_tem = ANY($1::text[]) ORDER BY array_position($1::text[], t.ma_tem) LIMIT 1', [dsMa]);
   if (p.rows[0]) return { type: 'PHAN_IN', ma_phan: p.rows[0].ma_phan };
   return { type: null };
 }
@@ -879,7 +881,7 @@ async function tinhTrangGraph(phanInId) {
        JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
        JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id AND dv.phan_in_id = $1
        JOIN phieu_san_xuat ps ON ps.lenh_san_xuat_id = ls.id
-       JOIN tem t ON t.phieu_san_xuat_id = ps.id AND t.trang_thai <> 'HUY'
+       JOIN tem t ON t.phieu_san_xuat_id = ps.id AND t.trang_thai <> 'HUY' AND t.tem_goc_id IS NULL
        LEFT JOIN chuyen_san_xuat cs ON cs.id = ps.chuyen_id
        LEFT JOIN LATERAL (SELECT txp.tg_bd_phoi, txp.tg_kt_phoi FROM tem_xe_phoi txp WHERE txp.tem_id=t.id ORDER BY txp.tg_bd_phoi DESC NULLS LAST LIMIT 1) phoi ON true
        LEFT JOIN LATERAL (SELECT ku.ho_ten AS nguoi, kk.created_date AS tg FROM kcs kk LEFT JOIN nguoi_dung ku ON ku.id=kk.created_by WHERE kk.tem_id=t.id ORDER BY kk.created_date DESC LIMIT 1) k ON true

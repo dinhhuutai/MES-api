@@ -9,7 +9,7 @@ const wf = require('../workflow/workflow.repository');
 const AppError = require('../../utils/AppError');
 const wfCache = require('../../utils/wfCache');
 const { buildMeta } = require('../../utils/pagination');
-const { layBarcodeTem } = require('../../utils/erpTemBarcode');
+const { layBarcodeTem, layBarcodeTem13 } = require('../../utils/erpTemBarcode');
 const { STAGE_LABEL } = require('../../utils/stage'); // nhãn giai đoạn — dùng chung với dashboard
 const { kiemCap } = require('../../utils/phuongAnChuyen'); // luật PA in ↔ loại chuyền (chặn ở Release 1)
 const { tinhNangBat } = require('../../utils/caiDatTinhNang'); // công tắc bật/tắt luật trên (mig 087)
@@ -943,20 +943,33 @@ async function rollbackLenh(lenhId, { target, lyDo, force = false }, actorId) {
   }
   const dotVaiIds = await tracking.dotVaiFromLenh(lenhId);
 
-  // Chỉ bỏ duyệt Release 2 → về Test Run (giữ lệnh, vẫn đã release).
+  // ─── VỀ LẠI TEST RUN (giữ lệnh, vẫn đã release) ───────────────────────────
+  // ⚠⚠ PHẢI HỦY LUÔN KẾT QUẢ TEST (chốt 04/09/2026 — "có trường hợp bấm nhầm Test Run đạt").
+  //   Bản cũ chỉ hạ `RELEASE_2 → RELEASE_1` mà GIỮ `TEST_CNSP`/`TEST_QA` DAT ⇒ lệnh **không quay lại
+  //   màn Test Run** (`listTestRunCandidates` lọc `NOT EXISTS TEST_QA DAT`) mà rơi thẳng sang màn
+  //   Release 2 chờ duyệt lại — đúng chỗ nó vừa được gỡ ra, không test lại được.
+  // ⚠⚠ NHẬN CẢ LỆNH CÒN `RELEASE_1`: bấm nhầm "đạt" ở Test Run thì lệnh CHƯA đổi trạng thái (vẫn
+  //   `RELEASE_1`) nhưng đã rời màn Test Run vì có `TEST_QA` DAT. Bản cũ ném NOOP đúng ca này ⇒
+  //   không có đường nào sửa. Nay chỉ NOOP khi thật sự không có gì để gỡ.
   if (TARGET === 'TEST_RUN') {
-    if (lenh.trang_thai !== 'RELEASE_2') {
-      throw new AppError('Lệnh đang ở Test Run (Release 1) — không cần hoàn tác về Test Run', { status: 409, errorCode: 'NOOP' });
+    const laR2 = lenh.trang_thai === 'RELEASE_2';
+    const coKqTest = await repo.coKetQuaTest(lenhId);
+    if (!laR2 && !coKqTest) {
+      throw new AppError('Lệnh đang ở Test Run và chưa có kết quả test — không có gì để hoàn tác',
+        { status: 409, errorCode: 'NOOP' });
     }
     await withTransaction(async (client) => {
-      await repo.setLenhTrangThai(client, lenhId, 'RELEASE_1', actorId);
+      if (laR2) await repo.setLenhTrangThai(client, lenhId, 'RELEASE_1', actorId);
+      // Gỡ kết quả TEST_CNSP + TEST_QA ⇒ lệnh hiện lại ở màn Test Run - QA để test lại từ đầu.
+      if (coKqTest) await repo.cancelTestResults(client, lenhId, actorId);
       await repo.logPlanChange(client, lenhId, 'HUY_RELEASE_2',
-        { trang_thai: 'RELEASE_2' }, { trang_thai: 'RELEASE_1', ly_do: (lyDo || '').trim() || null }, actorId);
+        { trang_thai: lenh.trang_thai, co_ket_qua_test: coKqTest },
+        { trang_thai: 'RELEASE_1', huy_ket_qua_test: coKqTest, ly_do: (lyDo || '').trim() || null }, actorId);
     });
     await tracking.revertToTram(dotVaiIds, 'TEST_RUN', actorId);
     sockets.emit('workflow:updated', { lenhId, stage: 'RELEASE_1' });
     sockets.emit('dashboard:refresh', {});
-    return { id: lenhId, target: TARGET, dot_vai: dotVaiIds.length };
+    return { id: lenhId, target: TARGET, dot_vai: dotVaiIds.length, huy_ket_qua_test: coKqTest };
   }
 
   // RELEASE_1 / READY: hủy lệnh (đợt vải rời lệnh) + (READY) hủy QC.
@@ -1078,7 +1091,13 @@ async function assertKhongChoKyThuat(lenhId) {
 // ----- LẬP KẾ HOẠCH LẠI -----
 async function listReplanCandidates({ search, page, limit, offset }) {
   const { rows, total } = await repo.listReplanCandidates({ search, offset, limit });
-  return { items: await attachPhanInList(rows), meta: buildMeta(page, limit, total) };
+  // Nhãn tiếng Việt của giai đoạn ĐANG Ở (dùng chung `STAGE_LABEL` với dashboard/Đơn hàng/Danh sách
+  // release). Trước 04/09/2026 FE tự suy từ `trang_thai` nên `RELEASE_1` luôn hiện "Test Run" — kể cả
+  // lệnh đã test xong (thực tế đang chờ duyệt Release 2) hay lệnh bị QA trả về Kỹ thuật (đang ở READY).
+  const items = rows.map((r) => ({
+    ...r, giai_doan_ten: STAGE_LABEL[r.giai_doan_hien_tai] || r.giai_doan_hien_tai || '—',
+  }));
+  return { items: await attachPhanInList(items), meta: buildMeta(page, limit, total) };
 }
 
 // ----- KẾ HOẠCH TẠM (mig 058): màn Kế hoạch xác nhận lại Release 1 khi phần in Ready xong -----
@@ -1218,7 +1237,47 @@ async function listGiaCong({ search, page, limit, offset }) {
   // + biết lệnh đang CHỜ TRẢ LẠI nhà gia công (chưa bấm "Trả lại nhà gia công").
   const rm = await qaRepo.activeReturnsMap('OQC_GIA_CONG', rows.map((r) => r.id));
   const items = rows.map((r) => ({ ...r, tra_ve: rm[r.id] || null, cho_tra_lai: !!rm[r.id] }));
-  return { items: await attachPhanInList(items), meta: buildMeta(page, limit, total) };
+  return { items: await ganPhanInGiaCong(items), meta: buildMeta(page, limit, total) };
+}
+
+// Gắn `phan_in_list` cho màn *Gia công* — 1 phần tử / CODE PHẦN, kèm SL release / đã nhận / CÒN LẠI
+// của RIÊNG code phần đó (nguồn: `repo.giaCongPhanInRows`).
+//
+// ⚠⚠ KHÔNG dùng `attachPhanInList` dùng chung: hàm đó chỉ gắn khi `so_phan_in > 1` và KHÔNG mang theo
+//   số lượng — mà ở màn này số lượng theo từng code phần CHÍNH LÀ thứ quyết định dòng nào còn hiện.
+// ⚠⚠ LỌC BỎ CODE PHẦN ĐÃ NHẬN ĐỦ (`con_lai_phan <= 0`) — yêu cầu 09/09/2026: "số lượng về 0 thì phần
+//   in đó mới mất ở trang này". Lệnh vẫn ở màn chừng nào còn code phần chưa đủ.
+// ⚠⚠ CÒN ĐÚNG 1 CODE PHẦN thì phải DỘI SỐ LIỆU LÊN CHÍNH HÀNG LỆNH: `DataTable` coi `subRows` có ≤1
+//   phần tử là "không tách dòng" và vẽ hàng cha nguyên vẹn ⇒ không dội thì hàng đó hiện SL của CẢ
+//   LỆNH trong khi chỉ còn 1 code phần chưa nhận — sai số ngay trên màn.
+async function ganPhanInGiaCong(items) {
+  if (!items.length) return items;
+  const rows = await repo.giaCongPhanInRows(items.map((r) => r.id));
+  const theoLenh = new Map();
+  for (const r of rows) {
+    if (!(Number(r.con_lai_phan) > 0)) continue; // đã nhận đủ ⇒ rời màn
+    const ds = theoLenh.get(r.lenh_id) || [];
+    ds.push({
+      phan_in_id: r.phan_in_id, dot_vai_ve_id: r.dot_vai_ve_id, ma_phan: r.ma_phan,
+      ten_khach_hang: r.ten_khach_hang, ma_don_hang: r.ma_don_hang, ma_hang: r.ma_hang,
+      mau_vai: r.mau_vai, kich_vai: r.kich_vai, kich_phim: r.kich_phim,
+      tinh_chat_in: r.tinh_chat_in, so_luong_don_hang: r.so_luong_don_hang,
+      so_luong_vai_ve: r.so_luong_vai_ve, han_giao_hang: r.han_giao_hang,
+      loai_dot_vai: r.loai_dot_vai, nha_gia_cong: r.nha_gia_cong,
+      // ⚠ Trùng TÊN với khóa mức lệnh để `{...row, ...sub}` của DataTable ĐÈ đúng chỗ ⇒ mỗi dòng con
+      //   hiện số của chính code phần đó, không phải số của cả lệnh.
+      so_luong_release: r.sl_release_phan, da_chuyen: r.da_chuyen_phan, con_lai: r.con_lai_phan,
+    });
+    theoLenh.set(r.lenh_id, ds);
+  }
+  return items.map((r) => {
+    const ds = theoLenh.get(r.id) || [];
+    if (ds.length <= 1) {
+      // 0 phần tử: dữ liệu cũ/bất thường ⇒ giữ nguyên hàng lệnh. 1 phần tử: dội lên hàng cha.
+      return ds.length === 1 ? { ...r, ...ds[0], phan_in_list: ds } : { ...r, phan_in_list: ds };
+    }
+    return { ...r, phan_in_list: ds };
+  });
 }
 
 // Kế hoạch đã mang hàng trả lại cho nhà gia công → tắt cờ trả về, lệnh về trạng thái "đang gia công"
@@ -1257,7 +1316,7 @@ async function giaCongHistory(date) {
 // (OQC bốc mẫu từng tem độc lập, truy vết được lô nào về lúc nào). Lệnh CHỈ rời màn Gia công
 // (→ HOAN_TAT + tracking sang OQC) khi Σ SL đã chuyển ĐỦ `so_luong_release`; chưa đủ thì vẫn đậu lại
 // với phần "còn lại" để nhận tiếp. Bỏ trống `soLuong` = chuyển hết phần còn lại (hành vi cũ).
-async function confirmGiaCongToOqc(lenhId, { soLuong } = {}, actorId) {
+async function confirmGiaCongToOqc(lenhId, { soLuong, items } = {}, actorId) {
   const lenh = await repo.getGiaCongLenh(lenhId);
   if (!lenh) throw new AppError('Lệnh sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   if (lenh.trang_thai !== 'GIA_CONG') {
@@ -1277,6 +1336,15 @@ async function confirmGiaCongToOqc(lenhId, { soLuong } = {}, actorId) {
   if (!(conLai > 0)) {
     throw new AppError('Lệnh đã chuyển đủ số lượng xuống OQC', { status: 409, errorCode: 'DA_DU_SL' });
   }
+  // ─── NHẬN THEO TỪNG CODE PHẦN (09/09/2026) ──────────────────────────────────────────────────
+  // `items` = [{ dotVaiId, soLuong }] — mỗi phần tử là MỘT code phần, tối đa `TOI_DA_IN_TEM` vì tờ
+  // decal chỉ có 2 khung tem. Không truyền `items` ⇒ giữ NGUYÊN đường cũ (nhận ở MỨC LỆNH), đó là
+  // đường mà nút "Chuyển OQC (N lệnh)" hàng loạt đang dùng.
+  const dsItem = Array.isArray(items) ? items.filter((x) => x && x.dotVaiId) : [];
+  if (dsItem.length) {
+    return nhanGiaCongTheoPhanIn(lenh, dsItem, actorId);
+  }
+
   const qty = soLuong == null || soLuong === '' ? conLai : Math.trunc(Number(soLuong));
   if (!Number.isFinite(qty) || qty <= 0) {
     throw new AppError('Số lượng nhận về phải lớn hơn 0', { status: 422, errorCode: 'INVALID_QTY' });
@@ -1287,14 +1355,21 @@ async function confirmGiaCongToOqc(lenhId, { soLuong } = {}, actorId) {
   }
   const xong = daChuyen + qty >= tong;
 
-  // Mã tem lấy TỪ ERP (barcode 12 số) — lấy TRƯỚC transaction, SAU mọi guard ở trên để không tiêu số vô ích.
-  // `null` = API mã tem đang TẮT ở Hệ thống > Cài đặt API ⇒ lùi về dãy `TEM00123` của MES.
-  const mt = (await layBarcodeTem(actorId)) || (await productionRepo.nextMaTem());
+  // ⚠⚠⚠ MÃ TEM 13 XIN RIÊNG CỦA ERP (`/barcode-tem-13`, chốt 06/09/2026) — trước đây tem gia công
+  //   xin mã của dãy tem 15 rồi chỉ ĐỔI 2 SỐ ĐẦU lúc IN NHÃN, nên DB lưu `15…` mà giấy in `13…`:
+  //   ERP không phân biệt được 2 nhãn, còn người cầm nhãn `13…` soi bảng lại thấy `15…`.
+  //   Nay `ma_tem` lưu ĐÚNG mã `13…` mà ERP cấp ⇒ nhãn giấy = mã trong DB.
+  // Lấy TRƯỚC transaction, SAU mọi guard ở trên để không tiêu số vô ích.
+  // Lùi 2 nấc khi API tắt: mã tem 15 (như trước) → dãy `TEM00123` của MES.
+  const mt = (await layBarcodeTem13(actorId))
+    || (await layBarcodeTem(actorId))
+    || (await productionRepo.nextMaTem());
 
+  let temIdMoi = null;
   const maTem = await withTransaction(async (client) => {
     const maPhieu = await productionRepo.nextMaPhieuTx(client);
     const phieuId = await productionRepo.createPhieuDone(client, { lenhId, chuyenId: lenh.chuyen_id, maPhieu, soLuong: qty }, actorId);
-    await productionRepo.createTemGiaCongOqc(client, { phieuId, maTem: mt, soLuong: qty }, actorId);
+    temIdMoi = await productionRepo.createTemGiaCongOqc(client, { phieuId, maTem: mt, soLuong: qty }, actorId);
     // Chưa đủ SL → GIỮ trạng thái GIA_CONG để lệnh còn ở màn Gia công mà nhận nốt.
     if (xong) await productionRepo.setLenhTrangThai(client, lenhId, 'HOAN_TAT', actorId);
     await client.query(
@@ -1307,6 +1382,20 @@ async function confirmGiaCongToOqc(lenhId, { soLuong } = {}, actorId) {
     );
     return mt;
   });
+  // ⚠⚠ BÁO NGƯỢC LÊN ERP CHO TEM 13 (nhiệm vụ #13, 05/09/2026). Trước đây chỉ `printTem`/
+  // `printTemBatch` báo ERP ⇒ tem "TH VỀ" của hàng gia công KHÔNG bao giờ được ghi sang ERP, dù nó
+  // cũng là một lượt tem thật đi vào OQC → Giao.
+  // ⚠ CHẠY NGẦM, KHÔNG `await` — giữ đúng luật của `guiGhiInTem`: ERP chậm/lỗi KHÔNG BAO GIỜ chặn
+  //   nghiệp vụ (xấu nhất ~33s do timeout 10s × 3 lần); mọi lỗi tự ghi `audit_log` để gửi lại tay.
+  // ⚠⚠ REQUIRE TRỄ TRONG HÀM, KHÔNG ở đầu file: `production.service` ĐÃ require `planning.service`
+  //   (rollbackLenh) ⇒ require ở đầu file là **vòng require**, `module.exports` một bên sẽ rỗng lúc
+  //   nạp. Gọi lúc chạy thì cả 2 module đã nạp xong.
+  // ⚠ Không truyền `dotVaiId`: lệnh gia công có thể gom nhiều đợt vải nhưng tem 13 là MỘT lượt nhận
+  //   chung cho cả lệnh (không tách theo đợt) ⇒ để `duLieuGhiInTem` lấy đợt đại diện, y như `printTem`.
+  if (temIdMoi) {
+    const { guiGhiInTem } = require('../production/production.service');
+    guiGhiInTem([{ temId: temIdMoi, dotVaiId: null, soLuongHuy: 0, soLuongThieu: 0 }], actorId);
+  }
   // Chỉ đẩy dòng chảy sang OQC khi đã nhận đủ; tem của các lần trước vẫn vào màn OQC bình thường
   // (danh sách OQC lọc theo SỔ CÁI tem `con_oqc > 0`, không phụ thuộc trạng thái lệnh).
   if (xong) {
@@ -1318,6 +1407,128 @@ async function confirmGiaCongToOqc(lenhId, { soLuong } = {}, actorId) {
   return {
     id: lenhId, ma_tem: maTem, stage: xong ? 'OQC' : 'GIA_CONG',
     so_luong: qty, da_chuyen: daChuyen + qty, con_lai: tong - (daChuyen + qty), hoan_tat: xong,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// NHẬN HÀNG GIA CÔNG THEO TỪNG CODE PHẦN (09/09/2026, nền: `tem.dot_vai_ve_id` mig 095)
+//
+// Trước đây hàng gia công nhận ở MỨC LỆNH: lệnh gom set 6 code phần chỉ có MỘT ô "còn lại" chung, nên
+// không biết code phần nào đã về, code phần nào chưa — mà nhà gia công trả hàng theo từng màu/kích.
+// Nay mỗi lượt nhận chọn tối đa `TOI_DA_IN_TEM` code phần, nhập SL cho từng cái ⇒ 1 phiếu + N tem, mỗi
+// tem gắn ĐỢT VẢI của đúng code phần đó. Phần in nào về đủ thì RỜI màn, các phần còn lại ở lại.
+//
+// ⚠⚠ TỐI ĐA 2 vì tờ decal chỉ có 2 khung tem (cùng ràng buộc với "in 1–2 tem/tờ" ở trang Sửa) — và
+//   1 lần bấm = 1 cửa sổ in, không được mở nhiều cửa sổ (trình duyệt CHẶN POPUP từ cửa sổ thứ 2).
+// ⚠⚠ GHI **1 DÒNG AUDIT CHO MỖI CODE PHẦN** (không phải 1 dòng cho cả lượt): nhờ vậy màn *Lịch sử
+//   chuyển* liệt kê đúng từng code phần và in lại được tem của riêng nó.
+// ⚠ MÃ TEM xin RIÊNG cho từng tem (mỗi lượt gọi ERP TIÊU MỘT SỐ) — lấy TRƯỚC transaction, SAU mọi
+//   guard, đúng luật đã ghi ở §6 "BA DÃY SỐ ĐỘC LẬP".
+const TOI_DA_IN_TEM = 2;
+
+async function nhanGiaCongTheoPhanIn(lenh, items, actorId) {
+  const lenhId = lenh.id;
+  if (items.length > TOI_DA_IN_TEM) {
+    throw new AppError(`Mỗi lần in chỉ chọn tối đa ${TOI_DA_IN_TEM} code phần (tờ tem có 2 khung)`,
+      { status: 422, errorCode: 'QUA_NHIEU_PHAN' });
+  }
+  // Phần còn lại của TỪNG code phần — nguồn tính giống hệt màn Gia công đang hiện, không tự tính lại.
+  const pinRows = await repo.giaCongPhanInRows([lenhId]);
+  const theoDot = new Map(pinRows.map((r) => [String(r.dot_vai_ve_id), r]));
+
+  const daXet = new Set();
+  const canhan = [];
+  for (const it of items) {
+    const key = String(it.dotVaiId);
+    const p = theoDot.get(key);
+    if (!p) {
+      throw new AppError('Code phần không thuộc lệnh gia công này', { status: 422, errorCode: 'PHAN_IN_LA' });
+    }
+    if (daXet.has(key)) {
+      throw new AppError(`Code phần ${p.ma_phan} bị chọn 2 lần`, { status: 422, errorCode: 'TRUNG_PHAN' });
+    }
+    daXet.add(key);
+    // ⚠⚠ `soLuong` = SL **ĐẠT** · `soLuongHuy` = SL **HỦY** (hàng hỏng nhà gia công trả về).
+    //   CẢ HAI đều là vải THỰC SỰ nhận về ⇒ **tổng đạt+hủy** mới là phần trừ vào "còn phải nhận".
+    //   Đạt được phép = 0 (cả lô hỏng), miễn tổng > 0.
+    const qty = it.soLuong == null || it.soLuong === '' ? p.con_lai_phan : Math.trunc(Number(it.soLuong));
+    const huy = it.soLuongHuy == null || it.soLuongHuy === '' ? 0 : Math.trunc(Number(it.soLuongHuy));
+    if (!Number.isFinite(qty) || qty < 0) {
+      throw new AppError(`Số lượng đạt của ${p.ma_phan} không hợp lệ`, { status: 422, errorCode: 'INVALID_QTY' });
+    }
+    if (!Number.isFinite(huy) || huy < 0) {
+      throw new AppError(`Số lượng hủy của ${p.ma_phan} không hợp lệ`, { status: 422, errorCode: 'INVALID_QTY' });
+    }
+    if (qty + huy <= 0) {
+      throw new AppError(`Nhập số lượng nhận của ${p.ma_phan} (đạt hoặc hủy) lớn hơn 0`,
+        { status: 422, errorCode: 'INVALID_QTY' });
+    }
+    if (qty + huy > p.con_lai_phan) {
+      throw new AppError(`Số lượng nhận của ${p.ma_phan} (đạt ${qty} + hủy ${huy} = ${qty + huy}) `
+        + `vượt phần còn lại (${p.con_lai_phan})`, { status: 422, errorCode: 'OVER_REMAINING' });
+    }
+    canhan.push({ pin: p, qty, huy });
+  }
+
+  // Sau lượt này lệnh đã nhận đủ chưa (để đổi trạng thái + đẩy dòng chảy sang OQC).
+  const tong = Number(lenh.so_luong_release) || 0;
+  const daChuyen = Number(lenh.da_chuyen) || 0;
+  // ⚠ Phần trừ vào "còn phải nhận" là ĐẠT + HỦY (vải đã về, dù một phần là phế).
+  const themLan = canhan.reduce((s, x) => s + x.qty + x.huy, 0);
+  const xong = daChuyen + themLan >= tong;
+
+  // Mã tem: mỗi code phần MỘT mã riêng. Lùi 2 nấc khi API tắt (giống nhánh nhận theo lệnh).
+  const maTems = [];
+  for (let i = 0; i < canhan.length; i += 1) {
+    maTems.push((await layBarcodeTem13(actorId))
+      || (await layBarcodeTem(actorId))
+      || (await productionRepo.nextMaTem()));
+  }
+
+  const ketQua = await withTransaction(async (client) => {
+    const maPhieu = await productionRepo.nextMaPhieuTx(client);
+    const phieuId = await productionRepo.createPhieuDone(client,
+      { lenhId, chuyenId: lenh.chuyen_id, maPhieu, soLuong: themLan }, actorId);
+    const ra = [];
+    for (let i = 0; i < canhan.length; i += 1) {
+      const { pin, qty, huy } = canhan[i];
+      const temId = await productionRepo.createTemGiaCongOqc(client,
+        { phieuId, maTem: maTems[i], soLuong: qty, slHuy: huy, dotVaiVeId: pin.dot_vai_ve_id }, actorId);
+      await client.query(
+        `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+         VALUES ('lenh_san_xuat', $1, 'GIA_CONG_CHUYEN_OQC', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`.replace(/\s+/g, ' '),
+        [String(lenhId), JSON.stringify({
+          ma_lenh: lenh.ma_lenh_san_xuat, so_luong: qty, so_luong_huy: huy, ma_tem: maTems[i],
+          ma_phan: pin.ma_phan, dot_vai_ve_id: pin.dot_vai_ve_id,
+          sl_release_phan: pin.sl_release_phan,
+          da_chuyen_phan: pin.da_chuyen_phan + qty + huy,
+          con_lai_phan: pin.con_lai_phan - qty - huy,
+          da_chuyen: daChuyen + themLan, con_lai: tong - (daChuyen + themLan), hoan_tat: xong,
+        }), actorId]
+      );
+      ra.push({ tem_id: temId, ma_tem: maTems[i], ma_phan: pin.ma_phan, so_luong: qty, so_luong_huy: huy });
+    }
+    if (xong) await productionRepo.setLenhTrangThai(client, lenhId, 'HOAN_TAT', actorId);
+    return ra;
+  });
+
+  // Báo ngược lên ERP từng tem — CHẠY NGẦM, không `await` (xem ghi chú ở nhánh nhận theo lệnh).
+  // ⚠ Truyền `dotVaiId` THẬT: mỗi tem nay đích danh 1 đợt vải, không phải "đợt đại diện" như trước.
+  const { guiGhiInTem } = require('../production/production.service');
+  guiGhiInTem(ketQua.map((t, i) => ({
+    temId: t.tem_id, dotVaiId: canhan[i].pin.dot_vai_ve_id, soLuongHuy: 0, soLuongThieu: 0,
+  })), actorId);
+
+  if (xong) {
+    await tracking.moveByLenh(lenhId, 'OQC', actorId);
+    await qaRepo.resolveReturnsMany('TEST_RUN', lenh.dot_vai_ids || []);
+  }
+  sockets.emit('workflow:updated', { lenhId, stage: xong ? 'OQC' : 'GIA_CONG', giaCong: true });
+  sockets.emit('dashboard:refresh', {});
+  return {
+    id: lenhId, stage: xong ? 'OQC' : 'GIA_CONG', hoan_tat: xong,
+    so_luong: themLan, da_chuyen: daChuyen + themLan, con_lai: tong - (daChuyen + themLan),
+    tems: ketQua, ma_tem: ketQua[0] && ketQua[0].ma_tem,
   };
 }
 
@@ -1384,9 +1595,10 @@ async function replan(lenhId, { chuyenId, ngayKeHoach, lyDo, tgBdKh, tgKtKh, slR
 
   const lenh = await repo.getLenhForReplan(lenhId);
   if (!lenh) throw new AppError('Lệnh sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
-  // Cho lập lại kế hoạch khi lệnh đang Test Run (RELEASE_1) HOẶC đã Release 2 — miễn chưa bắt đầu sản xuất.
-  if (!['RELEASE_1', 'RELEASE_2'].includes(lenh.trang_thai) || lenh.co_phieu) {
-    throw new AppError('Chỉ lập lại kế hoạch cho lệnh đang Test Run / đã Release 2 và chưa bắt đầu sản xuất',
+  // Cho lập lại kế hoạch khi lệnh đang Test Run (RELEASE_1) · đã Release 2 · hoặc ĐANG GIA CÔNG —
+  // miễn chưa bắt đầu sản xuất (chưa có phiếu; với lệnh gia công thì "chưa nhận lượt hàng nào về").
+  if (!['RELEASE_1', 'RELEASE_2', 'GIA_CONG'].includes(lenh.trang_thai) || lenh.co_phieu) {
+    throw new AppError('Chỉ lập lại kế hoạch cho lệnh đang Test Run / Release 2 / Gia công và chưa bắt đầu sản xuất',
       { status: 409, errorCode: 'NOT_REPLANNABLE' });
   }
 
@@ -1432,10 +1644,14 @@ async function replan(lenhId, { chuyenId, ngayKeHoach, lyDo, tgBdKh, tgKtKh, slR
   }
   const slCu = dsDot.reduce((a, d) => a + d.so_luong, 0);
 
+  // CHẶNG PHẢI KHỚP LOẠI CHUYỀN VỪA GÁN (chốt 04/09/2026) — xem `chuyenChangTheoChuyen`.
+  const changMoi = await chuyenChangTheoChuyen(lenh, newChuyen, dsDot, slCu);
+
   let slMoi = slCu;
   await withTransaction(async (client) => {
     await repo.updateLenhPlan(client, lenhId,
       { chuyenId: newChuyen, ngayKeHoach, tgBdKh: bdMoi, tgKtKh: ktMoi }, actorId);
+    if (changMoi) await repo.setLenhTrangThaiTx(client, lenhId, changMoi, actorId);
     if (items.length) slMoi = await repo.updateReleaseTx(client, lenhId, items, actorId);
     await repo.logPlanChange(client, lenhId, 'REPLAN',
       { chuyen_id: lenh.chuyen_id || null, ngay_ke_hoach: toDateStr(lenh.ngay_ke_hoach),
@@ -1446,11 +1662,42 @@ async function replan(lenhId, { chuyenId, ngayKeHoach, lyDo, tgBdKh, tgKtKh, slR
         ...(items.length ? { so_luong_release: slMoi } : {}) },
       actorId);
   });
-  sockets.emit('workflow:updated', { lenhId, stage: 'RELEASE_2', replan: true });
+  sockets.emit('workflow:updated', { lenhId, stage: changMoi || 'RELEASE_2', replan: true, giaCong: changMoi === 'GIA_CONG' || undefined });
   sockets.emit('dashboard:refresh', {});
   // Đổi SL release là đổi con số mà màn Sản xuất / dashboard đang đọc ⇒ báo luôn cho chúng tải lại.
   if (items.length) sockets.emit('production:updated', { lenhId });
-  return { id: lenhId, so_luong_release: slMoi };
+  return { id: lenhId, so_luong_release: slMoi, trang_thai: changMoi || lenh.trang_thai };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ĐỔI CHUYỀN Ở MÀN "LẬP KẾ HOẠCH LẠI" CÓ THỂ ĐỔI LUÔN CHẶNG CỦA LỆNH (chốt 04/09/2026).
+//
+// ⚠⚠ LỖI ĐÃ GẶP: `updateLenhPlan` chỉ ghi `chuyen_id`, KHÔNG đụng `trang_thai` ⇒ chuyển một lệnh sang
+//   **chuyền loại GIA_CONG** thì nó vẫn mang `RELEASE_1` ⇒ **hàng gia công nằm chình ình ở màn
+//   Test Run - QA** chờ QA test, trong khi hàng đã gửi ra ngoài xưởng và lẽ ra phải đậu ở màn
+//   Kế hoạch > Gia công. Chiều ngược lại cũng hỏng: lệnh `GIA_CONG` đổi về chuyền in trong xưởng vẫn
+//   giữ `GIA_CONG` ⇒ mãi không vào được dòng chảy in.
+//
+// Trả về mã chặng MỚI, hoặc `null` khi không phải đổi gì.
+// ⚠ Chỉ gọi cho lệnh **CHƯA CÓ PHIẾU** (guard `co_phieu` ở `replan` đã chặn) — có tem rồi mà đổi chặng
+//   là làm sai sổ cái.
+async function chuyenChangTheoChuyen(lenh, chuyenIdMoi, dsDot, tongSL) {
+  const laGiaCong = (await repo.getChuyenLoai(chuyenIdMoi)) === 'GIA_CONG';
+  if (laGiaCong) return lenh.trang_thai === 'GIA_CONG' ? null : 'GIA_CONG';
+  if (lenh.trang_thai !== 'GIA_CONG') return null; // chuyền thường → thường: giữ nguyên chặng
+
+  // GIA_CONG → chuyền in trong xưởng: quay lại dòng chảy, áp ĐÚNG luật đi tắt Test Run của
+  // `createDotSanXuat` (dùng `every` vì 1 lệnh có thể gộp nhiều đợt vải — trộn 1 đợt SO_LUONG là có
+  // hàng mới thật sự ⇒ vẫn phải test). Không chép luật ra chỗ mới: cùng `boTestTheoLoai`/`SL_NHO_BO_TEST`.
+  const ids = dsDot.map((d) => d.dot_vai_id);
+  const compose = ids.length ? await repo.getDotVaiForCompose(ids) : [];
+  const dangChay = compose.length
+    ? (await repo.phanInDangChay([...new Set(compose.map((r) => r.phan_in_id))])).length > 0
+    : false;
+  const lamLai = compose.some((r) => r.can_lam_lai_ready);
+  const boTheoLoai = compose.length > 0 && compose.every((r) => boTestTheoLoai(r));
+  const diTat = boTheoLoai || ((dangChay || tongSL < SL_NHO_BO_TEST) && !lamLai);
+  return diTat ? 'RELEASE_2' : 'RELEASE_1';
 }
 
 // Chi tiết 1 lệnh cho màn Lập kế hoạch lại: kế hoạch hiện tại + DANH SÁCH ĐỢT VẢI kèm SL release.

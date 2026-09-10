@@ -7,6 +7,10 @@ const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
 const planningRepo = require('../planning/planning.repository');
 const { caFromParts } = require('../../utils/ca');
+// Ghép tiền tố công đoạn vào mã tem (mã ERP 12 số → thay 2 số đầu; mã cũ `TEM…` → nối gạch).
+// Dùng để đặt `ma_tem` cho TEM CON nhãn 17 (mig 091).
+const { temCode } = require('../../utils/temPrefix');
+const { layBarcodeTem17 } = require('../../utils/erpTemBarcode');
 
 const num = (x) => Math.max(0, Number(x) || 0);
 
@@ -77,6 +81,33 @@ async function returnOqcGiaCong(t, lyDo, actorId) {
   };
 }
 
+// OQC trả về một TEM CON (nhãn 17, mig 091) ⇒ số lượng quay lại **chờ sửa của TEM GỐC**.
+// Đảo đúng 2 bút toán mà `recordSua` đã ghi lúc tách:
+//   tem con  `sl_kcs_dat -= qty`  (hết sạch thì HỦY tem con — nó không còn đại diện cho lô nào)
+//   tem gốc  `sl_sua_dat -= qty` + `sl_sua_tach -= qty`
+// ⇒ `con_sua` của tem gốc TĂNG đúng qty (về màn Sửa), còn `con_oqc_sua` vẫn 0 vì trừ song song
+//   cả 2 vế ⇒ không sinh hàng ma ở OQC.
+async function returnOqcTemCon(temCon, lyDo, actorId) {
+  const gocId = temCon.tem_goc_id;
+  const qty = Number(temCon.con_oqc) || 0;
+  if (qty <= 0) {
+    throw new AppError('Tem sửa (17) không còn phần chờ OQC để trả về', { status: 409, errorCode: 'NO_OQC' });
+  }
+  await withTransaction(async (client) => {
+    await repo.congSlTemCon(client, temCon.id, -qty, actorId);
+    await repo.huyTemConNeuRong(client, temCon.id, actorId);
+    await repo.addSuaLedger(client, gocId, { dat: -qty, huy: 0 }, actorId);
+    await repo.congSuaTach(client, gocId, -qty, actorId);
+    await repo.recomputeTemStageMany(client, [temCon.id, gocId], actorId);
+  });
+  // Badge + lý do phải nằm trên TEM GỐC — đó mới là dòng hiện ở màn Sửa.
+  await repo.insertQcTraVe({ loai: 'OQC_SUA', temId: gocId, lyDo }, actorId);
+  await tracking.moveByTem(gocId, 'SUA', actorId);
+  sockets.emit('quality:updated', { temId: gocId, stage: 'OQC', next: 'TRA_VE_SUA' });
+  sockets.emit('dashboard:refresh', {});
+  return { tem_id: gocId, tem_con_id: temCon.id, nguon: 'SUA', so_luong: qty, next: 'TRA_VE_SUA' };
+}
+
 async function returnOqcToKcs(temId, body, actorId) {
   const nguon = body.nguon === 'SUA' ? 'SUA' : 'KCS';
   const tram = nguon === 'SUA' ? 'Sửa' : 'KCS';
@@ -98,6 +129,13 @@ async function returnOqcToKcs(temId, body, actorId) {
   if (!lyDo) throw new AppError(`Nhập lý do trả về ${tram}`, { status: 422, errorCode: 'NO_LY_DO' });
   const tem = await repo.getTemLedger(temId);
   if (!tem) throw new AppError('Tem không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+
+  // ⚠⚠⚠ TEM CON (nhãn 17 — hàng sửa đạt, mig 091) rẽ nhánh RIÊNG, bỏ qua `nguon` FE gửi lên.
+  //   Tem con mang số lượng ở `sl_kcs_dat` nên màn OQC hiện nó là nguồn "KCS"; đi theo nhánh KCS
+  //   thường thì `reduceKcsDat` sẽ trừ số lượng mà **KHÔNG trả nó về đâu cả** — `con_kcs` của tem con
+  //   bị kẹp 0 (`conKcsSql`) nên hàng BIẾN MẤT KHỎI SỔ CÁI, không ai thấy để xử lý.
+  //   Đúng nghĩa nghiệp vụ: hàng đã sửa mà OQC đánh rớt thì phải quay lại **CHỜ SỬA của tem GỐC**.
+  if (tem.tem_goc_id) return returnOqcTemCon(tem, lyDo, actorId);
 
   // Phần chờ OQC tách theo nguồn (mig 047 bắt buộc ⇒ 2 sub-counter luôn có giá trị).
   const con = Number(nguon === 'SUA' ? tem.con_oqc_sua : tem.con_oqc_kcs) || 0;
@@ -151,22 +189,39 @@ async function recordKcs(temId, body, actorId) {
   if (conKcs <= 0) throw new AppError('Tem không còn phần chờ KCS', { status: 409, errorCode: 'DONE' });
 
   const dat = num(body.soLuongDat);                          // đạt → chờ OQC
-  const hu = num(body.soLuongHu);                            // hư (khuyết tật)
-  const quyetDinhSua = Math.min(num(body.soLuongSua), hu);   // ≤ hư (mặc định = hư) → chờ sửa
-  const huyTrucTiep = num(body.soLuongHuy);                  // hủy nhập trực tiếp → loại
+  const hu = num(body.soLuongHu);                            // hư (khuyết tật) → TOÀN BỘ vào chờ sửa
   const mau = num(body.soLuongMau);                          // mẫu: ghi nhận tham khảo, KHÔNG tính vào SL kiểm
   const thieu = num(body.soLuongThieu);
   const du = num(body.soLuongDu);
   const chenh = du - thieu;                                  // dư(+)/thiếu(−) → đổi TỔNG CẦN KIỂM = so_luong + Σchênh
 
+  // ⚠⚠ ĐÃ BỎ 2 Ô "QUYẾT ĐỊNH SỬA" + "SỐ LƯỢNG HỦY" (chốt 04/09/2026): KCS chỉ chốt ĐẠT/HƯ, chia
+  //   sửa–hủy theo từng loại lỗi làm ở trang *Sản xuất › Phân loại lỗi* (mig 075 — số ở đó là CHÍNH
+  //   THỨC, ghi ĐÈ `sl_kcs_sua`/`sl_kcs_huy`). ⇒ ở đây TOÀN BỘ hư vào `sl_kcs_sua` (chờ sửa), đúng
+  //   hành vi cũ khi "Quyết định sửa" mặc định = hư. Bất biến của mig 075 vẫn giữ: Σ(sửa+hủy) = SL hư.
+  // ⚠ VẪN NHẬN `soLuongSua`/`soLuongHuy` nếu ai đó gọi API trực tiếp (tương thích ngược) — nhưng FE
+  //   không gửi nữa, và chúng KHÔNG tham gia công thức cân đối bên dưới.
+  const quyetDinhSua = body.soLuongSua === undefined ? hu : Math.min(num(body.soLuongSua), hu);
+  const huyTrucTiep = num(body.soLuongHuy);
   const huyTaiKcs = (hu - quyetDinhSua) + huyTrucTiep;       // phần hư không sửa + hủy trực tiếp → loại
-  // SL kiểm được lần này = đạt + hư + hủy (= đạt + sửa + hủyTạiKcs). Mẫu không tính; ≤ SL còn lại (± chênh lệch).
+
+  // SL kiểm được lần này = đạt + hư + hủy. Mẫu không tính.
   const kiem = dat + hu + huyTrucTiep;
-  if (kiem <= 0) throw new AppError('Nhập số lượng kiểm (đạt/hư/hủy)', { status: 422, errorCode: 'EMPTY' });
+  if (kiem <= 0) throw new AppError('Nhập số lượng kiểm (đạt/hư)', { status: 422, errorCode: 'EMPTY' });
   const conSauChenh = conKcs + chenh; // dư làm tăng, thiếu làm giảm phần còn được kiểm
-  if (kiem > conSauChenh) {
-    throw new AppError(`SL kiểm lần này (${kiem}) vượt SL còn lại (${conSauChenh}${chenh ? ` = còn ${conKcs} ${chenh > 0 ? '+ dư ' + chenh : '− thiếu ' + -chenh}` : ''})`,
-      { status: 422, errorCode: 'OVER' });
+
+  // ⚠⚠ CÂN ĐỐI BẮT BUỘC: **SL cần kiểm + dư − thiếu = đạt + hư** — lệch dù 1 pcs là KHÔNG lưu.
+  //   Trước đây chỉ chặn "vượt SL còn lại", nhập THIẾU thì lặng lẽ coi là "kiểm lần sau" nên số đạt/hư
+  //   sai mà không ai biết (vd tem 50, nhập đạt 45 + hư 3 = 48 vẫn lưu, mất dấu 2 pcs).
+  //   Ví dụ người dùng đưa: kiểm 50 · đạt 45 · hư 6 ⇒ +1 (chặn) · hư 3 ⇒ −2 (chặn).
+  if (kiem !== conSauChenh) {
+    const lech = kiem - conSauChenh;
+    throw new AppError(
+      `Chênh lệch ${lech > 0 ? '+' : ''}${lech} — phải bằng 0 mới lưu được. `
+      + `Cần kiểm ${conKcs}${du ? ` + dư ${du}` : ''}${thieu ? ` − thiếu ${thieu}` : ''} = ${conSauChenh}, `
+      + `đã nhập đạt ${dat} + hư ${hu}${huyTrucTiep ? ` + hủy ${huyTrucTiep}` : ''} = ${kiem}`,
+      { status: 422, errorCode: 'LECH_CAN_DOI' }
+    );
   }
 
   const data = {
@@ -185,7 +240,7 @@ async function recordKcs(temId, body, actorId) {
   await repo.resolveReturns('OQC', temId); // KCS làm lại xong → tắt cờ "bị OQC trả về"
   sockets.emit('quality:updated', { temId, stage: 'KCS' });
   sockets.emit('dashboard:refresh', {});
-  const conLai = conSauChenh - kiem; // SL chưa kiểm còn lại (đã tính chênh lệch)
+  const conLai = conSauChenh - kiem; // luôn = 0 từ 04/09 (cân đối bắt buộc); giữ để không đổi hình dạng trả về
   return { tem_id: temId, next: 'KCS', so_luong_dat: dat, so_luong_sua: quyetDinhSua, so_luong_huy: huyTaiKcs, con_kcs: conLai };
 }
 
@@ -269,17 +324,59 @@ async function recordSua(temId, body, actorId) {
 
   const ghiChu = [body.ghiChu, huyThang > 0 ? `Hủy thẳng: ${huyThang}` : null].filter(Boolean).join(' · ') || null;
 
+  // ⚠⚠⚠ MÃ TEM 17 XIN RIÊNG CỦA ERP (chốt 06/09/2026) — KHÔNG còn suy từ mã tem gốc bằng
+  //   `temCode(ma,17)`. Liên kết "tem 17 này là hàng sửa đạt của tem 15 kia" do cột `tem.tem_goc_id`
+  //   (mig 091) gánh, nên mã rời nhau hoàn toàn không mất thông tin gì.
+  // ⚠ CHỈ XIN KHI THẬT SỰ TẠO TEM CON: mỗi tem gốc chỉ có ĐÚNG 1 tem con, sửa nhiều lần thì CỘNG DỒN
+  //   ⇒ tra trước ngoài transaction để không tiêu số của ERP một cách vô ích (mỗi lần gọi = 1 số).
+  // ⚠ Gọi TRƯỚC transaction (luật chung của `layBarcodeTem*`): giữ transaction hở suốt thời gian chờ
+  //   HTTP sẽ khóa bảng `tem`, mà lỗi mạng còn abort cả transaction.
+  // ⚠ `null` = API bị TẮT ở *Hệ thống > Cài đặt API* ⇒ lùi về cách cũ (mã suy từ tem gốc).
+  const conTruoc = suaDat > 0 ? await repo.getTemConCuaGoc(temId) : null;
+  const maTem17 = suaDat > 0 && !conTruoc ? await layBarcodeTem17(actorId) : null;
+
+  let temConId = null;
   await withTransaction(async (client) => {
     await repo.insertSua(client, temId, { soLuongSua: total, soLuongSuaDat: suaDat, soLuongSuaHuy: suaHuy, ghiChu }, actorId);
     // Sửa đạt → quay lại pool OQC; sửa hủy → hủy.
     await repo.addSuaLedger(client, temId, { dat: suaDat, huy: suaHuy }, actorId);
-    await repo.recomputeTemStage(client, temId, actorId);
+    // ⚠⚠ TÁCH PHẦN SỬA ĐẠT RA **TEM CON** (nhãn 17 — mig 091). Trước đây tem 17 chỉ là phần
+    //   `con_oqc_sua` ẩn trong chính tem gốc, mã `17…` do FE ghép lúc hiện/in ⇒ không truy được
+    //   "lô sửa này gồm bao nhiêu" như một đơn vị độc lập.
+    // ⚠ `sl_sua_tach` của tem GỐC tăng đúng bằng phần đã tách ⇒ `con_oqc_sua` về 0, số lượng nằm
+    //   trọn ở tem con, KHÔNG bị đếm 2 lần ở OQC/Giao.
+    if (suaDat > 0) {
+      await repo.congSuaTach(client, temId, suaDat, actorId);
+      const con = await repo.getTemConCuaGoc(temId, client);
+      // ⚠ Tra LẠI trong transaction (2 người cùng bấm sửa 1 tem): tem con vừa được lượt kia tạo thì
+      //   CỘNG DỒN vào nó, mã 17 vừa xin bị bỏ phí — chấp nhận, giống ca transaction rollback.
+      if (con) {
+        temConId = con.id;
+        if (maTem17) console.warn(`[tem-17] Tem con của ${tem.ma_tem} đã tồn tại — bỏ phí mã vừa xin: ${maTem17}`);
+        await repo.congSlTemCon(client, con.id, suaDat, actorId);
+      } else {
+        temConId = await repo.taoTemCon(client, {
+          temGocId: temId,
+          phieuId: tem.phieu_san_xuat_id,
+          // Mã ERP riêng; API tắt ⇒ lùi về cách cũ (suy từ mã tem gốc) để không chặn việc xác nhận sửa.
+          maTem: maTem17 || temCode(tem.ma_tem, 17),
+          soLuong: suaDat,
+        }, actorId);
+      }
+    }
+    // Tính lại trạng thái CẢ HAI: tem gốc (hết phần chờ sửa thì rời màn Sửa) và tem con (vào CHO_OQC).
+    await repo.recomputeTemStageMany(client, [temId, temConId].filter(Boolean), actorId);
   });
   await tracking.moveByTem(temId, 'SUA', actorId);
   await repo.resolveReturns('OQC_SUA', temId); // Sửa làm lại xong → tắt cờ "bị OQC trả về"
   sockets.emit('quality:updated', { temId, stage: 'SUA' });
   sockets.emit('dashboard:refresh', {});
-  return { tem_id: temId, next: 'SUA', so_luong_sua_dat: suaDat, con_sua: conSua - total };
+  return {
+    tem_id: temId, next: 'SUA', so_luong_sua_dat: suaDat, con_sua: conSua - total,
+    tem_con_id: temConId,
+    // Mã tem 17 THẬT (ERP cấp) để FE hiện/in đúng — đừng suy lại bằng `temCode(ma_goc, 17)`.
+    ma_tem_17: temConId ? (maTem17 || (conTruoc && conTruoc.ma_tem) || temCode(tem.ma_tem, 17)) : null,
+  };
 }
 
 // ----- HỦY TEM SỬA — trang "Hủy lệnh xác nhận" -----
@@ -530,9 +627,29 @@ async function cancelSua(suaId, lyDo, actorId) {
   if (N(r.sl_kcs_dat) + newDat < N(r.sl_oqc_dat)) {
     throw new AppError('Phần sửa đạt của lần này đã đi tiếp OQC — hủy xác nhận OQC trước', { status: 409, errorCode: 'CONSUMED_OQC' });
   }
+  // ⚠⚠ ĐẢO CẢ TEM CON (mig 091) — phần sửa đạt đã được TÁCH sang tem 17 riêng, nên hủy lần sửa mà
+  //   chỉ trừ `sl_sua_dat` của tem gốc là **để lại số lượng mồ côi trên tem con** (vẫn nằm ở OQC).
+  //   Guard đọc NGOÀI transaction (chỉ SELECT) rồi kiểm hết trước khi ghi bất cứ thứ gì.
+  let temCon = null;
+  if (dat > 0) {
+    temCon = await repo.getTemConCuaGoc(r.tem_id);
+    const slCon = N(temCon && temCon.sl_kcs_dat);
+    if (!temCon || slCon < dat) {
+      throw new AppError('Không tìm thấy đủ số lượng trên tem sửa (17) để đảo — không hủy được lần Sửa này',
+        { status: 409, errorCode: 'LEDGER' });
+    }
+    if (slCon - dat < N(temCon.sl_oqc_dat)) {
+      throw new AppError('Tem sửa (17) của lần này đã qua OQC — hủy xác nhận OQC trước', { status: 409, errorCode: 'CONSUMED_OQC' });
+    }
+  }
   await withTransaction(async (client) => {
     await repo.addSuaLedger(client, r.tem_id, { dat: -dat, huy: -huy }, actorId);
-    await repo.recomputeTemStage(client, r.tem_id, actorId);
+    if (dat > 0 && temCon) {
+      await repo.congSuaTach(client, r.tem_id, -dat, actorId);
+      await repo.congSlTemCon(client, temCon.id, -dat, actorId);
+      await repo.huyTemConNeuRong(client, temCon.id, actorId); // hết sạch SL ⇒ tem 17 biến mất khỏi OQC
+    }
+    await repo.recomputeTemStageMany(client, [r.tem_id, temCon && temCon.id].filter(Boolean), actorId);
   });
   await repo.logCancelQc('sua', suaId, r.tem_id, r.ma_tem, lyDo, actorId);
   await tracking.moveByTem(r.tem_id, 'SUA', actorId);

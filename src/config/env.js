@@ -62,6 +62,14 @@ const env = {
     barcodeTemTimeoutMs: parseInt(process.env.ERP_BARCODE_TEM_TIMEOUT_MS || '10000', 10),
     // Số lần thử lại khi lấy mã tem lỗi; hết lượt thì CHẶN in và báo rõ (không lùi về mã `TEM…` cũ).
     barcodeTemRetry: parseInt(process.env.ERP_BARCODE_TEM_RETRY || '3', 10),
+    // ─── MÃ TEM RIÊNG CHO 2 CÔNG ĐOẠN (chốt 06/09/2026) ──────────────────────
+    // ⚠⚠ Tem 17 (sửa đạt) và tem 13 (hàng gia công về) KHÔNG còn suy từ mã tem 15 bằng cách thay 2
+    //   số đầu — mỗi loại XIN MÃ RIÊNG của ERP để 2 bên đối soát được từng nhãn giấy.
+    //   Liên kết "tem 17 này là hàng sửa đạt của tem 15 kia" nay do cột `tem.tem_goc_id` (mig 091)
+    //   gánh, KHÔNG còn nằm trong chuỗi mã ⇒ ĐỪNG suy quan hệ từ `ma_tem` nữa.
+    // ⚠ Dùng chung `barcodeTemTimeoutMs`/`barcodeTemRetry`: cùng bản chất (gọi nhẹ, người đang đứng chờ).
+    barcodeTem17Url: process.env.ERP_BARCODE_TEM_17_URL || `${ERP_GOC}/barcode-tem-17`,
+    barcodeTem13Url: process.env.ERP_BARCODE_TEM_13_URL || `${ERP_GOC}/barcode-tem-13`,
     // API BÁO NGƯỢC LÊN ERP mỗi lần in tem (proc `MES_spr_MES2SF0`) — chiều ĐẨY duy nhất của hệ.
     // ⚠⚠ MẶC ĐỊNH SUY TỪ URL ĐỒNG BỘ (xem ghi chú đầu file) — đừng hardcode host lại ở đây.
     ghiInTemUrl: process.env.ERP_GHI_IN_TEM_URL || `${ERP_GOC}/ghi-in-tem`,
@@ -72,6 +80,25 @@ const env = {
     ghiInTemRetry: parseInt(process.env.ERP_GHI_IN_TEM_RETRY || '3', 10),
     // Tắt nhanh khi ERP bảo trì mà không phải sửa code/deploy lại.
     ghiInTemEnabled: String(process.env.ERP_GHI_IN_TEM_ENABLED || 'true').toLowerCase() === 'true',
+    // ─── 3 API PHIẾU GIAO / PHÂN LOẠI LỖI (thêm 04/09/2026) ───────────────────
+    // ⚠⚠ CÙNG LUẬT VỚI 2 API TRÊN: mặc định SUY TỪ `ERP_GOC` (host của URL đồng bộ), **KHÔNG hardcode
+    //   host** — sự cố 11/08/2026 (prod không in được tem) chính là do một URL bị ghim cứng địa chỉ LAN
+    //   trong khi server public đi bằng host khác. Muốn đổi thì đặt biến `.env` của môi trường đó.
+    // Xin ID phiếu giao từ ERP (giống `barcode-tem`: mỗi lần gọi TIÊU MỘT SỐ) — gọi khi TẠO phiếu giao.
+    layIdPhieuGiaoUrl: process.env.ERP_LAY_ID_PHIEU_GIAO_URL || `${ERP_GOC}/lay-id-phieu-giao`,
+    layIdPhieuGiaoTimeoutMs: parseInt(process.env.ERP_LAY_ID_PHIEU_GIAO_TIMEOUT_MS || '10000', 10),
+    layIdPhieuGiaoRetry: parseInt(process.env.ERP_LAY_ID_PHIEU_GIAO_RETRY || '3', 10),
+    // Đẩy dữ liệu phiếu giao sang ERP (chiều ĐẨY, chạy ngầm — không chặn thao tác giao hàng).
+    guiPhieuGiaoUrl: process.env.ERP_GUI_PHIEU_GIAO_URL || `${ERP_GOC}/gui-erp-phieu-giao`,
+    guiPhieuGiaoTimeoutMs: parseInt(process.env.ERP_GUI_PHIEU_GIAO_TIMEOUT_MS || '10000', 10),
+    guiPhieuGiaoRetry: parseInt(process.env.ERP_GUI_PHIEU_GIAO_RETRY || '3', 10),
+    guiPhieuGiaoEnabled: String(process.env.ERP_GUI_PHIEU_GIAO_ENABLED || 'true').toLowerCase() === 'true',
+    // Đẩy dữ liệu phân loại lỗi sang ERP (chiều ĐẨY, chạy ngầm).
+    guiPhanLoaiLoiUrl: process.env.ERP_GUI_PHAN_LOAI_LOI_URL || `${ERP_GOC}/gui-erp-phan-loai-loi`,
+    guiPhanLoaiLoiTimeoutMs: parseInt(process.env.ERP_GUI_PHAN_LOAI_LOI_TIMEOUT_MS || '10000', 10),
+    guiPhanLoaiLoiRetry: parseInt(process.env.ERP_GUI_PHAN_LOAI_LOI_RETRY || '3', 10),
+    guiPhanLoaiLoiEnabled: String(process.env.ERP_GUI_PHAN_LOAI_LOI_ENABLED || 'true').toLowerCase() === 'true',
+
     // Bật/tắt job tự đồng bộ theo chu kỳ (mặc định 5 phút/lần).
     syncEnabled: String(process.env.ERP_SYNC_ENABLED || 'true').toLowerCase() === 'true',
     // Chu kỳ tự đồng bộ (phút). Mặc định 5 phút/lần (sàn tối thiểu 5 — xem jobs/erpSync.job.js).
