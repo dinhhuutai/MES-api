@@ -1,6 +1,12 @@
 'use strict';
 
 const { query } = require('../../config/db');
+// ⚠⚠ BẮT BUỘC — `updateReleaseTx` ném `BELOW_PRINTED`/`DOT_VAI_LA` bằng AppError. Thiếu dòng này thì
+//   guard biến thành `ReferenceError: AppError is not defined` (500 "Lỗi hệ thống") thay vì 409/422 có
+//   thông điệp. Lỗi sống ẩn từ 20/08/2026: `printed` luôn = 0 vì màn Lập kế hoạch lại chỉ nhận lệnh
+//   CHƯA có phiếu ⇒ nhánh đó chưa bao giờ chạy. Kiểm thực 10/09/2026 bắt được ngay khi mở màn này cho
+//   lệnh gia công ĐÃ nhận hàng về (lúc đó `printed` = Σ tem > 0).
+const AppError = require('../../utils/AppError');
 const { lenhPhanInMatch } = require('../../utils/search');
 // Hiển thị theo PHƯƠNG ÁN IN — cấu hình động từng trang (mig 067), mặc định BẬT HẾT = không lọc.
 const { dkTrang } = require('../../utils/phuongAnIn');
@@ -674,9 +680,18 @@ async function getLenhBasic(lenhId) {
 // ⚠⚠ **GIA_CONG PHẢI CÓ MẶT** (chốt 04/09/2026): hàng gửi đi gia công cũng cần dời ngày / đổi chuyền /
 //   sửa SL như mọi lệnh khác, mà trước đây danh sách chỉ lọc `RELEASE_1`/`RELEASE_2` nên **không có
 //   đường nào lập lại kế hoạch cho nó** — muốn sửa phải hủy lệnh rồi release lại từ đầu.
-// ⚠ Điều kiện "chưa có phiếu sản xuất" GIỮ NGUYÊN cho cả 3 trạng thái ⇒ lệnh gia công **đã nhận hàng
-//   về một phần** (mỗi lượt nhận sinh 1 phiếu + 1 tem) sẽ KHÔNG hiện ở đây — đúng, vì lúc đó đã có
-//   tem đi tiếp sang OQC, đổi chuyền/SL sẽ làm sai sổ cái. Xem `GIA_CONG_DA_CHUYEN`.
+// ⚠⚠⚠ LỆNH GIA CÔNG **ĐÃ NHẬN HÀNG VỀ MỘT PHẦN VẪN PHẢI HIỆN** (chốt 10/09/2026 — người dùng báo
+//   "có phần in ở màn Gia công mà không thấy ở Lập kế hoạch lại"). Mỗi lượt nhận hàng sinh 1 phiếu +
+//   1 tem, mà điều kiện "chưa có phiếu" áp chung cho cả 3 trạng thái ⇒ lệnh gia công vừa nhận lượt
+//   ĐẦU TIÊN là **biến mất khỏi màn này ngay**, trong khi phần chưa nhận vẫn còn ở nhà gia công và
+//   vẫn cần dời ngày / đổi nhà gia công. Đo prod 10/09: 1 lệnh (`LSX0342`, 3 phần in gom set, nhận
+//   11/12) đang bị ẩn — con số này sẽ TĂNG VỌT sau khi deploy mig 095 (nhận hàng theo từng code phần
+//   ⇒ lượt nhận đầu tiên đã sinh phiếu).
+// ⚠ Lệnh IN THƯỜNG (`RELEASE_1`/`RELEASE_2`) có phiếu = đang chạy máy ⇒ GIỮ NGUYÊN điều kiện chặn.
+// ⚠ Trả thêm `co_phieu` để FE cảnh báo + service siết đúng chỗ: lệnh gia công đã có tem thì
+//   `replan` CHỈ cho dời ngày/giờ và đổi sang chuyền gia công khác — xem guard ở `planning.service`.
+// ⚠ `so_phan_in` LỌC `pin.dang_hoat_dong` để khớp `phanInRowsByLenh` (`phan_in_list`): lệch nhau thì
+//   badge ghi "N phần in" mà bảng chỉ vẽ N−1 dòng con (đo prod: 2 lệnh đang lệch).
 async function listReplanCandidates({ search = '', offset = 0, limit = 50 }) {
   const dkPain = await dkTrang('KH_REPLAN', 'lenh', 'ls.id');
   const FROM = `
@@ -685,12 +700,14 @@ async function listReplanCandidates({ search = '', offset = 0, limit = 50 }) {
     ${PHAN_INFO_LATERAL}
     WHERE ls.trang_thai IN ('RELEASE_1','RELEASE_2','GIA_CONG')
       AND ${dkPain}
-      AND NOT EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = ls.id)
+      AND (ls.trang_thai = 'GIA_CONG'
+           OR NOT EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = ls.id))
       AND ($1 = '' OR ls.ma_lenh_san_xuat ~* $1 OR ${lenhPhanInMatch('ls.id', '$1')})`;
   const dataSql = `
     SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.ngay_ke_hoach, ls.chuyen_id, ls.trang_thai,
            ls.tg_bd_kh, ls.tg_kt_kh,
            (${lenhStageCase('ls.id', 'ls.trang_thai')}) AS giai_doan_hien_tai,
+           EXISTS (SELECT 1 FROM phieu_san_xuat ps2 WHERE ps2.lenh_san_xuat_id = ls.id) AS co_phieu,
            cs.ma_chuyen, cs.ten_chuyen,
            info.ten_khach_hang, info.ma_don_hang, info.ma_hang,
            info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan, info.tinh_chat_in,
@@ -698,7 +715,7 @@ async function listReplanCandidates({ search = '', offset = 0, limit = 50 }) {
            info.so_luong_don_hang, info.so_luong_vai_ve, info.ngay_vai_ve, info.han_giao_hang,
            info.loai_dot_vai, info.nha_gia_cong,
            (SELECT count(*) FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id)::int AS so_dot_vai,
-           (SELECT count(DISTINCT dv2.phan_in_id) FROM lenh_sx_dot_vai lsd2 JOIN dot_vai_ve dv2 ON dv2.id = lsd2.dot_vai_ve_id WHERE lsd2.lenh_san_xuat_id = ls.id)::int AS so_phan_in
+           (SELECT count(DISTINCT dv2.phan_in_id) FROM lenh_sx_dot_vai lsd2 JOIN dot_vai_ve dv2 ON dv2.id = lsd2.dot_vai_ve_id JOIN phan_in pin2 ON pin2.id = dv2.phan_in_id AND pin2.dang_hoat_dong WHERE lsd2.lenh_san_xuat_id = ls.id)::int AS so_phan_in
     ${FROM}
     ORDER BY ls.ngay_ke_hoach NULLS LAST, ls.created_date
     LIMIT $2 OFFSET $3`;
@@ -735,7 +752,7 @@ async function listGiaCongLenh({ search = '', offset = 0, limit = 50 }) {
            ${GIA_CONG_DA_CHUYEN} AS da_chuyen,
            (ls.so_luong_release - ${GIA_CONG_DA_CHUYEN})::int AS con_lai,
            (SELECT count(*) FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id)::int AS so_dot_vai,
-           (SELECT count(DISTINCT dv2.phan_in_id) FROM lenh_sx_dot_vai lsd2 JOIN dot_vai_ve dv2 ON dv2.id = lsd2.dot_vai_ve_id WHERE lsd2.lenh_san_xuat_id = ls.id)::int AS so_phan_in
+           (SELECT count(DISTINCT dv2.phan_in_id) FROM lenh_sx_dot_vai lsd2 JOIN dot_vai_ve dv2 ON dv2.id = lsd2.dot_vai_ve_id JOIN phan_in pin2 ON pin2.id = dv2.phan_in_id AND pin2.dang_hoat_dong WHERE lsd2.lenh_san_xuat_id = ls.id)::int AS so_phan_in
     ${FROM}
     ORDER BY ls.ngay_ke_hoach NULLS LAST, ls.created_date
     LIMIT $2 OFFSET $3`;
@@ -1484,12 +1501,16 @@ async function logLenhCancel(lenhId, maLenh, lyDo, actorId) {
   );
 }
 
+// ⚠ `da_nhan` = SL hàng gia công ĐÃ nhận về (Σ tem non-HUY). Chỉ có nghĩa với lệnh `GIA_CONG`; dùng
+//   để (a) service chặn hạ SL release xuống dưới mức đã nhận, (b) SidePanel hiện "đã nhận x/y".
+//   Lệnh in thường luôn = 0 ở màn này (có phiếu là đã bị loại khỏi danh sách).
 async function getLenhForReplan(lenhId) {
   const { rows } = await query(
     `SELECT ls.id, ls.ma_lenh_san_xuat, ls.trang_thai, ls.chuyen_id, ls.ngay_ke_hoach,
-            ls.tg_bd_kh, ls.tg_kt_kh,
-            EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = ls.id) AS co_phieu
-     FROM lenh_san_xuat ls WHERE ls.id = $1`,
+            ls.so_luong_release, ls.tg_bd_kh, ls.tg_kt_kh,
+            EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = ls.id) AS co_phieu,
+            ${GIA_CONG_DA_CHUYEN} AS da_nhan
+     FROM lenh_san_xuat ls WHERE ls.id = $1`.replace(/\s+/g, ' '),
     [lenhId]
   );
   return rows[0] || null;
@@ -1522,7 +1543,9 @@ async function getReplanDotVai(lenhId) {
 // Ghi SL RELEASE mới cho từng (lệnh, đợt vải) rồi tính lại `lenh_san_xuat.so_luong_release = Σ`.
 // ⚠⚠ CÙNG LUẬT với `manualentry.repository.updateReleaseTx` (trang *Cập nhật SL nhận vải / release*)
 //   — nhưng thêm TRẦN TRÊN (`toi_da`) mà hàm kia không có, vì màn này cho NÂNG số lượng lên.
-//   Guard `BELOW_PRINTED` giữ nguyên cho chắc, dù lệnh replan luôn chưa có phiếu nên `printed` = 0.
+// ⚠⚠ `BELOW_PRINTED` NAY CHẠY THẬT (10/09/2026): từ khi màn Lập kế hoạch lại nhận cả lệnh GIA CÔNG đã
+//   nhận hàng về một phần, `printed` = Σ tem đã nhận > 0 ⇒ đây là chốt chặn hạ SL release xuống dưới
+//   mức đã nhận về. Trước đó nhánh này là code chết (lệnh replan luôn chưa có phiếu).
 // ⚠ Chạy TRONG transaction của `replan` để đổi chuyền/ngày/SL là một thao tác duy nhất.
 async function updateReleaseTx(client, lenhId, items, actorId) {
   const cu = (await client.query(

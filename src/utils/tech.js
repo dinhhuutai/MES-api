@@ -71,13 +71,21 @@ function techDoneSqlByPin(pinExpr) {
 // `nguoi_xac_nhan_id = NULL` + `ghi_chu` nêu lý do. Nếu cứ `LEFT JOIN nguoi_dung` như cũ thì cột
 // "Người" hiện Ô TRỐNG — người dùng không hiểu là chưa ai làm hay hệ thống làm.
 //
-// ⚠⚠ CHỈ DÙNG Ở QUERY ĐÃ LỌC `trang_thai='DAT'`. Dòng CHƯA xác nhận cũng có `nguoi_xac_nhan_id`
+// ⚠⚠⚠ CHỈ DÙNG Ở QUERY ĐÃ LỌC `trang_thai='DAT'`. Dòng CHƯA xác nhận cũng có `nguoi_xac_nhan_id`
 //   NULL ⇒ áp vào danh sách chưa lọc sẽ hiện "Hệ thống (tự động)" cho mọi mục chưa ai đụng — sai nặng.
-// ⚠ Bám vào `ghi_chu IS NOT NULL` chứ không phải chỉ `ho_ten IS NULL`: dữ liệu CŨ (trước bản vá) cũng
-//   có dòng NULL người mà không có ghi chú — những dòng đó để trống như trước, không bịa nguồn gốc.
+//   (`technical.getResults` CỐ Ý không dùng helper này vì nó trả cả mục chưa xác nhận.)
+// ⚠⚠ NHẬN DIỆN = `ho_ten IS NULL`, KHÔNG dùng `ghi_chu` (đổi 10/09/2026). Chốt cũ *"bám `ghi_chu` để
+//   không bịa nguồn gốc cho dòng cũ"* làm **350/770 dòng hiện Ô TRỐNG** — người đọc không phân biệt
+//   được "chưa ai làm" với "hệ thống làm", đúng thứ cột này sinh ra để trả lời. Đo prod 10/09: trong
+//   **770 dòng DAT có `nguoi_xac_nhan_id` NULL ở trạm READY, 0 dòng nào KHÔNG thuộc phần in có đợt vải
+//   `kt_can_kiem_tra = false`** ⇒ NULL-người trên dòng DAT **luôn** là hệ thống tự đặt, không có ngoại lệ.
+//   Cùng dấu hiệu mà `readyTuDongSql` bên dưới đang dùng ⇒ 2 chỗ nay nhất quán.
+// ⚠ `kqAlias` GIỮ trong chữ ký (mọi call-site đang truyền đủ 2) — đừng bỏ, có thể cần lại khi `ghi_chu`
+//   đã phủ hết dữ liệu và muốn phân biệt nhiều nguồn tự động khác nhau.
 const NHAN_HE_THONG = 'Hệ thống (tự động)';
+// eslint-disable-next-line no-unused-vars
 const nguoiXacNhanSql = (ndAlias, kqAlias) =>
-  `COALESCE(${ndAlias}.ho_ten, CASE WHEN ${kqAlias}.ghi_chu IS NOT NULL THEN '${NHAN_HE_THONG}' END)`;
+  `COALESCE(${ndAlias}.ho_ten, '${NHAN_HE_THONG}')`;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // READY DO HỆ THỐNG TỰ XÁC NHẬN — LOẠI KHỎI MỌI SỐ LIỆU & DANH SÁCH CỦA READY

@@ -251,9 +251,13 @@ async function getPhanInTimeline(phanInId) {
     WHERE wv.la_hien_hanh=true ORDER BY t.thu_tu`;
 
   // READY (mức phần in) — checklist chung
+  // ⚠ `tu_dong` = mục do HỆ THỐNG đặt hộ, không phải người bấm (`erpsync.simulateReadyDone` khi ERP
+  //   `KTCankiemtra = 0`). An toàn vì query đã lọc `trang_thai='DAT'`: dòng CHƯA ai xác nhận cũng có
+  //   `nguoi_xac_nhan_id` NULL nhưng không lọt vào đây. Cùng dấu hiệu với `utils/tech.js`.
   const readyCklSql = `
     SELECT cp.ma_checkpoint, cp.ten_checkpoint, cp.thu_tu AS cp_thu_tu,
-           kq.gia_tri_text, kq.tg_xac_nhan AS tg, nd.ho_ten AS nguoi
+           kq.gia_tri_text, kq.tg_xac_nhan AS tg, nd.ho_ten AS nguoi,
+           (kq.nguoi_xac_nhan_id IS NULL) AS tu_dong
     FROM ket_qua_checkpoint kq
     JOIN checkpoint cp ON cp.id = kq.checkpoint_id
     JOIN tram t ON t.id = cp.tram_id
@@ -264,7 +268,8 @@ async function getPhanInTimeline(phanInId) {
 
   // LỊCH SỬ xác nhận READY (mọi lần DAT, kể cả các CHU KỲ đã bị mở lại) — để dựng READY RIÊNG cho từng đợt SX.
   const readyEventsSql = `
-    SELECT cp.ma_checkpoint, cp.ten_checkpoint, cp.thu_tu AS cp_thu_tu, lst.tg_thuc_hien AS tg, nd.ho_ten AS nguoi
+    SELECT cp.ma_checkpoint, cp.ten_checkpoint, cp.thu_tu AS cp_thu_tu, lst.tg_thuc_hien AS tg, nd.ho_ten AS nguoi,
+           (lst.nguoi_thuc_hien_id IS NULL) AS tu_dong
     FROM lich_su_trang_thai lst
     JOIN trang_thai tt ON tt.id = lst.trang_thai_moi_id AND tt.ma_trang_thai = 'DAT'
     JOIN ket_qua_checkpoint kq ON kq.id = lst.ket_qua_checkpoint_id AND kq.phan_in_id = $1
@@ -377,7 +382,18 @@ async function getPhanInTimeline(phanInId) {
                       WHERE lsd.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY')
     ORDER BY dv.created_date, dv.ma_dot_vai`;
 
-  const [tramR, readyR, readyEvR, lenhR, lenhCklR, mocR, qtyR, pendingR] = await Promise.all([
+  // ĐI THẲNG PKH, KHÔNG QUA PKT? — phần in mà mốc kết thúc READY (`QC_XAC_NHAN`) do HỆ THỐNG đặt hộ
+  // (ERP `KTCankiemtra = 0` → `erpsync.simulateReadyDone`). Dùng ĐÚNG dấu hiệu của `utils/tech.js
+  // readyTuDongSql` để 2 nơi không bao giờ nói khác nhau. Query nhẹ theo PK (IPS-safe).
+  // ⚠ CỐ Ý ở mức PHẦN IN, không theo từng chu kỳ READY: `lich_su_trang_thai` của các lượt tự động CŨ
+  //   không có dòng nào (bản vá ghi lịch sử mới từ 19/08/2026) nên suy theo chu kỳ sẽ trống ở đúng
+  //   nhóm cần đánh dấu. Đo prod 10/09: 192 phần in, trong đó 90/92 nhóm cũ là HOÀN TOÀN tự động.
+  const khongQuaKtSql = `SELECT EXISTS (
+    SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
+     WHERE kq.phan_in_id = $1 AND cp.ma_checkpoint = 'QC_XAC_NHAN'
+       AND kq.trang_thai = 'DAT' AND kq.nguoi_xac_nhan_id IS NULL) AS e`;
+
+  const [tramR, readyR, readyEvR, lenhR, lenhCklR, mocR, qtyR, pendingR, ktR] = await Promise.all([
     query(tramSql.replace(/\s+/g, ' ')),
     query(readyCklSql.replace(/\s+/g, ' '), [phanInId]),
     query(readyEventsSql.replace(/\s+/g, ' '), [phanInId]),
@@ -386,7 +402,9 @@ async function getPhanInTimeline(phanInId) {
     query(mocSql.replace(/\s+/g, ' '), [phanInId]),
     query(qtySql.replace(/\s+/g, ' '), [phanInId]),
     query(pendingSql.replace(/\s+/g, ' '), [phanInId]),
+    query(khongQuaKtSql.replace(/\s+/g, ' '), [phanInId]),
   ]);
+  const khongQuaKt = !!ktR.rows[0].e;
   const qtyByLenh = new Map(qtyR.rows.map((r) => [r.lenh_id, r]));
   // Số lượng hiển thị ở từng node theo trạm (mảng {label, value}).
   const nodeQty = (ma, q) => {
@@ -409,9 +427,10 @@ async function getPhanInTimeline(phanInId) {
   // READY (mức phần in)
   const ready = readyR.rows.length ? {
     ma_tram: 'READY', ten_tram: tenTram('READY'), thu_tu: thuTu('READY'),
+    khong_qua_ky_thuat: khongQuaKt, // FE hiện badge "Không qua kỹ thuật" ngay trên node READY
     checklists: readyR.rows.map((r) => ({
       ma_checkpoint: r.ma_checkpoint, ten_checkpoint: r.ten_checkpoint,
-      gia_tri_text: r.gia_tri_text, tg: r.tg, nguoi: r.nguoi || null,
+      gia_tri_text: r.gia_tri_text, tg: r.tg, nguoi: r.nguoi || null, tu_dong: !!r.tu_dong,
     })),
   } : null;
 
@@ -440,9 +459,15 @@ async function getPhanInTimeline(phanInId) {
       if (new Date(e.tg).getTime() <= T) byCp.set(e.ma_checkpoint, e); // events đã ORDER BY tg → giữ cái mới nhất ≤ T
     }
     const checklists = [...byCp.values()].sort((a, b) => a.cp_thu_tu - b.cp_thu_tu)
-      .map((e) => ({ ma_checkpoint: e.ma_checkpoint, ten_checkpoint: e.ten_checkpoint, gia_tri_text: null, tg: e.tg, nguoi: e.nguoi || null }));
+      .map((e) => ({
+        ma_checkpoint: e.ma_checkpoint, ten_checkpoint: e.ten_checkpoint,
+        gia_tri_text: null, tg: e.tg, nguoi: e.nguoi || null, tu_dong: !!e.tu_dong,
+      }));
     if (!checklists.length) return null;
-    return { ma_tram: 'READY', ten_tram: tenTram('READY'), thu_tu: thuTu('READY'), checklists, moc: null };
+    return {
+      ma_tram: 'READY', ten_tram: tenTram('READY'), thu_tu: thuTu('READY'),
+      khong_qua_ky_thuat: khongQuaKt, checklists, moc: null,
+    };
   };
 
   const journeys = lenhR.rows.map((l) => {

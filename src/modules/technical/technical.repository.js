@@ -3,7 +3,10 @@
 const { query } = require('../../config/db');
 // Hiển thị theo PHƯƠNG ÁN IN — cấu hình động (mig 067), mặc định BẬT HẾT = không lọc.
 const { dkTrang } = require('../../utils/phuongAnIn');
-const { techDoneSql, KHUON_OPT_SQL_LIST, nguoiXacNhanSql, khongReadyTuDongSql } = require('../../utils/tech');
+// ⚠⚠ ĐÃ BỎ `khongReadyTuDongSql` KHỎI FILE NÀY (10/09/2026): 2 sidebar *Lịch sử* + *Đã hoàn thành*
+//   của READY KT & QC READY nay HIỆN CẢ phần in đi thẳng PKH (ERP `KTCankiemtra=0`) — xem ghi chú ở
+//   `listConfirmHistory` / `doneByDate`. Luật loại-khỏi-số-liệu vẫn còn hiệu lực ở sĩ số + báo cáo.
+const { techDoneSql, KHUON_OPT_SQL_LIST, nguoiXacNhanSql } = require('../../utils/tech');
 const { mauTim } = require('../../utils/timKiem');
 const { sqlKhopMa } = require('../../utils/maPhanIn');
 
@@ -223,6 +226,16 @@ async function historyByDate(date, maList) {
 
 // Lịch sử xác nhận READY (mức phần in) đang hiệu lực (DAT) theo ngày — cho trang "Lịch sử trạng thái"
 // ở module Hệ thống. Admin có thể xóa mềm (hủy) từng dòng để người phụ trách xác nhận lại.
+//
+// ⚠⚠⚠ HIỆN CẢ PHẦN IN ĐI THẲNG PKH (không qua PKT) — chốt 10/09/2026, ĐẢO chốt 19/08/2026 cho RIÊNG
+//   2 sidebar này. Đợt vải ERP `KTCankiemtra = 0` được `simulateReadyDone` đặt hộ DAT; luật cũ loại
+//   chúng khỏi **mọi** danh sách READY nên **không còn chỗ nào tra ra** phần in nào đã đi thẳng, đi
+//   lúc nào. Nay chúng hiện lại, cột "Người" ghi rõ **"Hệ thống (tự động)"** (xem `nguoiXacNhanSql`)
+//   nên không lẫn với việc người thật làm. Đo prod 10/09: **+768 dòng / 192 phần in**.
+// ⚠ Luật loại-khỏi-SỐ-LIỆU vẫn GIỮ ở dải "Theo dõi" (`utils/siSoTram.js`) + metric/dataset báo cáo —
+//   đó là chỗ đo KHỐI LƯỢNG VIỆC của tổ kỹ thuật, tính vào là thổi phồng. ⇒ **sidebar sẽ nhiều hơn ô
+//   "Làm được trong kỳ"**; đây là CỐ Ý, cùng họ với chênh lệch đã ghi ở §6 (Đã hoàn thành đếm theo
+//   lượt xác nhận, dải Theo dõi đếm phần in rời trạm). Đừng "sửa cho khớp".
 async function listConfirmHistory({ date, search = '' }) {
   const sql = `
     SELECT kq.id AS ket_qua_id, kq.phan_in_id, cp.ma_checkpoint, cp.ten_checkpoint,
@@ -238,7 +251,6 @@ async function listConfirmHistory({ date, search = '' }) {
     JOIN khach_hang kh ON kh.id = dh.khach_hang_id
     LEFT JOIN nguoi_dung nx ON nx.id = kq.nguoi_xac_nhan_id
     WHERE t.ma_tram = 'READY' AND kq.trang_thai = 'DAT'
-      AND ${khongReadyTuDongSql('pin.id')}
       AND (kq.tg_xac_nhan AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
       AND ($2 = '' OR pin.ma_phan ~* $2 OR mh.ma_hang ~* $2
            OR kh.ten_khach_hang ~* $2 OR dh.ma_don_hang ~* $2
@@ -251,6 +263,8 @@ async function listConfirmHistory({ date, search = '' }) {
 // Danh sách phần in ĐÃ HOÀN THÀNH checkpoint READY theo ngày (giờ VN) — cho DonePanel.
 //  scope='tech': phần in đủ 3 mục kỹ thuật (mốc hoàn thành = lần xác nhận mục cuối cùng trong ngày).
 //  scope='qc':   phần in đã QC_XAC_NHAN = DAT trong ngày.
+// ⚠⚠ HIỆN CẢ PHẦN IN ĐI THẲNG PKH (không qua PKT) từ 10/09/2026 — lý do + đánh đổi ghi đầy đủ ở
+//   `listConfirmHistory` ngay trên. Cột "Người" của nhóm này là **"Hệ thống (tự động)"**.
 async function doneByDate(date, scope = 'tech') {
   const info = `pin.ma_phan AS ma, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.so_luong_don_hang AS so_luong,
                 pin.tinh_chat_in, mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
@@ -269,7 +283,6 @@ async function doneByDate(date, scope = 'tech') {
       ${joins}
       LEFT JOIN nguoi_dung nx ON nx.id = kq.nguoi_xac_nhan_id
       WHERE t.ma_tram = 'READY' AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT'
-        AND ${khongReadyTuDongSql('pin.id')}
         AND (kq.tg_xac_nhan AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
       ORDER BY kq.tg_xac_nhan DESC`;
   } else {
@@ -294,7 +307,6 @@ async function doneByDate(date, scope = 'tech') {
                          ORDER BY tg_xac_nhan DESC NULLS LAST LIMIT 1) last ON true
       LEFT JOIN nguoi_dung nx ON nx.id = last.nguoi_xac_nhan_id
       WHERE (a.tg_done AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
-        AND ${khongReadyTuDongSql('pin.id')}
         AND ${techDoneSql('kh.ten_khach_hang', 'a.hk', 'a.hf', 'a.hm')}
       ORDER BY a.tg_done DESC`;
   }

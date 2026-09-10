@@ -148,13 +148,17 @@ async function layRows(donIds, loc = {}) {
 //   mốc mức phần in: cả điểm của việc tách dòng là thấy đợt nào release trước, đợt nào còn chờ.
 //   Biểu thức `moc_release_2` gương y hệt CTE `LENH` trong `utils/kpiReady.js` — sửa một bên thì
 //   soát lại bên kia, nếu không 2 chế độ xem ra 2 mốc khác nhau cho cùng một phần in.
+//
+// ⚠ `ngay_ke_hoach` = ngày SX kế hoạch của LỆNH gắn đợt này. Đợt release nhiều lần ⇒ nhiều lệnh ⇒ lấy
+//   `min` (ngày dự kiến lên chuyền SỚM NHẤT). Đợt chưa release ⇒ NULL ⇒ bảng hiện "—", không bịa ngày.
 async function dsDotVai(phanInIds) {
   if (!phanInIds || !phanInIds.length) return [];
   const sql =
     `SELECT dv.phan_in_id, dv.id AS dot_vai_ve_id, dv.ma_dot_vai,
             COALESCE(dv.so_luong_vai_ve, 0)::int AS so_luong_vai_ve,
             dv.ngay_vai_ve, dv.han_giao_hang, dv.created_date AS moc_vai,
-            l.moc_release_1, l.moc_test_run, l.moc_release_2, COALESCE(l.so_lenh, 0)::int AS so_lenh
+            l.moc_release_1, l.moc_test_run, l.moc_release_2, l.ngay_ke_hoach,
+            COALESCE(l.so_lenh, 0)::int AS so_lenh
        FROM dot_vai_ve dv
        LEFT JOIN LATERAL (
          SELECT min(ls.created_date) AS moc_release_1,
@@ -164,6 +168,7 @@ async function dsDotVai(phanInIds) {
                         WHERE a.ten_bang = 'lenh_san_xuat' AND a.id_ban_ghi = ls.id::text
                           AND a.hanh_dong = 'RELEASE_2'),
                       GREATEST(tq.moc_qa, ls.created_date)) END) AS moc_release_2,
+                min(ls.ngay_ke_hoach) AS ngay_ke_hoach,
                 count(DISTINCT ls.id)::int AS so_lenh
            FROM lenh_sx_dot_vai lsd
            JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id AND ls.trang_thai <> 'HUY'

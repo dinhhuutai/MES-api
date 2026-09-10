@@ -1595,14 +1595,28 @@ async function replan(lenhId, { chuyenId, ngayKeHoach, lyDo, tgBdKh, tgKtKh, slR
 
   const lenh = await repo.getLenhForReplan(lenhId);
   if (!lenh) throw new AppError('Lệnh sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
-  // Cho lập lại kế hoạch khi lệnh đang Test Run (RELEASE_1) · đã Release 2 · hoặc ĐANG GIA CÔNG —
-  // miễn chưa bắt đầu sản xuất (chưa có phiếu; với lệnh gia công thì "chưa nhận lượt hàng nào về").
-  if (!['RELEASE_1', 'RELEASE_2', 'GIA_CONG'].includes(lenh.trang_thai) || lenh.co_phieu) {
+  // Cho lập lại kế hoạch khi lệnh đang Test Run (RELEASE_1) · đã Release 2 · hoặc ĐANG GIA CÔNG.
+  // ⚠⚠ LỆNH GIA CÔNG ĐÃ NHẬN HÀNG VỀ MỘT PHẦN VẪN LẬP LẠI KẾ HOẠCH ĐƯỢC (chốt 10/09/2026): mỗi lượt
+  //   nhận sinh 1 phiếu + 1 tem, mà phần CHƯA nhận vẫn còn ở nhà gia công và vẫn cần dời ngày. Lệnh
+  //   IN THƯỜNG có phiếu = đang chạy máy ⇒ giữ nguyên chặn (dùng *Hủy lệnh sản xuất* nếu muốn gỡ).
+  const laGiaCong = lenh.trang_thai === 'GIA_CONG';
+  if (!['RELEASE_1', 'RELEASE_2', 'GIA_CONG'].includes(lenh.trang_thai) || (lenh.co_phieu && !laGiaCong)) {
     throw new AppError('Chỉ lập lại kế hoạch cho lệnh đang Test Run / Release 2 / Gia công và chưa bắt đầu sản xuất',
       { status: 409, errorCode: 'NOT_REPLANNABLE' });
   }
 
   const newChuyen = chuyenId || lenh.chuyen_id; // không gửi thì giữ chuyền cũ
+
+  // ⚠⚠ ĐÃ NHẬN HÀNG VỀ RỒI THÌ KHÔNG ĐƯỢC RỜI KHỎI GIA CÔNG. Tem đã nhận đang đi tiếp sang OQC; đổi
+  //   sang chuyền in trong xưởng sẽ kéo lệnh về `RELEASE_1`/`RELEASE_2` (xem `chuyenChangTheoChuyen`)
+  //   ⇒ hàng vừa nằm ở OQC vừa nằm ở hàng đợi test, sổ cái sai mà không ai báo lỗi.
+  //   Vẫn cho đổi sang **chuyền gia công KHÁC** (đổi nhà gia công) và dời ngày/giờ như thường.
+  // ⚠ Guard chạy TRƯỚC MỌI thao tác ghi.
+  if (lenh.co_phieu && (await repo.getChuyenLoai(newChuyen)) !== 'GIA_CONG') {
+    throw new AppError(`Lệnh đã nhận về ${lenh.da_nhan}/${lenh.so_luong_release} — chỉ đổi được sang chuyền gia công khác. `
+      + 'Muốn đưa về chuyền in trong xưởng thì hủy tem gia công đã nhận trước (Hệ thống > Hủy lệnh xác nhận > Hủy tem gia công).',
+    { status: 409, errorCode: 'DA_NHAN_HANG' });
+  }
   // GIỜ BẮT ĐẦU / KẾT THÚC kế hoạch:
   //  - FE gửi lên → dùng luôn (đã ghép sẵn ngày mới + giờ, y như Release 1).
   //  - KHÔNG gửi → DỜI giờ cũ sang NGÀY MỚI, giữ nguyên giờ-trong-ngày.
@@ -1645,7 +1659,9 @@ async function replan(lenhId, { chuyenId, ngayKeHoach, lyDo, tgBdKh, tgKtKh, slR
   const slCu = dsDot.reduce((a, d) => a + d.so_luong, 0);
 
   // CHẶNG PHẢI KHỚP LOẠI CHUYỀN VỪA GÁN (chốt 04/09/2026) — xem `chuyenChangTheoChuyen`.
-  const changMoi = await chuyenChangTheoChuyen(lenh, newChuyen, dsDot, slCu);
+  // ⚠ Lệnh gia công ĐÃ có tem thì KHÔNG bao giờ đổi chặng: guard `DA_NHAN_HANG` ở trên đã ép chuyền
+  //   mới cũng phải là gia công, nên bỏ hẳn lời gọi cho tường minh (và đỡ 1 lượt truy vấn).
+  const changMoi = lenh.co_phieu ? null : await chuyenChangTheoChuyen(lenh, newChuyen, dsDot, slCu);
 
   let slMoi = slCu;
   await withTransaction(async (client) => {
