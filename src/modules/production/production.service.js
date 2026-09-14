@@ -437,7 +437,9 @@ async function guiGhiInTem(items, actorId, ngayCt = null) {
         // (`0` / `''`) chứ không gửi null — xem `chuanHoa` trong `utils/erpGhiInTem.js`.
         inbosung: laBoSung ? 1 : 0,
         Lenhbosung: laBoSung ? r.ma_lenh_san_xuat : '',
-        Soluong: r.so_luong,
+        // Bên gọi truyền `soLuong` khi SL tem ≠ SL cần báo — tem gia công lưu `so_luong = đạt + hủy`
+        // (vải thực nhận) nên phải báo ĐẠT ở đây và HỦY ở `Soluongloi`, không thì ERP đếm hủy 2 lần.
+        Soluong: it.soLuong != null ? Number(it.soLuong) || 0 : r.so_luong,
         Soluongloi: Number(it.soLuongHuy) || 0,
         SOLUONGTHIEU: Number(it.soLuongThieu) || 0,
         GCMauvai: r.gc_mau_vai,

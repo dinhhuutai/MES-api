@@ -3,7 +3,7 @@
 // KPI READY — 5 chỉ số + bảng theo dõi. Luật cột ở `utils/kpiReady.js`.
 
 const repo = require('./kpiready.repository');
-const { COT_KPI, LOAI_NGAY, NGUONG_DOI_PA } = require('../../utils/kpiReady');
+const { COT_KPI, COT_TRAI_OWNER, LOAI_NGAY, NGUONG_DOI_PA } = require('../../utils/kpiReady');
 
 const LOC_KEYS = ['timKiem', 'khach', 'maHang', 'codePhan', 'mauVai', 'loaiNgay', 'ngayTu', 'ngayDen'];
 const layLoc = (q = {}) => LOC_KEYS.reduce((a, k) => (q[k] ? { ...a, [k]: q[k] } : a), {});
@@ -38,11 +38,14 @@ function gomOwner(rows) {
 // `khoaRows` (tùy chọn) = danh sách trạm/checklist của workflow hiện hành kèm **id** — dùng cho trang
 // *Owner checkpoint/checklist* để bấm gán thẳng vào đúng đích. Không truyền ⇒ 2 khóa `*_id` là null,
 // endpoint chính (`/kpi-ready`) giữ nguyên hình dạng dữ liệu như trước.
-function dungCot(ownerRows, khoaRows) {
+// `ds` = danh mục cột cần dựng: mặc định 23 cột checklist (`COT_KPI`), truyền `COT_TRAI_OWNER` để
+// dựng các cột BÊN TRÁI có owner riêng (hiện chỉ "Đợt vải"). Cùng một hàm ⇒ 2 nhóm cột không bao giờ
+// lệch luật owner.
+function dungCot(ownerRows, khoaRows, ds = COT_KPI) {
   const m = gomOwner(ownerRows);
   const k = {};
   (khoaRows || []).forEach((x) => { k[`${x.cap}:${x.ma}`] = x; });
-  return COT_KPI.map((c) => {
+  return ds.map((c) => {
     const key = c.checkpoint ? `CHECKPOINT:${c.checkpoint}` : (c.tram ? `TRAM:${c.tram}` : null);
     const g = (key && m[key]) || null;
     const dich = (key && k[key]) || null;
@@ -169,6 +172,9 @@ async function duLieu(q = {}) {
     don_hang: donChon,
     don_hang_dang_loc: yeuCau.length ? ids : [],
     cot: dungCot(ownerRows),
+    // ⚠ TÁCH RIÊNG khỏi `cot`: bảng KPI vẽ `cot` thành khối 23 cột bên PHẢI — nhét cột trái vào đó
+    //   là hiện sai chỗ. FE chỉ dùng mảng này để lấy owner cho cột trái tương ứng.
+    cot_trai: dungCot(ownerRows, null, COT_TRAI_OWNER),
     loai_ngay: Object.entries(LOAI_NGAY).map(([ma, v]) => ({ ma, ten: v.ten })),
     kpi: tinhKpi(rows),
     rows,
@@ -178,9 +184,14 @@ async function duLieu(q = {}) {
 // ─── DANH MỤC CỘT (cho trang Owner checkpoint/checklist) ─────────────────────
 // Trả 23 cột + owner hiện tại + ĐÍCH GÁN (id trạm/checklist). Cố ý TÁCH khỏi `duLieu()`: trang Owner
 // chỉ cần danh mục, không việc gì phải chạy cả câu KPI nặng (9 CTE) chỉ để lấy tên owner.
+// ⚠ `cot_trai` = cột bên trái có owner riêng (hiện chỉ "Đợt vải") — trang Owner phải bày CẢ hai
+//   nhóm, nếu không người dùng không thấy chỗ nào để gán cột đó (đúng lỗi người dùng báo 10/09/2026).
 async function danhMucCot() {
   const [ownerRows, khoaRows] = await Promise.all([repo.dsOwner(), repo.dsKhoaOwner()]);
-  return { cot: dungCot(ownerRows, khoaRows) };
+  return {
+    cot: dungCot(ownerRows, khoaRows),
+    cot_trai: dungCot(ownerRows, khoaRows, COT_TRAI_OWNER),
+  };
 }
 
 // ─── TRANG CẤU HÌNH (Hệ thống) ───────────────────────────────────────────────

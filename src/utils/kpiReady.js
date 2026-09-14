@@ -95,6 +95,24 @@ const COT_KPI = [
     ghiChu: 'Phiếu giao đầu tiên được lập' },
 ];
 
+// ─── CỘT BÊN TRÁI CÓ OWNER RIÊNG ─────────────────────────────────────────────
+// Bảng KPI có khối cột TRÁI (thông tin phần in) do FE khai; phần lớn không cần owner. Cột nào cần
+// thì khai ở đây để (a) trang *Hệ thống → Owner checkpoint/checklist* bày ra mà gán, (b) dòng 2 của
+// bảng KPI hiện tên.
+//
+// ⚠⚠⚠ "ĐỢT VẢI" CÓ OWNER RIÊNG, **KHÁC** CỘT "VẢI" (người dùng chốt 10/09/2026 — *"cái này khác với
+//   vải nha"*): cột `vai` là mốc **PHẦN IN lên MES** (trạm `PIPELINE`), còn cột `dot_vai` là **ngày
+//   về của TỪNG đợt vải**. Hai việc khác nhau, người phụ trách khác nhau ⇒ neo vào **checklist
+//   `DOT_VAI`** (mig 097, nằm trong trạm PIPELINE) chứ KHÔNG mượn owner của trạm.
+// ⚠⚠ `DOT_VAI` chỉ là KHÓA GÁN OWNER — **KHÔNG phải mục cần xác nhận**, `bat_buoc = false`, không có
+//   màn nhập liệu nào (MES bắt đầu từ READY). Đừng viết code tạo `ket_qua_checkpoint` cho mã này.
+// ⚠ Chưa chạy mig 097 ⇒ `dich_id` null ⇒ trang Owner hiện dòng nhưng chưa bấm gán được, bảng KPI hiện
+//   "— chưa gán —". KHÔNG sập ở đâu.
+const COT_TRAI_OWNER = [
+  { ma: 'dot_vai', ten: 'Đợt vải', checkpoint: 'DOT_VAI',
+    ghiChu: 'Ngày vải về của TỪNG đợt (cột bên trái, chỉ hiện ở chế độ Chi tiết)' },
+];
+
 // ─── BỘ LỌC NGÀY ─────────────────────────────────────────────────────────────
 // ⚠ Whitelist CỨNG — giá trị client chỉ dùng để TRA khóa, không bao giờ nội suy vào SQL.
 // ⚠ `kieu`: 'ts' = timestamptz (phải quy về giờ VN trước khi cắt ngày) · 'date' = cột DATE sẵn.
@@ -341,4 +359,4 @@ WHERE pin.dang_hoat_dong AND dh.id = ANY($1::uuid[])`;
 // Ngưỡng "bất thường" của KPI 5 — phần in bị đổi phương án in NHIỀU HƠN ngưỡng này lần.
 const NGUONG_DOI_PA = 2;
 
-module.exports = { COT_KPI, LOAI_NGAY, CAU_CHINH, NGUONG_DOI_PA, VN };
+module.exports = { COT_KPI, COT_TRAI_OWNER, LOAI_NGAY, CAU_CHINH, NGUONG_DOI_PA, VN };

@@ -37,6 +37,31 @@ function ngayCond(col, ngay, isTimestamp) {
   return `${left} = '${v}'::date`;
 }
 
+// ---- 2 CỘT "LOẠI ĐỢT VẢI" + "SL BỔ SUNG" (thêm 2026-09-14) — dùng CHUNG mọi nguồn danh sách ----
+// · Loại đợt vải: tên loại (Số lượng / Bổ sung / Mẫu số lượng…); nhiều đợt khác loại ⇒ gộp "A, B".
+// · SL bổ sung  : Σ SL vải về của ĐỢT BỔ SUNG (ERP loaikd 5I, mã `BO_SUNG`). Không có đợt bổ sung nào
+//   (vd chỉ có 3I) ⇒ "-" (gạch ngang) — `runOne` đổi NULL thành "-" sau khi chạy.
+// ⚠ So theo MÃ `loai_dot_vai.ma_loai`, KHÔNG so tên hiển thị.
+const COT_LOAI_DOT = [
+  { key: 'loai_dot_vai', ten: 'Loại đợt vải', kieu: 'text' },
+  { key: 'sl_bo_sung', ten: 'SL bổ sung', kieu: 'so' },
+];
+const LOAI_DOT_LOC = "dvl.trang_thai NOT IN ('DA_GOP','DA_HUY')";
+const LOAI_DOT_JOIN = 'LEFT JOIN loai_dot_vai ldl ON ldl.id = dvl.loai_dot_vai_id';
+// Theo PHẦN IN (mọi đợt vải còn hiệu lực).
+const loaiDotTheoPin = (pinCol) => `
+  (SELECT string_agg(DISTINCT ldl.ten_loai, ', ') FROM dot_vai_ve dvl ${LOAI_DOT_JOIN}
+    WHERE dvl.phan_in_id = ${pinCol} AND ${LOAI_DOT_LOC}) AS loai_dot_vai,
+  (SELECT (sum(dvl.so_luong_vai_ve) FILTER (WHERE ldl.ma_loai = 'BO_SUNG'))::int FROM dot_vai_ve dvl ${LOAI_DOT_JOIN}
+    WHERE dvl.phan_in_id = ${pinCol} AND ${LOAI_DOT_LOC}) AS sl_bo_sung`;
+// Theo LỆNH SX (các đợt vải gắn vào lệnh qua lenh_sx_dot_vai).
+const loaiDotTheoLenh = (lenhCol) => `
+  (SELECT string_agg(DISTINCT ldl.ten_loai, ', ') FROM lenh_sx_dot_vai lsl JOIN dot_vai_ve dvl ON dvl.id = lsl.dot_vai_ve_id
+    ${LOAI_DOT_JOIN} WHERE lsl.lenh_san_xuat_id = ${lenhCol}) AS loai_dot_vai,
+  (SELECT (sum(dvl.so_luong_vai_ve) FILTER (WHERE ldl.ma_loai = 'BO_SUNG'))::int FROM lenh_sx_dot_vai lsl
+    JOIN dot_vai_ve dvl ON dvl.id = lsl.dot_vai_ve_id ${LOAI_DOT_JOIN}
+    WHERE lsl.lenh_san_xuat_id = ${lenhCol}) AS sl_bo_sung`;
+
 // ============================== 1) PHẦN IN / ĐỢT VẢI ==============================
 // 1 dòng = 1 đợt vải của phần in (kèm trạm hiện tại + SLA) → sheet "HỆ ĐIỀU HÀNH NHÀ MÁY IN LỤA".
 const COT_PHAN_IN = [
@@ -55,6 +80,7 @@ const COT_PHAN_IN = [
   { key: 'han_giao_hang', ten: 'Hạn giao', kieu: 'ngay' },
   { key: 'ma_dot_vai', ten: 'Mã đợt vải', kieu: 'text' },
   { key: 'loai_dot_vai', ten: 'Loại đợt vải', kieu: 'text' },
+  { key: 'sl_bo_sung', ten: 'SL bổ sung', kieu: 'so' },
   // --- Chuẩn bị kỹ thuật (READY): lựa chọn đã xác nhận từng mục (gia_tri_text của ket_qua_checkpoint DAT) ---
   { key: 'ready_khuon', ten: 'Khuôn (READY)', kieu: 'text' },
   { key: 'ready_film', ten: 'Film (READY)', kieu: 'text' },
@@ -89,6 +115,7 @@ async function runPhanIn({ loc = {}, gioi_han }) {
            to_char(dv.ngay_vai_ve, 'DD/MM/YYYY') AS ngay_vai_ve,
            to_char(dv.han_giao_hang, 'DD/MM/YYYY') AS han_giao_hang,
            dv.so_luong_vai_ve, ldv.ten_loai AS loai_dot_vai,
+           (CASE WHEN ldv.ma_loai = 'BO_SUNG' THEN dv.so_luong_vai_ve END) AS sl_bo_sung,
            pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in, pin.so_luong_don_hang,
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
            ${readyChoiceSub('KHUON')} AS ready_khuon,
@@ -144,6 +171,7 @@ const COT_DOT_SX = [
   { key: 'ma_lenh_san_xuat', ten: 'Mã lệnh (LSX)', kieu: 'text' },
   { key: 'so_luong_don_hang', ten: 'SLĐH', kieu: 'so' },
   { key: 'so_luong_release', ten: 'SL release', kieu: 'so' },
+  ...COT_LOAI_DOT,
   { key: 'gio_bd', ten: 'Giờ bắt đầu', kieu: 'text' },
   { key: 'gio_kt', ten: 'Giờ kết thúc', kieu: 'text' },
   // --- Test Run ---
@@ -178,7 +206,7 @@ async function runDotSanXuat({ loc = {}, gioi_han }) {
     conds.push(`(ls.ma_lenh_san_xuat ~* $${i} OR info.ma_phan ~* $${i} OR info.ma_hang ~* $${i} OR info.mau_vai ~* $${i})`);
   }
   const sql = `
-    SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.trang_thai AS tt,
+    SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.trang_thai AS tt, ${loaiDotTheoLenh('ls.id')},
            to_char(ls.ngay_ke_hoach, 'DD/MM/YYYY') AS ngay_ke_hoach,
            to_char(ls.tg_bd_kh AT TIME ZONE 'Asia/Ho_Chi_Minh', 'HH24:MI') AS gio_bd,
            to_char(ls.tg_kt_kh AT TIME ZONE 'Asia/Ho_Chi_Minh', 'HH24:MI') AS gio_kt,
@@ -247,6 +275,7 @@ const COT_TEST_RUN = [
   { key: 'ma_lenh_san_xuat', ten: 'Mã lệnh (LSX)', kieu: 'text' },
   { key: 'so_luong_don_hang', ten: 'SLĐH', kieu: 'so' },
   { key: 'so_luong_release', ten: 'SL release', kieu: 'so' },
+  ...COT_LOAI_DOT,
   // --- Kết quả + thông tin test của QC ---
   { key: 'test_ket_qua', ten: 'Kết quả test', kieu: 'text' },
   { key: 'nguoi_test', ten: 'Người test', kieu: 'text' },
@@ -280,7 +309,7 @@ async function runTestRun({ loc = {}, gioi_han }) {
   else conds.push(`(${coMat} OR ${daTest})`);
 
   const sql = `
-    SELECT ls.ma_lenh_san_xuat, ls.so_luong_release,
+    SELECT ls.ma_lenh_san_xuat, ls.so_luong_release, ${loaiDotTheoLenh('ls.id')},
            to_char(ls.ngay_ke_hoach, 'DD/MM/YYYY') AS ngay_ke_hoach,
            (CASE WHEN tq.tg IS NULL THEN 'Đang chờ test' ELSE 'Đã test' END) AS tinh_trang,
            (CASE WHEN tq.tg IS NULL THEN 'Chờ test' ELSE 'Đạt' END) AS test_ket_qua,
@@ -340,6 +369,7 @@ const COT_TEM = [
   { key: 'mau_vai', ten: 'Màu vải', kieu: 'text' },
   { key: 'kich_vai', ten: 'Kích vải', kieu: 'text' },
   { key: 'so_luong_don_hang', ten: 'SLĐH', kieu: 'so' },
+  ...COT_LOAI_DOT,
   { key: 'so_luong', ten: 'SL in', kieu: 'so' },
   { key: 'sl_kcs_dat', ten: 'KCS đạt', kieu: 'so' },
   { key: 'sl_kcs_sua', ten: 'Chuyển sửa', kieu: 'so' },
@@ -369,7 +399,7 @@ async function runTem({ loc = {}, gioi_han }) {
     conds.push(`(t.ma_tem ~* $${i} OR info.ma_phan ~* $${i} OR info.ma_hang ~* $${i})`);
   }
   const sql = `
-    SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai AS tt,
+    SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai AS tt, ${loaiDotTheoLenh('ls.id')},
            to_char(t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh', 'DD/MM/YYYY') AS ngay_in_tem,
            t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy, t.sl_sua_dat, t.sl_sua_huy, t.sl_oqc_dat, t.sl_da_giao,
            cs.ten_chuyen, info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan, info.mau_vai, info.kich_vai, info.so_luong_don_hang
@@ -428,6 +458,7 @@ const COT_HOAN_THANH = [
   { key: 'kich_vai', ten: 'Kích vải', kieu: 'text' },
   { key: 'kich_phim', ten: 'Kích film', kieu: 'text' },
   { key: 'so_luong_don_hang', ten: 'SLĐH', kieu: 'so' },
+  ...COT_LOAI_DOT,
 ];
 
 // 1 phần in = 1 dòng cho MỖI checkpoint (DISTINCT ON phần in + trạm, lấy lượt hoàn thành muộn nhất trong
@@ -454,7 +485,8 @@ async function runHoanThanhTram({ loc = {}, gioi_han }) {
     SELECT to_char(z.tg_ra AT TIME ZONE 'Asia/Ho_Chi_Minh', 'DD/MM/YYYY') AS ngay_hoan_thanh,
            to_char(z.tg_ra AT TIME ZONE 'Asia/Ho_Chi_Minh', 'HH24:MI') AS gio_hoan_thanh,
            COALESCE(trm.ten_tram, z.ma_tram) AS ten_tram, kh.ten_khach_hang, dh.ma_don_hang,
-           pin.ma_phan, mh.ma_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.so_luong_don_hang
+           pin.ma_phan, mh.ma_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.so_luong_don_hang,
+           ${loaiDotTheoPin('pin.id')}
     FROM z
     JOIN phan_in pin ON pin.id = z.phan_in_id
     JOIN ma_hang mh ON mh.id = pin.ma_hang_id
@@ -503,6 +535,7 @@ const READY_INFO_SELECT = `
   pin.id AS phan_in_id,
   pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in, pin.so_luong_don_hang,
   mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
+  ${loaiDotTheoPin('pin.id')},
   (SELECT COALESCE(sum(dv5.so_luong_vai_ve),0) FROM dot_vai_ve dv5 WHERE dv5.phan_in_id = pin.id AND dv5.trang_thai NOT IN ('DA_GOP','DA_HUY'))::int AS so_luong_vai_ve,
   to_char((SELECT min(dv4.han_giao_hang) FROM dot_vai_ve dv4 WHERE dv4.phan_in_id = pin.id AND dv4.trang_thai NOT IN ('DA_GOP','DA_HUY')), 'DD/MM/YYYY') AS han_giao_hang,
   (CASE WHEN kh.ten_khach_hang IN (${KHUON_OPT_SQL_LIST}) THEN '—' ELSE ${readyMark('KHUON')} END) AS ready_khuon,
@@ -526,6 +559,7 @@ const COT_READY_DANG_O = [
   { key: 'tinh_chat_in', ten: 'TC IN', kieu: 'text' },
   { key: 'so_luong_don_hang', ten: 'SLĐH', kieu: 'so' },
   { key: 'so_luong_vai_ve', ten: 'SL nhận vải', kieu: 'so' },
+  ...COT_LOAI_DOT,
   { key: 'han_giao_hang', ten: 'Hạn giao', kieu: 'ngay' },
   { key: 'ready_khuon', ten: 'Khuôn', kieu: 'text' },
   { key: 'ready_film', ten: 'Film', kieu: 'text' },
@@ -621,6 +655,7 @@ const COT_READY_HOAN_THANH = [
   { key: 'kich_phim', ten: 'Kích film', kieu: 'text' },
   { key: 'so_luong_don_hang', ten: 'SLĐH', kieu: 'so' },
   { key: 'so_luong_vai_ve', ten: 'SL nhận vải', kieu: 'so' },
+  ...COT_LOAI_DOT,
 ];
 
 // Danh sách phần in đã hoàn thành READY (QC xác nhận) — khớp sidebar "Đã hoàn thành" (scope QC) màn QC READY.
@@ -639,6 +674,7 @@ async function runReadyHoanThanh({ loc = {}, gioi_han }) {
            to_char(${READY_TS} AT TIME ZONE 'Asia/Ho_Chi_Minh', 'HH24:MI') AS gio_hoan_thanh,
            ${nguoiXacNhanSql('nx', 'kq')} AS nguoi_xac_nhan,
            pin.ma_phan, mh.ma_hang, kh.ten_khach_hang, dh.ma_don_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.so_luong_don_hang,
+           ${loaiDotTheoPin('pin.id')},
            (SELECT COALESCE(sum(dv5.so_luong_vai_ve),0) FROM dot_vai_ve dv5 WHERE dv5.phan_in_id = pin.id AND dv5.trang_thai NOT IN ('DA_GOP','DA_HUY'))::int AS so_luong_vai_ve
     FROM ket_qua_checkpoint kq
     JOIN checkpoint cp ON cp.id = kq.checkpoint_id
@@ -672,6 +708,7 @@ const COT_VAO_TRAM = [
   { key: 'kich_vai', ten: 'Kích vải', kieu: 'text' },
   { key: 'kich_phim', ten: 'Kích film', kieu: 'text' },
   { key: 'so_luong_don_hang', ten: 'SLĐH', kieu: 'so' },
+  ...COT_LOAI_DOT,
   { key: 'hoan_thanh', ten: 'Hoàn thành trong ngày', kieu: 'text' },
   { key: 'gio_hoan_thanh', ten: 'Giờ hoàn thành', kieu: 'text' },
 ];
@@ -698,6 +735,7 @@ async function runPhanInVaoTram({ loc = {}, gioi_han }) {
            to_char(z.tg_vao AT TIME ZONE 'Asia/Ho_Chi_Minh', 'HH24:MI') AS gio_vao,
            COALESCE(trm.ten_tram, z.ma_tram) AS ten_tram, kh.ten_khach_hang, dh.ma_don_hang,
            pin.ma_phan, mh.ma_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.so_luong_don_hang,
+           ${loaiDotTheoPin('pin.id')},
            CASE WHEN ${dkXong} THEN 'Đã hoàn thành' ELSE '' END AS hoan_thanh,
            CASE WHEN ${dkXong}
                 THEN to_char(z.tg_ra AT TIME ZONE 'Asia/Ho_Chi_Minh', 'HH24:MI') ELSE '' END AS gio_hoan_thanh
@@ -864,6 +902,8 @@ async function runOne(cfg = {}) {
   if (!def) return { cot: [], rows: [], loi: `Nguồn "${cfg.nguon}" không tồn tại` };
   try {
     const rows = await def.run({ loc: cfg.loc || {}, gioi_han: cfg.gioi_han });
+    // SL bổ sung: không có đợt bổ sung (5I) ⇒ gạch ngang "-" (người dùng chốt 2026-09-14).
+    rows.forEach((r) => { if ('sl_bo_sung' in r && r.sl_bo_sung == null) r.sl_bo_sung = '-'; });
     const keys = Array.isArray(cfg.cot) && cfg.cot.length ? cfg.cot : def.cot.slice(0, 8).map((c) => c.key);
     const cot = keys.map((k) => def.cot.find((c) => c.key === k)).filter(Boolean);
     return { cot, rows };

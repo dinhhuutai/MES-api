@@ -71,7 +71,10 @@ const confirmQA = asyncHandler(async (req, res) =>
     nguoiTest: req.body?.nguoiTest ?? null,
     ghiChu: req.body?.ghiChu ?? null,
     loaiTest: req.body?.loaiTest ?? null,
-  }), 'QA đã xác nhận test'));
+    inKhongDat: req.body?.inKhongDat ?? null,
+  }), req.body?.inKhongDat ? 'QA xác nhận in không đạt' : 'QA đã xác nhận test'));
+
+const ownerChoIn = asyncHandler(async (req, res) => ok(res, await service.listOwnerChoIn()));
 
 const cancelCNSP = asyncHandler(async (req, res) =>
   ok(res, await service.cancelTest(req.params.lenhId, 'cnsp', req.user.id), 'Đã hủy xác nhận CNSP'));
@@ -242,7 +245,7 @@ module.exports = {
   release1Candidates, autoPlanCandidates, createRelease1, release1TraVeKyThuat, createDotSanXuat, release1History, releaseList, releaseSets, releaseSet,
   gopCandidates, gopDotVai, gopHistory,
   testRunCandidates, lenhDetail, recordTestRun,
-  confirmCNSP, confirmQA, cancelCNSP, cancelQA, confirmCNSPBatch, confirmQABatch,
+  confirmCNSP, confirmQA, ownerChoIn, cancelCNSP, cancelQA, confirmCNSPBatch, confirmQABatch,
   release2Candidates, approveRelease2, approveRelease2Batch, skipTestRun, testRunHistory,
   replanCandidates, replan, replanDetail, replanBatch, planHistory,
   giaCongList, giaCongToOqc, giaCongHistory, giaCongTemCancelable, giaCongTemHuy, giaCongTraLai,

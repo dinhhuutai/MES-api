@@ -740,6 +740,26 @@ async function getLenhDetail(lenhId) {
   };
 }
 
+// Owner được phép "cho IN" khi test không đạt — chốt theo TÀI KHOẢN (người dùng chỉ định).
+// Thêm/bớt người = sửa mảng này, không cần migration.
+const OWNER_CHO_IN_USERNAMES = ['011000052', '021000052'];
+
+async function listOwnerChoIn() {
+  return repo.usersByUsernames(OWNER_CHO_IN_USERNAMES);
+}
+
+// Kiểm dữ liệu "In không đạt": phải có ≥1 owner và CHỈ được là owner trong danh sách; lý do tùy chọn.
+async function chuanHoaInKhongDat(raw = {}) {
+  const ids = [...new Set((Array.isArray(raw.ownerIds) ? raw.ownerIds : []).map(String).filter(Boolean))];
+  if (!ids.length) throw new AppError('Chọn ít nhất 1 owner cho IN', { status: 422, errorCode: 'NO_OWNER_CHO_IN' });
+  const hopLe = await listOwnerChoIn();
+  const owners = hopLe.filter((u) => ids.includes(String(u.id)));
+  if (owners.length !== ids.length) {
+    throw new AppError('Owner cho IN không hợp lệ', { status: 422, errorCode: 'OWNER_CHO_IN_KHONG_HOP_LE' });
+  }
+  return { owners, lyDo: (raw.lyDo || '').toString().trim() || null };
+}
+
 async function recordTestRun(lenhId, body, actorId) {
   await repo.getLenhBasic(lenhId);
   await assertKhongChoKyThuat(lenhId);
@@ -766,7 +786,14 @@ async function confirmTest(lenhId, which, actorId, extra = {}) {
     // Bắt buộc nhập người test khi QA xác nhận đạt (không cho xác nhận "trống tên").
     if (!nguoiTest) throw new AppError('Bắt buộc nhập người test khi QA xác nhận đạt', { status: 422, errorCode: 'NGUOI_TEST_REQUIRED' });
     const loaiTest = extra.loaiTest === 'DAP_PHAN' ? 'DAP_PHAN' : 'TEST_RUN';
-    const ghiChu = (extra.ghiChu || '').toString().trim() || null;
+    let ghiChu = (extra.ghiChu || '').toString().trim() || null;
+    // "XÁC NHẬN IN KHÔNG ĐẠT": đi y như xác nhận đạt, chỉ khác lần test ghi KHONG_DAT_CHO_IN + owner cho in.
+    const ikd = extra.inKhongDat ? await chuanHoaInKhongDat(extra.inKhongDat) : null;
+    if (ikd && st.qa_done) throw new AppError('QA đã xác nhận lệnh này', { status: 409, errorCode: 'ALREADY' });
+    if (ikd) {
+      const tomTat = `In không đạt — ${ikd.owners.map((o) => o.ho_ten).join(', ')} cho IN${ikd.lyDo ? `: ${ikd.lyDo}` : ''}`;
+      ghiChu = ghiChu ? `${tomTat} · ${ghiChu}` : tomTat;
+    }
     await withTransaction(async (client) => {
       const kqCnsp = await repo.upsertLenhResult(client, {
         lenhId, checkpointId: byMa[CNSP_CP].id, trangThai: 'DAT', giaTriText: nguoiTest, nguoiXacNhanId: actorId, actorId,
@@ -776,7 +803,16 @@ async function confirmTest(lenhId, which, actorId, extra = {}) {
         lenhId, checkpointId: byMa[QA_CP].id, trangThai: 'DAT', giaTriText: loaiTest, ghiChu, nguoiXacNhanId: actorId, actorId,
       });
       await repo.insertStatusLog(client, { ketQuaId: kqQa, trangThaiMoiId: datId, nguoiId: actorId, lyDo: `QA xác nhận test (${loaiTest})` });
-      if (recordPass) {
+      if (ikd) {
+        const tr = await repo.insertTestRunTx(client, lenhId,
+          { soLuong: extra.soLuong ?? null, ketQua: repo.KET_QUA_IN_KHONG_DAT, ghiChu: ikd.lyDo }, actorId);
+        await repo.logInKhongDatTx(client, tr.id, {
+          lenh_san_xuat_id: lenhId, lan_test: tr.lan_test, ly_do: ikd.lyDo,
+          owner_ids: ikd.owners.map((o) => o.id),
+          owner_ten: ikd.owners.map((o) => o.ho_ten),
+          owner_username: ikd.owners.map((o) => o.ten_dang_nhap),
+        }, actorId);
+      } else if (recordPass) {
         await repo.insertTestRunTx(client, lenhId, { soLuong: extra.soLuong ?? null, ketQua: 'DAT', ghiChu }, actorId);
       }
     });
@@ -1515,8 +1551,10 @@ async function nhanGiaCongTheoPhanIn(lenh, items, actorId) {
   // Báo ngược lên ERP từng tem — CHẠY NGẦM, không `await` (xem ghi chú ở nhánh nhận theo lệnh).
   // ⚠ Truyền `dotVaiId` THẬT: mỗi tem nay đích danh 1 đợt vải, không phải "đợt đại diện" như trước.
   const { guiGhiInTem } = require('../production/production.service');
+  // ⚠ `soLuong` = SL ĐẠT, `soLuongHuy` = SL HỦY nhập ở modal (tem lưu so_luong = đạt + hủy).
   guiGhiInTem(ketQua.map((t, i) => ({
-    temId: t.tem_id, dotVaiId: canhan[i].pin.dot_vai_ve_id, soLuongHuy: 0, soLuongThieu: 0,
+    temId: t.tem_id, dotVaiId: canhan[i].pin.dot_vai_ve_id,
+    soLuong: canhan[i].qty, soLuongHuy: canhan[i].huy, soLuongThieu: 0,
   })), actorId);
 
   if (xong) {
@@ -1865,7 +1903,7 @@ module.exports = {
   listRelease1Candidates, autoPlanCandidates, createRelease1, traVeKyThuat, createDotSanXuat, release1History, listReleaseSets, releaseSet,
   listGopCandidates, gopDotVai, gopHistory,
   getReplanDetail,
-  listTestRunCandidates, getLenhDetail, recordTestRun, confirmTest, confirmTestBatch, cancelTest,
+  listTestRunCandidates, getLenhDetail, recordTestRun, confirmTest, confirmTestBatch, cancelTest, listOwnerChoIn,
   returnTestRunToReady,
   listRelease2Candidates, approveRelease2, approveRelease2Batch, skipTestRun, testRunHistory,
   listReplanCandidates, replan, replanBatch, planHistory,

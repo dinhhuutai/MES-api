@@ -1677,8 +1677,9 @@ async function getLenhDotVai(lenhId) {
 
 async function getTestRuns(lenhId) {
   const { rows } = await query(
-    `SELECT id, lan_test, so_luong, ket_qua, tg_bd_test, tg_kt_test, ghi_chu, created_date
-     FROM test_run WHERE lenh_san_xuat_id = $1 ORDER BY lan_test`,
+    `SELECT tr.id, tr.lan_test, tr.so_luong, tr.ket_qua, tr.tg_bd_test, tr.tg_kt_test, tr.ghi_chu, tr.created_date,
+            ${OWNER_CHO_IN_SQL('tr')}
+     FROM test_run tr WHERE tr.lenh_san_xuat_id = $1 ORDER BY tr.lan_test`.replace(/\s+/g, ' '),
     [lenhId]
   );
   return rows;
@@ -1867,12 +1868,40 @@ async function testDoneByDate(date, maCheckpoint) {
 async function testRunsByLenh(lenhIds = []) {
   if (!lenhIds.length) return [];
   const { rows } = await query(
-    `SELECT tr.lenh_san_xuat_id, tr.lan_test, tr.ket_qua, tr.ghi_chu
+    `SELECT tr.lenh_san_xuat_id, tr.lan_test, tr.ket_qua, tr.ghi_chu, ${OWNER_CHO_IN_SQL('tr')}
      FROM test_run tr WHERE tr.lenh_san_xuat_id = ANY($1::uuid[])
      ORDER BY tr.lenh_san_xuat_id, tr.lan_test, tr.created_date`.replace(/\s+/g, ' '),
     [lenhIds]
   );
   return rows;
+}
+
+// "XÁC NHẬN IN KHÔNG ĐẠT" (Test Run QA): test không đạt nhưng owner chịu trách nhiệm CHO IN.
+// Lần test đó ghi test_run.ket_qua = KET_QUA_IN_KHONG_DAT; DANH SÁCH OWNER lưu ở audit_log
+// (ten_bang='test_run', id_ban_ghi = test_run.id, hanh_dong='IN_KHONG_DAT') — KHÔNG cần migration.
+const KET_QUA_IN_KHONG_DAT = 'KHONG_DAT_CHO_IN';
+// Chuỗi tên owner (ngăn bằng ", ") của 1 lần test; NULL nếu không phải lần "in không đạt".
+const OWNER_CHO_IN_SQL = (alias) =>
+  `(SELECT (SELECT string_agg(x.v, ', ') FROM jsonb_array_elements_text(a.gia_tri_moi->'owner_ten') x(v))
+      FROM audit_log a WHERE a.ten_bang = 'test_run' AND a.id_ban_ghi = ${alias}.id::text
+       AND a.hanh_dong = 'IN_KHONG_DAT' ORDER BY a.thoi_gian DESC LIMIT 1) AS owner_cho_in`;
+
+async function usersByUsernames(usernames = []) {
+  if (!usernames.length) return [];
+  const { rows } = await query(
+    `SELECT id, ten_dang_nhap, ho_ten FROM nguoi_dung
+     WHERE ten_dang_nhap = ANY($1::text[]) AND dang_hoat_dong = true ORDER BY ten_dang_nhap`.replace(/\s+/g, ' '),
+    [usernames]
+  );
+  return rows;
+}
+
+async function logInKhongDatTx(client, testRunId, payload, actorId) {
+  await client.query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('test_run', $1, 'IN_KHONG_DAT', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`.replace(/\s+/g, ' '),
+    [String(testRunId), JSON.stringify(payload || {}), actorId]
+  );
 }
 
 // ----- CÀI ĐẶT CA THEO TUẦN (migration 046) — best-effort nếu bảng chưa tạo -----
@@ -1988,6 +2017,7 @@ module.exports = {
   listTestRunCandidates, listRelease2Candidates, getLenhBasic, getLenhDotVai, dotVaiIdsByLenh, getTestRuns,
   getLenhTestStatus, insertTestRun, insertTestRunTx, upsertLenhResult, insertStatusLog, setLenhTrangThai,
   testRunHistoryByDate, testRunsByLenh,
+  KET_QUA_IN_KHONG_DAT, usersByUsernames, logInKhongDatTx,
   listReplanCandidates, getLenhForReplan, getReplanDotVai, updateReleaseTx, updateLenhPlan, setLenhTrangThaiTx, logPlanChange, planHistoryByDate,
   phanInRowsByLenh,
   listGiaCongLenh, getGiaCongLenh, listGiaCongHistory, giaCongPhanInRows,

@@ -44,6 +44,7 @@ router.get('/test-run/candidates', rbac(...TEST_VIEW), c.testRunCandidates);
 router.get('/test-run/history', rbac(...TEST_VIEW), c.testRunHistory);
 router.get('/test-run/cnsp-done', rbac(...TEST_VIEW), c.testCnspDone);
 router.get('/test-run/qa-done', rbac(...TEST_VIEW), c.testQaDone);
+router.get('/test-run/owner-cho-in', rbac(...TEST_VIEW), c.ownerChoIn);
 router.get('/lenh/:lenhId', rbac(...TEST_VIEW), c.lenhDetail);
 router.post('/test-run/cnsp-confirm-batch', rbac('TESTRUN_CNSP'), c.confirmCNSPBatch);
 router.post('/test-run/qa-confirm-batch', rbac('TESTRUN_QA'), c.confirmQABatch);
