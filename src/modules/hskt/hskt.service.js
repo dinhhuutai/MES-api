@@ -77,19 +77,18 @@ async function changePhuongAnIn(id, pain, actorId) {
   if (!isValidPain(p)) throw new AppError('Phương án in không hợp lệ (1 Bàn / 2 Máy / 3 Robot)', { status: 422, errorCode: 'INVALID' });
   const res = await repo.changePhuongAnIn(id, p, actorId);
   if (!res) throw new AppError('HSKT không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
-  if (res.error === 'BARCODE_TRUNG') {
-    throw new AppError(
-      `Đã có hồ sơ kỹ thuật khác đang dùng mã vạch ${res.barcode_moi} — không thể đổi phương án in`,
-      { status: 409, errorCode: 'BARCODE_TRUNG' }
-    );
-  }
+  // ⚠ Trùng mã vạch KHÔNG còn là lỗi (15/09/2026): repository đã GỘP phần in vào hồ sơ đang giữ mã
+  //   đó và trả `gop_vao` — xem `hskt.repository.gopVaoHskt`.
   sockets.emit('workflow:updated', { stage: 'HSKT', hsktId: res.id });
   // Màn READY / QC READY cho đổi phương án in ngay tại cột ⇒ máy khác phải thấy. 2 màn đó nghe
   // `ready:confirmed` (KHÔNG nghe `workflow:updated` — event ấy bị planning bắn rất dày, nghe vào là
   // tải lại liên tục vô ích), nên emit thêm ở đây thay vì nới danh sách nghe bên FE.
   sockets.emit('ready:confirmed', { stage: 'HSKT', hsktId: res.id });
   const data = await detail(res.id);
-  return { ...data, barcode_cu: res.barcode_cu, barcode_moi: res.barcode_moi };
+  return {
+    ...data, barcode_cu: res.barcode_cu, barcode_moi: res.barcode_moi,
+    gop_vao: res.gop_vao || null, so_phan_in_gop: res.so_phan_in_gop || 0,
+  };
 }
 
 module.exports = { list, detail, byPhanIn, byBarcode, changePhuongAnIn, PHUONG_AN };

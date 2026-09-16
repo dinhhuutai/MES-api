@@ -517,12 +517,12 @@ async function runHoanThanhTram({ loc = {}, gioi_han }) {
 // Bất biến nhận diện: release luôn đòi QC xong ⇒ QC bị hủy + chưa in tem = đang làm lại READY.
 // ⇒ ĐIỀU KIỆN NÀY NẰM Ở 3 NƠI, đổi luật phải sửa CẢ 3: `technical.listCandidates` ·
 //   `utils/stage.js` (dotStageCase nhánh 2) · hằng này.
-const READY_MEMBER = `(EXISTS (SELECT 1 FROM dot_vai_ve dvu WHERE dvu.phan_in_id = pin.id AND dvu.trang_thai <> 'DA_GOP' AND dvu.tg_chuyen_ready IS NOT NULL
+// ⚠ 15/09/2026: bỏ nhánh "phần in chưa có đợt vải nào" + loại đợt DA_HUY (hệ thống đi theo đợt vải).
+const READY_MEMBER = `(EXISTS (SELECT 1 FROM dot_vai_ve dvu WHERE dvu.phan_in_id = pin.id AND dvu.trang_thai NOT IN ('DA_GOP','DA_HUY') AND dvu.tg_chuyen_ready IS NOT NULL
         AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsu JOIN lenh_san_xuat lu ON lu.id = lsu.lenh_san_xuat_id WHERE lsu.dot_vai_ve_id = dvu.id AND lu.trang_thai <> 'HUY'))
-    OR NOT EXISTS (SELECT 1 FROM dot_vai_ve dvz WHERE dvz.phan_in_id = pin.id AND dvz.trang_thai <> 'DA_GOP')
     OR EXISTS (SELECT 1 FROM dot_vai_ve dvt JOIN lenh_sx_dot_vai lst ON lst.dot_vai_ve_id = dvt.id
                  JOIN lenh_san_xuat lt ON lt.id = lst.lenh_san_xuat_id AND lt.trang_thai = 'RELEASE_1'
-                WHERE dvt.phan_in_id = pin.id AND dvt.trang_thai <> 'DA_GOP' AND dvt.tg_chuyen_ready IS NOT NULL
+                WHERE dvt.phan_in_id = pin.id AND dvt.trang_thai NOT IN ('DA_GOP','DA_HUY') AND dvt.tg_chuyen_ready IS NOT NULL
                   AND NOT EXISTS (SELECT 1 FROM phieu_san_xuat pst WHERE pst.lenh_san_xuat_id = lt.id)))`;
 const QC_DONE_EXISTS = `EXISTS (SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint cp ON cp.id = k.checkpoint_id
     WHERE k.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND k.trang_thai = 'DAT')`;

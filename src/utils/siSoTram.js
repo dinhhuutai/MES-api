@@ -84,17 +84,15 @@ const MOC_KT_XONG = "CASE WHEN kh.ten_khach_hang = ANY(" + KH_MIEN_KHUON + ") TH
 //   lệch một nhánh là 2 con số lại đá nhau.
 const LAT_ROI_READY = (pinCol) => `LEFT JOIN LATERAL (
   SELECT CASE WHEN EXISTS (SELECT 1 FROM dot_vai_ve rdva WHERE rdva.phan_in_id = ${pinCol}
-                             AND rdva.trang_thai <> 'DA_GOP' AND rdva.tg_chuyen_ready IS NOT NULL
+                             AND rdva.trang_thai NOT IN ('DA_GOP','DA_HUY') AND rdva.tg_chuyen_ready IS NOT NULL
                              AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai rlsa
                                   JOIN lenh_san_xuat rla ON rla.id = rlsa.lenh_san_xuat_id
                                  WHERE rlsa.dot_vai_ve_id = rdva.id AND rla.trang_thai <> 'HUY'))
-               OR NOT EXISTS (SELECT 1 FROM dot_vai_ve rdvb WHERE rdvb.phan_in_id = ${pinCol}
-                                AND rdvb.trang_thai <> 'DA_GOP')
                OR EXISTS (SELECT 1 FROM dot_vai_ve rdvc
                             JOIN lenh_sx_dot_vai rlsc ON rlsc.dot_vai_ve_id = rdvc.id
                             JOIN lenh_san_xuat rlc ON rlc.id = rlsc.lenh_san_xuat_id
                                  AND rlc.trang_thai = 'RELEASE_1'
-                           WHERE rdvc.phan_in_id = ${pinCol} AND rdvc.trang_thai <> 'DA_GOP'
+                           WHERE rdvc.phan_in_id = ${pinCol} AND rdvc.trang_thai NOT IN ('DA_GOP','DA_HUY')
                              AND rdvc.tg_chuyen_ready IS NOT NULL
                              AND NOT EXISTS (SELECT 1 FROM phieu_san_xuat rpsc
                                              WHERE rpsc.lenh_san_xuat_id = rlc.id))
@@ -156,7 +154,7 @@ const NHAN_TRONG = `NULL::text AS ma_lenh_san_xuat, NULL::text AS ten_chuyen,
 // Khung nguồn theo LỆNH: 1 dòng / (lệnh × đợt vải) → gom lại thành 1 dòng / phần in.
 const NGUON_LENH = ({ tgVao, tgRa, dk, them = '' }) => `SELECT dv.phan_in_id, ${tgVao} AS tg_vao,
     ${tgRa} AS tg_ra, ls.ma_lenh_san_xuat, cs.ten_chuyen, cs.ma_chuyen, lct.ma_loai AS ma_loai_chuyen,
-    ls.ngay_ke_hoach, ls.created_date AS ngay_release, NULL::text AS ma_tem
+    ls.ngay_ke_hoach, ls.created_date AS ngay_release, NULL::text AS ma_tem, dv.ma_dot_vai
   FROM lenh_san_xuat ls
   JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
   JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
@@ -172,7 +170,7 @@ const NGUON_LENH = ({ tgVao, tgRa, dk, them = '' }) => `SELECT dv.phan_in_id, ${
 //   phải thêm cột `tem.dot_vai_ve_id`.
 const NGUON_TEM = ({ tgVao, tgRa, dk, them = '' }) => `SELECT dv.phan_in_id, ${tgVao} AS tg_vao,
     ${tgRa} AS tg_ra, ls.ma_lenh_san_xuat, cs.ten_chuyen, cs.ma_chuyen, lct.ma_loai AS ma_loai_chuyen,
-    ls.ngay_ke_hoach, ls.created_date AS ngay_release, t.ma_tem
+    ls.ngay_ke_hoach, ls.created_date AS ngay_release, t.ma_tem, dv.ma_dot_vai
   FROM tem t
   JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
   JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
@@ -726,4 +724,8 @@ const O_SI_SO = {
   ton_cuoi: { ten: 'Tồn cuối kỳ', dk: 'q.tg_vao < $2 AND (q.tg_ra IS NULL OR q.tg_ra >= $2)' },
 };
 
-module.exports = { MAN, LOAI_NGAY, O_SI_SO, VN, CP_PHAN_IN, nguonPhanIn };
+// `DV` export thêm 15/09/2026 cho trang *Dashboard › Thời gian trạm* (`modules/thoigiantram`) — đo thời
+// gian ở từng trạm bằng ĐÚNG các nguồn mốc vào/ra này, để 2 tính năng không thể lệch luật.
+// ⚠ `NGUON_LENH`/`NGUON_TEM` nay trả thêm `dv.ma_dot_vai` (trang đó cần hiện đợt vải của từng lệnh/tem);
+//   `gomTheo`/`manTheoDonVi` SELECT cột tường minh nên thêm cột KHÔNG ảnh hưởng sĩ số/báo cáo.
+module.exports = { MAN, LOAI_NGAY, O_SI_SO, VN, CP_PHAN_IN, nguonPhanIn, DV };

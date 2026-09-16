@@ -53,6 +53,10 @@ function dotStageCase(a) {
   // lệnh được GIỮ NGUYÊN (để QC xong nhảy lại Test Run) nên đợt vẫn có lenh_id — nếu không có nhánh này,
   // dashboard/chip sẽ đếm phần in ở Test Run trong khi thực tế nó đang nằm ở READY chờ làm lại.
   // Bất biến: release luôn đòi QC xong ⇒ QC bị hủy + chưa in tem = đang làm lại READY.
+  // ⚠ THỨ TỰ TRÌNH TỰ (chốt 15/09/2026): READY → Release 1 → Test Run → Release 2 → Chờ SX → SX → Chờ khô
+  //   → KCS → Sửa → OQC → Giao. Lệnh `RELEASE_2` được xét TRƯỚC các nhánh tem: lệnh "Ngừng lệnh chạy"
+  //   quay về RELEASE_2 mà đã có tem vẫn là CHỜ SẢN XUẤT (còn phải in tiếp) — kém tiến độ hơn tem đã in.
+  //   Lệnh đã có phiếu (SAN_XUAT/HOAN_TAT) nhưng không còn tem sống ⇒ vẫn Chờ SX, KHÔNG rơi về Test Run.
   return `CASE
       WHEN ${a}.lenh_id IS NULL THEN
         CASE WHEN ${kqPin('QC_XAC_NHAN')} THEN 'RELEASE_1'
@@ -64,28 +68,27 @@ function dotStageCase(a) {
         CASE WHEN ${techDoneSqlByPin(`${a}.phan_in_id`)} THEN 'READY_QA' ELSE 'READY_KT' END
       WHEN ${a}.lenh_tt='GIA_CONG' THEN 'GIA_CONG'
       WHEN EXISTS(SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id=${a}.lenh_id AND ps.trang_thai='DANG_CHAY') THEN 'SAN_XUAT'
+      WHEN ${a}.lenh_tt='RELEASE_2' THEN 'CHO_SAN_XUAT'
       WHEN ${temEx("t.trang_thai IN ('IN','DANG_PHOI')")} THEN 'CHO_KHO'
       WHEN ${temEx("t.trang_thai='DA_KHO'")} THEN 'KCS'
       WHEN ${temEx("t.trang_thai='CHO_SUA'")} THEN 'SUA'
       WHEN ${temEx("t.trang_thai='CHO_OQC'")} THEN 'OQC'
       WHEN ${temEx("t.trang_thai='OQC_DAT'")} THEN 'DANG_GIAO'
       WHEN ${temEx("t.trang_thai='DA_GIAO'")} THEN 'DA_GIAO'
-      WHEN ${a}.lenh_tt='RELEASE_2' THEN 'CHO_SAN_XUAT'
+      WHEN ${a}.lenh_tt IN ('SAN_XUAT','HOAN_TAT') THEN 'CHO_SAN_XUAT'
       WHEN ${kqLenh('TEST_CNSP')} AND ${kqLenh('TEST_QA')} THEN 'RELEASE_2'
       WHEN ${kqLenh('TEST_CNSP')} THEN 'TESTRUN_QA'
       ELSE 'TESTRUN_CNSP' END`;
 }
 
-// Giai đoạn "dự phòng" cho phần in KHÔNG có đợt vải nào (chưa nhận vải) — LUÔN thuộc READY (chuẩn bị),
-// KHÔNG bao giờ RELEASE_1: không có đợt vải nào để release nên màn Release 1 (theo đợt) không hiện chúng
-// ⇒ nếu xếp RELEASE_1 sẽ đếm dư so với màn. (RELEASE_1 chỉ dành cho phần in CÓ đợt vải chưa release.)
-// Fallback khi phần in KHÔNG có đợt vải ĐÃ VÀO READY (dotSource rỗng): nếu còn đợt CHỜ chuyển (pending)
-// → 'CHO_CHUYEN'; nếu không có đợt nào → READY (chuẩn bị, kỹ thuật có thể làm trước khi vải về).
+// Giai đoạn "dự phòng" khi phần in KHÔNG có đợt vải sống nào (dotSource rỗng).
+//
+// ⚠⚠ ĐỔI 15/09/2026 — HỆ THỐNG ĐI THEO ĐỢT VẢI: phần in KHÔNG còn đợt vải sống thì KHÔNG thuộc giai
+//   đoạn nào (trả NULL ⇒ không lọt vào chip/ô READY nào). Bỏ luôn nhánh CHO_CHUYEN (API ERP "-new" đã gỡ
+//   từ 27/07, đo prod 15/09: 0 đợt tg_chuyen_ready NULL). Tham số giữ để không đổi chữ ký hàm.
+// eslint-disable-next-line no-unused-vars
 function readyFallback(pinId) {
-  return `CASE
-      WHEN EXISTS(SELECT 1 FROM dot_vai_ve dp WHERE dp.phan_in_id=${pinId} AND dp.trang_thai NOT IN ('DA_GOP','DA_HUY') AND dp.tg_chuyen_ready IS NULL) THEN 'CHO_CHUYEN'
-      WHEN ${techDoneSqlByPin(pinId)} THEN 'READY_QA'
-      ELSE 'READY_KT' END`;
+  return 'NULL::text';
 }
 
 // Rowsource các đợt vải (không DA_GOP/DA_HUY, ĐÃ vào READY — tg_chuyen_ready ≠ null) của phần in + lệnh non-HUY mới nhất.

@@ -235,37 +235,37 @@ async function confirmGiao(giaoHangId, actorId) {
 }
 
 // Dựng payload phiếu giao rồi bắn sang ERP.
-// ⚠⚠ TÊN TRƯỜNG LÀ ĐỀ XUẤT CỦA MES, **CHƯA CÓ HỢP ĐỒNG CHÍNH THỨC TỪ ERP** — đặt theo đúng khuôn
-//   PascalCase của 2 API đang chạy (`ghi-in-tem`, `gui-erp-phan-loai-loi`). Khi ERP xác nhận tên thật
-//   thì sửa ĐÚNG hàm này, không rải ra chỗ khác. An toàn vì API này chạy ngầm và không chặn gì.
+// ⚠⚠ HỢP ĐỒNG proc `MES_spr_MES2SQ0` — ĐÚNG 4 tham số, không hơn: `IDPhieuGiao` · `Ngayct` ·
+//   `user` · `DsTemGiao`. (Bản 04/09/2026 gửi 8 trường tự đặt — MaPhieuGiao/Ngaygiao/Khachhang/
+//   ChiTiet[]… — nên router ERP nhận `undefined` cả 4 tham số và proc GHI RỖNG mà vẫn trả
+//   `success:true`. Sửa 16/09/2026 theo router ERP người dùng gửi.)
 // ⚠ Bọc try/catch TOÀN BỘ: kể cả câu đọc dữ liệu mô tả hỏng cũng không được kéo theo lỗi cho `confirmGiao`.
 async function guiErpPhieuGiao(giaoHangId, gh, tems, actorId) {
   try {
     await erp.guiPhieuGiao({
-      MaPhieuGiao: gh.ma_phieu_giao,
-      Ngaygiao: gh.ngay_giao || null,
-      Khachhang: gh.ten_khach_hang || '',
-      DonHang: gh.ma_don_hang || '',
-      Ghichu: gh.ghi_chu || '',
-      Sotem: tems.length,
-      Tongsl: tems.reduce((s, t) => s + (Number(t.so_luong_giao) || 0), 0),
-      ChiTiet: tems.map((t) => ({
-        BarcodeIn: t.ma_tem,
-        Nguon: t.nguon || 'KCS',
-        MaLenhSX: t.ma_lenh_san_xuat || '',
-        CodePhan: t.phan_list || '',
-        Mahang: t.ma_hang || '',
-        Mauvai: t.mau_vai || '',
-        Soluonggiao: Number(t.so_luong_giao) || 0,
-      })),
+      IDPhieuGiao: gh.ma_phieu_giao,
+      // Ngày chứng từ = NGÀY GIAO của phiếu (lùi về hôm nay nếu thiếu).
+      Ngayct: ngayErp(gh.ngay_giao),
+      user: await erp.tenDangNhap(actorId),
+      DsTemGiao: erp.dsTemGiao(tems),
     }, { giaoHangId, actorId });
   } catch (e) {
     console.error(`[gui-erp-phieu-giao] ✗ Không gửi được (phiếu ${gh.ma_phieu_giao}): ${e.message}`);
   }
 }
 
+// `sql.DateTime` bên ERP: gửi chuỗi `YYYY/MM/DD` (khuôn của `ghi-in-tem` đang chạy thật).
+// ⚠ Cắt ngày bằng giờ LOCAL — `toISOString()` quy về UTC nên giờ VN trước 07:00 sẽ LÙI 1 NGÀY.
+function ngayErp(v) {
+  const d = v ? new Date(v) : new Date();
+  if (Number.isNaN(d.getTime())) return null;
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())}`;
+}
+
 module.exports = {
   listTemSanSang, getDetail, createGiaoHang, listGiaoHang, confirmGiao,
   listTemChoTich, tichTem, boTichTem, traCuuTemTich,
   historyGiao, doneGiao, huyPhieuGiao, listPhieuGiaoCancelable,
+  guiErpPhieuGiao, // export để kiểm thực payload + gửi lại bằng tay khi ERP lỗi
 };

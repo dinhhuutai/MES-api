@@ -220,8 +220,7 @@ async function stageCounts() {
       FROM phan_in pi JOIN ma_hang mh ON mh.id = pi.ma_hang_id
       JOIN don_hang dh ON dh.id = mh.don_hang_id AND dh.trang_thai IS DISTINCT FROM 'CLOSED_FINANCE'
       WHERE pi.dang_hoat_dong
-        AND (EXISTS (SELECT 1 FROM dot_vai_ve dr WHERE dr.phan_in_id=pi.id AND dr.trang_thai NOT IN ('DA_GOP','DA_HUY') AND dr.tg_chuyen_ready IS NOT NULL)
-             OR NOT EXISTS (SELECT 1 FROM dot_vai_ve da WHERE da.phan_in_id=pi.id AND da.trang_thai NOT IN ('DA_GOP','DA_HUY')))
+        AND EXISTS (SELECT 1 FROM dot_vai_ve dr WHERE dr.phan_in_id=pi.id AND dr.trang_thai NOT IN ('DA_GOP','DA_HUY') AND dr.tg_chuyen_ready IS NOT NULL)
     ),
     dvs AS (
       SELECT d.phan_in_id, ${lenh('id')} AS lenh_id, ${lenh('trang_thai')} AS lenh_tt
@@ -238,7 +237,7 @@ async function stageCounts() {
     ),
     dom AS (
       SELECT * FROM dom0
-       WHERE stage IN ('CHO_CHUYEN','READY_KT','READY_QA') OR ${dkPain}
+       WHERE stage IN ('READY_KT','READY_QA') OR ${dkPain}
     )`;
   const stageSql = `${DOM_CTE}
     SELECT stage, count(*)::int AS n_phan_in, count(DISTINCT ma_hang_id)::int AS n_ma
@@ -691,6 +690,12 @@ async function flowRows(tramMa = '') {
       WHERE c.ma_checkpoint IN ('KHUON','FILM','MUC')
       GROUP BY kq.phan_in_id
     ),
+    qa AS (
+      SELECT kq.lenh_san_xuat_id AS lenh_id, max(COALESCE(kq.tg_xac_nhan, kq.created_date)) AS qa_tg
+      FROM ket_qua_checkpoint kq JOIN checkpoint c ON c.id = kq.checkpoint_id
+      WHERE c.ma_checkpoint = 'TEST_QA' AND kq.trang_thai = 'DAT' AND kq.lenh_san_xuat_id IS NOT NULL
+      GROUP BY kq.lenh_san_xuat_id
+    ),
     gc AS (
       SELECT lk.dot_vai_ve_id, (lc.ma_loai='GIA_CONG') AS is_gia_cong
       FROM lk JOIN lenh_san_xuat ls ON ls.id = lk.lenh_id
@@ -724,25 +729,30 @@ async function flowRows(tramMa = '') {
     LEFT JOIN qc ON qc.phan_in_id = b.phan_in_id
     LEFT JOIN kt ON kt.phan_in_id = b.phan_in_id
     LEFT JOIN gc ON gc.dot_vai_ve_id = b.dot_vai_ve_id
+    LEFT JOIN qa ON qa.lenh_id = lk.lenh_id
     CROSS JOIN qcp
     CROSS JOIN LATERAL (SELECT (CASE
-        WHEN lk.lenh_id IS NULL THEN (CASE WHEN EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint c ON c.id=kq.checkpoint_id WHERE kq.phan_in_id=b.phan_in_id AND c.ma_checkpoint='QC_XAC_NHAN' AND kq.trang_thai='DAT') THEN 'RELEASE_1' ELSE 'READY' END)
+        WHEN lk.lenh_id IS NULL THEN (CASE WHEN qc.phan_in_id IS NOT NULL THEN 'RELEASE_1' ELSE 'READY' END)
+        WHEN lk.lenh_tt='RELEASE_1' AND ph.dot_vai_ve_id IS NULL AND qc.phan_in_id IS NULL THEN 'READY'
+        WHEN lk.lenh_tt='GIA_CONG' THEN 'GIA_CONG'
         WHEN ph.co_chay THEN 'SAN_XUAT'
+        WHEN lk.lenh_tt='RELEASE_2' THEN 'SAN_XUAT'
         WHEN ta.has_phoi THEN 'CHO_KHO'
         WHEN ta.has_dakho THEN 'KIEM'
         WHEN ta.has_chosua THEN 'SUA'
         WHEN ta.has_choqc THEN 'OQC'
         WHEN ta.has_oqcdat THEN 'FINISH'
-        WHEN ta.pcs IS NOT NULL THEN 'DONE_DELIVERY'
-        WHEN lk.lenh_tt='RELEASE_2' THEN 'RELEASE_2'
+        WHEN ta.has_giao THEN 'DONE_DELIVERY'
+        WHEN lk.lenh_tt IN ('SAN_XUAT','HOAN_TAT') THEN 'SAN_XUAT'
+        WHEN qa.qa_tg IS NOT NULL THEN 'RELEASE_2'
         ELSE 'TEST_RUN'
       END) AS ma_tram) cur
     CROSS JOIN LATERAL (SELECT (CASE cur.ma_tram
         WHEN 'READY' THEN (CASE WHEN ${KT_DONE_FLOW} THEN kt.kt_tg ELSE b.dv_tg END)
         WHEN 'RELEASE_1' THEN COALESCE(qc.qc_tg, b.dv_tg)
         WHEN 'TEST_RUN' THEN lk.lenh_tg
-        WHEN 'RELEASE_2' THEN lk.lenh_tg
-        WHEN 'SAN_XUAT' THEN ph.phieu_tg
+        WHEN 'RELEASE_2' THEN COALESCE(qa.qa_tg, lk.lenh_tg)
+        WHEN 'SAN_XUAT' THEN COALESCE(ph.phieu_tg, qa.qa_tg, lk.lenh_tg)
         WHEN 'CHO_KHO' THEN ta.tem_tg
         WHEN 'KIEM' THEN COALESCE(ev.dry_tg, ta.tem_tg)
         WHEN 'SUA' THEN COALESCE(ev.kcs_tg, ta.tem_tg)

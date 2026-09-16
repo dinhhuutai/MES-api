@@ -219,12 +219,18 @@ async function changePhuongAnIn(hsktId, pain, actorId) {
       return { id: h.id, barcode_cu: h.barcode_hskt, barcode_moi: h.barcode_hskt, khong_doi: true };
     }
     const barcodeMoi = applyPainToBarcode(h.barcode_hskt, pain);
-    // `barcode_hskt` KHÔNG có UNIQUE (mig 064) ⇒ tự chặn: không để 2 HSKT ACTIVE cùng mã vạch.
+    // `barcode_hskt` KHÔNG có UNIQUE (mig 064) ⇒ không để 2 HSKT ACTIVE cùng mã vạch.
+    // ⚠⚠ ĐỔI 15/09/2026 (người dùng chốt): mã vạch mới ĐÃ CÓ CHỦ thì **KHÔNG báo lỗi nữa** mà GỘP
+    //   phần in của hồ sơ này VÀO hồ sơ đang giữ mã đó. Trùng mã chỉ xảy ra khi 2 hồ sơ có CÙNG 11 số
+    //   đầu (số cuối = phương án in) — tức ERP đã tạo 2 hồ sơ cho CÙNG một định danh (đo prod 15/09:
+    //   có sẵn 3 cặp như vậy) ⇒ gộp về 1 hồ sơ mới là đúng bản chất, chặn lại chỉ làm kẹt người dùng.
     if (barcodeMoi && barcodeMoi !== h.barcode_hskt) {
       const { rows: dup } = await client.query(
-        'SELECT id FROM ho_so_ky_thuat WHERE barcode_hskt=$1 AND dang_hoat_dong=true AND id<>$2 LIMIT 1',
+        `SELECT id, barcode_hskt, phuong_an_in, phien_ban FROM ho_so_ky_thuat
+          WHERE barcode_hskt=$1 AND dang_hoat_dong=true AND id<>$2
+          ORDER BY updated_date DESC NULLS LAST LIMIT 1`,
         [barcodeMoi, hsktId]);
-      if (dup.length) return { error: 'BARCODE_TRUNG', barcode_moi: barcodeMoi };
+      if (dup.length) return gopVaoHskt(client, h, dup[0], pain, actorId);
     }
     // `ma_hskt` được set = barcode lúc tạo ⇒ chỉ đổi theo khi nó đang ĐÚNG BẰNG barcode cũ.
     const maHsktMoi = h.ma_hskt && h.ma_hskt === h.barcode_hskt ? barcodeMoi : h.ma_hskt;
@@ -254,6 +260,44 @@ async function changePhuongAnIn(hsktId, pain, actorId) {
       [newId, `Đổi phương án in ${h.phuong_an_in ?? '—'}→${pain}${doiMa}`, (h.phien_ban || 1) + 1, actorId]);
     return { id: newId, barcode_cu: h.barcode_hskt, barcode_moi: barcodeMoi };
   });
+}
+
+// GỘP hồ sơ `h` vào hồ sơ đích `dich` (đang giữ mã vạch mà `h` muốn đổi sang) — chạy TRONG transaction
+// của `changePhuongAnIn`.
+//  1. Tắt `h` + tắt liên kết phần in của nó.
+//  2. Nối các phần in đó vào `dich` (bật lại liên kết cũ nếu từng có — UNIQUE (hskt_id, phan_in_id)).
+//  3. `dich` đặt `pa_in_sua_tay=true` + đúng phương án in vừa chọn: người dùng CHỦ ĐỘNG chọn ⇒ không để
+//     post-pass luật sản lượng của job ERP đổi lại (sau khi gộp, tổng SL vải của hồ sơ lớn hơn — nếu
+//     không khóa thì có thể vượt/tụt ngưỡng 2000 và tự lật phương án in + số cuối mã vạch).
+//  4. Ghi `lich_su_hskt` ở CẢ 2 hồ sơ để tra được từ phía nào cũng thấy.
+// ⚠ KHÔNG tạo phiên bản mới cho `dich`: mã vạch của nó không đổi, phần in chỉ được thêm vào.
+async function gopVaoHskt(client, h, dich, pain, actorId) {
+  const { rows: pins } = await client.query(
+    'SELECT phan_in_id FROM hskt_phan_in WHERE hskt_id=$1 AND dang_hoat_dong', [h.id]);
+  const pinIds = pins.map((p) => p.phan_in_id);
+  await client.query('UPDATE ho_so_ky_thuat SET dang_hoat_dong=false, updated_date=now(), updated_by=$2 WHERE id=$1',
+    [h.id, actorId]);
+  await client.query('UPDATE hskt_phan_in SET dang_hoat_dong=false WHERE hskt_id=$1', [h.id]);
+  if (pinIds.length) {
+    await client.query(
+      `INSERT INTO hskt_phan_in (hskt_id, phan_in_id, created_by)
+       SELECT $1, x, $3 FROM unnest($2::uuid[]) x
+       ON CONFLICT (hskt_id, phan_in_id) DO UPDATE SET dang_hoat_dong = true`,
+      [dich.id, pinIds, actorId]);
+  }
+  await client.query(
+    `UPDATE ho_so_ky_thuat SET pa_in_sua_tay=true, phuong_an_in=$2, updated_date=now(), updated_by=$3
+      WHERE id=$1`, [dich.id, pain, actorId]);
+  const moTa = `Gộp hồ sơ ${h.barcode_hskt} (PA ${h.phuong_an_in ?? '—'}→${pain}) vào hồ sơ ${dich.barcode_hskt}`
+    + ` · ${pinIds.length} phần in`;
+  await client.query(
+    `INSERT INTO lich_su_hskt (hskt_id, hanh_dong, chi_tiet, phien_ban, nguoi_id)
+     VALUES ($1,'DOI_PHUONG_AN_IN',$2,$3,$5), ($4,'DOI_PHUONG_AN_IN',$2,$6,$5)`,
+    [dich.id, moTa, dich.phien_ban || 1, h.id, actorId, h.phien_ban || 1]);
+  return {
+    id: dich.id, barcode_cu: h.barcode_hskt, barcode_moi: dich.barcode_hskt,
+    gop_vao: dich.id, so_phan_in_gop: pinIds.length,
+  };
 }
 
 module.exports = {

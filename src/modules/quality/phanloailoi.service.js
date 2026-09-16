@@ -16,8 +16,9 @@
 
 const { withTransaction } = require('../../config/db');
 const AppError = require('../../utils/AppError');
-const { maTemUngVien } = require('../../utils/temPrefix');
-const { guiPhanLoaiLoi } = require('../../utils/erpApiChung');
+const { maTemUngVien, temCode } = require('../../utils/temPrefix');
+const { guiPhanLoaiLoi, tenDangNhap, dsMaLoi } = require('../../utils/erpApiChung');
+const { capIdMes } = require('../../utils/idMes');
 const repo = require('./phanloailoi.repository');
 const qualityRepo = require('./quality.repository');
 
@@ -108,26 +109,25 @@ async function luu(temId, { dong = [], ghiChu = '' } = {}, actorId) {
 // Dựng payload rồi bắn sang ERP. Tách hàm riêng để `luu` không phình và để chỗ này chịu trách nhiệm
 // đọc thêm dữ liệu mô tả (mã tem / mã lỗi / tên biện pháp) mà bảng chi tiết chỉ lưu id.
 // ⚠ Bọc try/catch toàn bộ: kể cả câu đọc dữ liệu mô tả hỏng cũng KHÔNG được kéo theo lỗi cho `luu`.
-async function guiErpPhanLoaiLoi(temId, { rows, tongSua, tongHuy, slHu, ghiChu }, actorId) {
+async function guiErpPhanLoaiLoi(temId, { rows }, actorId) {
   try {
     const ct = await repo.chiTietGuiErp(temId, rows);
     if (!ct) return;
+    const dsLoi = dsMaLoi(ct.dong);
+    if (!dsLoi) {
+      console.warn(`[gui-erp-phan-loai-loi] ⏭ Tem ${ct.ma_tem}: không dòng nào có MÃ LỖI — bỏ qua lời gọi ERP`);
+      return;
+    }
+    const idMes = await capIdMes('gui-erp-phan-loai-loi');
+    if (idMes == null) return;
     await guiPhanLoaiLoi({
-      BarcodeIn: ct.ma_tem,
-      Ngay: ct.ngay_phan_loai,
-      Soluonghu: slHu,
-      Soluongsua: tongSua,
-      Soluonghuy: tongHuy,
-      Ghichu: ghiChu || '',
-      ChiTiet: ct.dong.map((d) => ({
-        MaLoi: d.ma_loi || '',
-        TenLoi: d.ten_loi || '',
-        MaBienPhap: d.ma_bien_phap || '',
-        TenBienPhap: d.ten_bien_phap || '',
-        Soluongsua: d.so_luong_sua,
-        Soluonghuy: d.so_luong_huy,
-        Ghichu: d.ghi_chu || '',
-      })),
+      IDMes: String(idMes),
+      Ngayct: ct.ngay_phan_loai,
+      nhanvien: await tenDangNhap(actorId),
+      // ⚠ Người phân loại quét NHÃN HÀNG LỖI (tiền tố `16`), không phải mã tem in (`15`) — người dùng
+      //   chốt 16/09/2026. DB vẫn lưu mã gốc; chỉ chuỗi GỬI ERP mang tiền tố công đoạn.
+      Maquet: temCode(ct.ma_tem, 16),
+      DsMaloi: dsLoi,
     }, { temId, actorId });
   } catch (e) {
     console.error(`[gui-erp-phan-loai-loi] ✗ Không gửi được (tem ${temId}): ${e.message}`);
@@ -153,4 +153,5 @@ const doiTrangThaiBienPhap = (id, active, actorId) => repo.setBienPhapActive(id,
 module.exports = {
   danhSach, traTem, chiTiet, luu,
   dsBienPhap, taoBienPhap, suaBienPhap, doiTrangThaiBienPhap,
+  guiErpPhanLoaiLoi, // export để kiểm thực payload + gửi lại bằng tay khi ERP lỗi
 };

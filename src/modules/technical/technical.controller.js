@@ -29,7 +29,14 @@ const itemCounts = asyncHandler(async (req, res) => ok(res, await service.itemCo
 // (đã QC xong / đã release / đã hủy), không đổi dữ liệu.
 const traCuu = asyncHandler(async (req, res) => ok(res, await service.traCuuMaQuet(req.query.code || '')));
 
-const detail = asyncHandler(async (req, res) => ok(res, await service.getDetail(req.params.phanInId)));
+// `dotVaiIds` (tùy chọn, mig 098): danh sách đợt vải của 1 DÒNG LOẠI ĐỢT VẢI trên màn READY — có thì
+// thao tác/xem ở MỨC NHÓM ĐỢT VẢI, không có thì như cũ (mức phần in). Nhận mảng hoặc chuỗi ngăn phẩy.
+const laUuid = (v) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(v || ''));
+const dsDot = (v) => [...new Set((Array.isArray(v) ? v : String(v || '').split(','))
+  .map((x) => String(x).trim()).filter(laUuid))];
+
+const detail = asyncHandler(async (req, res) => ok(res,
+  await service.getDetail(req.params.phanInId, dsDot(req.query.dotVaiIds))));
 
 const history = asyncHandler(async (req, res) => {
   const date = req.query.date || new Date().toISOString().slice(0, 10);
@@ -51,7 +58,8 @@ const confirmItem = asyncHandler(async (req, res) => {
   if (!perms.includes('*') && !perms.includes(perm)) {
     throw new AppError(`Không có quyền xác nhận mục này (${perm})`, { status: 403, errorCode: 'FORBIDDEN', details: [perm] });
   }
-  const data = await service.confirmItem(req.params.phanInId, ma, req.body.value, req.user.id, req.body.phuong_an_in);
+  const data = await service.confirmItem(req.params.phanInId, ma, req.body.value, req.user.id, req.body.phuong_an_in,
+    dsDot(req.body.dotVaiIds));
   return ok(res, data, 'Đã xác nhận');
 });
 
@@ -67,7 +75,8 @@ const confirmItemsBatch = asyncHandler(async (req, res) => {
       throw new AppError(`Không có quyền xác nhận mục ${ma} (${perm})`, { status: 403, errorCode: 'FORBIDDEN', details: [perm] });
     }
   }
-  const data = await service.confirmItemsBatch(req.params.phanInId, items, req.user.id, req.body.phuong_an_in);
+  const data = await service.confirmItemsBatch(req.params.phanInId, items, req.user.id, req.body.phuong_an_in,
+    dsDot(req.body.dotVaiIds));
   return ok(res, data, 'Đã xác nhận các mục đã chọn');
 });
 
@@ -102,7 +111,7 @@ const cancelItem = asyncHandler(async (req, res) => {
 // Bỏ tích 1 mục kỹ thuật (trong luồng Quét/tích) — quyền tech, khác hủy xác nhận (READY_CANCEL).
 const uncheckItem = asyncHandler(async (req, res) => {
   const ma = String(req.params.ma || '').toUpperCase();
-  const data = await service.uncheckItem(req.params.phanInId, ma, req.user.id);
+  const data = await service.uncheckItem(req.params.phanInId, ma, req.user.id, dsDot(req.body && req.body.dotVaiIds));
   return ok(res, data, 'Đã bỏ tích');
 });
 

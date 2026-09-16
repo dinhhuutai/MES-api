@@ -25,6 +25,7 @@ const deliveryRoutes = require('./modules/delivery/delivery.routes');
 const wfconfigRoutes = require('./modules/wfconfig/wfconfig.routes');
 const dashboardRoutes = require('./modules/dashboard/dashboard.routes');
 const kpiReadyRoutes = require('./modules/kpiready/kpiready.routes');
+const thoiGianTramRoutes = require('./modules/thoigiantram/thoigiantram.routes');
 const erpsyncRoutes = require('./modules/erpsync/erpsync.routes');
 const hienThiPainRoutes = require('./modules/hienthipain/hienthipain.routes');
 const caiDatApiRoutes = require('./modules/caidatapi/caidatapi.routes');
@@ -78,6 +79,8 @@ app.use('/api/dashboard', dashboardRoutes);
 // Dashboard > KPI READY (5 KPI + bảng theo dõi phần in qua 23 cột checklist) + trang chọn đơn
 // hàng lấy số liệu ở Hệ thống — mig 093.
 app.use('/api/kpi-ready', kpiReadyRoutes);
+// Dashboard > Thời gian trạm (đo thời gian ở từng trạm theo nguồn mốc của dải "Theo dõi")
+app.use('/api/thoi-gian-tram', thoiGianTramRoutes);
 app.use('/api/erp', erpsyncRoutes);
 // Hệ thống > Hiển thị theo phương án in (bật/tắt Máy/Bàn/Robot/Khác cho từng trang — mig 067)
 app.use('/api/hien-thi-pain', hienThiPainRoutes);

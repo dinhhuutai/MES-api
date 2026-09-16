@@ -23,8 +23,43 @@
 
 const axios = require('axios');
 const env = require('../config/env');
+const { query } = require('../config/db');
 const { apiBat } = require('./caiDatApi');
 const { ghiLog } = require('./erpApiLog');
+const { maTemNhan } = require('./temPrefix');
+
+// ─── CHUẨN HÓA GIÁ TRỊ GỬI ERP ───────────────────────────────────────────────
+// ⚠ Cắt đúng độ dài tham số của proc (`NVARCHAR(20)` / `NVARCHAR(4000)`): tedious KHÔNG tự cắt,
+//   chuỗi dài hơn làm proc ăn lỗi khó đọc ("String or binary data would be truncated" — đã gặp thật
+//   với `ghi-in-tem` ngày 14/08/2026).
+// ⚠ Chuỗi thiếu → `''` (KHÔNG `null`) để proc khỏi phải `ISNULL` từng chỗ — cùng quy ước `erpGhiInTem`.
+//   RIÊNG trường ngày giờ (`sql.DateTime`) thì thiếu phải để `null`: chuỗi rỗng làm tedious ném lỗi
+//   chuyển kiểu và HỎNG CẢ LƯỢT GỌI.
+const catChuoi = (v, max) => {
+  if (v == null) return '';
+  const s = String(v).trim();
+  return max && s.length > max ? s.slice(0, max) : s;
+};
+const ngayGio = (v) => {
+  if (v == null) return null;
+  const s = String(v).trim();
+  return s || null;
+};
+
+// `nhanvien` / `user` bên ERP là MÃ NHÂN VIÊN — trùng với `ten_dang_nhap` của MES (ERP tạo tài khoản
+// theo mã nhân viên, vd `011600486`). ⚠ KHÔNG gửi `ho_ten`: cột ERP chỉ `NVARCHAR(20)` và họ tên
+// tiếng Việt vừa dài vừa trùng nhau.
+// ⚠ Lỗi đọc DB ⇒ trả `''`, TUYỆT ĐỐI không ném: đây là chiều đẩy chạy ngầm.
+async function tenDangNhap(actorId) {
+  if (!actorId) return '';
+  try {
+    const { rows } = await query('SELECT ten_dang_nhap FROM nguoi_dung WHERE id = $1', [actorId]);
+    return catChuoi(rows[0] && rows[0].ten_dang_nhap, 20);
+  } catch (e) {
+    console.error(`[erp] ✗ Không đọc được tên đăng nhập của người thao tác: ${e.message}`);
+    return '';
+  }
+}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const safeJson = (s) => { try { return JSON.parse(s); } catch { return null; } };
@@ -115,6 +150,33 @@ async function goiErp(maApi, { nhan, url, method = 'POST', body = null, timeoutM
   return { ok: false, error };
 }
 
+// ─── 2 CHUỖI DANH SÁCH GỬI ERP ───────────────────────────────────────────────
+// Proc `MES2SU6` / `MES2SQ0` chỉ nhận MỘT chuỗi cho toàn bộ chi tiết (không có tham số số lượng),
+// nên định dạng 2 chuỗi này LÀ hợp đồng dữ liệu — đặt ở đây để chỉ có 1 nguồn, sửa 1 chỗ.
+
+// `DsMaloi` = các BỘ BA `mã lỗi, SL sửa, SL hủy` nối tiếp, ngăn bằng dấu phẩy (người dùng chốt
+// 16/09/2026): `L1,2,0,L3,5,1` = lỗi L1 sửa 2 / hủy 0; lỗi L3 sửa 5 / hủy 1.
+// ⚠⚠ Số GIỮA = SL ĐEM SỬA, **KHÔNG gồm phần hủy** ⇒ tổng hư của một mã = số giữa + số cuối.
+// ⚠ Bỏ dòng KHÔNG có mã lỗi: gửi ô rỗng làm LỆCH VỊ TRÍ mọi bộ ba phía sau (ERP đọc sai toàn bộ).
+// ⚠ Mã lỗi chứa dấu phẩy sẽ phá cấu trúc ⇒ thay bằng khoảng trắng (đo prod: không mã nào có dấu phẩy).
+function dsMaLoi(dong = []) {
+  return dong
+    .filter((d) => d && d.ma_loi)
+    .map((d) => [String(d.ma_loi).replace(/,/g, ' ').trim(),
+      Number(d.so_luong_sua) || 0, Number(d.so_luong_huy) || 0].join(','))
+    .join(',');
+}
+
+// `DsTemGiao` = DANH SÁCH MÃ TEM ngăn bằng dấu phẩy (người dùng chốt 16/09/2026 — ERP tự tra SL).
+// ⚠⚠ GỬI ĐÚNG MÃ IN TRÊN NHÃN: nguồn SỬA → `17…`, nguồn KCS → `15…`, tem gia công đã mang `13…`
+//   thì GIỮ NGUYÊN (`maTemNhan`). Ghép tiền tố bừa lên tem 13 ra mã KHÔNG CÓ THẬT, ERP quét không ra.
+function dsTemGiao(tems = []) {
+  const ds = (tems || [])
+    .map((t) => maTemNhan(t.ma_tem, t.nguon === 'SUA' ? 17 : 15, null, t.la_tem_sua))
+    .filter(Boolean);
+  return [...new Set(ds)].join(',');
+}
+
 // ─── 1. XIN ID PHIẾU GIAO ────────────────────────────────────────────────────
 // Trả CHUỖI id do ERP cấp, hoặc `null` khi tắt / lỗi (bên gọi lùi về mã MES tự sinh).
 // ⚠ Mỗi lần gọi TIÊU MỘT SỐ ⇒ chỉ gọi khi THẬT SỰ tạo phiếu giao, và gọi TRƯỚC transaction
@@ -141,34 +203,61 @@ async function layIdPhieuGiao(actorId = null) {
 }
 
 // ─── 2. ĐẨY PHIẾU GIAO ───────────────────────────────────────────────────────
+// Hợp đồng proc `MES_spr_MES2SQ0` — ĐÚNG 4 tham số, tên phân biệt HOA/thường:
+//   pIDPhieuGiao NVARCHAR(20) · pNgayct DATETIME · puser NVARCHAR(20) · pDsTemGiao NVARCHAR(4000)
+// ⚠⚠ Router ERP destructure `{ IDPhieuGiao, Ngayct, user, DsTemGiao }` từ body ⇒ gửi SAI TÊN là
+//   4 tham số đều `undefined` → tedious gửi NULL → proc chạy xong, trả `success:true`, NHƯNG KHÔNG
+//   GHI GÌ. Hỏng hoàn toàn im lặng, không lỗi nào hiện ra. Sửa tên trường phải đối chiếu router ERP.
 // `idBanGhi` = giao_hang.id để dòng lịch sử liên kết được với phiếu.
 async function guiPhieuGiao(payload, { giaoHangId = null, actorId = null } = {}) {
+  const body = {
+    IDPhieuGiao: catChuoi(payload.IDPhieuGiao, 20),
+    Ngayct: ngayGio(payload.Ngayct),
+    user: catChuoi(payload.user, 20),
+    DsTemGiao: catChuoi(payload.DsTemGiao, 4000),
+  };
   return goiErp('ERP_GUI_PHIEU_GIAO', {
     nhan: 'gui-erp-phieu-giao',
     url: env.erp.guiPhieuGiaoUrl,
     method: 'POST',
-    body: payload,
+    body,
     timeoutMs: env.erp.guiPhieuGiaoTimeoutMs,
     retry: env.erp.guiPhieuGiaoRetry,
     idBanGhi: giaoHangId,
-    moTa: payload && payload.MaPhieuGiao ? `phiếu ${payload.MaPhieuGiao}` : null,
+    moTa: body.IDPhieuGiao ? `phiếu ${body.IDPhieuGiao}` : null,
     actorId,
   });
 }
 
 // ─── 3. ĐẨY PHÂN LOẠI LỖI ────────────────────────────────────────────────────
+// Hợp đồng proc `MES_spr_MES2SU6` — ĐÚNG 5 tham số:
+//   pIDMes NVARCHAR(20) · pNgayct DATETIME · pnhanvien NVARCHAR(20) · pMaquet NVARCHAR(20)
+//   · pDsMaloi NVARCHAR(4000)
+// ⚠⚠ Cùng bẫy "sai tên = NULL im lặng" như `guiPhieuGiao` ở trên. Chú ý `IDMes` viết HOA **ID** rồi
+//   thường **es** (khác `IDMES` của `ghi-in-tem`), và `nhanvien`/`user` viết THƯỜNG.
+// ⚠ Proc KHÔNG có tham số số lượng nào ⇒ mọi thông tin SL nằm trong chuỗi `DsMaloi` (xem `dsMaLoi`).
 async function guiPhanLoaiLoi(payload, { temId = null, actorId = null } = {}) {
+  const body = {
+    IDMes: catChuoi(payload.IDMes, 20),
+    Ngayct: ngayGio(payload.Ngayct),
+    nhanvien: catChuoi(payload.nhanvien, 20),
+    Maquet: catChuoi(payload.Maquet, 20),
+    DsMaloi: catChuoi(payload.DsMaloi, 4000),
+  };
   return goiErp('ERP_GUI_PHAN_LOAI_LOI', {
     nhan: 'gui-erp-phan-loai-loi',
     url: env.erp.guiPhanLoaiLoiUrl,
     method: 'POST',
-    body: payload,
+    body,
     timeoutMs: env.erp.guiPhanLoaiLoiTimeoutMs,
     retry: env.erp.guiPhanLoaiLoiRetry,
     idBanGhi: temId,
-    moTa: payload && payload.BarcodeIn ? `tem ${payload.BarcodeIn}` : null,
+    moTa: body.Maquet ? `tem ${body.Maquet}` : null,
     actorId,
   });
 }
 
-module.exports = { layIdPhieuGiao, guiPhieuGiao, guiPhanLoaiLoi, goiErp };
+module.exports = {
+  layIdPhieuGiao, guiPhieuGiao, guiPhanLoaiLoi, goiErp,
+  tenDangNhap, catChuoi, ngayGio, dsMaLoi, dsTemGiao,
+};

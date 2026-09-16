@@ -63,7 +63,7 @@ async function listCandidates({
               WHERE dv.phan_in_id = pin.id) AS gom_set_list,
            (SELECT string_agg(DISTINCT ldv.ten_loai, ', ')
               FROM dot_vai_ve dv3 JOIN loai_dot_vai ldv ON ldv.id = dv3.loai_dot_vai_id
-              WHERE dv3.phan_in_id = pin.id) AS loai_dot_vai,
+              WHERE dv3.phan_in_id = pin.id AND dv3.trang_thai NOT IN ('DA_GOP','DA_HUY')) AS loai_dot_vai,
            (SELECT min(dv4.han_giao_hang) FROM dot_vai_ve dv4
               WHERE dv4.phan_in_id = pin.id AND dv4.trang_thai NOT IN ('DA_GOP','DA_HUY')) AS han_giao_hang,
            -- "Thời gian ERP lên MES" = lúc đợt vải MỚI NHẤT lên (chốt 2026-08-07). Trước đây lấy MIN của
@@ -127,13 +127,15 @@ async function listCandidates({
     -- Nhánh 3: TEST RUN KHÔNG ĐẠT trả về Kỹ thuật — lệnh được GIỮ NGUYÊN (để QC xong nhảy lại Test Run)
     -- nên đợt vải VẪN thuộc lệnh; không có nhánh này thì phần in sẽ KHÔNG hiện ở READY để làm lại.
     -- Nhận diện: đợt thuộc lệnh RELEASE_1 CHƯA có phiếu SX (kết hợp OUTER_WHERE q.qc_done = false).
-    WHERE (EXISTS (SELECT 1 FROM dot_vai_ve dvu WHERE dvu.phan_in_id = pin.id AND dvu.trang_thai <> 'DA_GOP' AND dvu.tg_chuyen_ready IS NOT NULL
+    -- TỪ 15/09/2026 HỆ THỐNG ĐI THEO ĐỢT VẢI: phần in KHÔNG còn đợt vải sống (chỉ còn đợt DA_HUY/DA_GOP,
+    -- hoặc chưa có đợt nào) KHÔNG còn ở READY — đã bỏ nhánh cũ "chưa có đợt vải nào". Đợt DA_HUY cũng
+    -- không còn giữ phần in ở lại READY. Gương y hệt: countReadyItems · siSoTram.LAT_ROI_READY · datasets.READY_MEMBER.
+    WHERE (EXISTS (SELECT 1 FROM dot_vai_ve dvu WHERE dvu.phan_in_id = pin.id AND dvu.trang_thai NOT IN ('DA_GOP','DA_HUY') AND dvu.tg_chuyen_ready IS NOT NULL
                      AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsu JOIN lenh_san_xuat lu ON lu.id = lsu.lenh_san_xuat_id
                                      WHERE lsu.dot_vai_ve_id = dvu.id AND lu.trang_thai <> 'HUY'))
-             OR NOT EXISTS (SELECT 1 FROM dot_vai_ve dvz WHERE dvz.phan_in_id = pin.id AND dvz.trang_thai <> 'DA_GOP')
              OR EXISTS (SELECT 1 FROM dot_vai_ve dvt JOIN lenh_sx_dot_vai lst ON lst.dot_vai_ve_id = dvt.id
                           JOIN lenh_san_xuat lt ON lt.id = lst.lenh_san_xuat_id AND lt.trang_thai = 'RELEASE_1'
-                         WHERE dvt.phan_in_id = pin.id AND dvt.trang_thai <> 'DA_GOP' AND dvt.tg_chuyen_ready IS NOT NULL
+                         WHERE dvt.phan_in_id = pin.id AND dvt.trang_thai NOT IN ('DA_GOP','DA_HUY') AND dvt.tg_chuyen_ready IS NOT NULL
                            AND NOT EXISTS (SELECT 1 FROM phieu_san_xuat pst WHERE pst.lenh_san_xuat_id = lt.id)))
       AND pin.dang_hoat_dong
       AND ${dkPain}
@@ -192,10 +194,9 @@ async function countReadyItems({ khuonId, filmId, mucId, qcId }) {
       JOIN ma_hang mh ON mh.id = pin.ma_hang_id
       JOIN don_hang dh ON dh.id = mh.don_hang_id
       JOIN khach_hang kh ON kh.id = dh.khach_hang_id
-      WHERE (EXISTS (SELECT 1 FROM dot_vai_ve dvu WHERE dvu.phan_in_id = pin.id AND dvu.trang_thai <> 'DA_GOP' AND dvu.tg_chuyen_ready IS NOT NULL
+      WHERE EXISTS (SELECT 1 FROM dot_vai_ve dvu WHERE dvu.phan_in_id = pin.id AND dvu.trang_thai NOT IN ('DA_GOP','DA_HUY') AND dvu.tg_chuyen_ready IS NOT NULL
                        AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsu JOIN lenh_san_xuat lu ON lu.id = lsu.lenh_san_xuat_id
                                        WHERE lsu.dot_vai_ve_id = dvu.id AND lu.trang_thai <> 'HUY'))
-             OR NOT EXISTS (SELECT 1 FROM dot_vai_ve dvz WHERE dvz.phan_in_id = pin.id AND dvz.trang_thai <> 'DA_GOP'))
         AND pin.dang_hoat_dong
         AND NOT (${doneExpr('$4')})
     ) q`;
@@ -268,6 +269,8 @@ async function listConfirmHistory({ date, search = '' }) {
 async function doneByDate(date, scope = 'tech') {
   const info = `pin.ma_phan AS ma, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.so_luong_don_hang AS so_luong,
                 pin.tinh_chat_in, mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
+                (SELECT h.phuong_an_in FROM hskt_phan_in hp JOIN ho_so_ky_thuat h ON h.id = hp.hskt_id
+                  WHERE hp.phan_in_id = pin.id AND hp.dang_hoat_dong AND h.dang_hoat_dong LIMIT 1) AS phuong_an_in,
                 (SELECT min(dv.han_giao_hang) FROM dot_vai_ve dv WHERE dv.phan_in_id = pin.id AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY')) AS han_giao_hang`;
   const joins = `JOIN ma_hang mh ON mh.id = pin.ma_hang_id
                  JOIN don_hang dh ON dh.id = mh.don_hang_id
@@ -645,7 +648,89 @@ async function logReopenReady(phanInId, payload, actorId) {
   );
 }
 
+// ─── XÁC NHẬN READY THEO ĐỢT VẢI (mig 098 — 15/09/2026) ─────────────────────
+// Phần in chờ ≥2 LOẠI đợt vải ⇒ màn READY tách dòng theo loại, mỗi dòng xác nhận riêng. Luật hiệu lực
+// + gộp về dòng TỔNG ở `technical.service` (khối "THEO LOẠI ĐỢT VẢI").
+
+// Cache CHỈ khi ĐÃ có bảng (chạy migration xong là nhận ngay, khỏi restart) — khuôn `temCoCot` mig 066.
+let _coBangDot = false;
+async function coBangXacNhanDot() {
+  if (_coBangDot) return true;
+  try {
+    const { rows } = await query(
+      "SELECT 1 FROM information_schema.tables WHERE table_name = 'ready_xac_nhan_dot' LIMIT 1");
+    _coBangDot = rows.length > 0;
+  } catch (e) { _coBangDot = false; }
+  return _coBangDot;
+}
+
+// Đợt vải ĐANG Ở READY của các phần in = chưa release (không nằm trong lệnh ≠ HUY) — gương nhánh OR
+// thứ 1 của `listCandidates`.
+async function dsDotChoReady(phanInIds = []) {
+  if (!phanInIds.length) return [];
+  const { rows } = await query(
+    `SELECT dv.phan_in_id, dv.id AS dot_vai_ve_id, dv.ma_dot_vai, dv.loai_dot_vai_id, ldv.ten_loai,
+            dv.han_giao_hang, dv.tg_chuyen_ready, dv.barcode
+       FROM dot_vai_ve dv
+       LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id
+      WHERE dv.phan_in_id = ANY($1::uuid[]) AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY')
+        AND dv.tg_chuyen_ready IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai l JOIN lenh_san_xuat ls ON ls.id = l.lenh_san_xuat_id
+                         WHERE l.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY')
+      ORDER BY dv.tg_chuyen_ready`.replace(/\s+/g, ' '),
+    [phanInIds]);
+  return rows;
+}
+
+// Dòng TỔNG (`ket_qua_checkpoint`) của các phần in cho nhóm checkpoint — kèm `updated_date` (mốc hủy).
+async function ketQuaTong(phanInIds, cpIds) {
+  if (!phanInIds.length) return [];
+  const { rows } = await query(
+    `SELECT k.phan_in_id, k.checkpoint_id, k.trang_thai, k.updated_date, k.nguoi_xac_nhan_id,
+            COALESCE(k.tg_xac_nhan, k.updated_date, k.created_date) AS tg, nd.ho_ten AS nguoi
+       FROM ket_qua_checkpoint k LEFT JOIN nguoi_dung nd ON nd.id = k.nguoi_xac_nhan_id
+      WHERE k.phan_in_id = ANY($1::uuid[]) AND k.checkpoint_id = ANY($2::uuid[])`.replace(/\s+/g, ' '),
+    [phanInIds, cpIds]);
+  return rows;
+}
+
+async function xacNhanDotRows(phanInIds, cpIds) {
+  if (!phanInIds.length) return [];
+  const { rows } = await query(
+    `SELECT x.phan_in_id, x.dot_vai_ve_id, x.checkpoint_id, x.trang_thai, x.tg_xac_nhan, x.updated_date,
+            x.nguoi_xac_nhan_id, nd.ho_ten AS nguoi
+       FROM ready_xac_nhan_dot x LEFT JOIN nguoi_dung nd ON nd.id = x.nguoi_xac_nhan_id
+      WHERE x.phan_in_id = ANY($1::uuid[]) AND x.checkpoint_id = ANY($2::uuid[])`.replace(/\s+/g, ' '),
+    [phanInIds, cpIds]);
+  return rows;
+}
+
+// Ghi DAT/HUY cho 1 (đợt vải × checkpoint). `updated_date = CURRENT_TIMESTAMP` = MỐC HIỆU LỰC.
+async function ghiXacNhanDot(client, { phanInId, dotVaiId, checkpointId, trangThai, nguoiId, tg, actorId }) {
+  await client.query(
+    `INSERT INTO ready_xac_nhan_dot (phan_in_id, dot_vai_ve_id, checkpoint_id, trang_thai,
+       nguoi_xac_nhan_id, tg_xac_nhan, created_by, updated_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$7)
+     ON CONFLICT (dot_vai_ve_id, checkpoint_id) DO UPDATE SET
+       trang_thai = EXCLUDED.trang_thai, nguoi_xac_nhan_id = EXCLUDED.nguoi_xac_nhan_id,
+       tg_xac_nhan = EXCLUDED.tg_xac_nhan, updated_by = EXCLUDED.updated_by,
+       updated_date = CURRENT_TIMESTAMP`.replace(/\s+/g, ' '),
+    [phanInId, dotVaiId, checkpointId, trangThai, nguoiId || null, tg || null, actorId]);
+}
+
+// "Bồi" mốc hiệu lực cho các dòng DAT theo đợt KHÁC nhóm đang bỏ tích — gọi TRONG CÙNG transaction
+// ngay trước khi hủy dòng TỔNG, để lần hủy tổng đó không vô hiệu luôn các dòng loại đợt vải còn lại
+// (CURRENT_TIMESTAMP đứng yên trong 1 transaction ⇒ `updated_date` = mốc hủy, KHÔNG nhỏ hơn).
+async function boiHieuLucDot(client, phanInId, checkpointId, boQuaDotIds = []) {
+  await client.query(
+    `UPDATE ready_xac_nhan_dot SET updated_date = CURRENT_TIMESTAMP
+      WHERE phan_in_id = $1 AND checkpoint_id = $2 AND trang_thai = 'DAT'
+        AND NOT (dot_vai_ve_id = ANY($3::uuid[]))`.replace(/\s+/g, ' '),
+    [phanInId, checkpointId, boQuaDotIds]);
+}
+
 module.exports = {
+  coBangXacNhanDot, dsDotChoReady, ketQuaTong, xacNhanDotRows, ghiXacNhanDot, boiHieuLucDot,
   loadReadyConfig, listCandidates, countReadyItems, confirmInfoByPins, historyByDate, doneByDate, listConfirmHistory, isPhanInReleased, readyCancelState, traCuuMaQuet, getPhanInBasic, getResults, getBulkStates,
   getReadyEntryTime, findResultId, upsertResult, cancelResult, logCancel, insertStatusLog,
   listReopenCandidates, reopenReadyResults, flagUnreleasedDotLamLai, logReopenReady,

@@ -10,6 +10,8 @@ const { mauTim } = require('../../utils/timKiem');
 const { timTem } = require('../../utils/temPrefix');
 // Ghi vết lượt gọi API ERP (nguồn cho nút "Lịch sử" ở trang Cài đặt API).
 const { ghiLog } = require('../../utils/erpApiLog');
+// Cấp mã IDMES (dãy dùng chung mọi chiều đẩy ERP) — nguồn luật ở `utils/idMes.js`.
+const { capIdMes: capIdMesChung } = require('../../utils/idMes');
 
 const PHAN_AGG = `(SELECT string_agg(DISTINCT pin.ma_phan, ', ')
     FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
@@ -898,33 +900,9 @@ async function goiYTemMeta(lenhId, phieuId) {
 // BÁO NGƯỢC LÊN ERP MỖI LẦN IN TEM (`POST /ghi-in-tem` → proc `MES_spr_MES2SF0`, mig 082)
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Cấp mã `IDMES` DUY NHẤT: `YMMDD` + 4 số thứ tự trong ngày (vd 31/08/2026 lượt 1 = 608310001).
-// ⚠ Chỉ giữ 1 chữ số năm vì `@pIDMES` bên ERP khai kiểu `int` (SQL Server, tối đa 2.147.483.647):
-//   `YYMMDD`+4 cho ra 2.608.310.001 là TRÀN. Đổi lại: mã trùng vào 2036 (đã chốt, chấp nhận).
-// ⚠ 1 CÂU DUY NHẤT nên NGUYÊN TỬ — nhiều máy in bấm cùng lúc vẫn không nhận trùng số, khỏi khóa.
-// ⚠ Lỗi (chưa chạy mig 082 / vượt trần 9999) → trả NULL để bên gọi BỎ QUA lời gọi ERP.
-//   Tuyệt đối không ném lỗi: việc in tem không được phụ thuộc vào chiều đẩy này.
-async function capIdMes() {
-  try {
-    const { rows } = await query(
-      `INSERT INTO erp_idmes_counter (ngay, so_thu_tu)
-       VALUES ((now() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date, 1)
-       ON CONFLICT (ngay) DO UPDATE SET so_thu_tu = erp_idmes_counter.so_thu_tu + 1
-       RETURNING so_thu_tu, to_char(ngay, 'YMMDD') AS ymd`.replace(/\s+/g, ' ')
-    );
-    const r = rows[0];
-    if (!r) return null;
-    const stt = Number(r.so_thu_tu);
-    if (!(stt >= 1 && stt <= 9999)) {
-      console.error(`[ghi-in-tem] ✗ Vượt trần 9999 lượt/ngày (số ${stt}) — BỎ QUA lời gọi ERP để không gửi mã trùng`);
-      return null;
-    }
-    return Number(`${r.ymd}${String(stt).padStart(4, '0')}`);
-  } catch (e) {
-    console.error(`[ghi-in-tem] ✗ Không cấp được IDMES (đã chạy migration 082 chưa?): ${e.message}`);
-    return null;
-  }
-}
+// Cấp mã `IDMES` DUY NHẤT — luật + cảnh báo nay ở NGUỒN CHUNG `utils/idMes.js` (dùng chung với chiều
+// đẩy phân loại lỗi). Giữ tên hàm ở đây để 2 call-site cũ của `production.service` không phải sửa.
+const capIdMes = () => capIdMesChung('ghi-in-tem');
 
 // Gom đủ 20 trường ERP cần, cho NHIỀU tem trong 1 LƯỢT QUERY (lệnh gom set in N tem ⇒ tránh N+1
 // làm IPS reset — cùng lý do với `phanInRowsByLenh`).

@@ -98,6 +98,8 @@ async function listVaiVe({ search = '', filters = {}, stage = '', offset = 0, li
   // Lọc "đã chuyển / chưa chuyển READY" (chỉ dùng ở chip "Tất cả"). DA = có ≥1 đợt đã chuyển; CHUA = còn đợt chờ & chưa có đợt nào chuyển.
   cond.push("dh.trang_thai IS DISTINCT FROM 'CLOSED_FINANCE'");
   cond.push('pin.dang_hoat_dong'); // ẩn phần in đã xóa mềm
+  // Hệ thống đi theo ĐỢT VẢI (15/09/2026): phần in không còn đợt vải sống thì không hiện.
+  cond.push("EXISTS (SELECT 1 FROM dot_vai_ve dvl WHERE dvl.phan_in_id=pin.id AND dvl.trang_thai NOT IN ('DA_GOP','DA_HUY'))");
 
   const limitP = add(limit); const offsetP = add(offset);
   // Sắp xếp động (whitelist cột + hướng) — mặc định theo khách/đơn/mã/phần.
@@ -874,6 +876,13 @@ async function softDeleteDotVaiTx(client, dotVaiId, actorId) {
   };
 }
 
+// Phần in đang bị ẩn vì "hết đợt vải sống" (audit AN_PHAN_IN_HET_DOT_VAI là thao tác ẩn/mở MỚI NHẤT của nó).
+// Dùng alias `pin` của câu gọi. Không có comment SQL bên trong (các câu gọi gộp 1 dòng).
+const PIN_AN_HET_DOT_SQL = `COALESCE((SELECT ap.hanh_dong = 'AN_PHAN_IN_HET_DOT_VAI' FROM audit_log ap
+  WHERE ap.ten_bang='phan_in' AND ap.id_ban_ghi=pin.id::text
+    AND ap.hanh_dong IN ('HUY_PHAN_IN','MO_PHAN_IN','AN_PHAN_IN_HET_DOT_VAI')
+  ORDER BY ap.thoi_gian DESC LIMIT 1), false)`;
+
 // Gỡ mọi "xác nhận / hiển thị" bám theo 1 đợt vải + trả SNAPSHOT để mở lại được.
 // Quyền: `claude_agent_mes` CÓ DELETE trên ton_tram / gom_set_dot_vai; `qc_tra_ve` + `ket_qua_checkpoint`
 // chỉ có UPDATE nên dùng cờ (đúng tinh thần xóa mềm). ⇒ KHÔNG cần migration.
@@ -927,7 +936,7 @@ async function listDeletedDotVai(q) {
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang, pin.dang_hoat_dong AS phan_in_con_hoat_dong,
            a.thoi_gian AS tg_huy, nd.ho_ten AS nguoi_huy, a.gia_tri_moi->>'ly_do' AS ly_do,
            COALESCE(a.gia_tri_moi->>'trang_thai_cu', 'NHAN_VAI') AS trang_thai_cu,
-           COALESCE((a.gia_tri_moi->>'phan_in_da_huy')::boolean, false) AS pin_huy_theo_dot
+           (COALESCE((a.gia_tri_moi->>'phan_in_da_huy')::boolean, false) OR ${PIN_AN_HET_DOT_SQL}) AS pin_huy_theo_dot
     FROM dot_vai_ve dv
     JOIN phan_in pin ON pin.id=dv.phan_in_id
     JOIN ma_hang mh ON mh.id=pin.ma_hang_id
@@ -952,12 +961,16 @@ async function restoreDotVaiTx(client, dotVaiId, actorId) {
     `SELECT dv.id, dv.ma_dot_vai, dv.trang_thai, pin.ma_phan, pin.dang_hoat_dong,
             (SELECT a.gia_tri_moi FROM audit_log a
               WHERE a.ten_bang='dot_vai_ve' AND a.hanh_dong='HUY_DOT_VAI' AND a.id_ban_ghi=dv.id::text
-              ORDER BY a.thoi_gian DESC LIMIT 1) AS huy_log
+              ORDER BY a.thoi_gian DESC LIMIT 1) AS huy_log,
+            ${PIN_AN_HET_DOT_SQL} AS pin_an_het_dot
        FROM dot_vai_ve dv JOIN phan_in pin ON pin.id=dv.phan_in_id
       WHERE dv.id=$1`.replace(/\s+/g, ' '), [dotVaiId]);
   const dv = rows[0];
   if (!dv || dv.trang_thai !== 'DA_HUY') return { ok: false, ly_do: 'Đợt vải không ở trạng thái đã hủy' };
-  const log = dv.huy_log || {};
+  const log = { ...(dv.huy_log || {}) };
+  // Phần in bị script `an_phan_in_het_dot_vai.sql` (15/09/2026) ẩn vì hết đợt vải sống — cùng bản chất
+  // "hệ thống tự ẩn", nên mở đợt vải cũng bật lại phần in.
+  if (dv.pin_an_het_dot) log.phan_in_da_huy = true;
   // ⚠⚠ PHẦN IN BỊ XÓA MỀM **THEO CHÍNH LẦN HỦY ĐỢT NÀY** ⇒ mở đợt là bật lại phần in luôn, KHÔNG bắt
   //   người dùng chạy sang tab "Mở phần in" (họ đâu có hủy phần in bao giờ — hệ thống tự hủy vì hết vải).
   //   Phân biệt bằng cờ `phan_in_da_huy` trong audit: hủy PHẦN IN (tab riêng) không có cờ này nên vẫn

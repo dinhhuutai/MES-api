@@ -66,4 +66,20 @@ const timTem = (search) => {
   return laMaErp(s) ? s.slice(2) : s;
 };
 
-module.exports = { temCode, baseMaTem, maTemUngVien, timTem, laMaErp, MA_ERP_RE };
+// Mã ĐÃ mang tiền tố riêng của chính nó — tem 17 (sửa đạt, mig 091) / tem 13 (gia công về, 06/09)
+// xin mã RIÊNG từ ERP, và mã cũ dạng `17-TEM00030` đã có sẵn gạch nối.
+// ⚠ Gương y hệt `frontend/src/utils/format.js laMaTemRieng` — sửa phải sửa CẢ HAI.
+const laMaTemRieng = (maTem) => {
+  const m = String(maTem || '').trim();
+  if (/^\d{2}-/.test(m)) return true;
+  return laMaErp(m) && !m.startsWith('15');
+};
+
+// Mã in trên nhãn / gửi ERP: mã RIÊNG thì GIỮ NGUYÊN, còn lại mới ghép tiền tố công đoạn.
+// ⚠⚠ Thiếu bước này là tem 13 (gia công) đi ở nguồn KCS bị đổi thành `15…` — MÃ KHÔNG CÓ THẬT,
+//   quét không ra. `laRieng` cho bên gọi ép thêm bằng cờ `la_tem_sua` (bắt được cả tem cũ).
+const maTemNhan = (maTem, prefix, suffix, laRieng = false) => (
+  laRieng || laMaTemRieng(maTem) ? temCode(maTem, null, suffix) : temCode(maTem, prefix, suffix)
+);
+
+module.exports = { temCode, baseMaTem, maTemUngVien, timTem, laMaErp, laMaTemRieng, maTemNhan, MA_ERP_RE };
