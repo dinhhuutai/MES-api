@@ -16,7 +16,7 @@
 const { query } = require('../../config/db');
 const { slaStatus } = require('../../utils/sla');
 const { flowRowsCached } = require('./flowCache');
-const { KHUON_OPT_SQL_LIST, nguoiXacNhanSql, khongReadyTuDongSql } = require('../../utils/tech');
+const { KHUON_OPT_SQL_LIST, nguoiXacNhanSql, khongReadyTuDongSql, conDotChuaReadySql } = require('../../utils/tech');
 const { mauTim } = require('../../utils/timKiem');
 const { CP_PHAN_IN } = require('../../utils/siSoTram');
 
@@ -586,7 +586,11 @@ async function runReadyDangO({ loc = {}, gioi_han }) {
   // 1) ĐANG ở READY hiện tại (snapshot) — luôn lấy.
   const pc = [];
   // LOAI phan in do HE THONG tu xac nhan READY (ERP KTCankiemtra=0) - xem utils/tech.js.
-  const conds = ['pin.dang_hoat_dong', READY_MEMBER, `NOT ${QC_DONE_EXISTS}`, khongReadyTuDongSql('pin.id')];
+  // ⚠⚠ "Còn ở READY" gương y hệt `technical.listCandidates` (16/09/2026): dòng TỔNG đang DAT mà vẫn còn
+  //   đợt vải ĐANG CHỜ chưa được QC phủ thì phần in VẪN ở READY. Thiếu vế thứ 2 là dataset này báo ít
+  //   hơn màn READY đúng nhóm phần in vừa có đợt vải mới về — 2 con số trong cùng hệ đá nhau.
+  const conds = ['pin.dang_hoat_dong', READY_MEMBER,
+    `(NOT ${QC_DONE_EXISTS} OR ${conDotChuaReadySql('pin.id')})`, khongReadyTuDongSql('pin.id')];
   if (clean(loc.khach)) { pc.push(mauTim(loc.khach)); conds.push(`kh.ten_khach_hang ~* $${pc.length}`); }
   if (clean(loc.tim)) {
     pc.push(mauTim(loc.tim)); const i = pc.length;

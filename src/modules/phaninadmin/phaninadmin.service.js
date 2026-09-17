@@ -3,6 +3,9 @@ const planningService = require('../planning/planning.service');
 const ordersService = require('../orders/orders.service');
 const technicalService = require('../technical/technical.service');
 const erpsyncRepo = require('../erpsync/erpsync.repository');
+// HSKT active của phần in — để tính lại phương án in khi đổi LOẠI đợt vải / SL vải về (16/09/2026).
+// ⚠ Chỉ require REPOSITORY (không phải service) nên không có vòng require.
+const hsktRepo = require('../hskt/hskt.repository');
 const sockets = require('../../sockets');
 const AppError = require('../../utils/AppError');
 
@@ -64,9 +67,30 @@ async function suaDotVai(dotVaiId, patch, actorId) {
   const cu = {}; const moi = {};
   kq.cols.forEach((c) => { cu[c] = truoc[c]; moi[c] = kq.row[c]; });
   await repo.ghiAudit('dot_vai_ve', dotVaiId, 'QUAN_TRI_SUA_DOT_VAI', cu, moi, actorId);
+
+  // ⚠⚠ ĐỔI LOẠI ĐỢT VẢI / SL VẢI VỀ ⇒ TÍNH LẠI PHƯƠNG ÁN IN (người dùng chốt 16/09/2026).
+  //   · loại → BỔ SUNG  ⇒ hồ sơ phải về in BÀN ngay, không chờ job ERP 5 phút.
+  //   · đổi SL vải về  ⇒ tổng của hồ sơ đổi ⇒ ngưỡng 2000 có thể lật (vốn là gap sẵn có của màn này:
+  //     trước đây sửa SL ở đây thì PA in chỉ được tính lại khi job ERP chạm tới hồ sơ đó).
+  // ⚠ Tái dùng ĐÚNG `erpsync.applyPainTheoSanLuong` — hàm mà job ERP và Nhập tay đang gọi; tuyệt đối
+  //   đừng chép luật ra chỗ mới (nó còn lo tạo phiên bản HSKT + đổi số cuối barcode + ghi lịch sử).
+  // ⚠ BEST-EFFORT: hỏng bước này KHÔNG được làm hỏng việc sửa đợt vải vừa ghi xong.
+  let painMoi = null;
+  if (kq.cols.includes('loai_dot_vai_id') || kq.cols.includes('so_luong_vai_ve')) {
+    try {
+      const hs = await hsktRepo.activeHsktOfPhanIn(truoc.phan_in_id);
+      if (hs) {
+        const r = await erpsyncRepo.applyPainTheoSanLuong(hs.id, actorId);
+        if (r && r.doi) painMoi = r;
+      }
+    } catch (e) {
+      console.error(`[quan-tri-phan-in] ✗ Tính lại phương án in sau khi sửa đợt vải ${dotVaiId}: ${e.message}`);
+    }
+  }
   sockets.emit('dashboard:refresh', {});
   sockets.emit('workflow:updated', { dotVaiId });
-  return { id: dotVaiId, cols: kq.cols };
+  if (painMoi) sockets.emit('ready:confirmed', { phanInId: truoc.phan_in_id, doi_phuong_an_in: true });
+  return { id: dotVaiId, cols: kq.cols, phuong_an_in_moi: painMoi };
 }
 
 // ─── ĐẶT LẠI GIAI ĐOẠN CHO 1 ĐỢT VẢI ────────────────────────────────────────

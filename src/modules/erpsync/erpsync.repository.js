@@ -469,8 +469,61 @@ async function canLamLaiReady(pinId, boQuaDotVaiIds = []) {
   return !!rows[0].e;
 }
 
+// ⚠⚠⚠ ĐỢT VẢI MỚI (KTCankiemtra=1) — CHỈ GẮN CỜ, KHÔNG HỦY XÁC NHẬN READY (chốt 16/09/2026).
+//
+// Trước đây job ERP gọi `reopenReadyForPhanIn` (hủy sạch Khuôn/Film/Mực/QC của CẢ PHẦN IN) để đợt mới
+// hiện lại ở màn READY. Cái giá: **đợt vải CŨ đã Ready đang chờ release cũng mất trạng thái** ⇒ ở màn
+// Release 1 nó tụt xuống badge "Chờ Ready" và bấm xác nhận thì rơi vào Kế hoạch tạm thay vì release
+// thật — đúng lỗi người dùng báo ("đợt 1 đang ở Release 1, đợt 2 về là hỏng cả hai").
+//
+// Nay "đã Ready" xét theo TỪNG ĐỢT VẢI qua MỐC (`utils/tech.js qcDotSql`): đợt về SAU mốc QC tự động
+// được coi là CHƯA Ready ⇒ phần in hiện lại ở READY **mà không phải đụng vào dòng xác nhận nào**.
+// ⇒ Job chỉ còn gắn cờ `can_lam_lai_ready` (luật đi tắt Test Run vẫn cần cờ này).
+// ⚠ `reopenReadyForPhanIn` bên dưới GIỮ NGUYÊN — nó vẫn là đường đúng cho các ca NGƯỜI BẤM trả về
+//   (Release 1 → Kỹ thuật · Xác nhận chạy → Kỹ thuật · Quản trị phần in): ở đó người dùng CỐ Ý muốn
+//   hủy công đã làm. Đừng gộp 2 việc này lại.
+async function flagLamLaiReady(pinId) {
+  const { rowCount } = await query(
+    `UPDATE dot_vai_ve dv SET can_lam_lai_ready=true, updated_date=now()
+      WHERE dv.phan_in_id=$1 AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY')
+        AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai l JOIN lenh_san_xuat ls ON ls.id=l.lenh_san_xuat_id
+                        WHERE l.dot_vai_ve_id=dv.id AND ls.trang_thai<>'HUY')`.replace(/\s+/g, ' '),
+    [pinId]
+  );
+  return rowCount;
+}
+
 // KTCankiemtra=1 cho phần in ĐÃ release (đợt mới) → MỞ LẠI READY (port SQL trigger mig 054):
 // hủy xác nhận READY (Khuôn/Film/Mực/QC) + gắn cờ can_lam_lai_ready cho đợt chưa release.
+// ⚠ TỪ 16/09/2026 JOB ERP KHÔNG CÒN GỌI HÀM NÀY (xem `flagLamLaiReady` ngay trên) — nó chỉ còn phục vụ
+//   các đường NGƯỜI BẤM trả về Kỹ thuật. Đừng nối lại vào `erpsync.service`.
+// ⚠⚠⚠ TRẢ VỀ READY NHƯNG **GIỮ NGUYÊN XÁC NHẬN KỸ THUẬT** — chỉ hủy QC (người dùng chốt 16/09/2026).
+//
+// Vì sao: hủy sạch Khuôn/Film/Mực làm MẤT dấu "ai xác nhận, lúc nào" khỏi 2 sidebar *Lịch sử* và
+// *Đã hoàn thành* của màn READY (2 nguồn đó chỉ liệt kê dòng `trang_thai='DAT'`) ⇒ không còn đối
+// chiếu được công của tổ kỹ thuật. Giữ lại thì lịch sử nguyên vẹn, và phần in VẪN quay về màn READY
+// (kỹ thuật) vì `qc_done` đã false — kỹ thuật thấy badge + lý do trả về để biết phải làm lại gì.
+//
+// ⚠⚠ ĐÁNH ĐỔI ĐÃ BÁO VÀ NGƯỜI DÙNG CHẤP NHẬN: 3 mục KT còn `DAT` ⇒ `tech_done` vẫn TRUE ⇒ QC có thể
+//   bấm duyệt lại NGAY mà kỹ thuật không phải thao tác gì. Hệ thống KHÔNG còn ép làm lại — việc đó
+//   nay dựa vào badge "bị trả về" + lý do. Đây chính là điều ghi chú cũ ở `returnTestRunToReady` gọi
+//   là "lỗi"; nay là LỰA CHỌN có chủ đích, đừng tự ý đảo lại.
+//
+// ⚠ GIỮ `reopenReadyForPhanIn` bên dưới cho đường CỐ Ý xóa sạch công đã làm:
+//   *Quản trị phần in → đặt lại giai đoạn READY_KT* (ở đó đã có sẵn đích READY_QA = chỉ hủy QC).
+async function chiHuyQcReady(pinId) {
+  await withTransaction(async (client) => {
+    await client.query(
+      `UPDATE ket_qua_checkpoint SET trang_thai='HUY', nguoi_xac_nhan_id=NULL, tg_xac_nhan=NULL, updated_date=now() WHERE phan_in_id=$1 AND trang_thai='DAT' AND checkpoint_id IN (SELECT cp.id FROM checkpoint cp JOIN tram t ON t.id=cp.tram_id JOIN workflow_version wv ON wv.id=t.workflow_version_id AND wv.la_hien_hanh WHERE t.ma_tram='READY' AND cp.ma_checkpoint='QC_XAC_NHAN')`,
+      [pinId]
+    );
+    await client.query(
+      `UPDATE dot_vai_ve dv SET can_lam_lai_ready=true, updated_date=now() WHERE dv.phan_in_id=$1 AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY') AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai l JOIN lenh_san_xuat ls ON ls.id=l.lenh_san_xuat_id WHERE l.dot_vai_ve_id=dv.id AND ls.trang_thai<>'HUY')`,
+      [pinId]
+    );
+  });
+}
+
 async function reopenReadyForPhanIn(pinId) {
   await withTransaction(async (client) => {
     await client.query(
@@ -543,6 +596,20 @@ const NGUONG_VAI_IN_MAY = 2000;
 const PAIN_MAY = 2;
 const PAIN_BAN = 1;
 
+// ─── ĐỢT VẢI BỔ SUNG ⇒ LUÔN IN BÀN (người dùng chốt 16/09/2026) ──────────────
+// Hàng bổ sung là chạy tiếp thứ ĐÃ IN RỒI, số lượng thường nhỏ và gấp ⇒ luôn in bàn, KHÔNG xét
+// ngưỡng sản lượng. Luật này THẮNG luật ≥2000 → Máy.
+// ⚠⚠ Điều kiện là **CÓ ÍT NHẤT 1 đợt bổ sung** trong hồ sơ (người dùng chọn phương án này sau khi
+//   xem số đo prod 16/09: 814/2797 hồ sơ có đợt bổ sung, trong đó **54 hồ sơ đang in Máy sẽ chuyển
+//   sang Bàn** ngay khi deploy). Phương án "mọi đợt đều bổ sung" chỉ đổi 4 hồ sơ — đã cân nhắc và BỎ.
+// ⚠ So theo MÃ `loai_dot_vai.ma_loai`, KHÔNG so tên hiển thị (cùng luật với `LOAI_BO_TEST_RUN`
+//   của `planning.service` — đổi tên hiển thị không được làm hỏng luật).
+// ⚠ VẪN TÔN TRỌNG `pa_in_sua_tay`: kỹ thuật đã sửa tay thì không ai ghi đè, y hệt luật sản lượng.
+//   Đó là lối thoát DUY NHẤT của cả hệ cho phương án in — bỏ nó đi thì người dùng đổi xong thấy job
+//   ERP kéo về sau 5 phút mà không hiểu vì sao (đúng sự cố vòng lặp Pain 04-05/08/2026).
+const LOAI_LUON_IN_BAN = ['BO_SUNG'];
+const LUON_IN_BAN_SQL = LOAI_LUON_IN_BAN.map((m) => `'${m}'`).join(',');
+
 // Tạo PHIÊN BẢN MỚI khi đổi phương án in (dùng chung cho nhánh ERP `Pain` và luật sản lượng).
 // Đổi phương án in → tạo PHIÊN BẢN MỚI. **ĐỔI LUÔN SỐ CUỐI `barcode_hskt`** theo phương án in
 // (quy tắc mig 064: 11 số đầu = định danh, số cuối = 1 Bàn / 2 Máy / 3 Robot) — giống hệt khi sửa tay ở
@@ -588,25 +655,33 @@ async function applyPainTheoSanLuong(hsktId, actorId = null) {
     if (!cur.length) return { doi: false, tong: null, pain: null };
     const h = cur[0];
     const { rows: [sl] } = await client.query(
-      `SELECT COALESCE(SUM(dv.so_luong_vai_ve),0)::int AS tong
+      `SELECT COALESCE(SUM(dv.so_luong_vai_ve),0)::int AS tong,
+              count(*) FILTER (WHERE ldv.ma_loai IN (${LUON_IN_BAN_SQL}))::int AS n_luon_ban
          FROM hskt_phan_in hp
          JOIN phan_in pin ON pin.id = hp.phan_in_id AND pin.dang_hoat_dong
          JOIN dot_vai_ve dv ON dv.phan_in_id = pin.id AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY')
+         LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id
         WHERE hp.hskt_id = $1 AND hp.dang_hoat_dong`.replace(/\s+/g, ' '), [hsktId]);
     const tong = Number(sl.tong) || 0;
-    const pain = tong >= NGUONG_VAI_IN_MAY ? PAIN_MAY : PAIN_BAN;
+    // ⚠⚠ ĐỢT BỔ SUNG THẮNG NGƯỠNG SẢN LƯỢNG — xem `LOAI_LUON_IN_BAN` ở đầu khối.
+    const coLuonBan = Number(sl.n_luon_ban) > 0;
+    const pain = coLuonBan ? PAIN_BAN : (tong >= NGUONG_VAI_IN_MAY ? PAIN_MAY : PAIN_BAN);
     if (h.pa_in_sua_tay === true) return { doi: false, tong, pain, bo_qua: 'sua_tay' };
     if (Number(h.phuong_an_in) === pain) return { doi: false, tong, pain };
     const { rows: [pin0] } = await client.query(
       'SELECT phan_in_id FROM hskt_phan_in WHERE hskt_id=$1 AND dang_hoat_dong LIMIT 1', [hsktId]);
+    // Ghi RÕ LÝ DO vào lịch sử HSKT: 2 luật cho ra cùng giá trị 1 (Bàn) nhưng vì lý do khác hẳn nhau —
+    // không ghi rõ thì sau này không ai truy được vì sao hồ sơ 3000 m lại ra in Bàn.
+    const lyDo = coLuonBan
+      ? `có đợt vải BỔ SUNG ⇒ luôn in Bàn (tổng ${tong} pcs, bỏ qua ngưỡng ${NGUONG_VAI_IN_MAY})`
+      : `tự động theo sản lượng: ${tong} pcs vải ${tong >= NGUONG_VAI_IN_MAY ? '≥' : '<'} `
+        + `${NGUONG_VAI_IN_MAY} ⇒ ${pain === PAIN_MAY ? 'in Máy' : 'in Bàn'}`;
     const newId = await taoPhienBanPain(client, {
       hsktId, phienBan: h.phien_ban || 1, curPain: h.phuong_an_in, pain,
       pinId: pin0 ? pin0.phan_in_id : null, actorId,
-      chiTiet: `Đổi phương án in ${h.phuong_an_in ?? '—'}→${pain} (tự động theo sản lượng: `
-        + `${tong} m vải ${tong >= NGUONG_VAI_IN_MAY ? '≥' : '<'} ${NGUONG_VAI_IN_MAY} ⇒ `
-        + `${pain === PAIN_MAY ? 'in Máy' : 'in Bàn'})`,
+      chiTiet: `Đổi phương án in ${h.phuong_an_in ?? '—'}→${pain} (${lyDo})`,
     });
-    return { doi: true, tong, pain, hskt_id: newId };
+    return { doi: true, tong, pain, hskt_id: newId, luon_ban: coLuonBan };
   });
 }
 
@@ -702,7 +777,8 @@ module.exports = {
   createSyncLog, finishSyncLog, listSyncHistory, insertRawBatch, saveSyncRaw, getSyncRaw,
   upsertKhachHang, upsertDonHang, upsertMaHang, upsertPhanIn, setPhanInDryMin, getLoaiDotVaiId, upsertDotVai,
   findPhanInIdByMaPhan, promotePhanInToReady,
-  readyCheckpointIds, simulateReadyDone, isPhanInReleased, canLamLaiReady, reopenReadyForPhanIn, setDotVaiKtCanKiemTra,
+  readyCheckpointIds, simulateReadyDone, isPhanInReleased, canLamLaiReady, flagLamLaiReady,
+  chiHuyQcReady, reopenReadyForPhanIn, setDotVaiKtCanKiemTra,
   upsertHsktForPin, eligibleDotVaiByIds, openSetByGhiChu,
-  applyPainTheoSanLuong, NGUONG_VAI_IN_MAY,
+  applyPainTheoSanLuong, NGUONG_VAI_IN_MAY, LOAI_LUON_IN_BAN,
 };

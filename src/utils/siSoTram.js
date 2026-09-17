@@ -48,7 +48,7 @@
 //   không viết comment `-- …` bên trong chuỗi SQL; chú thích để ngoài như file này.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const { khongReadyTuDongSql } = require('./tech');
+const { khongReadyTuDongSql, conDotChuaReadySql } = require('./tech');
 
 const VN = "AT TIME ZONE 'Asia/Ho_Chi_Minh'";
 
@@ -206,7 +206,7 @@ const DV = {
   //   khối lượng việc của tổ kỹ thuật. Luật + cách nhận diện ở `utils/tech.js khongReadyTuDongSql`.
   //   Áp cho CẢ 3 nguồn READY (Kỹ thuật · QC · dòng chảy báo cáo) để 3 nơi không ra 3 số.
   READY_KT: `SELECT pin.id AS phan_in_id, dvs.tg_ready AS tg_vao,
-      COALESCE(${MOC_KT_XONG}, roi.moc_roi) AS tg_ra, ${NHAN_TRONG}
+      CASE WHEN ${conDotChuaReadySql('pin.id')} THEN NULL ELSE COALESCE(${MOC_KT_XONG}, roi.moc_roi) END AS tg_ra, ${NHAN_TRONG}
     FROM phan_in pin ${JOIN_PIN}
     ${LAT_DOT_CUA_PIN('pin.id')} ${LAT_READY('pin.id')} ${LAT_ROI_READY('pin.id')}
     WHERE pin.dang_hoat_dong AND ${khongReadyTuDongSql('pin.id')}`,
@@ -223,11 +223,17 @@ const DV = {
   // ⚠⚠ BẮT BUỘC có `${JOIN_PIN}`: `MOC_KT_XONG` đọc `kh.ten_khach_hang` (khách II/AD miễn Khuôn).
   //   Bản cũ KHÔNG join vì không cần `kh` — bỏ quên là lỗi `missing FROM-clause entry for table "kh"`.
   READY_QC: `SELECT pin.id AS phan_in_id, ${MOC_KT_XONG} AS tg_vao,
-      COALESCE(rdy.moc_qc, roi.moc_roi) AS tg_ra, ${NHAN_TRONG}
+      CASE WHEN ${conDotChuaReadySql('pin.id')} THEN NULL ELSE COALESCE(rdy.moc_qc, roi.moc_roi) END AS tg_ra, ${NHAN_TRONG}
     FROM phan_in pin ${JOIN_PIN}
     ${LAT_READY('pin.id')} ${LAT_ROI_READY('pin.id')}
     WHERE pin.dang_hoat_dong AND ${khongReadyTuDongSql('pin.id')}`,
 
+  // ⚠⚠ 2 NGUỒN TRÊN BỌC `CASE WHEN conDotChuaReady THEN NULL` (16/09/2026): READY đi theo ĐỢT VẢI nên
+  //   mốc RA cũ (đủ mục KT / QC xác nhận — đều ở mức PHẦN IN) vẫn còn nguyên từ đợt TRƯỚC khi đợt vải
+  //   MỚI về ⇒ dải "Theo dõi" báo phần in ĐÃ RỜI READY trong khi bảng bên dưới vẫn đang hiện nó.
+  //   Bọc lại thì phần in quay về ô *Tồn* đúng lúc nó quay lại màn — 2 con số không đá nhau.
+  // ⚠ `READY_DONG_CHAY` ngay dưới CỐ Ý KHÔNG bọc: nó phục vụ metric báo cáo `CP_READY_VAO_HOM_NAY` /
+  //   `CP_READY_ROI_HOM_NAY` (đo DÒNG CHẢY "vào READY → QC duyệt"), bọc vào là đổi nghĩa con số đó.
   // READY theo nghĩa DÒNG CHẢY (vào = đợt vải lên READY, ra = QC xác nhận) — CHỈ dùng cho **Báo cáo**
   // (`CP_PHAN_IN.READY`), KHÔNG phải cho màn nào.
   // ⚠⚠ TÁCH RIÊNG 18/08/2026, đừng gộp lại với `READY_QC`: metric `CP_READY_VAO_HOM_NAY` phải trả lời
@@ -486,10 +492,12 @@ const COT_PIN_GOM = `kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, pin.ma_phan,
 //   khóa chính. KHÔNG bỏ đi để "tối ưu": bỏ là bộ lọc im lặng không ăn.
 
 // "Đã Ready" = QC đã xác nhận READY (ô tích *Đã Ready / Chờ Ready* ở màn Release 1).
+// ⚠⚠ THEO ĐỢT VẢI (16/09/2026): phần in coi là "đã Ready" khi KHÔNG CÒN đợt vải đang chờ nào chưa
+//   được QC phủ. Trước đây chỉ hỏi "có dòng QC DAT không" ⇒ phần in vừa nhận đợt vải MỚI (chưa ai làm)
+//   vẫn bị tính là Đã Ready ⇒ ô tích trên màn Release 1 lọc ra một tập, dải "Theo dõi" lọc ra tập khác.
+//   Nguồn luật: `utils/tech.js conDotChuaReadySql` — cùng biểu thức màn READY dùng để giữ phần in lại.
 const LAT_QC_DONE = `LEFT JOIN LATERAL (
-  SELECT (count(*) > 0) AS qc_done FROM ket_qua_checkpoint xkq
-    JOIN checkpoint xcp ON xcp.id = xkq.checkpoint_id
-   WHERE xkq.phan_in_id = pin.id AND xkq.trang_thai = 'DAT' AND xcp.ma_checkpoint = 'QC_XAC_NHAN'
+  SELECT NOT ${conDotChuaReadySql('pin.id')} AS qc_done
 ) qcd ON true`;
 
 // ⚠⚠ ĐÃ GỠ `LAT_CHO_QA` + cột `cho_qa` (20/08/2026) cùng với ô tích "Chỉ chờ QA" ở màn Test Run - QA.

@@ -384,8 +384,12 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
             // ⚠ Truyền đợt vải vừa nhận để ghi vào `ghi_chu` (biết ĐỢT NÀO kích hoạt lần tự động này).
             if (ktCan === 0) await repo.simulateReadyDone(pinId, affectedDotVaiIds); // giả lập KT xong → Release 1
             // KTCankiemtra=1 & phần in đã xong READY một lần rồi (đợt trước ĐÃ RELEASE **hoặc** đã QC
-            // xác nhận READY dù chưa release) → mở lại READY để kỹ thuật kiểm lại cho đợt vải mới.
-            else if (await repo.canLamLaiReady(pinId, affectedDotVaiIds)) await repo.reopenReadyForPhanIn(pinId);
+            // xác nhận READY dù chưa release) → đợt vải mới phải qua kỹ thuật lại.
+            // ⚠⚠ TỪ 16/09/2026 CHỈ GẮN CỜ, KHÔNG hủy xác nhận READY của phần in (`flagLamLaiReady`
+            //   thay `reopenReadyForPhanIn`): đợt mới tự "chưa Ready" nhờ MỐC (`utils/tech.js
+            //   qcDotSql`) nên vẫn hiện lại ở màn READY, còn ĐỢT CŨ đã Ready đang chờ release thì
+            //   GIỮ NGUYÊN badge "Đã Ready" và release được bình thường. Xem ghi chú ở repository.
+            else if (await repo.canLamLaiReady(pinId, affectedDotVaiIds)) await repo.flagLamLaiReady(pinId);
           } catch (e) { console.error(`[erp-sync] ✗ KTCankiemtra lỗi (${p.maPhan}): ${e.message}`); }
         }
         if (intoReady) {

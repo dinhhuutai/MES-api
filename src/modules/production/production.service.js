@@ -945,9 +945,12 @@ async function traVeKyThuat(lenhId, { lyDo }, actorId) {
     lenhId, { target: 'READY', lyDo: `[Trả về Kỹ thuật từ Sản xuất] ${reason}`, force: !!lenh.co_phieu }, actorId
   );
 
-  // 2) Mở lại READY đầy đủ: hủy Khuôn/Film/Mực (bước 1 mới chỉ hủy QC) + cờ làm lại cho đợt chưa release.
+  // 2) Đưa phần in về READY: CHỈ hủy QC + gắn cờ làm lại cho đợt chưa release.
+  // ⚠⚠ GIỮ NGUYÊN xác nhận Khuôn/Film/Mực (người dùng chốt 16/09/2026) — trước đây gọi
+  //   `reopenReadyForPhanIn` hủy sạch, làm mất dấu công tổ kỹ thuật ở 2 sidebar *Lịch sử* +
+  //   *Đã hoàn thành* (2 nguồn đó chỉ đọc dòng `DAT`). Đánh đổi: `erpsync.repository.chiHuyQcReady`.
   for (const pinId of pinIds) {
-    await erpsyncRepo.reopenReadyForPhanIn(pinId);
+    await erpsyncRepo.chiHuyQcReady(pinId);
     await planningRepo.auditTraVeKyThuat(pinId, null, reason, actorId);
     // Dùng lại loai 'RELEASE1' (mức phần in) ⇒ màn READY/QC READY hiện sẵn badge + lý do mà KHÔNG
     // phải sửa gì bên `technical` (nó đọc `activeReturnsMap('RELEASE1', …)`); cờ tự tắt khi QC xác

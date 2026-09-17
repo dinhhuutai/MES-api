@@ -39,7 +39,7 @@ async function luu(items, actorId) {
 }
 
 // ⚠⚠ THỬ KẾT NỐI = CHỈ KIỂM TỚI ĐƯỢC MÁY CHỦ ERP HAY KHÔNG — cố ý KHÔNG gọi vào endpoint nghiệp vụ:
-//   · `/barcode-tem` mỗi lần gọi là **TIÊU MỘT MÃ TEM** của ERP (thủng dãy số vì mã đó không dùng);
+//   · `/barcode-tem-15` (và `-17`/`-13`) mỗi lần gọi là **TIÊU MỘT MÃ TEM** của ERP (thủng dãy số);
 //   · `/ghi-in-tem` gọi thử sẽ **ghi một bản ghi rác** vào ERP;
 //   · `/phieu-nhan-vai-60` chạy proc rất nặng (timeout mặc định 10 phút).
 //   Mà thứ cần biết đúng là "có ra tới host không" — đúng sự cố 11/08/2026 (gọi nhầm host LAN,
@@ -81,9 +81,18 @@ function erpProxy() {
   } catch { return undefined; }
 }
 
-// LỊCH SỬ GỌI API — chỉ 2 API có ghi vết (`ERP_BARCODE_TEM` lấy mã tem · `ERP_GHI_IN_TEM` báo in tem).
+// LỊCH SỬ GỌI API — mọi API có ghi vết qua `utils/erpApiLog.ghiLog`.
 // API đồng bộ đợt vải KHÔNG ở đây: nó đã có màn *Đồng bộ ERP* riêng với bảng `erp_sync_log`.
-const MA_CO_LICH_SU = new Set(['ERP_BARCODE_TEM', 'ERP_GHI_IN_TEM']);
+//
+// ⚠⚠ DANH SÁCH NÀY PHẢI PHỦ ĐỦ `erpApiLog.TEN_BANG` — bài học 16/09/2026: 5 API thêm về sau
+//   (3 API ngày 04/09 + 2 API mã tem 17/13 ngày 06/09) **ghi log đầy đủ xuống `audit_log` nhưng
+//   KHÔNG được khai ở đây** ⇒ bấm nút "Lịch sử" ra 404 `NO_HISTORY`, người dùng thấy trang trống
+//   và tưởng backend không ghi gì. FE `CaiDatApiPage.CO_LICH_SU` thì đã khai ⇒ nút vẫn hiện ra.
+//   ⇒ Thêm API mới có ghi vết thì sửa **CẢ HAI** chỗ (ở đây + `CO_LICH_SU` bên FE).
+const MA_CO_LICH_SU = new Set([
+  'ERP_BARCODE_TEM', 'ERP_BARCODE_TEM_17', 'ERP_BARCODE_TEM_13', 'ERP_GHI_IN_TEM',
+  'ERP_LAY_ID_PHIEU_GIAO', 'ERP_GUI_PHIEU_GIAO', 'ERP_GUI_PHAN_LOAI_LOI',
+]);
 
 async function lichSu(ma, { date, search, page, limit, offset }) {
   if (!MA_CO_LICH_SU.has(ma)) {

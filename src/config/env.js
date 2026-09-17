@@ -17,7 +17,7 @@ function required(name, fallback) {
 // `ERP_BARCODE_TEM` → không in được tem, trong khi log đồng bộ vẫn xanh nên rất khó đoán ra.
 //
 // ⇒ CÁCH LÀM NAY, theo đúng khuôn của URL nhận vải:
-//   1. **`ERP_BARCODE_TEM_URL` là biến CHÍNH THỨC trong `.env` của TỪNG môi trường** (đã đưa vào
+//   1. **`ERP_BARCODE_TEM_15_URL` là biến CHÍNH THỨC trong `.env` của TỪNG môi trường** (đã đưa vào
 //      `.env.example` **và** `.env` local) — production sửa host ngay tại biến này.
 //   2. Nếu môi trường nào QUÊN đặt thì **suy GỐC từ URL đồng bộ** (2 API cùng nằm dưới
 //      `/api/server/backup/mes/`) làm lưới an toàn — thà đi theo host đang chạy được còn hơn trỏ về
@@ -54,10 +54,16 @@ const env = {
   erp: {
     // API ERP lấy phiếu nhận vải CHÍNH THỨC (60 ngày) — dữ liệu này chuyển phần in qua READY. Override qua .env.
     phieuNhanVaiUrl: ERP_PHIEU_NHAN_VAI_URL,
-    // API lấy MÃ TEM (barcode 12 số, 2 số đầu = tiền tố công đoạn `15`) — thay mã tự sinh `TEM00001`.
+    // API lấy MÃ TEM 15 (barcode 12 số, 2 số đầu = tiền tố công đoạn `15`) — thay mã tự sinh `TEM00001`.
     // ⚠ Mỗi lần gọi TIÊU MỘT SỐ ⇒ chỉ gọi khi TẠO tem mới (in lại tem không gọi).
     // ⚠⚠ MẶC ĐỊNH SUY TỪ URL ĐỒNG BỘ (xem ghi chú đầu file) — đừng hardcode host lại ở đây.
-    barcodeTemUrl: process.env.ERP_BARCODE_TEM_URL || `${ERP_GOC}/barcode-tem`,
+    // ⚠⚠ ERP ĐỔI TÊN ENDPOINT `/barcode-tem` → `/barcode-tem-15` (16/09/2026) cho đồng bộ với 2 endpoint
+    //   `-17`/`-13`. Biến `.env` nhận CẢ HAI TÊN: `ERP_BARCODE_TEM_15_URL` (tên mới, ưu tiên) và
+    //   `ERP_BARCODE_TEM_URL` (tên cũ, giữ để môi trường đã deploy không chết khi chưa kịp sửa `.env`).
+    //   ⚠ Môi trường nào đang đặt `ERP_BARCODE_TEM_URL` trỏ `/barcode-tem` thì PHẢI sửa đuôi thành
+    //   `-15`, vì biến tường minh luôn THẮNG giá trị mặc định suy ra ở đây.
+    barcodeTemUrl: process.env.ERP_BARCODE_TEM_15_URL || process.env.ERP_BARCODE_TEM_URL
+      || `${ERP_GOC}/barcode-tem-15`,
     // Timeout 1 lần gọi lấy mã tem (ms) — API này nhẹ, người dùng đang ĐỨNG CHỜ máy in nên để ngắn.
     barcodeTemTimeoutMs: parseInt(process.env.ERP_BARCODE_TEM_TIMEOUT_MS || '10000', 10),
     // Số lần thử lại khi lấy mã tem lỗi; hết lượt thì CHẶN in và báo rõ (không lùi về mã `TEM…` cũ).

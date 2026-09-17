@@ -116,9 +116,45 @@ const readyTuDongSql = (pinExpr) => `EXISTS (SELECT 1 FROM ket_qua_checkpoint zq
 // Điều kiện "phần in này ĐƯỢC tính vào số liệu READY".
 const khongReadyTuDongSql = (pinExpr) => `NOT ${readyTuDongSql(pinExpr)}`;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ⚠⚠⚠ "ĐÃ READY" LÀ THUỘC TÍNH CỦA **ĐỢT VẢI**, KHÔNG PHẢI CỦA PHẦN IN
+// (người dùng chốt 16/09/2026 — "bây giờ là theo đợt vải, có đợt vải là vào lại READY").
+//
+// TRƯỚC ĐÂY cả 3 nơi đều hỏi "phần in đã QC chưa" (`ket_qua_checkpoint` khóa theo `phan_in_id`):
+// màn READY (`OUTER_WHERE q.qc_done = false`), badge Đã/Chờ Ready ở Release 1, và `dotStageCase`.
+// ⇒ Phần in có đợt 1 đã Ready đang chờ release, đợt 2 về sau thì **không tài nào** vừa ở READY (đợt 2)
+//   vừa ở Release 1 với đợt 1 còn nguyên "Đã Ready" — hai đợt dùng CHUNG một trạng thái.
+// Hệ quả thật trên prod: đợt 2 `KTCankiemtra=1` làm `erpsync.reopenReadyForPhanIn` **hủy READY của cả
+// phần in** ⇒ đợt 1 đang chờ release tụt xuống "Chờ Ready", bấm xác nhận rơi vào Kế hoạch tạm.
+//
+// ⚠⚠ MỐC LÀ NGUỒN SỰ THẬT, KHÔNG CẦN MIGRATION: đợt vải được QC phủ khi nó LÊN READY TRƯỚC lúc QC
+//   xác nhận. Cùng luật với nhánh (a) của `technical.service.dotDaXacNhan` (mig 098) cho Khuôn/Film/Mực
+//   ⇒ 4 mục READY nay hiểu "theo đợt" y như nhau.
+//   · Đợt về TRƯỚC mốc QC  → đã Ready (mọi dữ liệu cũ tự đúng — đo prod 16/09: 0/152 dòng Release 1 đổi
+//     trạng thái khi áp luật này ⇒ SIÊU TẬP an toàn, không hàng nào đang chờ bị tụt).
+//   · Đợt về SAU  mốc QC  → CHƯA Ready ⇒ phần in tự hiện lại ở READY mà KHÔNG phải hủy gì của đợt cũ.
+// ⚠ `tg_xac_nhan` bị GHI ĐÈ mỗi lần xác nhận lại (kể cả `simulateReadyDone`) — đó chính là thứ ta cần:
+//   mốc QC luôn là "lần duyệt READY gần nhất", nên QC duyệt lại là phủ hết mọi đợt đang chờ.
+// ⚠ `COALESCE(tg_chuyen_ready, created_date)` cho dữ liệu cũ thiếu mốc vào READY (prod hiện 0 dòng).
+// ⚠ Alias `zq`/`zc`/`zd`/`zl` đặt hiếm để không đụng alias của query lớn bọc ngoài.
+const qcDotSql = (dvAlias, pinCol) => `EXISTS (SELECT 1 FROM ket_qua_checkpoint zq
+  JOIN checkpoint zc ON zc.id = zq.checkpoint_id AND zc.ma_checkpoint = 'QC_XAC_NHAN'
+  WHERE zq.phan_in_id = ${pinCol} AND zq.trang_thai = 'DAT'
+    AND COALESCE(zq.tg_xac_nhan, zq.updated_date) >= COALESCE(${dvAlias}.tg_chuyen_ready, ${dvAlias}.created_date))`;
+
+// Phần in CÒN đợt vải đang chờ ở READY (đã lên READY, CHƯA release) mà CHƯA được QC phủ?
+// Đây là điều kiện "còn việc ở READY" thay cho `qc_done = false` mức phần in.
+// ⚠ Gương y hệt `dsDotChoReady` (technical.repository) — 2 chỗ lệch nhau là bảng và danh sách quét đá nhau.
+const conDotChuaReadySql = (pinCol) => `EXISTS (SELECT 1 FROM dot_vai_ve zd
+  WHERE zd.phan_in_id = ${pinCol} AND zd.trang_thai NOT IN ('DA_GOP','DA_HUY') AND zd.tg_chuyen_ready IS NOT NULL
+    AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai zl JOIN lenh_san_xuat zls ON zls.id = zl.lenh_san_xuat_id
+                     WHERE zl.dot_vai_ve_id = zd.id AND zls.trang_thai <> 'HUY')
+    AND NOT ${qcDotSql('zd', pinCol)})`;
+
 module.exports = {
   KHUON_OPTIONAL_KH, KHUON_OPT_SQL_LIST, isKhuonOptional, laHangGiaCong,
   requiredTechItems, hienFilm, techDoneSql, techDoneSqlByPin,
   NHAN_HE_THONG, nguoiXacNhanSql,
   readyTuDongSql, khongReadyTuDongSql,
+  qcDotSql, conDotChuaReadySql,
 };

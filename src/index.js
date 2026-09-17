@@ -39,8 +39,13 @@ async function start() {
     //   mã tem trỏ host khác ⇒ đồng bộ chạy ngon mà KHÔNG IN ĐƯỢC TEM, log đồng bộ vẫn xanh nên rất
     //   khó đoán. Nhìn 2 dòng này là thấy ngay 2 đường có cùng host không.
     console.log(`[erp] Nhận vải : ${env.erp.phieuNhanVaiUrl}`);
-    console.log(`[erp] Mã tem   : ${env.erp.barcodeTemUrl}`
-      + (process.env.ERP_BARCODE_TEM_URL ? '' : '   ⚠ CHƯA đặt ERP_BARCODE_TEM_URL trong .env — đang suy theo gốc URL nhận vải'));
+    // ⚠ ERP đổi tên endpoint `/barcode-tem` → `/barcode-tem-15` (16/09/2026). Biến `.env` nhận cả tên mới
+    //   (`ERP_BARCODE_TEM_15_URL`, ưu tiên) lẫn tên cũ; nhắc ngay ở đây nếu URL vẫn còn đuôi cũ.
+    console.log(`[erp] Mã tem 15: ${env.erp.barcodeTemUrl}`
+      + (process.env.ERP_BARCODE_TEM_15_URL || process.env.ERP_BARCODE_TEM_URL
+        ? '' : '   ⚠ CHƯA đặt ERP_BARCODE_TEM_15_URL trong .env — đang suy theo gốc URL nhận vải')
+      + (/\/barcode-tem$/.test(env.erp.barcodeTemUrl)
+        ? '   ⚠⚠ URL còn đuôi CŨ /barcode-tem — ERP đã đổi thành /barcode-tem-15, sửa .env đi' : ''));
     // Mã tem 17 (sửa đạt) / 13 (gia công về) xin từ endpoint RIÊNG — thiếu là 2 công đoạn đó lấy
     // nhầm dãy số của tem 15. In cùng chỗ để 1 lần nhìn là thấy đủ mọi đường đi tới ERP.
     console.log(`[erp] Mã tem 17: ${env.erp.barcodeTem17Url}`

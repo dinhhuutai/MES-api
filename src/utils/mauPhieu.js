@@ -74,8 +74,19 @@ const TRUONG_PHIEU = Object.freeze([
   { ma: 'ghi_chu', ten: 'Ghi chú phiếu', kieu: 'chu', nhom: 'Phiếu' },
   { ma: 'kieu_in', ten: 'Kiểu in (Chi tiết / Gộp)', kieu: 'chu', nhom: 'Phiếu' },
 
+  // Địa điểm giao — nhập LÚC IN, lưu vào chính phiếu (mig 099). Khách đổi địa chỉ thì phiếu CŨ vẫn
+  // giữ nguyên nơi đã giao ⇒ đây là trường của PHIẾU, không phải của khách hàng.
+  { ma: 'giao_hang_tai', ten: 'Giao hàng tại (nhập lúc in)', kieu: 'chu', nhom: 'Phiếu' },
+  // Người BẤM IN (không phải người lập phiếu) — ghép ở trình duyệt lúc in, xem `printPhieuGiao`.
+  { ma: 'nguoi_in', ten: 'Người in phiếu', kieu: 'chu', nhom: 'Phiếu' },
+
   { ma: 'ten_khach_hang', ten: 'Khách hàng', kieu: 'chu', nhom: 'Đơn hàng' },
   { ma: 'ma_don_hang', ten: 'Đơn hàng (PO)', kieu: 'chu', nhom: 'Đơn hàng' },
+  // Địa chỉ lấy từ *Hệ thống → Khách hàng* (mig 099) — để trống nếu chưa ai nhập cho khách đó.
+  { ma: 'dia_chi', ten: 'Địa chỉ khách hàng', kieu: 'chu', nhom: 'Đơn hàng' },
+  { ma: 'dia_chi_giao', ten: 'Địa chỉ giao mặc định của khách', kieu: 'chu', nhom: 'Đơn hàng' },
+  // Bộ phận bán hàng phụ trách đơn (ERP `bophanbh`, mig 090) — vd THLA / DAMY.
+  { ma: 'bo_phan_bh', ten: 'Bộ phận bán hàng', kieu: 'chu', nhom: 'Đơn hàng' },
 
   { ma: 'so_tem', ten: 'Tổng số tem', kieu: 'so', nhom: 'Tổng' },
   { ma: 'so_dong', ten: 'Số dòng bảng chi tiết', kieu: 'so', nhom: 'Tổng' },
@@ -94,6 +105,14 @@ const TRUONG_DONG_PHIEU = Object.freeze([
   { ma: 'kich_vai_phim', ten: 'Kích vải / phim (ghép sẵn)', kieu: 'chu', nhom: 'Dòng' },
   { ma: 'ma_lenh_san_xuat', ten: 'Mã đợt SX', kieu: 'chu', nhom: 'Dòng' },
   { ma: 'so_luong_giao', ten: 'SL giao của dòng', kieu: 'so', nhom: 'Dòng' },
+  // ⚠ SL ĐẠT TỪ OQC của chính dòng này (theo NGUỒN KCS/Sửa). Thường BẰNG `so_luong_giao`, nhưng
+  //   KHÁC khi giao TỪNG PHẦN (1 tem giao nhiều lần) — lúc đó "đạt" > "giao lần này".
+  { ma: 'sl_oqc_dat', ten: 'SL đạt từ OQC', kieu: 'so', nhom: 'Dòng' },
+  // Khách hàng / đơn hàng ở mức DÒNG: phiếu gom nhiều đơn thì mỗi dòng một PO khác nhau (trường
+  // cùng tên ở mức PHIẾU chỉ có giá trị khi cả phiếu thuộc MỘT đơn).
+  { ma: 'ma_don_hang', ten: 'Đơn hàng (PO) của dòng', kieu: 'chu', nhom: 'Dòng' },
+  { ma: 'ten_khach_hang', ten: 'Khách hàng của dòng', kieu: 'chu', nhom: 'Dòng' },
+  { ma: 'ghi_chu', ten: 'Ghi chú dòng', kieu: 'chu', nhom: 'Dòng' },
   // CHỈ có nghĩa ở kiểu in GỘP (nhiều tem cùng code phần dồn thành 1 dòng).
   { ma: 'so_tem_gop', ten: 'Số tem trong dòng (kiểu GỘP)', kieu: 'so', nhom: 'Dòng' },
   { ma: 'co_sua', ten: 'Dòng có hàng qua sửa (* / rỗng)', kieu: 'chu', nhom: 'Dòng' },

@@ -224,13 +224,33 @@ async function maPhieuGiaoDaDung(ma) {
   return rows.length > 0;
 }
 
-async function createGiaoHang(client, { maPhieu, donHangId, ngayGiao, ghiChu }, actorId) {
+// ⚠⚠ DÒ CỘT `giao_hang_tai` TRƯỚC rồi mới dựng câu INSERT (khuôn `temCoCot` mig 066) — cột thêm ở
+//   mig 099, SAU khi bảng đã lên production. TUYỆT ĐỐI KHÔNG try/catch quanh INSERT: hàm này chạy
+//   TRONG transaction, lỗi `42703` làm ABORT cả transaction ⇒ câu "thử lại" chết tiếp với `25P02`
+//   và người dùng mất luôn phiếu giao đang lập.
+async function createGiaoHang(client, { maPhieu, donHangId, ngayGiao, ghiChu, giaoHangTai }, actorId) {
+  const co = await coCotGiaoHangTai();
+  // Dựng cột + tham số SONG SONG để số thứ tự `$n` không lệch giữa 2 nhánh.
+  const cot = ['ma_phieu_giao', 'don_hang_id', 'ngay_giao', 'ghi_chu', ...(co ? ['giao_hang_tai'] : []), 'created_by'];
+  const val = [maPhieu, donHangId, ngayGiao || null, ghiChu || null, ...(co ? [giaoHangTai || null] : []), actorId];
+  const holder = cot.map((_, i) => `$${i + 1}`).join(', ');
   const { rows } = await client.query(
-    `INSERT INTO giao_hang (ma_phieu_giao, don_hang_id, ngay_giao, trang_thai, ghi_chu, created_by)
-     VALUES ($1,$2,$3,'TAO',$4,$5) RETURNING id`,
-    [maPhieu, donHangId, ngayGiao || null, ghiChu || null, actorId]
+    `INSERT INTO giao_hang (${cot.join(', ')}, trang_thai) VALUES (${holder}, 'TAO') RETURNING id`.replace(/\s+/g, ' '),
+    val
   );
   return rows[0].id;
+}
+
+// Dò 1 lần, CHỈ cache khi ĐÃ CÓ cột ⇒ chạy migration xong nhận ngay, không phải restart BE.
+let _coGiaoHangTai = null;
+async function coCotGiaoHangTai() {
+  if (_coGiaoHangTai) return true;
+  const { rows } = await query(
+    `SELECT 1 FROM information_schema.columns
+      WHERE table_name = 'giao_hang' AND column_name = 'giao_hang_tai' LIMIT 1`.replace(/\s+/g, ' ')
+  );
+  _coGiaoHangTai = rows.length > 0;
+  return _coGiaoHangTai;
 }
 
 // Thêm tem vào phiếu giao TỪNG PHẦN, TÁCH THEO NGUỒN (KCS 15- / SỬA 17- — như OQC).
@@ -252,9 +272,41 @@ async function addTem(client, giaoHangId, temId, soLuong, nguon, actorId) {
   );
 }
 
+// Các cột "thêm về sau" mà ĐƯỜNG IN PHIẾU cần — mỗi cái thuộc một migration khác nhau nên phải dò
+// ĐỘC LẬP (bài học mig 077 ↔ 079: gộp 1 cờ thì môi trường chạy lẻ 1 migration sẽ chết nhánh kia).
+//   · `giao_hang.giao_hang_tai`   (mig 099)
+//   · `khach_hang.dia_chi(_giao)` (mig 099)
+//   · `don_hang.bo_phan_bh`       (mig 090)
+let _cotThem = null;
+async function cotPhieuThem() {
+  if (_cotThem && _cotThem.du) return _cotThem;      // chỉ cache khi ĐÃ đủ ⇒ chạy migration xong nhận ngay
+  const { rows } = await query(
+    `SELECT table_name, column_name FROM information_schema.columns
+      WHERE (table_name='giao_hang'  AND column_name='giao_hang_tai')
+         OR (table_name='khach_hang' AND column_name IN ('dia_chi','dia_chi_giao'))
+         OR (table_name='don_hang'   AND column_name='bo_phan_bh')`.replace(/\s+/g, ' ')
+  );
+  const co = (t, c) => rows.some((r) => r.table_name === t && r.column_name === c);
+  _cotThem = {
+    giaoHangTai: co('giao_hang', 'giao_hang_tai'),
+    diaChi: co('khach_hang', 'dia_chi') && co('khach_hang', 'dia_chi_giao'),
+    boPhanBh: co('don_hang', 'bo_phan_bh'),
+  };
+  _cotThem.du = _cotThem.giaoHangTai && _cotThem.diaChi && _cotThem.boPhanBh;
+  return _cotThem;
+}
+
 async function getGiaoHang(giaoHangId) {
+  // ⚠ Cột thiếu ⇒ trả NULL có ĐÚNG TÊN thay vì bỏ hẳn: bộ render phiếu chỉ cần khóa tồn tại, ô in ra
+  //   để trống. Bỏ hẳn cột thì `renderMauPhieu` không tìm thấy khóa và người dùng tưởng mẫu hỏng.
+  const c = await cotPhieuThem();
+  const colGht = c.giaoHangTai ? 'gh.giao_hang_tai' : "NULL::text AS giao_hang_tai";
+  const colDc = c.diaChi ? 'kh.dia_chi, kh.dia_chi_giao'
+    : "NULL::text AS dia_chi, NULL::text AS dia_chi_giao";
+  const colBp = c.boPhanBh ? 'dh.bo_phan_bh' : "NULL::text AS bo_phan_bh";
   const { rows } = await query(
     `SELECT gh.id, gh.ma_phieu_giao, gh.ngay_giao, gh.trang_thai, gh.ghi_chu, gh.created_date,
+            ${colGht}, ${colDc}, ${colBp},
             dh.ma_don_hang, kh.ten_khach_hang,
             (SELECT count(*) FROM giao_hang_tem gt WHERE gt.giao_hang_id = gh.id)::int AS so_tem,
             (SELECT COALESCE(SUM(gt.so_luong_giao),0)::int FROM giao_hang_tem gt WHERE gt.giao_hang_id = gh.id) AS tong_sl
@@ -442,7 +494,11 @@ async function insertHuyPhieuAudit(giaoHangId, gh, lyDo, actorId) {
 // ⚠ KHÔNG đặt comment `--` trong chuỗi SQL: nó bị `.replace(/\s+/g,' ')` gộp 1 dòng (§9).
 async function getGiaoHangTems(giaoHangId) {
   const sql =
-    `SELECT gt.id, gt.tem_id, gt.so_luong_giao, gt.nguon, t.ma_tem, t.trang_thai,
+    // ⚠ `gt.ghi_chu` + SL OQC đạt phục vụ 2 cột tùy chọn của mẫu phiếu (xem `TRUONG_DONG_PHIEU`).
+    //   Trả CẢ `sl_oqc_dat_sua` để FE lấy đúng số theo NGUỒN của dòng: nguồn SỬA thì SL đạt là
+    //   `sl_oqc_dat_sua`, nguồn KCS là phần còn lại — lấy nhầm là in ra số lớn hơn thực tế.
+    `SELECT gt.id, gt.tem_id, gt.so_luong_giao, gt.nguon, gt.ghi_chu, t.ma_tem, t.trang_thai,
+            COALESCE(t.sl_oqc_dat,0) AS sl_oqc_dat, COALESCE(t.sl_oqc_dat_sua,0) AS sl_oqc_dat_sua,
             (t.tem_goc_id IS NOT NULL) AS la_tem_sua,
             ls.ma_lenh_san_xuat,
             (SELECT string_agg(DISTINCT pin.ma_phan, ', ')
@@ -511,7 +567,7 @@ async function applyGiaoLedger(client, giaoHangId, actorId) {
 module.exports = {
   listTemSanSang, listTemChoTich, donHangIdsForTems, nextMaPhieuGiao, maPhieuGiaoDaDung, createGiaoHang, addTem,
   getGiaoHang, listGiaoHang, getGiaoHangTems, markGiaoDone, applyGiaoLedger, insertGiaoAudit,
-  coCotTichGiao, tichTem, boTichTem, temDaVaoPhieu, traCuuTemTich, ghiAuditTich,
+  coCotTichGiao, coCotGiaoHangTai, cotPhieuThem, tichTem, boTichTem, temDaVaoPhieu, traCuuTemTich, ghiAuditTich,
   historyGiaoByDate, doneGiaoByDate,
   listPhieuGiaoCancelable, temThieuSoDeHuy, revertGiaoLedger, markGiaoHuy, insertHuyPhieuAudit,
 };

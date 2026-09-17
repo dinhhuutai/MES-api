@@ -36,6 +36,7 @@ const duyetRoutes = require('./modules/duyet/duyet.routes');
 const mauTemRoutes = require('./modules/mautem/mautem.routes');
 // Thiết kế PHIẾU (mig 094) — cùng khuôn mẫu tem, nhưng bố cục có VÙNG LẶP DÒNG.
 const mauPhieuRoutes = require('./modules/mauphieu/mauphieu.routes');
+const khachHangRoutes = require('./modules/khachhang/khachhang.routes');
 const presenceRoutes = require('./modules/presence/presence.routes');
 const phienRoutes = require('./modules/phien/phien.routes');
 const financeRoutes = require('./modules/finance/finance.routes');
@@ -95,6 +96,8 @@ app.use('/api/si-so', siSoRoutes);
 app.use('/api/duyet', duyetRoutes);
 app.use('/api/mau-tem', mauTemRoutes);
 app.use('/api/mau-phieu', mauPhieuRoutes);
+// Hệ thống > Khách hàng (địa chỉ + địa chỉ giao mặc định, in lên phiếu giao — mig 099)
+app.use('/api/khach-hang', khachHangRoutes);
 app.use('/api/presence', presenceRoutes);
 app.use('/api/phien', phienRoutes);
 app.use('/api/tai-chinh', financeRoutes);

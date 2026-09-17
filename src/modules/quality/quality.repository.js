@@ -224,12 +224,17 @@ async function addSuaLedger(client, temId, { dat = 0, huy = 0 }, actorId) {
 //   để lại bẫy vĩnh viễn cho mọi câu SUM viết sau này. (Người dùng chốt 05/09/2026.)
 // ⚠ Tiền lệ: `createTemGiaCongOqc` cũng seed `sl_kcs_dat` để `con_oqc > 0` — cùng một khuôn.
 
-// MỖI TEM GỐC CHỈ CÓ ĐÚNG 1 TEM CON. Sửa từng phần nhiều lần thì CỘNG DỒN vào tem con đã có —
-// tạo mỗi lượt 1 tem sẽ trùng `ma_tem` (cột có UNIQUE index).
+// ⚠⚠⚠ TỪ MIG 100: 1 TEM GỐC CÓ **NHIỀU** TEM CON — mỗi lượt xác nhận sửa đạt tạo 1 tem 17 riêng
+//   (mã ERP riêng, nhãn riêng). Hàm này trả về tem con **MỚI NHẤT** và CHỈ còn dùng làm ĐƯỜNG LÙI:
+//     · dữ liệu CŨ (`sua.tem_con_id` NULL — lượt sửa trước mig 100);
+//     · môi trường chưa chạy mig 100 (khi đó code giữ hành vi cũ: cộng dồn vào tem con này).
+//   Đường CHÍNH để tìm tem con của một lượt sửa là `sua.tem_con_id` — đừng quay lại dùng hàm này.
+// ⚠ `ORDER BY created_date DESC` là BẮT BUỘC: không có nó thì Postgres trả dòng bất kỳ, và việc
+//   "cộng dồn vào tem con" ở nhánh lùi sẽ nhảy lung tung giữa các tem con.
 async function getTemConCuaGoc(temGocId, client) {
   const run = client ? client.query.bind(client) : query;
   const { rows } = await run(
-    'SELECT id, ma_tem, trang_thai, sl_kcs_dat, sl_oqc_dat, sl_da_giao FROM tem WHERE tem_goc_id = $1 LIMIT 1',
+    'SELECT id, ma_tem, trang_thai, sl_kcs_dat, sl_oqc_dat, sl_da_giao FROM tem WHERE tem_goc_id = $1 ORDER BY created_date DESC LIMIT 1',
     [temGocId]
   );
   return rows[0] || null;
@@ -520,12 +525,32 @@ async function insertKcs(client, temId, d, actorId) {
   );
 }
 
+// ⚠⚠ DÒ CỘT `sua.tem_con_id` (mig 100) TRƯỚC KHI DÙNG — khuôn `temCoCot` mig 066. KHÔNG try/catch
+//   quanh INSERT: lỗi `42703` bên trong transaction làm ABORT cả transaction, câu "thử lại" chết
+//   tiếp với `25P02`. Cache khi ĐÃ có cột ⇒ chạy migration xong nhận ngay, khỏi restart BE.
+let _coCotSuaTemCon = false;
+async function coCotSuaTemCon() {
+  if (_coCotSuaTemCon) return true;
+  try {
+    const { rows } = await query(
+      "SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='sua' AND column_name='tem_con_id' LIMIT 1");
+    _coCotSuaTemCon = rows.length > 0;
+  } catch { _coCotSuaTemCon = false; }
+  return _coCotSuaTemCon;
+}
+
+// `temConId` (mig 100) = tem 17 do CHÍNH lượt này sinh ra — neo để `cancelSua` trừ ngược đúng chỗ.
 async function insertSua(client, temId, d, actorId) {
-  await client.query(
-    `INSERT INTO sua (tem_id, so_luong_sua, so_luong_sua_dat, so_luong_sua_huy, ghi_chu, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6)`,
-    [temId, d.soLuongSua, d.soLuongSuaDat, d.soLuongSuaHuy, d.ghiChu || null, actorId]
+  const co = await coCotSuaTemCon();
+  const cot = ['tem_id', 'so_luong_sua', 'so_luong_sua_dat', 'so_luong_sua_huy', 'ghi_chu',
+    ...(co ? ['tem_con_id'] : []), 'created_by'];
+  const val = [temId, d.soLuongSua, d.soLuongSuaDat, d.soLuongSuaHuy, d.ghiChu || null,
+    ...(co ? [d.temConId || null] : []), actorId];
+  const { rows } = await client.query(
+    `INSERT INTO sua (${cot.join(', ')}) VALUES (${cot.map((_, i) => `$${i + 1}`).join(', ')}) RETURNING id`,
+    val
   );
+  return rows[0].id;
 }
 
 async function nextOqcRound(temId) {
@@ -702,9 +727,15 @@ async function temDoneByDate(table, date) {
   // ⚠⚠ `ma_tem_17` = mã THẬT của tem con (nhãn sửa đạt). Từ 06/09/2026 mã này do ERP cấp riêng
   //   (`/barcode-tem-17`) nên **KHÔNG suy được** bằng `temCode(ma_goc, 17)` ở FE nữa — trang Sửa
   //   phải hiện/in đúng cột này. Dữ liệu CŨ chưa có tem con ⇒ NULL ⇒ FE lùi về cách suy như trước.
+  // ⚠⚠ TỪ MIG 100 mỗi lượt sửa đạt có TEM CON RIÊNG ⇒ phải lấy mã theo `x.tem_con_id` của CHÍNH
+  //   lượt đó. Lấy kiểu cũ (subquery `tem_goc_id = t.id LIMIT 1`) sẽ cho MỌI lượt cùng một mã 17 —
+  //   in ra là mọi lô sửa mang chung một nhãn. Lùi về subquery cũ cho dòng CŨ (`tem_con_id` NULL).
+  const ma17 = await coCotSuaTemCon()
+    ? '(SELECT tc.ma_tem FROM tem tc WHERE tc.id = x.tem_con_id)'
+    : 'NULL::text';
   const suaCols = table === 'sua'
     ? `, x.so_luong_sua_huy, x.id AS sua_id, ${await coCotNguoiSua() ? 'x.nguoi_sua, x.nguoi_sua_id' : 'NULL::text AS nguoi_sua, NULL::uuid AS nguoi_sua_id'}`
-      + ', (SELECT tc.ma_tem FROM tem tc WHERE tc.tem_goc_id = t.id LIMIT 1) AS ma_tem_17'
+      + `, COALESCE(${ma17}, (SELECT tc2.ma_tem FROM tem tc2 WHERE tc2.tem_goc_id = t.id ORDER BY tc2.created_date LIMIT 1)) AS ma_tem_17`
     : '';
   const sql = `
     SELECT x.created_date AS tg, nd.ho_ten AS nguoi, t.ma_tem AS ma, t.id AS tem_id,
@@ -888,13 +919,25 @@ async function getCancelKcsRow(id) {
   );
   return rows[0] || null;
 }
+// ⚠ `tem_con_id` (mig 100) = tem 17 của CHÍNH lượt này. Thiếu cột (chưa chạy migration) ⇒ trả NULL
+//   và `cancelSua` lùi về `getTemConCuaGoc` như trước.
 async function getCancelSuaRow(id) {
+  const co = await coCotSuaTemCon();
   const { rows } = await query(
     `SELECT x.id, x.tem_id, x.so_luong_sua, x.so_luong_sua_dat, x.so_luong_sua_huy,
+            ${co ? 'x.tem_con_id' : 'NULL::uuid AS tem_con_id'},
             ${CANCEL_TARGET_TEM_COLS}, ${cancelledQc('x', 'sua')} AS da_huy
      FROM sua x JOIN tem t ON t.id = x.tem_id WHERE x.id = $1`.replace(/\s+/g, ' '),
     [id]
   );
+  return rows[0] || null;
+}
+
+// Tem con theo id (cho `cancelSua` khi đã biết `sua.tem_con_id`).
+async function getTemConById(temConId) {
+  const { rows } = await query(
+    'SELECT id, ma_tem, trang_thai, sl_kcs_dat, sl_oqc_dat, sl_da_giao FROM tem WHERE id = $1 AND tem_goc_id IS NOT NULL',
+    [temConId]);
   return rows[0] || null;
 }
 async function getCancelOqcRow(id) {
@@ -1077,7 +1120,7 @@ module.exports = {
   listCancelKcs, listCancelSua, listCancelOqc, getCancelKcsRow, getCancelSuaRow, getCancelOqcRow, logCancelQc,
   listKcsCand, listSuaCand, listOqcCand, caPartsForTems, prevConfirmerByTems, getTemBasic, setTemTrangThai, setTemStatusQty,
   getTemLedger, addKcsLedger, addSuaLedger, addOqcLedger, addGiaoLedger, reduceKcsDat, reduceSuaDat,
-  getTemConCuaGoc, taoTemCon, congSlTemCon, congSuaTach, huyTemConNeuRong,
+  getTemConCuaGoc, getTemConById, coCotSuaTemCon, taoTemCon, congSlTemCon, congSuaTach, huyTemConNeuRong,
   recomputeTemStage, recomputeTemStageMany,
   temTimeline,
   nextMaTem, createChildTem, insertTemSplit, getTemForSplit,

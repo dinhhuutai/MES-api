@@ -327,19 +327,20 @@ async function recordSua(temId, body, actorId) {
   // ⚠⚠⚠ MÃ TEM 17 XIN RIÊNG CỦA ERP (chốt 06/09/2026) — KHÔNG còn suy từ mã tem gốc bằng
   //   `temCode(ma,17)`. Liên kết "tem 17 này là hàng sửa đạt của tem 15 kia" do cột `tem.tem_goc_id`
   //   (mig 091) gánh, nên mã rời nhau hoàn toàn không mất thông tin gì.
-  // ⚠ CHỈ XIN KHI THẬT SỰ TẠO TEM CON: mỗi tem gốc chỉ có ĐÚNG 1 tem con, sửa nhiều lần thì CỘNG DỒN
-  //   ⇒ tra trước ngoài transaction để không tiêu số của ERP một cách vô ích (mỗi lần gọi = 1 số).
+  // ⚠⚠⚠ TỪ MIG 100: **MỖI LƯỢT SỬA ĐẠT = 1 TEM 17 RIÊNG** (người dùng chốt 16/09/2026) — 1 tem 15 có
+  //   NHIỀU tem con. Trước đây mỗi tem gốc chỉ 1 tem con và các lượt sửa CỘNG DỒN vào nó, chỉ xin mã
+  //   ERP một lần ⇒ nhiều lô sửa khác nhau dùng CHUNG một nhãn giấy, ERP không tách được từng lô.
   // ⚠ Gọi TRƯỚC transaction (luật chung của `layBarcodeTem*`): giữ transaction hở suốt thời gian chờ
   //   HTTP sẽ khóa bảng `tem`, mà lỗi mạng còn abort cả transaction.
-  // ⚠ `null` = API bị TẮT ở *Hệ thống > Cài đặt API* ⇒ lùi về cách cũ (mã suy từ tem gốc).
-  const conTruoc = suaDat > 0 ? await repo.getTemConCuaGoc(temId) : null;
-  const maTem17 = suaDat > 0 && !conTruoc ? await layBarcodeTem17(actorId) : null;
+  // ⚠⚠ `null` = API bị TẮT ở *Hệ thống > Cài đặt API* ⇒ **LÙI VỀ HÀNH VI CŨ (cộng dồn vào tem con
+  //   đã có)**, KHÔNG tự bịa mã mới. Lý do: mã lùi duy nhất có thể suy ra là `temCode(ma_goc, 17)` —
+  //   dùng cho tem con THỨ HAI là trùng `ma_tem` (cột có UNIQUE index) ⇒ 500 giữa lúc xác nhận sửa.
+  //   Đây là lựa chọn an toàn: tắt API thì mất tính năng, không phải hỏng thao tác.
+  const maTem17 = suaDat > 0 ? await layBarcodeTem17(actorId) : null;
 
   let temConId = null;
+  let maTemCon = null;
   await withTransaction(async (client) => {
-    await repo.insertSua(client, temId, { soLuongSua: total, soLuongSuaDat: suaDat, soLuongSuaHuy: suaHuy, ghiChu }, actorId);
-    // Sửa đạt → quay lại pool OQC; sửa hủy → hủy.
-    await repo.addSuaLedger(client, temId, { dat: suaDat, huy: suaHuy }, actorId);
     // ⚠⚠ TÁCH PHẦN SỬA ĐẠT RA **TEM CON** (nhãn 17 — mig 091). Trước đây tem 17 chỉ là phần
     //   `con_oqc_sua` ẩn trong chính tem gốc, mã `17…` do FE ghép lúc hiện/in ⇒ không truy được
     //   "lô sửa này gồm bao nhiêu" như một đơn vị độc lập.
@@ -347,23 +348,33 @@ async function recordSua(temId, body, actorId) {
     //   trọn ở tem con, KHÔNG bị đếm 2 lần ở OQC/Giao.
     if (suaDat > 0) {
       await repo.congSuaTach(client, temId, suaDat, actorId);
-      const con = await repo.getTemConCuaGoc(temId, client);
-      // ⚠ Tra LẠI trong transaction (2 người cùng bấm sửa 1 tem): tem con vừa được lượt kia tạo thì
-      //   CỘNG DỒN vào nó, mã 17 vừa xin bị bỏ phí — chấp nhận, giống ca transaction rollback.
-      if (con) {
-        temConId = con.id;
-        if (maTem17) console.warn(`[tem-17] Tem con của ${tem.ma_tem} đã tồn tại — bỏ phí mã vừa xin: ${maTem17}`);
-        await repo.congSlTemCon(client, con.id, suaDat, actorId);
-      } else {
+      if (maTem17) {
+        // ĐƯỜNG CHÍNH: mỗi lượt 1 tem con RIÊNG, mã ERP riêng.
         temConId = await repo.taoTemCon(client, {
-          temGocId: temId,
-          phieuId: tem.phieu_san_xuat_id,
-          // Mã ERP riêng; API tắt ⇒ lùi về cách cũ (suy từ mã tem gốc) để không chặn việc xác nhận sửa.
-          maTem: maTem17 || temCode(tem.ma_tem, 17),
-          soLuong: suaDat,
+          temGocId: temId, phieuId: tem.phieu_san_xuat_id, maTem: maTem17, soLuong: suaDat,
         }, actorId);
+        maTemCon = maTem17;
+      } else {
+        // ĐƯỜNG LÙI (API `ERP_BARCODE_TEM_17` đang TẮT): giữ HÀNH VI CŨ — cộng dồn vào tem con đã có,
+        // chưa có thì tạo bằng mã suy từ tem gốc. Không bịa mã mới ⇒ không đụng UNIQUE `ma_tem`.
+        const con = await repo.getTemConCuaGoc(temId, client);
+        if (con) {
+          temConId = con.id; maTemCon = con.ma_tem;
+          await repo.congSlTemCon(client, con.id, suaDat, actorId);
+        } else {
+          maTemCon = temCode(tem.ma_tem, 17);
+          temConId = await repo.taoTemCon(client, {
+            temGocId: temId, phieuId: tem.phieu_san_xuat_id, maTem: maTemCon, soLuong: suaDat,
+          }, actorId);
+        }
       }
     }
+    // ⚠ `insertSua` ĐẶT SAU khi có `temConId` để neo lượt sửa ↔ đúng tem con của nó (mig 100) —
+    //   thiếu neo thì hủy xác nhận Sửa không biết trừ ngược vào tem con nào.
+    await repo.insertSua(client, temId,
+      { soLuongSua: total, soLuongSuaDat: suaDat, soLuongSuaHuy: suaHuy, ghiChu, temConId }, actorId);
+    // Sửa đạt → quay lại pool OQC; sửa hủy → hủy.
+    await repo.addSuaLedger(client, temId, { dat: suaDat, huy: suaHuy }, actorId);
     // Tính lại trạng thái CẢ HAI: tem gốc (hết phần chờ sửa thì rời màn Sửa) và tem con (vào CHO_OQC).
     await repo.recomputeTemStageMany(client, [temId, temConId].filter(Boolean), actorId);
   });
@@ -375,7 +386,7 @@ async function recordSua(temId, body, actorId) {
     tem_id: temId, next: 'SUA', so_luong_sua_dat: suaDat, con_sua: conSua - total,
     tem_con_id: temConId,
     // Mã tem 17 THẬT (ERP cấp) để FE hiện/in đúng — đừng suy lại bằng `temCode(ma_goc, 17)`.
-    ma_tem_17: temConId ? (maTem17 || (conTruoc && conTruoc.ma_tem) || temCode(tem.ma_tem, 17)) : null,
+    ma_tem_17: maTemCon,
   };
 }
 
@@ -632,7 +643,14 @@ async function cancelSua(suaId, lyDo, actorId) {
   //   Guard đọc NGOÀI transaction (chỉ SELECT) rồi kiểm hết trước khi ghi bất cứ thứ gì.
   let temCon = null;
   if (dat > 0) {
-    temCon = await repo.getTemConCuaGoc(r.tem_id);
+    // ⚠⚠⚠ TỪ MIG 100 một tem gốc có NHIỀU tem con ⇒ phải trừ ngược vào ĐÚNG tem con của lượt này
+    //   (`sua.tem_con_id`). Lấy `getTemConCuaGoc` như trước sẽ trừ nhầm sang tem con MỚI NHẤT —
+    //   sổ cái tổng vẫn "cân" nên KHÔNG AI PHÁT HIỆN, chỉ là số lượng nằm sai tem, in nhãn sai lô.
+    // ⚠ Dòng CŨ (`tem_con_id` NULL: lượt trước mig 100, hoặc môi trường chưa chạy migration) thì lùi
+    //   về cách cũ — lúc đó mỗi tem gốc vốn chỉ có 1 tem con nên không mập mờ.
+    temCon = r.tem_con_id
+      ? await repo.getTemConById(r.tem_con_id)
+      : await repo.getTemConCuaGoc(r.tem_id);
     const slCon = N(temCon && temCon.sl_kcs_dat);
     if (!temCon || slCon < dat) {
       throw new AppError('Không tìm thấy đủ số lượng trên tem sửa (17) để đảo — không hủy được lần Sửa này',

@@ -41,13 +41,16 @@ const CHIP_STAGES = {
   DA_GIAO: ['DA_GIAO'],
 };
 
-const { techDoneSqlByPin } = require('./tech');
+const { techDoneSqlByPin, qcDotSql } = require('./tech');
 
 // CASE tính stage cho 1 ĐỢT VẢI, dựa trên rowsource alias `a` có cột:
-//   a.phan_in_id, a.lenh_id (lệnh non-HUY mới nhất của đợt, NULL nếu chưa release), a.lenh_tt.
+//   a.phan_in_id, a.lenh_id (lệnh non-HUY mới nhất của đợt, NULL nếu chưa release), a.lenh_tt,
+//   a.tg_chuyen_ready, a.created_date  ← 2 cột sau THÊM 16/09/2026 cho `qcDotSql` (xem ngay dưới).
+// ⚠⚠ THÊM CỘT VÀO ĐÂY PHẢI SỬA KÈM 3 ROWSOURCE: `dotSource()` bên dưới · `dvs` trong
+//   `dashboard.repository.stageCounts` · `NGUON_DOT` của `phaninadmin.repository` (nguồn này dùng
+//   `d.*` nên đã có sẵn). Thiếu là `column a.tg_chuyen_ready does not exist`.
 function dotStageCase(a) {
   const temEx = (cond) => `EXISTS(SELECT 1 FROM phieu_san_xuat ps JOIN tem t ON t.phieu_san_xuat_id=ps.id WHERE ps.lenh_san_xuat_id=${a}.lenh_id AND t.trang_thai<>'HUY' AND ${cond})`;
-  const kqPin = (ma) => `EXISTS(SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id=k.checkpoint_id WHERE k.phan_in_id=${a}.phan_in_id AND c.ma_checkpoint='${ma}' AND k.trang_thai='DAT')`;
   const kqLenh = (ma) => `EXISTS(SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id=k.checkpoint_id WHERE k.lenh_san_xuat_id=${a}.lenh_id AND c.ma_checkpoint='${ma}' AND k.trang_thai='DAT')`;
   // ⚠ Nhánh 2 (RELEASE_1 + chưa có phiếu + phần in CHƯA QC) = TEST RUN KHÔNG ĐẠT, QA trả về Kỹ thuật:
   // lệnh được GIỮ NGUYÊN (để QC xong nhảy lại Test Run) nên đợt vẫn có lenh_id — nếu không có nhánh này,
@@ -57,14 +60,20 @@ function dotStageCase(a) {
   //   → KCS → Sửa → OQC → Giao. Lệnh `RELEASE_2` được xét TRƯỚC các nhánh tem: lệnh "Ngừng lệnh chạy"
   //   quay về RELEASE_2 mà đã có tem vẫn là CHỜ SẢN XUẤT (còn phải in tiếp) — kém tiến độ hơn tem đã in.
   //   Lệnh đã có phiếu (SAN_XUAT/HOAN_TAT) nhưng không còn tem sống ⇒ vẫn Chờ SX, KHÔNG rơi về Test Run.
+  // ⚠⚠ QC XÉT THEO **ĐỢT VẢI** (`qcDotSql`), KHÔNG theo phần in (đổi 16/09/2026 — xem `utils/tech.js`).
+  //   Trước đây `kqPin('QC_XAC_NHAN')` làm ĐỢT VẢI VỪA VỀ **thừa hưởng** READY của đợt trước ⇒ nhảy
+  //   thẳng 'RELEASE_1' dù chưa ai đụng tới nó. Nay đợt về SAU mốc QC vẫn ở READY_KT/READY_QA, còn đợt
+  //   cũ (về trước mốc) giữ nguyên 'RELEASE_1' ⇒ 1 phần in có thể vừa ở READY vừa ở Release 1 — đúng
+  //   như nghiệp vụ đi theo đợt vải. `kqPin` GIỮ cho các nhánh khác (TEST_CNSP/TEST_QA mức lệnh).
+  const qcDot = qcDotSql(a, `${a}.phan_in_id`);
   return `CASE
       WHEN ${a}.lenh_id IS NULL THEN
-        CASE WHEN ${kqPin('QC_XAC_NHAN')} THEN 'RELEASE_1'
+        CASE WHEN ${qcDot} THEN 'RELEASE_1'
              WHEN ${techDoneSqlByPin(`${a}.phan_in_id`)} THEN 'READY_QA'
              ELSE 'READY_KT' END
       WHEN ${a}.lenh_tt='RELEASE_1'
            AND NOT EXISTS(SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id=${a}.lenh_id)
-           AND NOT ${kqPin('QC_XAC_NHAN')} THEN
+           AND NOT ${qcDot} THEN
         CASE WHEN ${techDoneSqlByPin(`${a}.phan_in_id`)} THEN 'READY_QA' ELSE 'READY_KT' END
       WHEN ${a}.lenh_tt='GIA_CONG' THEN 'GIA_CONG'
       WHEN EXISTS(SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id=${a}.lenh_id AND ps.trang_thai='DANG_CHAY') THEN 'SAN_XUAT'
@@ -95,7 +104,7 @@ function readyFallback(pinId) {
 // Đợt CHỜ chuyển (pending) bị loại ⇒ dominant chỉ tính đợt đã vào dòng chảy; pending → readyFallback ('CHO_CHUYEN').
 function dotSource(pinId) {
   const lenh = (col) => `(SELECT ls.${col} FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id WHERE lsd.dot_vai_ve_id=d.id AND ls.trang_thai<>'HUY' ORDER BY ls.created_date DESC LIMIT 1)`;
-  return `SELECT d.phan_in_id, ${lenh('id')} AS lenh_id, ${lenh('trang_thai')} AS lenh_tt FROM dot_vai_ve d WHERE d.phan_in_id=${pinId} AND d.trang_thai NOT IN ('DA_GOP','DA_HUY') AND d.tg_chuyen_ready IS NOT NULL`;
+  return `SELECT d.phan_in_id, d.tg_chuyen_ready, d.created_date, ${lenh('id')} AS lenh_id, ${lenh('trang_thai')} AS lenh_tt FROM dot_vai_ve d WHERE d.phan_in_id=${pinId} AND d.trang_thai NOT IN ('DA_GOP','DA_HUY') AND d.tg_chuyen_ready IS NOT NULL`;
 }
 
 // Biểu thức SCALAR: stage dominant của phần in `pinId` (dùng ở orders.stageCondition).
@@ -119,7 +128,10 @@ function dominantStageScalar(pinId) {
 //   mà màn Test Run đang dùng để khóa thao tác) — không thể vẽ 1 lệnh ở 2 trạm cùng lúc.
 function lenhStageCase(lenhCol, trangThaiCol) {
   const kqLenh = (ma) => `EXISTS(SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id=k.checkpoint_id WHERE k.lenh_san_xuat_id=${lenhCol} AND c.ma_checkpoint='${ma}' AND k.trang_thai='DAT')`;
-  const conPinChuaQc = `EXISTS(SELECT 1 FROM lenh_sx_dot_vai lg JOIN dot_vai_ve dg ON dg.id=lg.dot_vai_ve_id WHERE lg.lenh_san_xuat_id=${lenhCol} AND NOT EXISTS(SELECT 1 FROM ket_qua_checkpoint kg JOIN checkpoint cg ON cg.id=kg.checkpoint_id WHERE kg.phan_in_id=dg.phan_in_id AND cg.ma_checkpoint='QC_XAC_NHAN' AND kg.trang_thai='DAT'))`;
+  // ⚠ QC theo ĐỢT VẢI (`qcDotSql`) y như `dotStageCase` — đợt của lệnh này đã release nên luôn về
+  //   TRƯỚC mốc QC ⇒ đợt vải MỚI của phần in KHÔNG kéo lệnh đã release ngược về READY. Chỉ ca QC bị
+  //   HỦY thật (Test Run trả về Kỹ thuật) mới cho ra READY, đúng như trước.
+  const conPinChuaQc = `EXISTS(SELECT 1 FROM lenh_sx_dot_vai lg JOIN dot_vai_ve dg ON dg.id=lg.dot_vai_ve_id WHERE lg.lenh_san_xuat_id=${lenhCol} AND NOT ${qcDotSql('dg', 'dg.phan_in_id')})`;
   const duMucKt = `EXISTS(SELECT 1 FROM lenh_sx_dot_vai lt JOIN dot_vai_ve dt ON dt.id=lt.dot_vai_ve_id WHERE lt.lenh_san_xuat_id=${lenhCol} AND ${techDoneSqlByPin('dt.phan_in_id')})`;
   return `CASE
       WHEN ${trangThaiCol}='GIA_CONG' THEN 'GIA_CONG'

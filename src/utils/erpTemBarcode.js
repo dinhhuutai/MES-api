@@ -3,11 +3,11 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // LẤY MÃ TEM (barcode) TỪ ERP — thay cho mã tự sinh `TEM00001` của MES.
 //
-// API: GET {ERP_BARCODE_TEM_URL} → { "success": true, "barcode": "152608057689" }
+// API: GET {ERP_BARCODE_TEM_15_URL} → { "success": true, "barcode": "152608057689" }
 // Mã 12 chữ số, **2 SỐ ĐẦU LÀ TIỀN TỐ CÔNG ĐOẠN**.
 //
 // ⚠⚠⚠ BA DÃY SỐ ĐỘC LẬP, MỖI CÔNG ĐOẠN MỘT ENDPOINT (chốt 06/09/2026):
-//   · `15` tem in ra ở chuyền           → GET /barcode-tem
+//   · `15` tem in ra ở chuyền           → GET /barcode-tem-15  (ERP đổi tên từ /barcode-tem, 16/09/2026)
 //   · `17` tem SỬA ĐẠT (tem con mig 091)→ GET /barcode-tem-17
 //   · `13` tem HÀNG GIA CÔNG VỀ          → GET /barcode-tem-13
 //   Trước đây tem 17/13 KHÔNG xin mã: chúng lấy mã tem 15 rồi **thay 2 số đầu** ⇒ 2 nhãn giấy khác

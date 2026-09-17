@@ -22,9 +22,12 @@ const env = require('./../config/env');
 //   `url()`     = URL đang thực sự gọi, để trang cài đặt hiện ra + nút "Thử kết nối" dùng.
 const DANH_MUC_API = [
   {
+    // ⚠ `ma_api` GIỮ NGUYÊN 'ERP_BARCODE_TEM' dù endpoint đã đổi tên thành `/barcode-tem-15`:
+    //   nó là KHÓA của bảng `cai_dat_api` và là `hanh_dong` của mọi dòng lịch sử trong `audit_log`.
+    //   Đổi mã = mất dòng bật/tắt đang lưu + mất sạch lịch sử 51 lượt gọi đã ghi trên prod.
     ma: 'ERP_BARCODE_TEM',
-    ten: 'Lấy mã tem từ ERP',
-    mo_ta: 'Gọi mỗi lần TẠO TEM MỚI để xin barcode 12 số. TẮT ⇒ MES tự sinh mã dạng TEM00123 '
+    ten: 'Lấy mã tem 15 (in ở chuyền) từ ERP',
+    mo_ta: 'Gọi mỗi lần TẠO TEM MỚI để xin barcode 12 số bắt đầu bằng 15. TẮT ⇒ MES tự sinh mã dạng TEM00123 '
       + '(vẫn quét được trong MES, nhưng máy quét bên ERP KHÔNG đọc được).',
     canh_bao: 'Tắt thì tem in ra không quét được bằng máy quét của ERP.',
     macDinh: () => true,

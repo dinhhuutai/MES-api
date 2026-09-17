@@ -278,7 +278,11 @@ async function traVeKyThuat({ dotVaiId, lyDo }, actorId) {
       { status: 409, errorCode: 'RELEASED' });
   }
 
-  await erpRepo.reopenReadyForPhanIn(pinId);
+  // ⚠⚠ GIỮ NGUYÊN xác nhận Khuôn/Film/Mực, CHỈ hủy QC (người dùng chốt 16/09/2026) — để 2 sidebar
+  //   *Lịch sử* + *Đã hoàn thành* của màn READY không mất dấu công tổ kỹ thuật đã làm. Phần in vẫn
+  //   quay về màn READY vì `qc_done` đã false; kỹ thuật biết phải làm lại gì qua badge + lý do.
+  //   Chi tiết đánh đổi: `erpsync.repository.chiHuyQcReady`.
+  await erpRepo.chiHuyQcReady(pinId);
   await repo.auditTraVeKyThuat(pinId, dotVaiId, reason, actorId);
   // Ghi qc_tra_ve loai='RELEASE1' (mức phần in) → màn READY/QC READY hiện badge + LÝ DO trả về;
   // cờ tự tắt khi QC xác nhận READY lại (technical.confirmQC → resolveReturns('RELEASE1')).
@@ -1083,7 +1087,15 @@ async function returnTestRunToReady(lenhId, { checklists, lyDo, loai }, actorId)
 
   await withTransaction(async (client) => {
     await repo.cancelTestResults(client, lenhId, actorId);                        // phải test lại
-    if (chosen.length) await repo.cancelReadyItemsByPhanIn(client, pinIds, chosen, actorId); // mục rớt → xác nhận lại
+    // ⚠⚠⚠ TEST LỖI: **GIỮ NGUYÊN xác nhận Khuôn/Film/Mực**, chỉ hủy QC (người dùng chốt 16/09/2026).
+    //   Mục rớt vẫn được GHI vào `qc_tra_ve.checklist_list` nên badge ở READY/QC READY vẫn nêu đúng
+    //   mục nào không đạt — chỉ là hệ thống không tự bỏ tích nữa, để 2 sidebar *Lịch sử* +
+    //   *Đã hoàn thành* giữ được dấu ai đã xác nhận. Đánh đổi (QC duyệt lại được ngay mà kỹ thuật
+    //   không phải thao tác) đã báo và người dùng chấp nhận — xem `erpsync.chiHuyQcReady`.
+    // ⚠⚠ NGOẠI LỆ **ĐỔI PHƯƠNG ÁN IN**: VẪN hủy cả 3 mục. Đổi Bàn ↔ Máy ↔ Robot là đổi hẳn cách in
+    //   nên khuôn/film/mực CŨ không dùng được về mặt VẬT LÝ — giữ lại là nói dối "đã có khuôn" cho
+    //   một phương án in khác hẳn. Đây là hành động khác bản chất với "test lỗi" (nó còn hủy cả lệnh).
+    if (doiPaIn && chosen.length) await repo.cancelReadyItemsByPhanIn(client, pinIds, chosen, actorId);
     await repo.cancelReadyQcForDotVai(client, dotVaiIds, actorId);                // QC phải duyệt lại
     // ĐỔI PHƯƠNG ÁN IN → HỦY LỆNH trong CÙNG transaction ⇒ đợt vải quay về pool Release 1.
     // ⚠ Đã chặn `co_phieu` ở trên nên chắc chắn chưa in tem — không phải dọn tem/phiếu.

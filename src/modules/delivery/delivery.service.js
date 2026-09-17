@@ -114,7 +114,10 @@ async function getDetail(giaoHangId) {
 //   giao"): cộng sổ cái `sl_da_giao`, tem sang DONE_DELIVERY, đẩy phiếu sang ERP. Nhờ vậy tem RỜI
 //   màn *Danh sách tem giao* ngay khi in xong — muốn lấy lại thì dùng *Hủy phiếu giao* ở Hệ thống.
 //   Bỏ trống ⇒ giữ luồng 2 bước như trước (tạo phiếu, xác nhận sau).
-async function createGiaoHang({ items, temIds, ngayGiao, ghiChu, xacNhan }, actorId) {
+// ⚠ `giaoHangTai` = ô người lập gõ lúc IN (gợi ý sẵn từ `khach_hang.dia_chi_giao`, sửa được). Lưu vào
+//   CHÍNH phiếu (mig 099) chứ không suy ngược từ khách hàng: khách đổi địa chỉ thì phiếu CŨ phải giữ
+//   nguyên địa điểm đã giao. Thiếu migration ⇒ repository tự bỏ qua, không chặn việc lập phiếu.
+async function createGiaoHang({ items, temIds, ngayGiao, ghiChu, giaoHangTai, xacNhan }, actorId) {
   const list = Array.isArray(items) && items.length
     ? items.map((it) => ({ temId: it.temId, nguon: it.nguon === 'SUA' ? 'SUA' : 'KCS', soLuong: it.soLuong != null ? Number(it.soLuong) : null }))
     : (Array.isArray(temIds) ? temIds.map((t) => ({ temId: t, nguon: 'KCS', soLuong: null })) : []);
@@ -125,7 +128,10 @@ async function createGiaoHang({ items, temIds, ngayGiao, ghiChu, xacNhan }, acto
   const maPhieu = await layMaPhieuGiao(actorId);
 
   const id = await withTransaction(async (client) => {
-    const ghId = await repo.createGiaoHang(client, { maPhieu, donHangId, ngayGiao, ghiChu }, actorId);
+    const ghId = await repo.createGiaoHang(client, {
+      maPhieu, donHangId, ngayGiao, ghiChu,
+      giaoHangTai: typeof giaoHangTai === 'string' ? giaoHangTai.trim().slice(0, 500) || null : null,
+    }, actorId);
     for (const it of list) await repo.addTem(client, ghId, it.temId, it.soLuong, it.nguon, actorId);
     return ghId;
   });

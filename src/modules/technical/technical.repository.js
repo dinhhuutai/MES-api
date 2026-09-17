@@ -6,7 +6,7 @@ const { dkTrang } = require('../../utils/phuongAnIn');
 // ⚠⚠ ĐÃ BỎ `khongReadyTuDongSql` KHỎI FILE NÀY (10/09/2026): 2 sidebar *Lịch sử* + *Đã hoàn thành*
 //   của READY KT & QC READY nay HIỆN CẢ phần in đi thẳng PKH (ERP `KTCankiemtra=0`) — xem ghi chú ở
 //   `listConfirmHistory` / `doneByDate`. Luật loại-khỏi-số-liệu vẫn còn hiệu lực ở sĩ số + báo cáo.
-const { techDoneSql, KHUON_OPT_SQL_LIST, nguoiXacNhanSql } = require('../../utils/tech');
+const { techDoneSql, KHUON_OPT_SQL_LIST, nguoiXacNhanSql, conDotChuaReadySql } = require('../../utils/tech');
 const { mauTim } = require('../../utils/timKiem');
 const { sqlKhopMa } = require('../../utils/maPhanIn');
 
@@ -49,6 +49,11 @@ async function listCandidates({
   const doneExpr = (param) =>
     `EXISTS (SELECT 1 FROM ket_qua_checkpoint k WHERE k.phan_in_id = pin.id AND k.checkpoint_id = ${param} AND k.trang_thai = 'DAT')`;
   // withItems=true: kèm cờ tình trạng từng mục (cho bảng); dùng $6..$9.
+  // ⚠⚠ Cột `con_dot_chua_ready` — "đã Ready" nay là thuộc tính của ĐỢT VẢI (16/09/2026): `qc_done` mức
+  //   phần in KHÔNG còn đủ để quyết định phần in có ở màn READY hay không, vì đợt vải về SAU mốc QC
+  //   chưa được ai xác nhận cho nó. Nguồn luật chung: `utils/tech.js conDotChuaReadySql` (gương
+  //   `dsDotChoReady`). ⚠ Chú thích để NGOÀI chuỗi SQL — backtick trong comment `--` bên trong
+  //   template literal sẽ ĐÓNG CHUỖI JS sớm (bẫy §9, đã mắc khi viết cột này).
   const selectBase = (withItems) => `
     SELECT pin.id, pin.ma_phan,
            -- 2 loại mã vạch KHÁC NHAU, đừng nhầm: barcode_phan_in = ERP BarcodePTHDH, 1 mã ↔ 1 PHẦN IN
@@ -83,7 +88,8 @@ async function listCandidates({
            ) AS tg_qua_ready,
            (SELECT count(*) FROM ket_qua_checkpoint k
               WHERE k.phan_in_id = pin.id AND k.checkpoint_id = ANY($2::uuid[]) AND k.trang_thai = 'DAT')::int AS n_tech_done,
-           ${doneExpr('$3')} AS qc_done${withItems ? `,
+           ${doneExpr('$3')} AS qc_done,
+           ${conDotChuaReadySql('pin.id')} AS con_dot_chua_ready${withItems ? `,
            ${doneExpr('$6')} AS khuon_done,
            ${doneExpr('$7')} AS film_done,
            ${doneExpr('$8')} AS muc_done,
@@ -146,7 +152,13 @@ async function listCandidates({
   //  - Màn QC (onlyQcReady): SLA QC_XAC_NHAN, chỉ đếm khi ĐỦ 3 mục KT (kt_done_tg); KT chưa đủ → NULL (không đỏ ở QC).
   // QC chỉ XÁC NHẬN được phần in đủ 3 mục (guard ở service + FE), nhưng vẫn THẤY toàn bộ danh sách READY.
   const tt = Number.isInteger(techTotal) ? techTotal : 3; // số nguyên do code kiểm soát (an toàn khi nội suy)
-  const OUTER_WHERE = 'WHERE q.qc_done = false';
+  // ⚠⚠⚠ CÒN Ở READY = "còn đợt vải ĐANG CHỜ chưa được QC phủ" (đổi 16/09/2026), KHÔNG còn là
+  //   `qc_done = false` mức phần in. Phần in có đợt 1 đã Ready (đang chờ release ở Release 1) + đợt 2
+  //   vừa về ⇒ `qc_done` vẫn TRUE nhưng đợt 2 chưa ai làm ⇒ phải hiện lại ở READY.
+  //   Giữ luôn vế `qc_done = false` để KHÔNG mất ca cũ: phần in bị QC/Test Run trả về (hủy dòng tổng)
+  //   nhưng đợt vải của nó đã thuộc lệnh RELEASE_1 nên `conDotChuaReadySql` (chỉ xét đợt CHƯA release)
+  //   không bắt được — đó chính là nhánh OR thứ 3 của WHERE bên trên.
+  const OUTER_WHERE = 'WHERE (q.qc_done = false OR q.con_dot_chua_ready = true)';
 
   // SLA theo GIAI ĐOẠN (task 3): $11=onlyQcReady. Màn QC → SLA QC_XAC_NHAN ($12) đếm từ kt_done_tg;
   // màn Kỹ thuật → SLA trạm READY ($9) từ ready_tg_vao, và KHI ĐỦ 3 mục KT → sla NULL (ngừng đếm, không đỏ ở KT).
@@ -198,7 +210,7 @@ async function countReadyItems({ khuonId, filmId, mucId, qcId }) {
                        AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsu JOIN lenh_san_xuat lu ON lu.id = lsu.lenh_san_xuat_id
                                        WHERE lsu.dot_vai_ve_id = dvu.id AND lu.trang_thai <> 'HUY'))
         AND pin.dang_hoat_dong
-        AND NOT (${doneExpr('$4')})
+        AND (NOT (${doneExpr('$4')}) OR ${conDotChuaReadySql('pin.id')})
     ) q`;
   const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [khuonId, filmId, mucId, qcId]);
   return { khuon: rows[0]?.khuon || 0, film: rows[0]?.film || 0, muc: rows[0]?.muc || 0 };
@@ -423,12 +435,18 @@ async function getPhanInBasic(phanInId) {
 }
 
 // Kết quả checkpoint của phần in tại 1 trạm (merge cấu hình + kết quả hiện có).
+// ⚠ `kq_updated_date` để `getDetail` suy "đợt này đã được QC phủ chưa" bằng ĐÚNG mốc mà
+//   `utils/tech.js qcDotSql` dùng: COALESCE(tg_xac_nhan, updated_date). Thiếu cột này thì 2 nơi so
+//   theo 2 mốc khác nhau ⇒ panel và bảng nói khác nhau.
+// ⚠⚠ Chú thích để NGOÀI chuỗi SQL — backtick trong comment `--` bên trong template literal ĐÓNG
+//   CHUỖI JS sớm (bẫy §9; vừa mắc lại khi thêm đúng cột này).
 async function getResults(tramId, phanInId) {
   const { rows } = await query(
     `SELECT cp.id AS checkpoint_id, cp.ma_checkpoint, cp.ten_checkpoint, cp.bat_buoc, cp.thu_tu,
             cp.cau_hinh_json, cp.thoi_gian_quy_dinh_phut, cp.canh_bao_truoc_phut, lc.ma_loai AS loai_checkpoint,
             kq.id AS ket_qua_id, kq.trang_thai, kq.gia_tri_text, kq.gia_tri_json,
             kq.nguoi_xac_nhan_id, kq.tg_xac_nhan, nx.ho_ten AS nguoi_xac_nhan_ten, kq.ghi_chu,
+            kq.updated_date AS kq_updated_date,
             (SELECT kh.ten_khach_hang FROM phan_in p JOIN ma_hang mh ON mh.id=p.ma_hang_id
                JOIN don_hang dh ON dh.id=mh.don_hang_id JOIN khach_hang kh ON kh.id=dh.khach_hang_id
                WHERE p.id=$2) AS ten_khach_hang
@@ -670,7 +688,7 @@ async function dsDotChoReady(phanInIds = []) {
   if (!phanInIds.length) return [];
   const { rows } = await query(
     `SELECT dv.phan_in_id, dv.id AS dot_vai_ve_id, dv.ma_dot_vai, dv.loai_dot_vai_id, ldv.ten_loai,
-            dv.han_giao_hang, dv.tg_chuyen_ready, dv.barcode
+            dv.han_giao_hang, dv.tg_chuyen_ready, dv.barcode, dv.so_luong_vai_ve, dv.ngay_vai_ve
        FROM dot_vai_ve dv
        LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id
       WHERE dv.phan_in_id = ANY($1::uuid[]) AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY')
@@ -680,6 +698,13 @@ async function dsDotChoReady(phanInIds = []) {
       ORDER BY dv.tg_chuyen_ready`.replace(/\s+/g, ' '),
     [phanInIds]);
   return rows;
+}
+
+// Phần in CÒN đợt vải đang chờ ở READY mà CHƯA được QC phủ? (nguồn luật `utils/tech.js`).
+// Dùng ở các guard KHÓA của service: dòng TỔNG đang DAT KHÔNG còn đồng nghĩa "READY đã xong hết".
+async function conDotChuaReady(phanInId) {
+  const { rows } = await query(`SELECT ${conDotChuaReadySql('$1::uuid')} AS e`.replace(/\s+/g, ' '), [phanInId]);
+  return !!rows[0].e;
 }
 
 // Dòng TỔNG (`ket_qua_checkpoint`) của các phần in cho nhóm checkpoint — kèm `updated_date` (mốc hủy).
@@ -730,7 +755,7 @@ async function boiHieuLucDot(client, phanInId, checkpointId, boQuaDotIds = []) {
 }
 
 module.exports = {
-  coBangXacNhanDot, dsDotChoReady, ketQuaTong, xacNhanDotRows, ghiXacNhanDot, boiHieuLucDot,
+  coBangXacNhanDot, dsDotChoReady, conDotChuaReady, ketQuaTong, xacNhanDotRows, ghiXacNhanDot, boiHieuLucDot,
   loadReadyConfig, listCandidates, countReadyItems, confirmInfoByPins, historyByDate, doneByDate, listConfirmHistory, isPhanInReleased, readyCancelState, traCuuMaQuet, getPhanInBasic, getResults, getBulkStates,
   getReadyEntryTime, findResultId, upsertResult, cancelResult, logCancel, insertStatusLog,
   listReopenCandidates, reopenReadyResults, flagUnreleasedDotLamLai, logReopenReady,

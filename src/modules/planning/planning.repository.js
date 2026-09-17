@@ -11,6 +11,11 @@ const { lenhPhanInMatch } = require('../../utils/search');
 // Hiển thị theo PHƯƠNG ÁN IN — cấu hình động từng trang (mig 067), mặc định BẬT HẾT = không lọc.
 const { dkTrang } = require('../../utils/phuongAnIn');
 const { mauTim } = require('../../utils/timKiem');
+// ⚠⚠ "Đã Ready" theo ĐỢT VẢI (16/09/2026) — badge Đã/Chờ Ready ở Release 1 & Kế hoạch tạm, và luật
+//   "đợt đã QC → release ngay / chưa QC → kế hoạch tạm". Trước đây hỏi ở MỨC PHẦN IN nên mọi dòng đợt
+//   vải của cùng phần in dùng CHUNG một badge: đợt mới về là đợt cũ đang chờ release cũng tụt xuống
+//   "Chờ Ready" (và ngược lại, đợt mới thừa hưởng "Đã Ready" của đợt cũ). Nguồn luật: `utils/tech.js`.
+const { qcDotSql } = require('../../utils/tech');
 // Giai đoạn HIỆN TẠI của phần in — dùng CHUNG hàm với dashboard/Đơn hàng (`dominantStageScalar`)
 // để "Danh sách release" và các màn khác không bao giờ ra 2 con số đá nhau.
 const { dominantStageScalar, STAGE_LABEL, lenhStageCase } = require('../../utils/stage');
@@ -73,8 +78,7 @@ async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
            pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
            pin.so_luong_don_hang, ldv.ten_loai AS loai_dot_vai,
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
-           EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
-                   WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT') AS qc_done,
+           ${qcDotSql('dv', 'pin.id')} AS qc_done,
            ${DA_REL}::int AS da_release,
            (COALESCE(dv.so_luong_vai_ve,0) - ${DA_REL})::int AS con_release,
            gsx.gom_set_id, gsx.ma_set,
@@ -136,8 +140,7 @@ async function getDotVaiForCompose(dotVaiIds) {
             COALESCE((SELECT SUM(COALESCE(lsd.so_luong,0)) FROM lenh_sx_dot_vai lsd
                       JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
                       WHERE lsd.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY'),0)::int AS da_dua,
-            EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
-                    WHERE kq.phan_in_id = dv.phan_in_id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT') AS qc_done
+            ${qcDotSql('dv', 'dv.phan_in_id')} AS qc_done
      FROM dot_vai_ve dv JOIN phan_in pin ON pin.id = dv.phan_in_id
      LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id
      WHERE dv.id = ANY($1::uuid[])`,
@@ -182,8 +185,7 @@ async function listGopCandidates({ search = '' }) {
     LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id
     WHERE COALESCE(dv.trang_thai,'') NOT IN ('DA_GOP','DA_HUY') AND pin.dang_hoat_dong
       AND COALESCE(dv.so_luong_vai_ve,0) > 0
-      AND EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
-                  WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT')
+      AND ${qcDotSql('dv', 'pin.id')}
       AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
                       WHERE lsd.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY')
       AND NOT EXISTS (SELECT 1 FROM gom_set_dot_vai gsd JOIN gom_set gs ON gs.id = gsd.gom_set_id
@@ -381,9 +383,7 @@ async function listReleasableSets(search = '') {
                FROM gom_set_dot_vai d JOIN dot_vai_ve dv ON dv.id = d.dot_vai_ve_id WHERE d.gom_set_id = gs.id) AS tong_vai,
             (SELECT count(*) FROM gom_set_dot_vai d JOIN dot_vai_ve dv ON dv.id = d.dot_vai_ve_id
                JOIN phan_in pin ON pin.id = dv.phan_in_id
-               WHERE d.gom_set_id = gs.id AND NOT EXISTS (
-                 SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
-                 WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT'))::int AS so_chua_ready
+               WHERE d.gom_set_id = gs.id AND NOT ${qcDotSql('dv', 'pin.id')})::int AS so_chua_ready
      FROM gom_set gs
      WHERE gs.trang_thai = 'MO'
        AND EXISTS (SELECT 1 FROM gom_set_dot_vai d JOIN dot_vai_ve dvm ON dvm.id = d.dot_vai_ve_id
@@ -419,8 +419,7 @@ async function getOpenSetMembers() {
             ldv.ten_loai AS loai_dot_vai,
             ${hsktCols('pin.id')},
             mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
-            EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
-                    WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT') AS qc_done
+            ${qcDotSql('dv', 'pin.id')} AS qc_done
      FROM gom_set gs
      JOIN gom_set_dot_vai gsd ON gsd.gom_set_id = gs.id
      JOIN dot_vai_ve dv ON dv.id = gsd.dot_vai_ve_id
@@ -446,8 +445,7 @@ async function getSetMembersForRelease(setId) {
     // `ke_hoach_tam.phan_in_id` — cột NOT NULL. Thiếu cột này thì MỌI lần lập kế hoạch sớm cho gom set
     // đều 500 "Lỗi hệ thống" (đợt vải LẺ không dính vì đi qua `createRelease1`).
     `SELECT dv.id AS dot_vai_id, dv.phan_in_id, COALESCE(dv.so_luong_vai_ve,0)::int AS so_luong,
-            EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
-                    WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT') AS qc_done,
+            ${qcDotSql('dv', 'pin.id')} AS qc_done,
             EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
                     WHERE lsd.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY') AS da_release
      FROM gom_set_dot_vai gsd
@@ -1164,9 +1162,7 @@ async function keHoachTamTheoDoi({ search = '', tuNgay = '', denNgay = '', loaiN
                           ORDER BY ls.created_date DESC LIMIT 1) lsx ON true
       CROSS JOIN LATERAL (SELECT EXISTS (SELECT 1 FROM ke_hoach_tam t
                             WHERE t.dot_vai_ve_id = dv.id AND t.trang_thai = 'CHO') AS con) live
-      CROSS JOIN LATERAL (SELECT EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
-                            WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN'
-                              AND kq.trang_thai = 'DAT') AS done) qc
+      CROSS JOIN LATERAL (SELECT ${qcDotSql('dv', 'pin.id')} AS done) qc
      WHERE ${dkPain} AND ${SEARCH}
        AND ($2 = '' OR ${COT_NGAY} >= $2::date)
        AND ($3 = '' OR ${COT_NGAY} <= $3::date)
@@ -1199,8 +1195,7 @@ async function listKeHoachTamRows({ search = '', offset = 0, limit = 200 }) {
            ${hsktCols('pin.id')},
            (SELECT gs.ma_set FROM gom_set_dot_vai gsd JOIN gom_set gs ON gs.id = gsd.gom_set_id
              WHERE gsd.dot_vai_ve_id = dv.id AND gs.trang_thai = 'MO' LIMIT 1) AS ma_set,
-           EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
-                   WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT') AS qc_done
+           ${qcDotSql('dv', 'pin.id')} AS qc_done
     ${FROM}
     ORDER BY kt.ngay_ke_hoach NULLS LAST, kt.created_date
     LIMIT $2 OFFSET $3`;
@@ -1220,9 +1215,7 @@ async function getOpenSetOfDotVai(dotVaiId) {
             (SELECT count(*) FROM gom_set_dot_vai d WHERE d.gom_set_id = gs.id)::int AS so_dot_vai,
             (SELECT count(*) FROM gom_set_dot_vai d JOIN dot_vai_ve dv2 ON dv2.id = d.dot_vai_ve_id
                JOIN phan_in p2 ON p2.id = dv2.phan_in_id
-              WHERE d.gom_set_id = gs.id AND NOT EXISTS (
-                SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
-                 WHERE kq.phan_in_id = p2.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT'))::int AS so_chua_ready
+              WHERE d.gom_set_id = gs.id AND NOT ${qcDotSql('dv2', 'p2.id')})::int AS so_chua_ready
        FROM gom_set_dot_vai gsd JOIN gom_set gs ON gs.id = gsd.gom_set_id
       WHERE gsd.dot_vai_ve_id = $1 AND gs.trang_thai = 'MO' LIMIT 1`.replace(/\s+/g, ' '),
     [dotVaiId]
@@ -1233,8 +1226,7 @@ async function getOpenSetOfDotVai(dotVaiId) {
 async function getKeHoachTam(id) {
   const { rows } = await query(
     `SELECT kt.id, kt.dot_vai_ve_id, kt.phan_in_id, kt.chuyen_id, kt.ngay_ke_hoach, kt.tg_bd_kh, kt.tg_kt_kh, kt.so_luong,
-            EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
-                    WHERE kq.phan_in_id = kt.phan_in_id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT') AS qc_done
+            EXISTS (SELECT 1 FROM dot_vai_ve zdv WHERE zdv.id = kt.dot_vai_ve_id AND ${qcDotSql('zdv', 'kt.phan_in_id')}) AS qc_done
      FROM ke_hoach_tam kt WHERE kt.id = $1`.replace(/\s+/g, ' '),
     [id]
   );
