@@ -67,6 +67,8 @@ const kcsDone = asyncHandler(async (req, res) => ok(res, await service.kcsDone(r
 const suaDone = asyncHandler(async (req, res) => ok(res, await service.suaDone(req.query.date || today())));
 const luuNguoiSua = asyncHandler(async (req, res) =>
   ok(res, await service.luuNguoiSua(req.body?.items, req.user.id), 'Đã lưu người sửa'));
+const guiLaiErpSua = asyncHandler(async (req, res) =>
+  ok(res, await service.guiLaiErpSua(req.params.suaId, req.user.id), 'Đã gửi sửa đạt sang ERP'));
 const oqcDone = asyncHandler(async (req, res) => ok(res, await service.oqcDone(req.query.date || today())));
 const inlineDone = asyncHandler(async (req, res) => ok(res, await service.inlineDone(req.query.date || today())));
 
@@ -92,8 +94,9 @@ const giaoDacBietToggle = asyncHandler(async (req, res) => ok(res, await service
 
 // ─── PHÂN LOẠI LỖI (mig 075) ─────────────────────────────────────────────────
 const plList = asyncHandler(async (req, res) => {
-  const { ngay = '', search = '', page = 1, limit = 20 } = req.query;
-  ok(res, await plService.danhSach({ ngay, search, page: Number(page) || 1, limit: Math.min(Number(limit) || 20, 200) }));
+  const { ngay = '', search = '', tinhTrang = '', page = 1, limit = 20 } = req.query;
+  const tt = ['CHUA', 'DA'].includes(String(tinhTrang).toUpperCase()) ? String(tinhTrang).toUpperCase() : '';
+  ok(res, await plService.danhSach({ ngay, search, tinhTrang: tt, page: Number(page) || 1, limit: Math.min(Number(limit) || 20, 200) }));
 });
 const plTraTem = asyncHandler(async (req, res) => ok(res, await plService.traTem(req.query.code || '')));
 const plChiTiet = asyncHandler(async (req, res) => ok(res, await plService.chiTiet(req.params.temId)));
@@ -108,7 +111,7 @@ module.exports = {
   plList, plTraTem, plChiTiet, plLuu, bpList, bpCreate, bpUpdate, bpToggle,
   kcsCandidates, recordKcs, gopTem, suaCandidates, recordSua, oqcCandidates, recordOqc,
   kcsHistory, suaHistory, oqcHistory,
-  kcsDone, suaDone, oqcDone, inlineDone, luuNguoiSua,
+  kcsDone, suaDone, oqcDone, inlineDone, luuNguoiSua, guiLaiErpSua,
   inlineCandidates, inlineLoaiLoi, inlineHistory, recordInline,
   loaiLoiList, loaiLoiCreate, loaiLoiUpdate, loaiLoiToggle,
   giaoDacBietActive, giaoDacBietList, giaoDacBietCreate, giaoDacBietUpdate, giaoDacBietToggle,

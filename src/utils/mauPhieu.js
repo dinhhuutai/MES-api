@@ -80,7 +80,10 @@ const TRUONG_PHIEU = Object.freeze([
   // Người BẤM IN (không phải người lập phiếu) — ghép ở trình duyệt lúc in, xem `printPhieuGiao`.
   { ma: 'nguoi_in', ten: 'Người in phiếu', kieu: 'chu', nhom: 'Phiếu' },
 
-  { ma: 'ten_khach_hang', ten: 'Khách hàng', kieu: 'chu', nhom: 'Đơn hàng' },
+  { ma: 'ten_khach_hang', ten: 'Khách hàng (mã ERP)', kieu: 'chu', nhom: 'Đơn hàng' },
+  // Tên đầy đủ công ty — NHẬP TAY ở *Hệ thống → Khách hàng* (mig 101). Trống thì lùi về MÃ khách
+  // (xem `printPhieuGiao.duLieuPhieu`) để ô trên phiếu không bao giờ rỗng.
+  { ma: 'ten_day_du_khach', ten: 'Tên đầy đủ công ty khách hàng', kieu: 'chu', nhom: 'Đơn hàng' },
   { ma: 'ma_don_hang', ten: 'Đơn hàng (PO)', kieu: 'chu', nhom: 'Đơn hàng' },
   // Địa chỉ lấy từ *Hệ thống → Khách hàng* (mig 099) — để trống nếu chưa ai nhập cho khách đó.
   { ma: 'dia_chi', ten: 'Địa chỉ khách hàng', kieu: 'chu', nhom: 'Đơn hàng' },
@@ -91,6 +94,8 @@ const TRUONG_PHIEU = Object.freeze([
   { ma: 'so_tem', ten: 'Tổng số tem', kieu: 'so', nhom: 'Tổng' },
   { ma: 'so_dong', ten: 'Số dòng bảng chi tiết', kieu: 'so', nhom: 'Tổng' },
   { ma: 'tong_sl', ten: 'Tổng SL giao', kieu: 'so', nhom: 'Tổng' },
+  // Hàng RCS (mã hàng chứa "RCS") — Σ (SL giao × KLG) các dòng RCS, KLG nhập lúc in (mig 102).
+  { ma: 'tong_tl_kg', ten: 'Tổng TL (KG) — hàng RCS', kieu: 'so', nhom: 'Tổng' },
 ]);
 
 const TRUONG_DONG_PHIEU = Object.freeze([
@@ -104,6 +109,11 @@ const TRUONG_DONG_PHIEU = Object.freeze([
   { ma: 'kich_phim', ten: 'Kích phim', kieu: 'chu', nhom: 'Dòng' },
   { ma: 'kich_vai_phim', ten: 'Kích vải / phim (ghép sẵn)', kieu: 'chu', nhom: 'Dòng' },
   { ma: 'ma_lenh_san_xuat', ten: 'Mã đợt SX', kieu: 'chu', nhom: 'Dòng' },
+  // GC màu vải — ghi chú màu vải do người in NHẬP TAY lúc in tem 15 (`tem.gc_mau_vai`, mig 071).
+  // ⚠ Kiểu in GỘP dồn nhiều tem vào 1 dòng ⇒ giá trị được gộp `DISTINCT` (xem `duLieuDong`), KHÁC
+  //   `ghi_chu` vốn CỐ Ý để trống ở kiểu gộp: GC màu vải là thuộc tính VẬT LÝ của lô hàng, gộp lại
+  //   vẫn đọc được; còn ghi chú là câu viết cho riêng một tem, gộp vào sẽ gây hiểu nhầm cả nhóm.
+  { ma: 'gc_mau_vai', ten: 'GC màu vải (nhập lúc in tem 15)', kieu: 'chu', nhom: 'Dòng' },
   { ma: 'so_luong_giao', ten: 'SL giao của dòng', kieu: 'so', nhom: 'Dòng' },
   // ⚠ SL ĐẠT TỪ OQC của chính dòng này (theo NGUỒN KCS/Sửa). Thường BẰNG `so_luong_giao`, nhưng
   //   KHÁC khi giao TỪNG PHẦN (1 tem giao nhiều lần) — lúc đó "đạt" > "giao lần này".
@@ -112,10 +122,17 @@ const TRUONG_DONG_PHIEU = Object.freeze([
   // cùng tên ở mức PHIẾU chỉ có giá trị khi cả phiếu thuộc MỘT đơn).
   { ma: 'ma_don_hang', ten: 'Đơn hàng (PO) của dòng', kieu: 'chu', nhom: 'Dòng' },
   { ma: 'ten_khach_hang', ten: 'Khách hàng của dòng', kieu: 'chu', nhom: 'Dòng' },
+  { ma: 'ten_day_du_khach', ten: 'Tên đầy đủ công ty của dòng', kieu: 'chu', nhom: 'Dòng' },
   { ma: 'ghi_chu', ten: 'Ghi chú dòng', kieu: 'chu', nhom: 'Dòng' },
   // CHỈ có nghĩa ở kiểu in GỘP (nhiều tem cùng code phần dồn thành 1 dòng).
   { ma: 'so_tem_gop', ten: 'Số tem trong dòng (kiểu GỘP)', kieu: 'so', nhom: 'Dòng' },
   { ma: 'co_sua', ten: 'Dòng có hàng qua sửa (* / rỗng)', kieu: 'chu', nhom: 'Dòng' },
+  // ⚠⚠ HÀNG RCS (21/09/2026): mã hàng chứa chuỗi "RCS" ⇒ in thêm KLG (khối lượng / 1 pcs, NHẬP LÚC IN,
+  //   lưu `giao_hang_tem.klg` — mig 102) và Tổng TL (KG) = SL giao × KLG. Dòng không phải RCS ⇒ 2 ô
+  //   này để TRỐNG. Muốn cả CỘT chỉ hiện khi phiếu có hàng RCS thì đặt "Chỉ hiện cột khi" ở ô tiêu đề.
+  { ma: 'klg', ten: 'KLG (kg/pcs) — hàng RCS', kieu: 'so', nhom: 'RCS' },
+  { ma: 'tong_tl_kg', ten: 'Tổng TL (KG) = SL × KLG', kieu: 'so', nhom: 'RCS' },
+  { ma: 'la_rcs', ten: 'Nhãn "RCS" (dòng hàng RCS)', kieu: 'chu', nhom: 'RCS' },
 ]);
 
 // Định dạng ngày chọn được — GIỮ GIỐNG mẫu tem để 2 trình thiết kế không lệch nhau.
@@ -205,6 +222,15 @@ function kiemBoCucPhieu(boCuc) {
         if (!p || p.loai !== 'truong') continue;
         if (!laTruong(p.ma)) {
           loi.push(`${ten}: ô "${key}" dùng trường "${p.ma}" không thuộc phạm vi ${tenPhamVi}`);
+        }
+      }
+      // ⚠ "Chỉ hiện cột khi <trường dòng> chứa <chuỗi>" (21/09/2026) — CHỈ đặt ở ô tiêu đề (hàng 0) của
+      //   vùng lặp, và trường phải là TRƯỜNG DÒNG. Đặt chỗ khác thì bộ render bỏ qua ⇒ chặn ngay lúc lưu.
+      if (val.hien_khi) {
+        const hk = val.hien_khi;
+        if (!laDong || r !== 0) loi.push(`${ten}: ô "${key}" — "Chỉ hiện cột khi" chỉ đặt được ở ô TIÊU ĐỀ của vùng lặp dòng`);
+        else if (!laTruongDong(hk.truong) || !String(hk.chua || '').trim()) {
+          loi.push(`${ten}: ô "${key}" — "Chỉ hiện cột khi" cần 1 trường dòng hợp lệ và chuỗi cần chứa`);
         }
       }
       // ⚠⚠ Ô QR / mã vạch CHỈ dùng được ở ĐẦU và CUỐI phiếu. Vùng lặp dòng thì mỗi dòng phải dựng

@@ -137,10 +137,32 @@ const khongReadyTuDongSql = (pinExpr) => `NOT ${readyTuDongSql(pinExpr)}`;
 //   mốc QC luôn là "lần duyệt READY gần nhất", nên QC duyệt lại là phủ hết mọi đợt đang chờ.
 // ⚠ `COALESCE(tg_chuyen_ready, created_date)` cho dữ liệu cũ thiếu mốc vào READY (prod hiện 0 dòng).
 // ⚠ Alias `zq`/`zc`/`zd`/`zl` đặt hiếm để không đụng alias của query lớn bọc ngoài.
-const qcDotSql = (dvAlias, pinCol) => `EXISTS (SELECT 1 FROM ket_qua_checkpoint zq
-  JOIN checkpoint zc ON zc.id = zq.checkpoint_id AND zc.ma_checkpoint = 'QC_XAC_NHAN'
+// ⚠⚠⚠ MỞ RỘNG 21/09/2026 — "ĐỢT d ĐÃ XÁC NHẬN MỤC ma" CÓ 2 NHÁNH (gương `technical.service.dotDaXacNhan`):
+//   (a) dòng TỔNG `ket_qua_checkpoint` DAT và đợt lên READY TRƯỚC mốc đó (luật mốc cũ); HOẶC
+//   (b) dòng RIÊNG CỦA ĐỢT trong `ready_xac_nhan_dot` (mig 098) DAT, và dòng tổng KHÔNG bị HỦY sau mốc
+//       `updated_date` của nó (mọi đường hủy ở mức phần in — trả về · hủy xác nhận — tự vô hiệu dòng đợt).
+//   Nhánh (b) nay áp cho CẢ QC: QC xác nhận THEO ĐỢT (người dùng chốt 21/09/2026 — "đợt 1 KT xong mà QC
+//   không xác nhận được vì đợt 2 KT chưa xác nhận"), và `erpsync.simulateReadyDone` ghi dòng theo ĐỢT
+//   khi phần in còn đợt khác đang chờ (không thì mốc QC tổng = now() PHỦ LUÔN đợt 1 chưa ai làm — đúng
+//   lỗi người dùng báo 18/09).
+// ⚠ Alias `zq*`/`zx*`/`zk*` đặt hiếm để không đụng alias của query lớn bọc ngoài; mã checkpoint là hằng code.
+const dotMucDatSql = (dvAlias, pinCol, ma) => `(EXISTS (SELECT 1 FROM ket_qua_checkpoint zq
+  JOIN checkpoint zc ON zc.id = zq.checkpoint_id AND zc.ma_checkpoint = '${ma}'
   WHERE zq.phan_in_id = ${pinCol} AND zq.trang_thai = 'DAT'
-    AND COALESCE(zq.tg_xac_nhan, zq.updated_date) >= COALESCE(${dvAlias}.tg_chuyen_ready, ${dvAlias}.created_date))`;
+    AND COALESCE(zq.tg_xac_nhan, zq.updated_date) >= COALESCE(${dvAlias}.tg_chuyen_ready, ${dvAlias}.created_date))
+ OR EXISTS (SELECT 1 FROM ready_xac_nhan_dot zx
+  JOIN checkpoint zxc ON zxc.id = zx.checkpoint_id AND zxc.ma_checkpoint = '${ma}'
+  WHERE zx.dot_vai_ve_id = ${dvAlias}.id AND zx.trang_thai = 'DAT'
+    AND NOT EXISTS (SELECT 1 FROM ket_qua_checkpoint zk WHERE zk.phan_in_id = ${pinCol}
+                    AND zk.checkpoint_id = zx.checkpoint_id AND zk.trang_thai = 'HUY'
+                    AND zk.updated_date > zx.updated_date)))`;
+
+const qcDotSql = (dvAlias, pinCol) => dotMucDatSql(dvAlias, pinCol, 'QC_XAC_NHAN');
+
+// Đợt đã xong KỸ THUẬT (Mực + Khuôn; khách gia công II/AD chỉ cần Mực) — gương `techDoneNhom` ở service.
+// `khachExpr` = biểu thức tên khách của phần in (vd `kh.ten_khach_hang`).
+const ktDotXongSql = (dvAlias, pinCol, khachExpr) => `(${dotMucDatSql(dvAlias, pinCol, 'MUC')}
+  AND ((${khachExpr}) IN (${KHUON_OPT_SQL_LIST}) OR ${dotMucDatSql(dvAlias, pinCol, 'KHUON')}))`;
 
 // Phần in CÒN đợt vải đang chờ ở READY (đã lên READY, CHƯA release) mà CHƯA được QC phủ?
 // Đây là điều kiện "còn việc ở READY" thay cho `qc_done = false` mức phần in.
@@ -151,10 +173,23 @@ const conDotChuaReadySql = (pinCol) => `EXISTS (SELECT 1 FROM dot_vai_ve zd
                      WHERE zl.dot_vai_ve_id = zd.id AND zls.trang_thai <> 'HUY')
     AND NOT ${qcDotSql('zd', pinCol)})`;
 
+// ⚠⚠ HÀNG ĐỢI CỦA QC = đợt vải đang chờ (chưa release) mà KỸ THUẬT ĐÃ XONG nhưng QC CHƯA xác nhận
+// (người dùng chốt 21/09/2026: "QC ready phải hiện khi Ready KT xác nhận xong"). Dùng cho màn QC READY +
+// sĩ số `DV.READY_QC` — 2 chỗ phải cùng một luật, lệch là ô Tồn cuối đá với bảng.
+const dotChoReadySql = (alias, pinCol) => `${alias}.phan_in_id = ${pinCol} AND ${alias}.trang_thai NOT IN ('DA_GOP','DA_HUY')
+    AND ${alias}.tg_chuyen_ready IS NOT NULL
+    AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai zl2 JOIN lenh_san_xuat zls2 ON zls2.id = zl2.lenh_san_xuat_id
+                     WHERE zl2.dot_vai_ve_id = ${alias}.id AND zls2.trang_thai <> 'HUY')`;
+const conDotChoQcSql = (pinCol, khachExpr) => `EXISTS (SELECT 1 FROM dot_vai_ve zdq
+  WHERE ${dotChoReadySql('zdq', pinCol)} AND NOT ${qcDotSql('zdq', pinCol)} AND ${ktDotXongSql('zdq', pinCol, khachExpr)})`;
+// Còn đợt vải đang chờ mà KỸ THUẬT CHƯA xong (việc của màn KT).
+const conDotChuaKtSql = (pinCol, khachExpr) => `EXISTS (SELECT 1 FROM dot_vai_ve zdk
+  WHERE ${dotChoReadySql('zdk', pinCol)} AND NOT ${qcDotSql('zdk', pinCol)} AND NOT ${ktDotXongSql('zdk', pinCol, khachExpr)})`;
+
 module.exports = {
   KHUON_OPTIONAL_KH, KHUON_OPT_SQL_LIST, isKhuonOptional, laHangGiaCong,
   requiredTechItems, hienFilm, techDoneSql, techDoneSqlByPin,
   NHAN_HE_THONG, nguoiXacNhanSql,
   readyTuDongSql, khongReadyTuDongSql,
-  qcDotSql, conDotChuaReadySql,
+  dotMucDatSql, qcDotSql, ktDotXongSql, conDotChuaReadySql, conDotChoQcSql, conDotChuaKtSql,
 };

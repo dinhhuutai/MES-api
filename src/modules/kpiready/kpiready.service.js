@@ -57,6 +57,9 @@ function dungCot(ownerRows, khoaRows, ds = COT_KPI) {
       tuSo: c.tuSo || null,
       mauSo: c.mauSo || null,
       ghi_chu: c.ghiChu || null,
+      // Chuỗi mốc nguồn cho CỘT THỜI GIAN đứng cạnh (xem `tgTu` ở `utils/kpiReady.js`).
+      // ⚠ `null` ⇒ FE KHÔNG vẽ cột thời gian cho cột đó (cột SL · cột % · cột "Vải").
+      tg_tu: c.tgTu && c.tgTu.length ? c.tgTu : null,
       // Khóa owner để FE chỉ đúng chỗ cần gán khi còn trống.
       owner_key: key,
       owner_tram: c.tram || null,

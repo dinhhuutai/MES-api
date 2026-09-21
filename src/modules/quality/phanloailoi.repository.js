@@ -41,13 +41,25 @@ const CHI_SO = `
   ${conKcsSql()} AS con_kcs`;
 
 // ─── Danh sách tem ĐÃ PHÂN LOẠI theo ngày (bảng chính của trang) ─────────────
-async function listTheoNgay({ ngay = '', search = '', page = 1, limit = 20 } = {}) {
+// ⚠⚠⚠ ĐỔI 21/09/2026 (người dùng chốt): NGUỒN LÀ **TEM ĐÃ KCS** (có hàng HƯ cần chia), KHÔNG còn là bảng
+//   phiếu phân loại. Mở trang là thấy ngay tem nào CHƯA phân loại lỗi trong ngày — trước đây chỉ liệt kê
+//   tem ĐÃ phân loại nên việc còn tồn không hiện ở đâu cả, phải tự nhớ để quét từng tem.
+//   · Ngày lọc = ngày KCS gần nhất của tem (giờ VN).
+//   · Tem vào danh sách khi: có lượt KCS **và** (còn SL hư `sl_kcs_sua + sl_kcs_huy > 0` HOẶC đã có phiếu).
+//     Tem KCS đạt hết (hư = 0) không có gì để phân loại ⇒ không hiện.
+//   · `tinhTrang`: '' tất cả · 'CHUA' chưa phân loại · 'DA' đã phân loại.
+// ⚠ Chỉ tem GỐC (`tem_goc_id IS NULL`) — tem 17 (sửa đạt) không mang SL hư.
+async function listTheoNgay({ ngay = '', search = '', tinhTrang = '', page = 1, limit = 20 } = {}) {
   const dkPain = await dkTrang('SX_PHAN_LOAI_LOI', 'phieu', 't.phieu_san_xuat_id');
-  const params = []; const conds = [dkPain];
+  const params = []; const conds = [dkPain, 'k.tg_kcs IS NOT NULL', 't.tem_goc_id IS NULL',
+    `((t.sl_kcs_sua + t.sl_kcs_huy) > 0 OR pl.id IS NOT NULL)`];
   if (ngay) {
     params.push(ngay);
-    conds.push(`(pl.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $${params.length}::date`);
+    conds.push(`(k.tg_kcs AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $${params.length}::date`);
   }
+  // Điều kiện tình trạng CHỈ áp cho câu lấy dữ liệu; câu ĐẾM trả đủ 3 con số cho dải chip (đếm trên
+  // CÙNG ngày + ô tìm nhưng KHÔNG áp chính chip — quy ước chung của `ChipTabs`).
+  const dkTinhTrang = tinhTrang === 'CHUA' ? ' AND pl.id IS NULL' : tinhTrang === 'DA' ? ' AND pl.id IS NOT NULL' : '';
   if (search) {
     params.push(mauTim(timTem(search)));
     const i = params.length;
@@ -57,8 +69,13 @@ async function listTheoNgay({ ngay = '', search = '', page = 1, limit = 20 } = {
   const where = `WHERE ${conds.join(' AND ')}`;
   const off = (Math.max(1, page) - 1) * limit;
   params.push(limit, off);
+  // `id` = id TEM (khóa dòng); `created_date` = giờ PHÂN LOẠI (NULL = chưa phân loại) — giữ tên cột cũ
+  // để Excel / FE đang đọc không phải đổi.
+  const KCS_LAT = `LEFT JOIN LATERAL (SELECT max(kc.created_date) AS tg_kcs, count(*)::int AS so_lan_kcs
+      FROM kcs kc WHERE kc.tem_id = t.id) k ON true`;
   const sql = `
-    SELECT pl.id, pl.tem_id, pl.ghi_chu, pl.created_date, nd.ho_ten AS nguoi,
+    SELECT t.id, t.id AS tem_id, pl.id AS phieu_id, pl.ghi_chu, pl.created_date, nd.ho_ten AS nguoi,
+           k.tg_kcs, (pl.id IS NOT NULL) AS da_phan_loai,
            t.ma_tem, ${CHI_SO},
            ls.ma_lenh_san_xuat, cs.ten_chuyen,
            info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan,
@@ -66,19 +83,21 @@ async function listTheoNgay({ ngay = '', search = '', page = 1, limit = 20 } = {
            (SELECT count(*) FROM phan_loai_loi_ct ct WHERE ct.phan_loai_loi_id = pl.id) AS so_dong,
            (SELECT string_agg(DISTINCT ll.ten_loi, ', ') FROM phan_loai_loi_ct ct
               JOIN loai_loi ll ON ll.id = ct.loai_loi_id WHERE ct.phan_loai_loi_id = pl.id) AS cac_loi
-    FROM phan_loai_loi pl
-    JOIN tem t ON t.id = pl.tem_id
+    FROM tem t
+    ${KCS_LAT}
+    LEFT JOIN phan_loai_loi pl ON pl.tem_id = t.id
     JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
     JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
     LEFT JOIN chuyen_san_xuat cs ON cs.id = ps.chuyen_id
     LEFT JOIN nguoi_dung nd ON nd.id = pl.created_by
     ${INFO}
-    ${where}
-    ORDER BY pl.created_date DESC
+    ${where}${dkTinhTrang}
+    ORDER BY (pl.id IS NOT NULL), k.tg_kcs DESC
     LIMIT $${params.length - 1} OFFSET $${params.length}`;
   const countSql = `
-    SELECT count(*)::int AS total FROM phan_loai_loi pl
-    JOIN tem t ON t.id = pl.tem_id
+    SELECT count(*)::int AS tat_ca, count(*) FILTER (WHERE pl.id IS NULL)::int AS chua, count(*) FILTER (WHERE pl.id IS NOT NULL)::int AS da FROM tem t
+    ${KCS_LAT}
+    LEFT JOIN phan_loai_loi pl ON pl.tem_id = t.id
     JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
     JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
     ${INFO} ${where}`;
@@ -86,7 +105,9 @@ async function listTheoNgay({ ngay = '', search = '', page = 1, limit = 20 } = {
     query(sql.replace(/\s+/g, ' '), params),
     query(countSql.replace(/\s+/g, ' '), params.slice(0, params.length - 2)),
   ]);
-  return { rows: d.rows, total: c.rows[0].total };
+  const dem = c.rows[0];
+  const total = tinhTrang === 'CHUA' ? dem.chua : tinhTrang === 'DA' ? dem.da : dem.tat_ca;
+  return { rows: d.rows, total, dem: { '': dem.tat_ca, CHUA: dem.chua, DA: dem.da } };
 }
 
 // ─── Tra 1 TEM để mở SidePanel phân loại (quét mã vạch / gõ tay) ─────────────

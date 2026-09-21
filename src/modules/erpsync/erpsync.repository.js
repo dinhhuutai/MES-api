@@ -326,6 +326,71 @@ async function upsertDotVai(client, { maDotVai, phanInId, loaiDotVaiId, ngayVaiV
   return { id: rows[0].id, inserted: true };
 }
 
+// ─── CẬP NHẬT LẠI THEO CODE PHẦN + NGÀY (Hệ thống › Đồng bộ ERP, 21/09/2026) ────────────────────
+// Ảnh chụp hiện trạng các phần in theo mã — cho màn XEM TRƯỚC (chỉ đọc) và làm snapshot CŨ cho audit.
+// ⚠ Không lọc `dang_hoat_dong`: code phần đã xóa mềm vẫn phải thấy để người dùng biết vì sao.
+async function anhChupPhanInTheoMa(maPhans = []) {
+  if (!maPhans.length) return [];
+  const coSub = await coCotSubPhanIn({ query: (sql, p) => query(sql, p) });
+  const sql = `
+    SELECT pin.id, pin.ma_phan, pin.dang_hoat_dong, pin.ma_hang_id,
+           mh.ma_hang, dh.ma_don_hang, kh.ma_khach_hang, kh.ten_khach_hang,
+           pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.so_luong_don_hang, pin.tinh_chat_in,
+           pin.barcode, ${coSub ? 'pin.ddh_sub_id' : 'NULL::text AS ddh_sub_id'},
+           (SELECT h.phuong_an_in FROM hskt_phan_in hp JOIN ho_so_ky_thuat h ON h.id = hp.hskt_id
+             WHERE hp.phan_in_id = pin.id AND hp.dang_hoat_dong AND h.dang_hoat_dong
+             ORDER BY h.phien_ban DESC LIMIT 1) AS phuong_an_in,
+           (SELECT count(*) FROM dot_vai_ve d WHERE d.phan_in_id = pin.id AND d.trang_thai NOT IN ('DA_GOP','DA_HUY'))::int AS so_dot_vai,
+           (SELECT count(DISTINCT l.id) FROM dot_vai_ve d JOIN lenh_sx_dot_vai ld ON ld.dot_vai_ve_id = d.id
+              JOIN lenh_san_xuat l ON l.id = ld.lenh_san_xuat_id AND l.trang_thai <> 'HUY'
+             WHERE d.phan_in_id = pin.id)::int AS so_lenh,
+           (SELECT count(*) FROM dot_vai_ve d JOIN lenh_sx_dot_vai ld ON ld.dot_vai_ve_id = d.id
+              JOIN phieu_san_xuat ps ON ps.lenh_san_xuat_id = ld.lenh_san_xuat_id
+              JOIN tem t ON t.phieu_san_xuat_id = ps.id AND t.trang_thai <> 'HUY'
+             WHERE d.phan_in_id = pin.id)::int AS so_tem
+      FROM phan_in pin
+      JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+      JOIN don_hang dh ON dh.id = mh.don_hang_id
+      JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+     WHERE upper(pin.ma_phan) = ANY($1::text[])`;
+  const { rows } = await query(sql.replace(/\s+/g, ' '), [maPhans.map((m) => String(m).toUpperCase())]);
+  return rows;
+}
+
+// Mã đợt vải (khóa `ERP-<md5>`) nào ĐÃ có trong MES — để xem trước nói rõ dòng ERP nào sẽ tạo đợt mới.
+async function dotVaiDaCo(maDotVais = []) {
+  if (!maDotVais.length) return new Set();
+  const { rows } = await query('SELECT ma_dot_vai FROM dot_vai_ve WHERE ma_dot_vai = ANY($1::text[])', [maDotVais]);
+  return new Set(rows.map((r) => r.ma_dot_vai));
+}
+
+// GHI ĐÈ đơn hàng / mã hàng + quy cách của 1 phần in theo DÒNG ERP người dùng chọn.
+// ⚠⚠ CHỈ gọi từ chế độ "Cập nhật lại theo code phần" — job 5 phút TUYỆT ĐỐI KHÔNG đổi `ma_hang_id`
+//   (19 code phần có >1 đơn: job mà đổi thì phần in lật đơn qua lại mỗi 5 phút, đúng kiểu vòng lặp
+//   Pain 04/08/2026). `barcode` KHÔNG đụng ở đây — nó GỘP DỒN qua `upsertPhanIn` như thường lệ.
+// ⚠ Ghi audit `ERP_CAP_NHAT_CODE_PHAN` kèm snapshot CŨ đủ để hoàn tác bằng tay.
+async function ganLaiPhanIn(client, { maPhan, maHangId, mauVai, kichVai, kichPhim, soLuongDonHang, tinhChatIn, ddhSubId }, cu, moiHienThi, actorId) {
+  const coSub = await coCotSubPhanIn(client);
+  const p = [maPhan, maHangId, mauVai || null, kichVai || null, kichPhim || null, soLuongDonHang ?? null,
+    tinhChatIn || null, actorId || null];
+  if (coSub) p.push(ddhSubId || null);
+  const { rows } = await client.query(
+    `UPDATE phan_in SET ma_hang_id = $2, mau_vai = $3, kich_vai = $4, kich_phim = $5,
+            so_luong_don_hang = $6, tinh_chat_in = COALESCE($7, tinh_chat_in),
+            ${coSub ? 'ddh_sub_id = COALESCE($9, ddh_sub_id),' : ''}
+            updated_by = $8, updated_date = CURRENT_TIMESTAMP
+      WHERE ma_phan = $1 RETURNING id`.replace(/\s+/g, ' '),
+    p
+  );
+  if (!rows[0]) return null;
+  await client.query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_cu, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('phan_in', $1, 'ERP_CAP_NHAT_CODE_PHAN', $2::jsonb, $3::jsonb, $4, CURRENT_TIMESTAMP, $4)`,
+    [String(rows[0].id), JSON.stringify(cu || null), JSON.stringify(moiHienThi || null), actorId || null]
+  );
+  return rows[0].id;
+}
+
 // Tra id phần in theo ma_phan (để API chính thức biết code phần đã có từ -new chưa).
 async function findPhanInIdByMaPhan(maPhan) {
   const { rows } = await query('SELECT id FROM phan_in WHERE ma_phan = $1 LIMIT 1', [maPhan]);
@@ -385,6 +450,19 @@ async function readyCheckpointIds() {
 // `dotVaiIds` = đợt vải vừa kích hoạt lần tự động này — chỉ để ghi mã đợt vào ghi chú cho dễ truy vết.
 const GHI_CHU_TU_DONG = 'Hệ thống tự xác nhận — không qua kỹ thuật (ERP KTCankiemtra=0)';
 
+// Phần in còn đợt vải KHÁC (ngoài `boQua`) đang chờ ở READY (chưa release) mà CHƯA Ready?
+async function coDotKhacDangCho(pinId, boQua = []) {
+  const { qcDotSql } = require('../../utils/tech');
+  const { rows } = await query(
+    `SELECT EXISTS (SELECT 1 FROM dot_vai_ve zd WHERE zd.phan_in_id = $1 AND zd.trang_thai NOT IN ('DA_GOP','DA_HUY')
+       AND zd.tg_chuyen_ready IS NOT NULL AND NOT (zd.id = ANY($2::uuid[]))
+       AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai zl JOIN lenh_san_xuat zls ON zls.id = zl.lenh_san_xuat_id
+                        WHERE zl.dot_vai_ve_id = zd.id AND zls.trang_thai <> 'HUY')
+       AND NOT ${qcDotSql('zd', '$1::uuid')}) AS e`.replace(/\s+/g, ' '),
+    [pinId, boQua]);
+  return !!rows[0].e;
+}
+
 async function simulateReadyDone(pinId, dotVaiIds = []) {
   const cp = await readyCheckpointIds();
   const ids = ['KHUON', 'FILM', 'MUC', 'QC_XAC_NHAN'].map((m) => cp[m]).filter(Boolean);
@@ -410,6 +488,31 @@ async function simulateReadyDone(pinId, dotVaiIds = []) {
     const { rows } = await query("SELECT id FROM trang_thai WHERE ma_trang_thai = 'DAT' LIMIT 1");
     ttDat = rows[0] ? rows[0].id : null;
   } catch (e) { ttDat = null; }
+
+  // ⚠⚠⚠ THEO ĐỢT VẢI (sửa 21/09/2026 — lỗi người dùng báo): phần in A có đợt 1 (`KTCankiemtra=1`)
+  //   đang chờ kỹ thuật, hôm sau đợt 2 (`=0`) về ⇒ bản cũ ghi 4 dòng TỔNG với mốc now() ⇒ theo luật
+  //   mốc `qcDotSql`, đợt 1 (lên READY trước mốc) bị coi là "đã Ready" ⇒ BIẾN MẤT khỏi màn Kỹ thuật dù
+  //   chưa ai đụng tới. Nay: còn đợt KHÁC đang chờ chưa Ready ⇒ chỉ ghi dòng THEO ĐỢT (`ready_xac_nhan_dot`)
+  //   cho đúng các đợt vừa về; dòng tổng giữ nguyên. Không còn đợt nào khác ⇒ đi đường cũ.
+  if (dsDot.length && await coDotKhacDangCho(pinId, dsDot)) {
+    await withTransaction(async (client) => {
+      for (const cpId of ids) {
+        for (const dvId of dsDot) {
+          await client.query(
+            `INSERT INTO ready_xac_nhan_dot (phan_in_id, dot_vai_ve_id, checkpoint_id, trang_thai, nguoi_xac_nhan_id, tg_xac_nhan)
+             VALUES ($1,$2,$3,'DAT',NULL,now())
+             ON CONFLICT (dot_vai_ve_id, checkpoint_id) DO UPDATE SET trang_thai='DAT', nguoi_xac_nhan_id=NULL,
+               tg_xac_nhan=now(), updated_date=CURRENT_TIMESTAMP`.replace(/\s+/g, ' '),
+            [pinId, dvId, cpId]);
+        }
+      }
+      await client.query(
+        `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, thoi_gian)
+         VALUES ('phan_in', $1, 'TU_XAC_NHAN_READY_THEO_DOT', $2::jsonb, CURRENT_TIMESTAMP)`.replace(/\s+/g, ' '),
+        [String(pinId), JSON.stringify({ dot_vai_ids: dsDot, ghi_chu: ghiChu })]);
+    });
+    return;
+  }
 
   await withTransaction(async (client) => {
     for (const id of ids) {
@@ -777,6 +880,7 @@ module.exports = {
   createSyncLog, finishSyncLog, listSyncHistory, insertRawBatch, saveSyncRaw, getSyncRaw,
   upsertKhachHang, upsertDonHang, upsertMaHang, upsertPhanIn, setPhanInDryMin, getLoaiDotVaiId, upsertDotVai,
   findPhanInIdByMaPhan, promotePhanInToReady,
+  anhChupPhanInTheoMa, dotVaiDaCo, ganLaiPhanIn,
   readyCheckpointIds, simulateReadyDone, isPhanInReleased, canLamLaiReady, flagLamLaiReady,
   chiHuyQcReady, reopenReadyForPhanIn, setDotVaiKtCanKiemTra,
   upsertHsktForPin, eligibleDotVaiByIds, openSetByGhiChu,

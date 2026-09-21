@@ -216,6 +216,12 @@ async function guiPhieuGiao(payload, { giaoHangId = null, actorId = null } = {})
     user: catChuoi(payload.user, 20),
     DsTemGiao: catChuoi(payload.DsTemGiao, 4000),
   };
+  // ⚠⚠ TÊN DỰ PHÒNG CHO MÃ PHIẾU (21/09/2026): lỗi "@pID was not supplied" là do router ERP khai
+  //   `request.input('pIDPhieuGiao', …)` trong khi proc khai `@pID` (đã chứng minh bằng log 17–18/09:
+  //   MES gửi đủ `IDPhieuGiao`). Gửi kèm `ID` + `pID` cùng giá trị để bên ERP sửa router theo cách nào
+  //   (đọc `ID` hay `pID`) cũng nhận được ngay, MES không phải deploy lại. Khóa thừa router bỏ qua, vô hại.
+  body.ID = body.IDPhieuGiao;
+  body.pID = body.IDPhieuGiao;
   return goiErp('ERP_GUI_PHIEU_GIAO', {
     nhan: 'gui-erp-phieu-giao',
     url: env.erp.guiPhieuGiaoUrl,

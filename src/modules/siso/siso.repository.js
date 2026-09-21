@@ -6,6 +6,7 @@
 const { query } = require('../../config/db');
 const { mauTim } = require('../../utils/timKiem');
 const { MAN, LOAI_NGAY, O_SI_SO, VN } = require('../../utils/siSoTram');
+const { DO_SL } = require('../../utils/bangTheoDoi');
 
 // ⚠⚠ MỐC KỲ ĐẶT TRONG CTE `ky`, KHÔNG nội suy `$1`/`$2` thẳng vào từng điều kiện.
 //   Lý do (lỗi thật đã bắt): ô `ton_dau` chỉ dùng $1, ô `ton_cuoi` chỉ dùng $2 ⇒ tham số còn lại
@@ -198,4 +199,47 @@ async function tomTatTheoNgayGiao(maTrang, o, { tu, den, loc, locTrang, donVi })
   return rows;
 }
 
-module.exports = { demSiSo, chiTiet, nguon, chonDonVi, tomTatTheoNgayGiao };
+// ─── BẢNG THEO DÕI 10 CHECKPOINT (Dashboard → Tổng quan, 20/09/2026) ─────────
+// Luật + danh mục dòng + biểu thức SL: `utils/bangTheoDoi.js`.
+
+// SLA của workflow HIỆN HÀNH (trạm + checklist) — 1 lượt query cho cả bảng.
+// ⚠ Gương y hệt `thoigiantram.repository.dsSla()`: 2 trang phải nói CÙNG một con số "nghẽn".
+async function dsSlaHienHanh() {
+  const { rows } = await query(
+    `SELECT 'TRAM' AS cap, t.ma_tram AS ma, t.thoi_gian_quy_dinh_phut AS sla
+       FROM tram t JOIN workflow_version v ON v.id = t.workflow_version_id AND v.la_hien_hanh
+     UNION ALL
+     SELECT 'CHECKPOINT', cp.ma_checkpoint, cp.thoi_gian_quy_dinh_phut
+       FROM checkpoint cp JOIN tram t ON t.id = cp.tram_id
+       JOIN workflow_version v ON v.id = t.workflow_version_id AND v.la_hien_hanh
+      WHERE cp.dang_hoat_dong`.replace(/\s+/g, ' ')
+  );
+  return rows;
+}
+
+// Một dòng của bảng: 5 cụm × (Phần + SL) trong MỘT lượt query.
+// ⚠⚠ NGHẼN = đối tượng **đang TỒN CUỐI** và đã ở trạm quá SLA ⇒ nghẽn LUÔN là tập con của Tồn cuối
+//   (nên %nghẽn chia cho Tồn cuối mới có nghĩa). Mốc đo là `LEAST(cuối kỳ, bây giờ)`: xem ngày quá
+//   khứ thì tính tới cuối ngày đó, xem hôm nay thì tính tới bây giờ — KHÔNG lấy `now()` trần, nếu
+//   không mọi thứ tồn từ tháng trước đều "nghẽn" khi soi lại một ngày cũ.
+// ⚠ SLA null (trạm chưa cấu hình) ⇒ `false` ⇒ nghẽn = 0, KHÔNG đoán bừa một ngưỡng.
+async function motDongBang(dong, slaPhut, { tu, den }) {
+  const m = nguon(dong.man);
+  const sqlPin = m.donVis.pin.sql;             // cột "Phần" LUÔN đếm theo PHẦN IN ở cả 10 dòng
+  const slSql = DO_SL[dong.sl].sql;
+  const dkNghen = slaPhut == null ? 'false'
+    : `(${dkO('ton_cuoi')}) AND EXTRACT(EPOCH FROM (LEAST((SELECT den FROM ky), now()) - q.tg_vao)) / 60 > ${Number(slaPhut)}`;
+  const cum = (ten, dk) => `count(*) FILTER (WHERE ${dk})::int AS ${ten}_phan,
+    COALESCE(sum(${slSql}) FILTER (WHERE ${dk}), 0)::int AS ${ten}_sl`;
+  const sql = `WITH ${CTE_KY}, q AS (${sqlPin}) SELECT
+      ${cum('ton_dau', dkO('ton_dau'))}, ${cum('nhan', dkO('nhan'))},
+      ${cum('xong', dkO('lam_duoc'))}, ${cum('ton_cuoi', dkO('ton_cuoi'))},
+      ${cum('nghen', dkNghen)}
+    FROM q WHERE ${NEN}`;
+  const { rows } = await query(sql.replace(/\s+/g, ' '), [tu, den]);
+  return rows[0] || {};
+}
+
+module.exports = {
+  demSiSo, chiTiet, nguon, chonDonVi, tomTatTheoNgayGiao, dsSlaHienHanh, motDongBang,
+};

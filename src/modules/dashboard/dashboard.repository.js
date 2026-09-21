@@ -223,7 +223,7 @@ async function stageCounts() {
         AND EXISTS (SELECT 1 FROM dot_vai_ve dr WHERE dr.phan_in_id=pi.id AND dr.trang_thai NOT IN ('DA_GOP','DA_HUY') AND dr.tg_chuyen_ready IS NOT NULL)
     ),
     dvs AS (
-      SELECT d.phan_in_id, d.tg_chuyen_ready, d.created_date, ${lenh('id')} AS lenh_id, ${lenh('trang_thai')} AS lenh_tt
+      SELECT d.id, d.phan_in_id, d.tg_chuyen_ready, d.created_date, ${lenh('id')} AS lenh_id, ${lenh('trang_thai')} AS lenh_tt
       FROM dot_vai_ve d JOIN pin_active p ON p.phan_in_id = d.phan_in_id
       WHERE d.trang_thai NOT IN ('DA_GOP','DA_HUY') AND d.tg_chuyen_ready IS NOT NULL
     ),

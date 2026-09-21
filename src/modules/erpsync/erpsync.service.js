@@ -295,24 +295,31 @@ async function autoGomSetByHskt(barcodeHskt, inset, dotVaiIds, actorId) {
 // Đồng bộ ERP (MỘT API duy nhất `/phieu-nhan-vai-60`): mọi đợt vải hợp lệ vào THẲNG READY,
 // rồi cờ `KTCankiemtra` quyết định ở lại READY (=1) hay giả lập KT xong để đi thẳng Release 1 (=0).
 // (Luồng 2 API "lấy trước" đã BỎ — không còn trạng thái "chờ chuyển READY".)
-async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = false }) {
+// ⚠ 3 tham số tùy chọn cho chế độ "Cập nhật lại theo code phần" (21/09/2026) — KHÔNG truyền ⇒ job 5
+//   phút và nút "Đồng bộ ngay" chạy Y NHƯ CŨ:
+//   · `duLieu`      {data, rawText} đã tải sẵn ở bước Xem trước ⇒ khỏi gọi lại ERP (proc rất nặng).
+//   · `chiCodePhan` Set mã code phần (viết HOA) ⇒ chỉ xử lý dòng thuộc tập này.
+//   · `ghiDe`       Map mã → dòng ERP người dùng CHỌN ⇒ gán lại đơn/mã hàng của phần in theo dòng đó.
+async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = false, duLieu = null, chiCodePhan = null, ghiDe = null }) {
   const from = fromDate || defaultFrom();
   const logId = await repo.createSyncLog({ nguon, fromDate: from, tuDong }, actorId);
   try {
-    const { data: rows, rawText } = await fetchErp(baseUrl, from);
+    const { data: rows, rawText } = duLieu || await fetchErp(baseUrl, from);
 
     try { await repo.saveSyncRaw(logId, rawText); }
     catch (e) { console.error(`[erp-sync] ✗ Lưu chuỗi thô lỗi: ${e.message}`); }
 
     // Lọc dòng: bỏ khi thiếu code_part, loaikd ngoài {3I,5I}, hoặc tính chất in ngoài phạm vi. (Không lọc khách.)
     const seen = new Map();
+    // ⚠ `buildKeys` chạy trên TOÀN BỘ dòng rồi mới lọc phạm vi: khóa đợt vải phụ thuộc thứ tự xuất hiện
+    //   trong nhóm trùng, lọc trước là có thể lệch khóa với lần job chạy ⇒ đẻ đợt vải trùng.
     const prepared = rows.map((r) => {
       const noCode = !clean(r.code_part);
       const isBoLoai = !LAY_LOAIKD.has(clean(r.loaikd).toUpperCase());
       const isBoTcin = BO_TINH_CHAT_IN.has(normTcin(erpTinhChatIn(r)));
       const { maPhan, maDotVai } = buildKeys(r, seen);
       return { r, maPhan, maDotVai, skip: noCode || isBoLoai || isBoTcin, noCode, isBoLoai, isBoTcin };
-    });
+    }).filter((p) => !chiCodePhan || chiCodePhan.has(clean(p.r.code_part).toUpperCase()));
 
     try {
       await repo.insertRawBatch(logId, prepared.map((p) => ({
@@ -404,6 +411,15 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
         }
       }
     }
+    // GHI ĐÈ đơn/mã hàng theo dòng người dùng chọn — chạy SAU vòng upsert (mỗi `upsertPhanIn` đè
+    // màu/kích bằng dòng xử lý sau cùng, nên phải chốt lại theo dòng được chọn ở bước cuối).
+    const daGhiDe = [];
+    if (ghiDe) {
+      for (const [ma, r] of ghiDe) {
+        try { daGhiDe.push(await ganLaiTheoDong(ma, r, actorId)); }
+        catch (e) { errors.push(`Ghi đè ${ma}: ${e.message}`); }
+      }
+    }
     // Đợt vào READY → theo dõi dòng chảy.
     if (newDotVaiIds.length) await tracking.moveDotVaiTo(newDotVaiIds, 'READY', actorId);
     // Auto gom set từ ERP: Inset≠0 & CÙNG BarcodeHKT có ≥2 phần in → gom (idempotent theo ghi_chu).
@@ -427,16 +443,20 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
     if (soBoLoai) notes.push(`bỏ qua ${soBoLoai} dòng loaikd ngoài ${[...LAY_LOAIKD].join('/')}`);
     if (soBoTcin) notes.push(`bỏ qua ${soBoTcin} dòng tính chất in ngoài phạm vi`);
     if (soDoiPain) notes.push(`đổi phương án in theo sản lượng: ${soDoiPain} HSKT`);
+    if (daGhiDe.length) notes.push(`gán lại đơn/mã hàng: ${daGhiDe.filter((x) => x && x.doi).length}/${daGhiDe.length} phần in`);
     if (errors.length) notes.push(`lỗi ${errors.length}/${rows.length}: ${errors.slice(0, 3).join(' | ')}`);
     await repo.finishSyncLog(logId, {
       tong: rows.length, soMoi, soCapNhat, soLoi: errors.length, trangThai,
       thongDiep: notes.length ? notes.join(' · ') : null,
     });
-    if (soMoi + soCapNhat > 0) {
+    if (soMoi + soCapNhat > 0 || daGhiDe.length) {
       sockets.emit('order:updated', { source: 'erp' });
       sockets.emit('dashboard:refresh', {});
     }
-    return { logId, tong: rows.length, soMoi, soCapNhat, soBoQua, soLoi: errors.length, trangThai };
+    return {
+      logId, tong: rows.length, soMoi, soCapNhat, soBoQua, soLoi: errors.length, trangThai,
+      ...(ghiDe ? { ghi_de: daGhiDe, loi: errors.slice(0, 10) } : {}),
+    };
   } catch (e) {
     await repo.finishSyncLog(logId, { tong: 0, soMoi: 0, soCapNhat: 0, soLoi: 0, trangThai: 'LOI', thongDiep: e.message });
     throw e;
@@ -469,4 +489,177 @@ async function rawData(logId) {
   return { chuoi_tho: text || null };
 }
 
-module.exports = { syncPhieuNhanVai, history, rawData, autoGomSetByHskt };
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+// CẬP NHẬT LẠI DỮ LIỆU THEO CODE PHẦN + NGÀY TỪ ERP (Hệ thống › Đồng bộ ERP, 21/09/2026)
+//
+// Vì sao: `upsertPhanIn` KHÔNG BAO GIỜ đổi `ma_hang_id` ⇒ phần in giữ mãi đơn/mã hàng của dòng ERP
+//   ĐẦU TIÊN. Đo prod 20/09: 19 code phần có >1 `order_name` (vd `DK-2609-008-A01-F03-C01`: đơn
+//   FW-2728-F1 vào trước ↔ 2605-206-F1) ⇒ MES gắn nhầm đơn mà không có đường nào sửa.
+// Luồng 2 bước BẮT BUỘC: XEM TRƯỚC (gọi ERP, CHỈ ĐỌC) → người dùng CHỌN dòng ERP làm chuẩn cho mỗi
+//   code phần → CẬP NHẬT (tái dùng NGUYÊN `runSync` — HSKT · KTCankiemtra · gom set · luật sản lượng ·
+//   raw · sync log — rồi gán lại đơn/mã hàng theo dòng đã chọn).
+// ⚠ GIỚI HẠN MÔ HÌNH (báo trên màn): `phan_in.ma_phan` UNIQUE ⇒ 1 code phần chỉ có 1 phần in thuộc
+//   1 đơn; đợt vải của dòng ERP thuộc đơn KIA vẫn nằm trong phần in này.
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+const XEM_TRUOC = new Map();                 // token → { ts, actorId, fromDate, codes, duLieu, dong }
+const TTL_XEM_TRUOC_MS = 30 * 60 * 1000;
+const MAX_CODE_PHAN = 50;
+const tachCodes = (v) => [...new Set((Array.isArray(v) ? v : String(v || '').split(/[,;\r\n]+/))
+  .map((x) => clean(x).toUpperCase()).filter(Boolean))];
+const donDepXemTruoc = () => {
+  const han = Date.now() - TTL_XEM_TRUOC_MS;
+  for (const [k, v] of XEM_TRUOC) if (v.ts < han) XEM_TRUOC.delete(k);
+};
+
+// Mô tả 1 dòng ERP cho màn xem trước (không trả nguyên payload — gọn + đủ để người dùng chọn).
+function moTaDongErp(p, daCo) {
+  const r = p.r;
+  return {
+    key: p.maDotVai,
+    da_co_trong_mes: daCo.has(p.maDotVai),
+    bo_qua: p.skip,
+    ly_do_bo_qua: p.noCode ? 'Không có code_part' : p.isBoLoai ? `loaikd ${clean(r.loaikd) || '—'} ngoài 3I/5I/6I`
+      : p.isBoTcin ? `Tính chất in ${erpTinhChatIn(r)} ngoài phạm vi` : null,
+    khach: clean(r.customer_name), don_hang: clean(r.order_name), ma_hang: clean(r.item_name),
+    ddh_id: erpDdhId(r), ddh_sub_id: erpDdhSubId(r), pain: erpPain(r), loaikd: clean(r.loaikd) || null,
+    so_luong: r.received_qty ?? null, so_luong_don_hang: r.order_qty ?? null,
+    ngay_nhan_vai: erpNgayVaiVe(r), han_giao: toDate(r.due_date),
+    mau_vai: clean(r.fabric_color), kich_vai: clean(r.fabric_size), kich_phim: clean(r.film_size),
+    tinh_chat_in: erpTinhChatIn(r), barcode_phan_in: erpBarcodePhanIn(r) || null,
+    kt_can_kiem_tra: erpKtCanKiemTra(r), tao_luc: r.created_date || r.erp_datetime || null,
+  };
+}
+
+async function xemTruocCodePhan({ codeParts, ngay } = {}, actorId) {
+  const codes = tachCodes(codeParts);
+  if (!codes.length) throw new AppError('Nhập ít nhất 1 code phần', { status: 422, errorCode: 'NO_CODE' });
+  if (codes.length > MAX_CODE_PHAN) {
+    throw new AppError(`Tối đa ${MAX_CODE_PHAN} code phần mỗi lần`, { status: 422, errorCode: 'QUA_NHIEU' });
+  }
+  const d = clean(ngay);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || Number.isNaN(new Date(`${d}T00:00:00`).getTime())) {
+    throw new AppError('Ngày không hợp lệ (YYYY-MM-DD)', { status: 422, errorCode: 'NGAY_SAI' });
+  }
+  if (!(await apiBat('ERP_DONG_BO_VAI'))) {
+    throw new AppError('Đồng bộ đợt vải từ ERP đang TẮT — bật lại ở Hệ thống > Cài đặt API.',
+      { status: 409, errorCode: 'API_DANG_TAT' });
+  }
+  // ERP trả dữ liệu TỪ ngày đó TỚI HIỆN TẠI (cùng tham số `fromDate` job dùng).
+  const fromDate = `${d}T00:00:00`;
+  const duLieu = await fetchErp(env.erp.phieuNhanVaiUrl, fromDate);
+
+  const tapCode = new Set(codes);
+  const seen = new Map();
+  const tatCa = duLieu.data.map((r) => {
+    const { maPhan, maDotVai } = buildKeys(r, seen);
+    return {
+      r, maPhan, maDotVai,
+      noCode: !clean(r.code_part),
+      isBoLoai: !LAY_LOAIKD.has(clean(r.loaikd).toUpperCase()),
+      isBoTcin: BO_TINH_CHAT_IN.has(normTcin(erpTinhChatIn(r))),
+    };
+  }).map((p) => ({ ...p, skip: p.noCode || p.isBoLoai || p.isBoTcin }))
+    .filter((p) => tapCode.has(clean(p.r.code_part).toUpperCase()));
+
+  const [hienTai, daCo] = await Promise.all([
+    repo.anhChupPhanInTheoMa(codes),
+    repo.dotVaiDaCo(tatCa.map((p) => p.maDotVai)),
+  ]);
+  const htTheoMa = new Map(hienTai.map((h) => [String(h.ma_phan).toUpperCase(), h]));
+
+  const dong = new Map();                    // khóa dòng → dòng ERP gốc (để bước Cập nhật dùng lại)
+  const items = codes.map((ma) => {
+    const ps = tatCa.filter((p) => clean(p.r.code_part).toUpperCase() === ma);
+    ps.forEach((p) => dong.set(p.maDotVai, { ma, r: p.r, skip: p.skip }));
+    const erp = ps.map((p) => moTaDongErp(p, daCo));
+    const dung = erp.filter((x) => !x.bo_qua);
+    // Mặc định chọn dòng MỚI NHẤT (ngày nhận vải, rồi mốc tạo bên ERP) — người dùng đổi được.
+    const macDinh = [...dung].sort((a, b) => String(b.ngay_nhan_vai || '').localeCompare(String(a.ngay_nhan_vai || ''))
+      || String(b.tao_luc || '').localeCompare(String(a.tao_luc || '')))[0];
+    const ht = htTheoMa.get(ma) || null;
+    const soDon = new Set(dung.map((x) => x.don_hang)).size;
+    const canhBao = [];
+    if (!erp.length) canhBao.push('ERP không có dữ liệu cho code phần này từ ngày đã chọn');
+    else if (!dung.length) canhBao.push('Mọi dòng ERP đều bị bỏ qua (loaikd / tính chất in ngoài phạm vi)');
+    if (soDon > 1) canhBao.push(`ERP có ${soDon} ĐƠN HÀNG khác nhau cho code phần này — chọn đúng dòng làm chuẩn`);
+    if (ht && (ht.so_lenh > 0 || ht.so_tem > 0)) {
+      canhBao.push(`Phần in đã có ${ht.so_lenh} lệnh SX / ${ht.so_tem} tem — đổi đơn hàng thì báo cáo cũ sẽ hiện theo đơn MỚI`);
+    }
+    if (ht && !ht.dang_hoat_dong) canhBao.push('Phần in đang bị HỦY (xóa mềm) trong MES');
+    if (!ht && dung.length) canhBao.push('Chưa có trong MES — cập nhật sẽ TẠO MỚI phần in + đợt vải');
+    return { code: ma, hien_tai: ht, dong_erp: erp, chon_mac_dinh: macDinh ? macDinh.key : null, canh_bao: canhBao };
+  });
+
+  donDepXemTruoc();
+  const token = crypto.randomUUID();
+  XEM_TRUOC.set(token, { ts: Date.now(), actorId, fromDate, codes, duLieu, dong });
+  return {
+    token, ngay: d, from_date: fromDate, tong_erp: duLieu.data.length,
+    items, het_han_phut: TTL_XEM_TRUOC_MS / 60000,
+  };
+}
+
+// Gán lại 1 phần in theo dòng ERP đã chọn — upsert khách/đơn/mã hàng Y HỆT `processRow`, rồi đổi
+// `ma_hang_id` + quy cách. Trả { ma, doi, cu, moi }.
+async function ganLaiTheoDong(ma, r, actorId) {
+  const [cu] = await repo.anhChupPhanInTheoMa([ma]);
+  if (!cu) return { ma, doi: false, ly_do: 'Phần in chưa có trong MES' };
+  const moi = {
+    khach: clean(r.customer_name), don_hang: clean(r.order_name), ma_hang: clean(r.item_name),
+    mau_vai: clean(r.fabric_color), kich_vai: clean(r.fabric_size), kich_phim: clean(r.film_size),
+    so_luong_don_hang: r.order_qty ?? null, tinh_chat_in: erpTinhChatIn(r), ddh_sub_id: erpDdhSubId(r),
+  };
+  const cuGon = {
+    ma_hang_id: cu.ma_hang_id, khach: cu.ma_khach_hang, don_hang: cu.ma_don_hang, ma_hang: cu.ma_hang,
+    mau_vai: cu.mau_vai, kich_vai: cu.kich_vai, kich_phim: cu.kich_phim,
+    so_luong_don_hang: cu.so_luong_don_hang, tinh_chat_in: cu.tinh_chat_in, ddh_sub_id: cu.ddh_sub_id,
+  };
+  await withTransaction(async (client) => {
+    const khId = await repo.upsertKhachHang(client, { ma: moi.khach, ten: moi.khach });
+    const donId = await repo.upsertDonHang(client, {
+      maDon: moi.don_hang, khachHangId: khId, ddhId: erpDdhId(r), boPhanBh: erpBoPhanBh(r),
+    });
+    const mhId = await repo.upsertMaHang(client, { donHangId: donId, maHang: moi.ma_hang, tenMaHang: moi.ma_hang });
+    await repo.ganLaiPhanIn(client, {
+      maPhan: cu.ma_phan, maHangId: mhId, mauVai: moi.mau_vai, kichVai: moi.kich_vai, kichPhim: moi.kich_phim,
+      soLuongDonHang: moi.so_luong_don_hang, tinhChatIn: moi.tinh_chat_in, ddhSubId: moi.ddh_sub_id,
+    }, cuGon, { ...moi, ma_hang_id: mhId }, actorId);
+  });
+  const doi = cuGon.don_hang !== moi.don_hang || cuGon.ma_hang !== moi.ma_hang || cuGon.khach !== moi.khach;
+  return { ma, doi, cu: cuGon, moi };
+}
+
+// Bước 2: CẬP NHẬT theo lựa chọn ở bước Xem trước. `chon` = { [codePhan]: khóa dòng ERP }.
+async function capNhatCodePhan({ token, chon } = {}, actorId) {
+  donDepXemTruoc();
+  const xt = XEM_TRUOC.get(String(token || ''));
+  if (!xt) {
+    throw new AppError('Phiên xem trước đã hết hạn (hoặc máy chủ vừa khởi động lại) — bấm Xem trước lại',
+      { status: 409, errorCode: 'HET_HAN' });
+  }
+  if (xt.actorId && actorId && xt.actorId !== actorId) {
+    throw new AppError('Phiên xem trước thuộc người khác', { status: 403, errorCode: 'KHAC_NGUOI' });
+  }
+  const ghiDe = new Map();
+  for (const [ma0, key] of Object.entries(chon || {})) {
+    const ma = clean(ma0).toUpperCase();
+    const d = xt.dong.get(String(key));
+    if (!d || d.ma !== ma) {
+      throw new AppError(`Dòng ERP đã chọn không thuộc code phần ${ma}`, { status: 422, errorCode: 'DONG_LA' });
+    }
+    if (d.skip) throw new AppError(`Dòng ERP đã chọn cho ${ma} là dòng bị bỏ qua`, { status: 422, errorCode: 'DONG_BO_QUA' });
+    ghiDe.set(ma, d.r);
+  }
+  const kq = await runSync({
+    baseUrl: env.erp.phieuNhanVaiUrl, nguon: 'cap_nhat_code_phan', fromDate: xt.fromDate, actorId,
+    duLieu: xt.duLieu, chiCodePhan: new Set(xt.codes), ghiDe,
+  });
+  XEM_TRUOC.delete(String(token));
+  return kq;
+}
+
+module.exports = {
+  syncPhieuNhanVai, history, rawData, autoGomSetByHskt, xemTruocCodePhan, capNhatCodePhan,
+  // export để kiểm thực
+  _runSync: runSync, _XEM_TRUOC: XEM_TRUOC,
+};

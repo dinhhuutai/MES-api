@@ -117,13 +117,63 @@ function chuanHoa(row = {}) {
   return out;
 }
 
-async function goiMotLan(body) {
-  const url = env.erp.ghiInTemUrl;
+// ⚠⚠ CÙNG 20 TRƯỜNG, NHIỀU PROC (21/09/2026): proc `MES_spr_MES2SK6` (SỬA ĐẠT tem 17) nhận ĐÚNG bộ
+//   tham số của `ghi-in-tem` (người dùng chốt) ⇒ tham số hóa hàm này thay vì chép ra file thứ hai —
+//   chép là sớm muộn 2 bên lệch luật cắt độ dài / luật `null` cho 3 trường ngày.
+//   Khai kênh mới = thêm 1 dòng vào `KENH`.
+const KENH = {
+  ERP_GHI_IN_TEM: {
+    nhan: 'ghi-in-tem',
+    url: () => env.erp.ghiInTemUrl,
+    timeoutMs: () => env.erp.ghiInTemTimeoutMs,
+    retry: () => env.erp.ghiInTemRetry,
+  },
+  ERP_GUI_SUA_DAT: {
+    nhan: 'gui-sua-dat',
+    url: () => env.erp.guiSuaDatUrl,
+    timeoutMs: () => env.erp.guiSuaDatTimeoutMs,
+    retry: () => env.erp.guiSuaDatRetry,
+  },
+};
+
+// Dựng 20 trường từ 1 dòng `production.repository.duLieuGhiInTem` — DÙNG CHUNG cho tem 15
+// (`production.service.guiGhiInTem`) và tem 17 (`quality/suaDatErp`). Viết 2 bản là 2 bên lệch luật.
+//   `soLuong` truyền vào khi SL cần báo ≠ SL tem (gia công: báo ĐẠT; sửa đạt: báo SL của LƯỢT).
+function taoPayload(r, { idMes, soLuong = null, soLuongHuy = 0, soLuongThieu = 0 } = {}) {
+  const laBoSung = r.la_bo_sung === true;
+  return {
+    IDMES: idMes,
+    Ngayct: r.ngay_ct,
+    Ngayca: r.ma_ngay_ca,
+    Tugio: r.tu_gio,
+    Dengio: r.den_gio,
+    Chuyentruong: r.chuyen_truong,
+    Catruong: r.ca_truong,
+    dsthoin: r.tho_in,
+    // TỔ IN (mig 084) — chưa gán / chưa chạy migration ⇒ `chuanHoa` đổi thành ''.
+    Toin: r.ma_to,
+    banin: r.ma_chuyen,
+    IDDotNhanvai: r.id_dot_nhan_vai,
+    DDHID: r.ddh_id,
+    DDHsubID: r.ddh_sub_id,
+    BarcodeIn: r.ma_tem,
+    // Chỉ điền khi đợt vải THẬT SỰ là loại BỔ SUNG; ngược lại gửi giá trị RỖNG ĐÚNG KIỂU.
+    inbosung: laBoSung ? 1 : 0,
+    Lenhbosung: laBoSung ? r.ma_lenh_san_xuat : '',
+    Soluong: soLuong != null ? Number(soLuong) || 0 : r.so_luong,
+    Soluongloi: Number(soLuongHuy) || 0,
+    SOLUONGTHIEU: Number(soLuongThieu) || 0,
+    GCMauvai: r.gc_mau_vai,
+  };
+}
+
+async function goiMotLan(body, k = KENH.ERP_GHI_IN_TEM) {
+  const url = k.url();
   // ⚠ LOG CẢ URL: bài học 2026-08-11 (gọi nhầm host LAN) mất rất lâu mới tìm ra vì thông điệp lỗi
   //   chỉ ghi "timeout" mà không nói đang gọi ĐI ĐÂU.
-  console.log(`[ghi-in-tem] → POST ${url} (IDMES ${body.IDMES}, tem ${body.BarcodeIn})`);
+  console.log(`[${k.nhan}] → POST ${url} (IDMES ${body.IDMES}, tem ${body.BarcodeIn})`);
   const res = await axios.post(url, body, {
-    timeout: env.erp.ghiInTemTimeoutMs,
+    timeout: k.timeoutMs(),
     headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...(env.erp.apiHeaders || {}) },
     proxy: erpProxy(),
     validateStatus: () => true,
@@ -161,7 +211,7 @@ async function goiMotLan(body) {
   //   ra log khi khác 0. CỐ Ý KHÔNG ném lỗi ở đây — chưa rõ bảng mã của proc, ném bừa sẽ chặn in tem
   //   vì một mã có thể hoàn toàn bình thường.
   if (data && data.returnValue != null && Number(data.returnValue) !== 0) {
-    console.warn(`[ghi-in-tem] ⚠ ERP nhận nhưng proc trả returnValue=${data.returnValue}`
+    console.warn(`[${k.nhan}] ⚠ ERP nhận nhưng proc trả returnValue=${data.returnValue}`
       + ` (IDMES ${body.IDMES}, tem ${body.BarcodeIn}) — kiểm tra ở Hệ thống > Cài đặt API > Lịch sử`);
   }
   return data || {};
@@ -181,34 +231,36 @@ function erpProxy() {
 }
 
 // Gửi 1 bản ghi. KHÔNG NÉM LỖI — luôn trả { ok, body, data? , error? }.
-async function ghiInTem(row) {
+// `maApi` = kênh trong `KENH` (mặc định `ERP_GHI_IN_TEM` ⇒ mọi call-site cũ không đổi).
+async function ghiInTem(row, { maApi = 'ERP_GHI_IN_TEM' } = {}) {
+  const k = KENH[maApi] || KENH.ERP_GHI_IN_TEM;
   const body = chuanHoa(row);
   // Tắt ở Hệ thống > Cài đặt API (mig 083); chưa có dòng cấu hình thì lấy mặc định `.env`.
-  if (!(await apiBat('ERP_GHI_IN_TEM'))) {
-    console.log(`[ghi-in-tem] ⏸ ĐANG TẮT (Hệ thống > Cài đặt API) — bỏ qua tem ${body.BarcodeIn}`);
+  if (!(await apiBat(maApi))) {
+    console.log(`[${k.nhan}] ⏸ ĐANG TẮT (Hệ thống > Cài đặt API) — bỏ qua tem ${body.BarcodeIn}`);
     return { ok: false, bo_qua: true, body };
   }
-  const soLan = Math.max(1, env.erp.ghiInTemRetry);
+  const soLan = Math.max(1, k.retry());
   let loiCuoi;
   for (let i = 1; i <= soLan; i += 1) {
     try {
-      const data = await goiMotLan(body);
-      console.log(`[ghi-in-tem] ✓ Đã báo ERP (IDMES ${body.IDMES}, tem ${body.BarcodeIn})`);
+      const data = await goiMotLan(body, k);
+      console.log(`[${k.nhan}] ✓ Đã báo ERP (IDMES ${body.IDMES}, tem ${body.BarcodeIn})`);
       return { ok: true, body, data };
     } catch (e) {
       loiCuoi = e;
       if (i < soLan) {
         const cho = 1000 * i; // 1s, 2s, 3s...
-        console.warn(`[ghi-in-tem] ⟳ Báo ERP lỗi (lần ${i}/${soLan}), thử lại sau ${cho / 1000}s: ${e.message}`);
+        console.warn(`[${k.nhan}] ⟳ Báo ERP lỗi (lần ${i}/${soLan}), thử lại sau ${cho / 1000}s: ${e.message}`);
         await sleep(cho);
       }
     }
   }
-  const error = `${loiCuoi && loiCuoi.message} (${env.erp.ghiInTemUrl})`;
-  console.error(`[ghi-in-tem] ✗ Không báo được ERP sau ${soLan} lần — tem ${body.BarcodeIn}: ${error}`);
+  const error = `${loiCuoi && loiCuoi.message} (${k.url()})`;
+  console.error(`[${k.nhan}] ✗ Không báo được ERP sau ${soLan} lần — tem ${body.BarcodeIn}: ${error}`);
   // ⚠ TRẢ CẢ `data` Ở NHÁNH LỖI: phản hồi nguyên văn của ERP (nếu có) được `goiMotLan` đính vào lỗi.
   //   Lỗi mạng/timeout thì không có gì để trả → `null`, đúng bản chất "chưa tới được ERP".
   return { ok: false, body, error, data: (loiCuoi && loiCuoi.phanHoi) || null };
 }
 
-module.exports = { ghiInTem, chuanHoa, THU_TU_TRUONG, DAI_TOI_DA };
+module.exports = { ghiInTem, chuanHoa, taoPayload, THU_TU_TRUONG, DAI_TOI_DA, KENH };

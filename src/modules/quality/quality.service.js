@@ -11,6 +11,7 @@ const { caFromParts } = require('../../utils/ca');
 // Dùng để đặt `ma_tem` cho TEM CON nhãn 17 (mig 091).
 const { temCode } = require('../../utils/temPrefix');
 const { layBarcodeTem17 } = require('../../utils/erpTemBarcode');
+const suaDatErp = require('./suaDatErp');
 
 const num = (x) => Math.max(0, Number(x) || 0);
 
@@ -340,6 +341,7 @@ async function recordSua(temId, body, actorId) {
 
   let temConId = null;
   let maTemCon = null;
+  let suaId = null;
   await withTransaction(async (client) => {
     // ⚠⚠ TÁCH PHẦN SỬA ĐẠT RA **TEM CON** (nhãn 17 — mig 091). Trước đây tem 17 chỉ là phần
     //   `con_oqc_sua` ẩn trong chính tem gốc, mã `17…` do FE ghép lúc hiện/in ⇒ không truy được
@@ -371,7 +373,7 @@ async function recordSua(temId, body, actorId) {
     }
     // ⚠ `insertSua` ĐẶT SAU khi có `temConId` để neo lượt sửa ↔ đúng tem con của nó (mig 100) —
     //   thiếu neo thì hủy xác nhận Sửa không biết trừ ngược vào tem con nào.
-    await repo.insertSua(client, temId,
+    suaId = await repo.insertSua(client, temId,
       { soLuongSua: total, soLuongSuaDat: suaDat, soLuongSuaHuy: suaHuy, ghiChu, temConId }, actorId);
     // Sửa đạt → quay lại pool OQC; sửa hủy → hủy.
     await repo.addSuaLedger(client, temId, { dat: suaDat, huy: suaHuy }, actorId);
@@ -380,6 +382,9 @@ async function recordSua(temId, body, actorId) {
   });
   await tracking.moveByTem(temId, 'SUA', actorId);
   await repo.resolveReturns('OQC_SUA', temId); // Sửa làm lại xong → tắt cờ "bị OQC trả về"
+  // Báo ERP lượt SỬA ĐẠT (proc MES_spr_MES2SK6) — NGẦM, đúng 1 lần/lượt; lượt chỉ có hủy thì không
+  // có tem 17 nên không gửi. Xem `suaDatErp.js`.
+  if (suaDat > 0 && suaId) suaDatErp.guiNgam(suaId, actorId);
   sockets.emit('quality:updated', { temId, stage: 'SUA' });
   sockets.emit('dashboard:refresh', {});
   return {
@@ -739,7 +744,37 @@ async function temHanhTrinh(temId) {
 
 // ----- Danh sách "đã hoàn thành" theo ngày (cho DonePanel bên trái) -----
 async function kcsDone(date) { return repo.temDoneByDate('kcs', date); }
-async function suaDone(date) { return repo.temDoneByDate('sua', date); }
+// Kèm trạng thái gửi ERP sửa đạt (`erp_sua_dat`: 'OK' | 'LOI' | null) của TỪNG lượt — nguồn cho nút
+// "Gửi lại ERP" ở sidebar. Lỗi đọc trạng thái bị NUỐT: đây là thông tin thêm, không được chặn sidebar.
+async function suaDone(date) {
+  const rows = await repo.temDoneByDate('sua', date);
+  try {
+    const tt = await suaDatErp.trangThaiGui(rows.map((r) => r.sua_id));
+    rows.forEach((r) => { r.erp_sua_dat = tt[String(r.sua_id)] || null; });
+  } catch (e) { /* bỏ qua */ }
+  return rows;
+}
+
+// NÚT "GỬI LẠI ERP" cho 1 lượt sửa đạt (bài học 20/09: chiều đẩy nuốt lỗi thì phải có đường đẩy lại).
+// ⚠ Khác nhánh ngầm: CÓ `await` và trả lỗi cho người bấm. Đã gửi thành công ⇒ 409, KHÔNG gửi lần hai
+//   (proc ERP ghi trùng lượt sửa là sai số liệu mà không ai báo).
+async function guiLaiErpSua(suaId, actorId) {
+  const kq = await suaDatErp.guiSuaDat(suaId, actorId);
+  if (kq.ok && kq.ly_do === 'DA_GUI') {
+    throw new AppError('Lượt sửa này đã gửi ERP thành công — không gửi lại', { status: 409, errorCode: 'DA_GUI' });
+  }
+  if (kq.ok) return { ok: true };
+  const LY_DO = {
+    NOT_FOUND: ['Lượt sửa không tồn tại', 404],
+    DA_HUY: ['Lượt sửa này đã bị hủy xác nhận', 409],
+    KHONG_SUA_DAT: ['Lượt sửa không có SL sửa đạt — không có tem 17 để gửi', 409],
+    KHONG_TEM_17: ['Không tìm thấy tem 17 của lượt sửa', 409],
+    KHONG_DU_LIEU: ['Không đọc được dữ liệu tem 17', 409],
+    API_DANG_TAT: ['API "Gửi sửa đạt sang ERP" đang TẮT ở Hệ thống › Cài đặt API', 409],
+  };
+  const [msg, status] = LY_DO[kq.ly_do] || [`ERP báo lỗi: ${kq.error || 'không rõ'}`, 502];
+  throw new AppError(msg, { status, errorCode: kq.ly_do || 'ERP_LOI' });
+}
 async function oqcDone(date) { return repo.temDoneByDate('oqc', date); }
 async function inlineDone(date) { return repo.inlineDoneByDate(date); }
 
@@ -859,7 +894,7 @@ module.exports = {
   listCancelKcs, listCancelSua, listCancelOqc, cancelKcs, cancelSua, cancelOqc,
   listTemSuaCancelable, listTemSuaDeleted, huyTemSua, moTemSua,
   kcsHistory, suaHistory, oqcHistory, temHanhTrinh,
-  kcsDone, suaDone, oqcDone, inlineDone, luuNguoiSua,
+  kcsDone, suaDone, oqcDone, inlineDone, luuNguoiSua, guiLaiErpSua,
   listInlineCandidates, listLoaiLoi, recordQcInline, inlineHistory,
   listLoaiLoiAll, createLoaiLoi, updateLoaiLoi, toggleLoaiLoi,
   listGiaoDacBiet, listGiaoDacBietAll, createGiaoDacBiet, updateGiaoDacBiet, toggleGiaoDacBiet,

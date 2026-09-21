@@ -11,6 +11,8 @@ router.use(auth);
 //   xem `utils/siSoTram.js`). Đặt rbac cứng ở đây sẽ hoặc chặn oan, hoặc mở quá tay.
 // ⚠ Route TĨNH `/danh-muc` phải đứng TRƯỚC `/:maTrang`.
 router.get('/danh-muc', c.danhMuc);
+// ⚠ Route TĨNH — phải đứng TRƯỚC `/:maTrang`, để sau thì `maTrang = "bang-theo-doi"` và trả 404.
+router.get('/bang-theo-doi', c.bangTheoDoi);
 router.get('/:maTrang', c.siSo);
 // ⚠ Route 3 đoạn `/:maTrang/:o/ngay-giao` phải đặt TRƯỚC `/:maTrang/:o` — Express khớp theo thứ tự,
 //   để sau thì `/:o` sẽ nuốt mất (`o` = "ton_cuoi", phần "ngay-giao" bị bỏ ⇒ trả nhầm danh sách).

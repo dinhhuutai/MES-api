@@ -104,6 +104,12 @@ const env = {
     guiPhanLoaiLoiTimeoutMs: parseInt(process.env.ERP_GUI_PHAN_LOAI_LOI_TIMEOUT_MS || '10000', 10),
     guiPhanLoaiLoiRetry: parseInt(process.env.ERP_GUI_PHAN_LOAI_LOI_RETRY || '3', 10),
     guiPhanLoaiLoiEnabled: String(process.env.ERP_GUI_PHAN_LOAI_LOI_ENABLED || 'true').toLowerCase() === 'true',
+    // Đẩy SỬA ĐẠT (tem 17) sang ERP — proc `MES_spr_MES2SK6`, cùng 20 tham số với `ghi-in-tem` (21/09/2026).
+    // ⚠ Proc RIÊNG chính là để KHÔNG cộng vào sản lượng in (gửi tem 17 qua `ghi-in-tem` là đếm đôi).
+    guiSuaDatUrl: process.env.ERP_GUI_SUA_DAT_URL || `${ERP_GOC}/gui-erp-sua-dat`,
+    guiSuaDatTimeoutMs: parseInt(process.env.ERP_GUI_SUA_DAT_TIMEOUT_MS || '10000', 10),
+    guiSuaDatRetry: parseInt(process.env.ERP_GUI_SUA_DAT_RETRY || '3', 10),
+    guiSuaDatEnabled: String(process.env.ERP_GUI_SUA_DAT_ENABLED || 'true').toLowerCase() === 'true',
 
     // Bật/tắt job tự đồng bộ theo chu kỳ (mặc định 5 phút/lần).
     syncEnabled: String(process.env.ERP_SYNC_ENABLED || 'true').toLowerCase() === 'true',

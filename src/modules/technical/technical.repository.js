@@ -6,7 +6,7 @@ const { dkTrang } = require('../../utils/phuongAnIn');
 // ⚠⚠ ĐÃ BỎ `khongReadyTuDongSql` KHỎI FILE NÀY (10/09/2026): 2 sidebar *Lịch sử* + *Đã hoàn thành*
 //   của READY KT & QC READY nay HIỆN CẢ phần in đi thẳng PKH (ERP `KTCankiemtra=0`) — xem ghi chú ở
 //   `listConfirmHistory` / `doneByDate`. Luật loại-khỏi-số-liệu vẫn còn hiệu lực ở sĩ số + báo cáo.
-const { techDoneSql, KHUON_OPT_SQL_LIST, nguoiXacNhanSql, conDotChuaReadySql } = require('../../utils/tech');
+const { techDoneSql, KHUON_OPT_SQL_LIST, nguoiXacNhanSql, conDotChuaReadySql, qcDotSql, conDotChoQcSql } = require('../../utils/tech');
 const { mauTim } = require('../../utils/timKiem');
 const { sqlKhopMa } = require('../../utils/maPhanIn');
 
@@ -89,7 +89,12 @@ async function listCandidates({
            (SELECT count(*) FROM ket_qua_checkpoint k
               WHERE k.phan_in_id = pin.id AND k.checkpoint_id = ANY($2::uuid[]) AND k.trang_thai = 'DAT')::int AS n_tech_done,
            ${doneExpr('$3')} AS qc_done,
-           ${conDotChuaReadySql('pin.id')} AS con_dot_chua_ready${withItems ? `,
+           ${conDotChuaReadySql('pin.id')} AS con_dot_chua_ready,
+           ${conDotChoQcSql('pin.id', 'kh.ten_khach_hang')} AS con_dot_cho_qc,
+           EXISTS (SELECT 1 FROM dot_vai_ve dvr WHERE dvr.phan_in_id = pin.id AND dvr.trang_thai NOT IN ('DA_GOP','DA_HUY')
+                     AND dvr.tg_chuyen_ready IS NOT NULL
+                     AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsr2 JOIN lenh_san_xuat lr2 ON lr2.id = lsr2.lenh_san_xuat_id
+                                     WHERE lsr2.dot_vai_ve_id = dvr.id AND lr2.trang_thai <> 'HUY')) AS co_dot_chua_release${withItems ? `,
            ${doneExpr('$6')} AS khuon_done,
            ${doneExpr('$7')} AS film_done,
            ${doneExpr('$8')} AS muc_done,
@@ -124,8 +129,16 @@ async function listCandidates({
              -- và MUC ($8), CỐ Ý BỎ FILM ($7): xác nhận Film không được đẩy phần in lên đầu danh sách.
              -- ⚠ Phải là cột RIÊNG, KHÔNG sửa kt_done_tg ở trên: kt_done_tg là mốc bắt đầu đếm SLA của
              -- QC (dòng tg_vao/sla_phut bên dưới) nên vẫn phải tính ĐỦ CẢ 3 mục.
-             (SELECT max(COALESCE(k.tg_xac_nhan, k.created_date)) FROM ket_qua_checkpoint k
-                WHERE k.phan_in_id = pin.id AND k.checkpoint_id IN ($6, $8) AND k.trang_thai = 'DAT') AS xn_sort_tg
+             -- Tính CẢ dòng xác nhận THEO ĐỢT (ready_xac_nhan_dot, mig 098): từ khi xác nhận đi theo đợt vải,
+             -- dòng TỔNG chỉ được ghi khi mọi đợt xong (và KHÔNG ghi lại nếu đã DAT từ đợt trước) nên chỉ đọc
+             -- dòng tổng thì phần in vừa xác nhận KHÔNG nhảy lên đầu nữa (lỗi báo 21/09/2026).
+             GREATEST(
+               (SELECT max(COALESCE(k.tg_xac_nhan, k.created_date)) FROM ket_qua_checkpoint k
+                  WHERE k.phan_in_id = pin.id AND k.checkpoint_id IN ($6, $8) AND k.trang_thai = 'DAT'),
+               (SELECT max(COALESCE(x.tg_xac_nhan, x.updated_date)) FROM ready_xac_nhan_dot x
+                  WHERE x.phan_in_id = pin.id AND x.checkpoint_id IN ($6, $8) AND x.trang_thai = 'DAT'
+                    AND x.nguoi_xac_nhan_id IS NOT NULL)
+             ) AS xn_sort_tg
     ) sla ON true
     -- Ở READY khi phần in CÒN đợt vải CHƯA release (đợt không nằm trong lệnh ≠ HUY), HOẶC chưa có đợt vải nào.
     -- ⇒ phần in đã release hết đợt thì rời READY; nhưng nếu "Mở lại READY" (hủy QC) mà còn đợt mới chưa release
@@ -158,7 +171,15 @@ async function listCandidates({
   //   Giữ luôn vế `qc_done = false` để KHÔNG mất ca cũ: phần in bị QC/Test Run trả về (hủy dòng tổng)
   //   nhưng đợt vải của nó đã thuộc lệnh RELEASE_1 nên `conDotChuaReadySql` (chỉ xét đợt CHƯA release)
   //   không bắt được — đó chính là nhánh OR thứ 3 của WHERE bên trên.
-  const OUTER_WHERE = 'WHERE (q.qc_done = false OR q.con_dot_chua_ready = true)';
+  // ⚠⚠ Vế `qc_done = false` CHỈ còn áp khi phần in KHÔNG còn đợt chưa release (nhánh Test Run trả về —
+  //   đợt đã thuộc lệnh RELEASE_1). Có đợt chưa release thì `con_dot_chua_ready` đã nói đủ; để vế
+  //   `qc_done = false` chạy trần thì phần in mà mọi đợt đã được QC THEO ĐỢT (dòng tổng chưa có) vẫn
+  //   bị kéo lại màn READY dù không còn việc gì (21/09/2026).
+  // ⚠⚠ MÀN QC ($11) CHỈ LẤY HÀNG ĐỢI CỦA QC: đợt vải KỸ THUẬT ĐÃ XONG mà QC chưa xác nhận (người dùng
+  //   chốt 21/09/2026 — "QC ready phải hiện khi Ready KT xác nhận xong"). Gương `DV.READY_QC` của sĩ số.
+  const OUTER_WHERE = `WHERE CASE WHEN $11
+      THEN (q.con_dot_cho_qc OR (NOT q.co_dot_chua_release AND q.qc_done = false AND q.tech_done))
+      ELSE (q.con_dot_chua_ready OR (NOT q.co_dot_chua_release AND q.qc_done = false)) END`;
 
   // SLA theo GIAI ĐOẠN (task 3): $11=onlyQcReady. Màn QC → SLA QC_XAC_NHAN ($12) đếm từ kt_done_tg;
   // màn Kỹ thuật → SLA trạm READY ($9) từ ready_tg_vao, và KHI ĐỦ 3 mục KT → sla NULL (ngừng đếm, không đỏ ở KT).
@@ -210,8 +231,10 @@ async function countReadyItems({ khuonId, filmId, mucId, qcId }) {
                        AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsu JOIN lenh_san_xuat lu ON lu.id = lsu.lenh_san_xuat_id
                                        WHERE lsu.dot_vai_ve_id = dvu.id AND lu.trang_thai <> 'HUY'))
         AND pin.dang_hoat_dong
-        AND (NOT (${doneExpr('$4')}) OR ${conDotChuaReadySql('pin.id')})
+        AND ${conDotChuaReadySql('pin.id')} AND ($4::uuid IS NULL OR true)
     ) q`;
+  // ⚠ Đã có đợt chưa release (WHERE trên) thì "còn ở READY" = còn đợt chưa Ready — gương OUTER_WHERE của
+  //   `listCandidates` (21/09/2026). `$4` giữ trong chữ ký để không đổi call-site.
   const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [khuonId, filmId, mucId, qcId]);
   return { khuon: rows[0]?.khuon || 0, film: rows[0]?.film || 0, muc: rows[0]?.muc || 0 };
 }
@@ -299,7 +322,18 @@ async function doneByDate(date, scope = 'tech') {
       LEFT JOIN nguoi_dung nx ON nx.id = kq.nguoi_xac_nhan_id
       WHERE t.ma_tram = 'READY' AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT'
         AND (kq.tg_xac_nhan AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
-      ORDER BY kq.tg_xac_nhan DESC`;
+      UNION ALL
+      SELECT x.tg_xac_nhan AS tg, ${nguoiXacNhanSql('nx', 'x')} AS nguoi,
+             'QC theo đợt vải ' || COALESCE(dvx.barcode, dvx.ma_dot_vai) AS ghi_chu, ${info}
+      FROM ready_xac_nhan_dot x
+      JOIN checkpoint cp ON cp.id = x.checkpoint_id AND cp.ma_checkpoint = 'QC_XAC_NHAN'
+      JOIN dot_vai_ve dvx ON dvx.id = x.dot_vai_ve_id
+      JOIN phan_in pin ON pin.id = x.phan_in_id
+      ${joins}
+      LEFT JOIN nguoi_dung nx ON nx.id = x.nguoi_xac_nhan_id
+      WHERE x.trang_thai = 'DAT' AND x.nguoi_xac_nhan_id IS NOT NULL
+        AND (x.tg_xac_nhan AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
+      ORDER BY 1 DESC`;
   } else {
     sql = `
       WITH tech AS (
@@ -695,6 +729,7 @@ async function dsDotChoReady(phanInIds = []) {
         AND dv.tg_chuyen_ready IS NOT NULL
         AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai l JOIN lenh_san_xuat ls ON ls.id = l.lenh_san_xuat_id
                          WHERE l.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY')
+        AND NOT ${qcDotSql('dv', 'dv.phan_in_id')}
       ORDER BY dv.tg_chuyen_ready`.replace(/\s+/g, ' '),
     [phanInIds]);
   return rows;
@@ -754,7 +789,16 @@ async function boiHieuLucDot(client, phanInId, checkpointId, boQuaDotIds = []) {
     [phanInId, checkpointId, boQuaDotIds]);
 }
 
+// Vết QC xác nhận THEO ĐỢT (21/09/2026) — dòng `ket_qua_checkpoint` không ghi nên lịch sử phải nằm ở audit.
+async function logQcTheoDot(phanInId, dotVaiIds, actorId) {
+  await query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('phan_in', $1, 'QC_XAC_NHAN_THEO_DOT', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`,
+    [String(phanInId), JSON.stringify({ dot_vai_ids: dotVaiIds }), actorId]);
+}
+
 module.exports = {
+  logQcTheoDot,
   coBangXacNhanDot, dsDotChoReady, conDotChuaReady, ketQuaTong, xacNhanDotRows, ghiXacNhanDot, boiHieuLucDot,
   loadReadyConfig, listCandidates, countReadyItems, confirmInfoByPins, historyByDate, doneByDate, listConfirmHistory, isPhanInReleased, readyCancelState, traCuuMaQuet, getPhanInBasic, getResults, getBulkStates,
   getReadyEntryTime, findResultId, upsertResult, cancelResult, logCancel, insertStatusLog,

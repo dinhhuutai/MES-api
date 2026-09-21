@@ -384,15 +384,23 @@ async function listCandidates({ search, page, limit, offset, onlyQcReady = false
       //       đúng như guard `confirmQC`, để tick 1 dòng rồi bấm không bao giờ ăn 409.
       //     · các cờ HIỂN THỊ (`khuon_done`/`film_done`/`muc_done` + `tech_done_dot`) lấy THEO ĐỢT.
       //   Đổi `tech_done` sang mức đợt là dòng "đợt 1 xong" bật checkbox trong khi đợt 2 còn thiếu.
-      nhom.forEach((g) => {
+      // ⚠⚠⚠ ĐỔI 21/09/2026 (người dùng chốt): QC XÁC NHẬN THEO ĐỢT — đợt 1 kỹ thuật xong thì QC duyệt
+      //   được ngay, không phải chờ đợt 2. Màn QC CHỈ hiện đợt KỸ THUẬT ĐÃ XONG (hàng đợi của QC);
+      //   `tech_done` nay = của CHÍNH ĐỢT đó. Ghi chú cũ phía trên ("QC vẫn xác nhận ở mức phần in")
+      //   ĐÃ LỖI THỜI — giữ để thấy vì sao từng làm khác.
+      const choQc = nhom.filter((g) => techDoneNhom(g, r.ten_khach_hang));
+      const nhieuQc = choQc.length > 1;
+      choQc.forEach((g) => {
         const it = g.items;
         const vao = g.dots.map((d) => tMs(d.tg_chuyen_ready)).filter(Boolean);
         const han = g.dots.map((d) => d.han_giao_hang).filter(Boolean).sort();
-        const xongDot = techDoneNhom(g, r.ten_khach_hang);
+        const xongDot = true;
+        // Mốc KT xong CỦA ĐỢT = lần xác nhận muộn nhất (Khuôn/Mực) — bắt đầu đếm SLA của QC.
+        const ktTg = [it.KHUON?.tg, it.MUC?.tg].map(tMs).filter(Boolean);
         items.push({
           ...r,
           _key: nhieu ? `${r.id}|${g.key}` : r.id,
-          tach_theo_loai: nhieu,
+          tach_theo_loai: nhieuQc || nhieu,
           so_nhom_loai: nhom.length,
           thu_tu_dot: nhom.indexOf(g) + 1,
           so_luong_dot: g.dots.reduce((s, d) => s + (Number(d.so_luong_vai_ve) || 0), 0),
@@ -403,13 +411,13 @@ async function listCandidates({ search, page, limit, offset, onlyQcReady = false
           barcode: nhieu ? [...new Set(g.dots.map((d) => d.barcode).filter(Boolean))].join(',') : r.barcode,
           han_giao_hang: nhieu ? (han[0] || null) : r.han_giao_hang,
           tg_qua_ready: vao.length ? new Date(Math.max(...vao)).toISOString() : r.tg_qua_ready,
-          // Hiển thị THEO ĐỢT
           khuon_done: !!it.KHUON?.done, film_done: !!it.FILM?.done, muc_done: !!it.MUC?.done,
           tech_done_dot: xongDot,
-          // Quyết định QC — MỨC PHẦN IN
-          tech_done: r.tech_done && tatCaXong,
-          loai_dot_vai_chua_xong: chuaXong.length ? chuaXong.join(', ') : null,
-          ...(tatCaXong ? {} : { tg_vao: null, sla_phut: null, trang_thai_ready: 'DANG' }),
+          tech_done: true,
+          loai_dot_vai_chua_xong: tatCaXong ? null : (chuaXong.length ? chuaXong.join(', ') : null),
+          tg_vao: ktTg.length ? new Date(Math.max(...ktTg)).toISOString() : r.tg_vao,
+          sla_phut: qcSla,
+          trang_thai_ready: 'CHO_QC',
         });
       });
       return;
@@ -870,8 +878,51 @@ async function confirmItemBulk(phanInIds, ma, value, actorId) {
   return { okCount: eligible.length, skippedCount: phanInIds.length - eligible.length };
 }
 
-async function confirmQC(phanInId, actorId) {
+// ⚠⚠⚠ QC XÁC NHẬN THEO ĐỢT VẢI (21/09/2026). `dotVaiIds` = đợt của dòng QC bấm.
+//   · Các đợt được chọn phải ĐỦ MỤC kỹ thuật (của CHÍNH đợt đó) — đợt khác chưa xong KHÔNG còn chặn.
+//   · Chọn HẾT các đợt đang chờ ⇒ ghi dòng TỔNG như cũ (dây chuyền phía sau đọc dòng tổng).
+//   · Còn đợt khác đang chờ ⇒ CHỈ ghi dòng THEO ĐỢT (`ready_xac_nhan_dot`) — ghi dòng tổng mốc now()
+//     là theo luật mốc `qcDotSql` sẽ PHỦ LUÔN đợt còn lại mà kỹ thuật chưa làm (đúng lỗi 18/09).
+//   Trả null nếu phần in không có đợt nào đang chờ (nhánh Test Run trả về) ⇒ đi đường mức phần in.
+async function confirmQcTheoDot(phanInId, actorId, dotVaiIds, byMa) {
+  const { nhomCuaPin } = await taiNhomLoai([phanInId], byMa);
+  const nhom = nhomCuaPin.get(phanInId);
+  if (!nhom || !nhom.length) return null;
+  const chon = chonNhom(nhom, dotVaiIds);
+  if (!chon || !chon.length) return null;
+  const tenKhach = (await repo.getPhanInBasic(phanInId))?.ten_khach_hang;
+  const chua = chon.filter((g) => !techDoneNhom(g, tenKhach));
+  if (chua.length) {
+    throw new AppError(`Kỹ thuật chưa xác nhận đủ mục cho đợt vải: ${nhanNhom(chua)}`,
+      { status: 409, errorCode: 'TECH_NOT_DONE' });
+  }
+  const chonSet = new Set(chon);
+  if (nhom.every((g) => chonSet.has(g))) return null; // chọn hết ⇒ đường dòng tổng (bên dưới)
+  const cpId = byMa[QC_CP].id;
+  const bayGio = new Date();
+  await withTransaction(async (client) => {
+    for (const g of chon) {
+      for (const d of g.dots) {
+        await repo.ghiXacNhanDot(client, {
+          phanInId, dotVaiId: d.dot_vai_ve_id, checkpointId: cpId, trangThai: 'DAT',
+          nguoiId: actorId, tg: bayGio, actorId,
+        });
+      }
+    }
+  });
+  await repo.logQcTheoDot(phanInId, chon.flatMap((g) => g.dot_vai_ids), actorId);
+  sockets.emit('ready:confirmed', { phanInId, buoc: 'QC', dotVaiIds });
+  sockets.emit('workflow:updated', { phanInId, stage: 'RELEASE_1' });
+  sockets.emit('dashboard:refresh', {});
+  return getDetail(phanInId);
+}
+
+async function confirmQC(phanInId, actorId, dotVaiIds = []) {
   const { tram, byMa } = await loadConfig();
+  if (dotVaiIds && dotVaiIds.length && byMa[QC_CP]) {
+    const kq = await confirmQcTheoDot(phanInId, actorId, dotVaiIds, byMa);
+    if (kq) return kq;
+  }
   const state = buildState(await repo.getResults(tram.id, phanInId));
   if (!state.tech_done) {
     throw new AppError('Kỹ thuật chưa hoàn tất — QC không thể xác nhận', { status: 409, errorCode: 'TECH_NOT_DONE' });
@@ -938,9 +989,14 @@ async function confirmQcBatch(phanInIds, actorId) {
   }
   const ok = [];
   const failed = [];
-  for (const id of phanInIds) {
+  // Phần tử là id phần in (cũ) HOẶC { id, dot_vai_ids } (QC theo đợt, 21/09/2026).
+  // ⚠ Chạy TUẦN TỰ: 2 dòng cùng phần in thì lượt đầu ghi theo đợt, lượt sau thấy đợt kia đã Ready
+  //   nên chọn hết ⇒ ghi dòng tổng. Chạy song song là 2 lượt tranh nhau đọc cùng trạng thái.
+  for (const it of phanInIds) {
+    const id = typeof it === 'object' && it ? it.id : it;
+    const dv = typeof it === 'object' && it && Array.isArray(it.dot_vai_ids) ? it.dot_vai_ids : [];
     try {
-      await confirmQC(id, actorId);
+      await confirmQC(id, actorId, dv);
       ok.push(id);
     } catch (e) {
       failed.push({ id, message: e.message || 'Lỗi' });

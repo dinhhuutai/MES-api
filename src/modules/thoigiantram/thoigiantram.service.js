@@ -43,6 +43,8 @@ async function duLieu(q = {}) {
   const tram = repo.TRAM_TG.map((t) => ({
     ma: t.ma, ten: t.ten, don_vi: t.donVi, mo_ta: t.moTa, sla_phut: slaCua(t, slaRows), cat: false,
     dang_xet: dsTram.includes(t),
+    // Số checklist sổ xuống được — FE chỉ vẽ mũi tên ở dòng có số > 0.
+    so_checklist: (t.checklist || []).length,
   }));
   dsTram.forEach((t, i) => {
     let ds = kq[i];
@@ -56,4 +58,42 @@ async function duLieu(q = {}) {
   return { loc, tram, rows, cat, tran_dong: repo.TRAN_DONG, bay_gio: new Date().toISOString() };
 }
 
-module.exports = { duLieu, _layLoc: layLoc };
+// ─── CHECKLIST CỦA MỘT TRẠM (bấm mũi tên ở dòng trạm để sổ xuống) ────────────
+// ⚠⚠ TẢI LƯỜI (chỉ khi người dùng bung dòng), KHÔNG nhét vào `duLieu()`: mỗi checklist là một lượt
+//   query nặng ngang dòng trạm cha — READY_KT có 3 checklist là gấp 4 lần dữ liệu cho một trạm mà
+//   đa số lần xem không ai mở tới.
+// ⚠ Trả RA DÒNG (không phải số đã tổng hợp) để FE chạy CHÍNH `tongHopTheoTram` của dòng cha ⇒ cha và
+//   con không thể dùng 2 công thức khác nhau (TB / trung vị / P90 / quá SLA).
+async function duLieuChecklist(maTram, q = {}) {
+  const t = repo.TRAM_TG.find((x) => x.ma === maTram);
+  if (!t || !(t.checklist || []).length) return { tram: maTram, checklist: [], rows: [] };
+
+  const loc = layLoc(q);
+  const [dm, kq] = await Promise.all([
+    repo.dsChecklist(),
+    // ⚠ Các checklist ĐỘC LẬP ⇒ song song (cùng lý do với 13 trạm ở `duLieu`).
+    Promise.all(t.checklist.map((ma) => repo.donViTaiTram(t, loc, ma))),
+  ]);
+
+  const rows = [];
+  const checklist = t.checklist.map((ma, i) => {
+    const info = dm.find((x) => x.ma === ma) || {};
+    let ds = kq[i];
+    let cat = false;
+    if (ds.length > repo.TRAN_DONG) { ds = ds.slice(0, repo.TRAN_DONG); cat = true; }
+    ds.forEach((r) => rows.push({ ...r, ma_tram: maTram, ma_checkpoint: ma }));
+    return {
+      ma,
+      ten: info.ten || ma,
+      // ⚠ SLA của CHECKLIST (không phải của trạm): Khuôn 120p · Mực 90p · QC 60p… — lấy SLA trạm thì
+      //   mục nào cũng "trong hạn" và cột "Quá SLA" của dòng con thành vô nghĩa.
+      sla_phut: info.sla != null ? Number(info.sla) : null,
+      so_don_vi: ds.length,
+      so_xac_nhan: ds.filter((r) => r.da_xac_nhan).length,
+      cat,
+    };
+  });
+  return { tram: maTram, don_vi: t.donVi, checklist, rows, tran_dong: repo.TRAN_DONG };
+}
+
+module.exports = { duLieu, duLieuChecklist, _layLoc: layLoc };

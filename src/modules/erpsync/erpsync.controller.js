@@ -21,4 +21,13 @@ const history = asyncHandler(async (req, res) => {
 const rawData = asyncHandler(async (req, res) =>
   ok(res, await service.rawData(req.params.id)));
 
-module.exports = { syncPhieuNhanVai, history, rawData };
+// Cập nhật lại theo code phần + ngày (21/09/2026) — 2 bước: xem trước (chỉ đọc) → cập nhật.
+const xemTruocCodePhan = asyncHandler(async (req, res) =>
+  ok(res, await service.xemTruocCodePhan(req.body || {}, req.user.id)));
+const capNhatCodePhan = asyncHandler(async (req, res) => {
+  const r = await service.capNhatCodePhan(req.body || {}, req.user.id);
+  const soDoi = (r.ghi_de || []).filter((x) => x && x.doi).length;
+  return ok(res, r, `Đã cập nhật: ${r.soMoi} đợt mới, ${r.soCapNhat} cập nhật, gán lại đơn/mã hàng ${soDoi} phần in`);
+});
+
+module.exports = { syncPhieuNhanVai, history, rawData, xemTruocCodePhan, capNhatCodePhan };

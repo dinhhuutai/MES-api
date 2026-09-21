@@ -42,25 +42,46 @@ function ngayCond(col, ngay, isTimestamp) {
 // · SL bổ sung  : Σ SL vải về của ĐỢT BỔ SUNG (ERP loaikd 5I, mã `BO_SUNG`). Không có đợt bổ sung nào
 //   (vd chỉ có 3I) ⇒ "-" (gạch ngang) — `runOne` đổi NULL thành "-" sau khi chạy.
 // ⚠ So theo MÃ `loai_dot_vai.ma_loai`, KHÔNG so tên hiển thị.
+// · SL thực tính (thêm 21/09/2026): CÓ SL bổ sung > 0 ⇒ Σ SL bổ sung; ngược lại ⇒ Σ SL nhận vải (mọi
+//   đợt trong CÙNG phạm vi với "SL bổ sung"). ⚠ LUÔN LÀ SỐ (COALESCE 0) — KHÔNG đổi thành "-" như
+//   `sl_bo_sung`, ra chữ là Excel không cộng được (bẫy "ô số phải ghi ra số thật" §6 Báo cáo).
 const COT_LOAI_DOT = [
   { key: 'loai_dot_vai', ten: 'Loại đợt vải', kieu: 'text' },
   { key: 'sl_bo_sung', ten: 'SL bổ sung', kieu: 'so' },
+  { key: 'sl_thuc_tinh', ten: 'SL thực tính', kieu: 'so' },
 ];
 const LOAI_DOT_LOC = "dvl.trang_thai NOT IN ('DA_GOP','DA_HUY')";
 const LOAI_DOT_JOIN = 'LEFT JOIN loai_dot_vai ldl ON ldl.id = dvl.loai_dot_vai_id';
+const SUM_BO_SUNG = "sum(dvl.so_luong_vai_ve) FILTER (WHERE ldl.ma_loai = 'BO_SUNG')";
+const SL_THUC_TINH_EXPR = `(CASE WHEN COALESCE(${SUM_BO_SUNG},0) > 0 THEN ${SUM_BO_SUNG}
+    ELSE COALESCE(sum(dvl.so_luong_vai_ve),0) END)::int`;
+// Nguồn đợt vải của 2 phạm vi — dùng CHUNG cho cột + bộ lọc "nhóm bổ sung" để 2 thứ không lệch nhau.
+const FROM_DOT_PIN = (pinCol) => `FROM dot_vai_ve dvl ${LOAI_DOT_JOIN}
+    WHERE dvl.phan_in_id = ${pinCol} AND ${LOAI_DOT_LOC}`;
+const FROM_DOT_LENH = (lenhCol) => `FROM lenh_sx_dot_vai lsl JOIN dot_vai_ve dvl ON dvl.id = lsl.dot_vai_ve_id
+    ${LOAI_DOT_JOIN} WHERE lsl.lenh_san_xuat_id = ${lenhCol}`;
+const slThucTinhTheoPin = (pinCol) => `(SELECT ${SL_THUC_TINH_EXPR} ${FROM_DOT_PIN(pinCol)})`;
 // Theo PHẦN IN (mọi đợt vải còn hiệu lực).
 const loaiDotTheoPin = (pinCol) => `
-  (SELECT string_agg(DISTINCT ldl.ten_loai, ', ') FROM dot_vai_ve dvl ${LOAI_DOT_JOIN}
-    WHERE dvl.phan_in_id = ${pinCol} AND ${LOAI_DOT_LOC}) AS loai_dot_vai,
-  (SELECT (sum(dvl.so_luong_vai_ve) FILTER (WHERE ldl.ma_loai = 'BO_SUNG'))::int FROM dot_vai_ve dvl ${LOAI_DOT_JOIN}
-    WHERE dvl.phan_in_id = ${pinCol} AND ${LOAI_DOT_LOC}) AS sl_bo_sung`;
+  (SELECT string_agg(DISTINCT ldl.ten_loai, ', ') ${FROM_DOT_PIN(pinCol)}) AS loai_dot_vai,
+  (SELECT (${SUM_BO_SUNG})::int ${FROM_DOT_PIN(pinCol)}) AS sl_bo_sung,
+  ${slThucTinhTheoPin(pinCol)} AS sl_thuc_tinh`;
 // Theo LỆNH SX (các đợt vải gắn vào lệnh qua lenh_sx_dot_vai).
 const loaiDotTheoLenh = (lenhCol) => `
-  (SELECT string_agg(DISTINCT ldl.ten_loai, ', ') FROM lenh_sx_dot_vai lsl JOIN dot_vai_ve dvl ON dvl.id = lsl.dot_vai_ve_id
-    ${LOAI_DOT_JOIN} WHERE lsl.lenh_san_xuat_id = ${lenhCol}) AS loai_dot_vai,
-  (SELECT (sum(dvl.so_luong_vai_ve) FILTER (WHERE ldl.ma_loai = 'BO_SUNG'))::int FROM lenh_sx_dot_vai lsl
-    JOIN dot_vai_ve dvl ON dvl.id = lsl.dot_vai_ve_id ${LOAI_DOT_JOIN}
-    WHERE lsl.lenh_san_xuat_id = ${lenhCol}) AS sl_bo_sung`;
+  (SELECT string_agg(DISTINCT ldl.ten_loai, ', ') ${FROM_DOT_LENH(lenhCol)}) AS loai_dot_vai,
+  (SELECT (${SUM_BO_SUNG})::int ${FROM_DOT_LENH(lenhCol)}) AS sl_bo_sung,
+  (SELECT ${SL_THUC_TINH_EXPR} ${FROM_DOT_LENH(lenhCol)}) AS sl_thuc_tinh`;
+
+// BỘ LỌC "Nhóm bổ sung" (21/09/2026): CO = có đợt bổ sung SL > 0 · KHONG = ngược lại. Cùng phạm vi đợt
+// với cột ⇒ 2 nhóm PHỦ KÍN, không trùng, và khớp đúng nhánh CASE của `sl_thuc_tinh`.
+// ⚠ Phải là EXISTS riêng — `sl_bo_sung` là subquery trong SELECT, KHÔNG dùng được trong WHERE cùng cấp.
+const coBoSung = (fromSql) => `EXISTS (SELECT 1 ${fromSql} AND ldl.ma_loai = 'BO_SUNG' AND dvl.so_luong_vai_ve > 0)`;
+function dkNhomBoSung(loc, fromSql) {
+  const v = clean(loc.nhom_bo_sung).toUpperCase();
+  if (v === 'CO') return coBoSung(fromSql);
+  if (v === 'KHONG') return `NOT ${coBoSung(fromSql)}`;
+  return null;
+}
 
 // ============================== 1) PHẦN IN / ĐỢT VẢI ==============================
 // 1 dòng = 1 đợt vải của phần in (kèm trạm hiện tại + SLA) → sheet "HỆ ĐIỀU HÀNH NHÀ MÁY IN LỤA".
@@ -81,6 +102,9 @@ const COT_PHAN_IN = [
   { key: 'ma_dot_vai', ten: 'Mã đợt vải', kieu: 'text' },
   { key: 'loai_dot_vai', ten: 'Loại đợt vải', kieu: 'text' },
   { key: 'sl_bo_sung', ten: 'SL bổ sung', kieu: 'so' },
+  // ⚠ Nguồn này 1 dòng = 1 ĐỢT VẢI; tính ở mức đợt thì SL thực tính luôn = SL của chính đợt (vô nghĩa)
+  //   ⇒ người dùng chốt 21/09/2026 tính theo PHẦN IN của dòng — mọi dòng cùng phần in ra CÙNG số.
+  { key: 'sl_thuc_tinh', ten: 'SL thực tính (theo phần in)', kieu: 'so' },
   // --- Chuẩn bị kỹ thuật (READY): lựa chọn đã xác nhận từng mục (gia_tri_text của ket_qua_checkpoint DAT) ---
   { key: 'ready_khuon', ten: 'Khuôn (READY)', kieu: 'text' },
   { key: 'ready_film', ten: 'Film (READY)', kieu: 'text' },
@@ -104,6 +128,8 @@ async function runPhanIn({ loc = {}, gioi_han }) {
   const conds = ["dv.trang_thai NOT IN ('DA_GOP','DA_HUY')", 'pin.dang_hoat_dong'];
   const nc = ngayCond('dv.ngay_vai_ve', loc.ngay, false);
   if (nc) conds.push(nc);
+  const nb = dkNhomBoSung(loc, FROM_DOT_PIN('pin.id'));
+  if (nb) conds.push(nb);
   if (clean(loc.khach)) { params.push(mauTim(loc.khach)); conds.push(`kh.ten_khach_hang ~* $${params.length}`); }
   if (clean(loc.tim)) {
     params.push(mauTim(loc.tim));
@@ -116,6 +142,7 @@ async function runPhanIn({ loc = {}, gioi_han }) {
            to_char(dv.han_giao_hang, 'DD/MM/YYYY') AS han_giao_hang,
            dv.so_luong_vai_ve, ldv.ten_loai AS loai_dot_vai,
            (CASE WHEN ldv.ma_loai = 'BO_SUNG' THEN dv.so_luong_vai_ve END) AS sl_bo_sung,
+           ${slThucTinhTheoPin('pin.id')} AS sl_thuc_tinh,
            pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in, pin.so_luong_don_hang,
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
            ${readyChoiceSub('KHUON')} AS ready_khuon,
@@ -198,6 +225,8 @@ async function runDotSanXuat({ loc = {}, gioi_han }) {
   const conds = ["ls.trang_thai <> 'HUY'"];
   const nc = ngayCond('ls.ngay_ke_hoach', loc.ngay, false);
   if (nc) conds.push(nc);
+  const nb = dkNhomBoSung(loc, FROM_DOT_LENH('ls.id'));
+  if (nb) conds.push(nb);
   if (clean(loc.chuyen)) { params.push(mauTim(loc.chuyen)); conds.push(`cs.ten_chuyen ~* $${params.length}`); }
   if (clean(loc.trang_thai)) { params.push(clean(loc.trang_thai)); conds.push(`ls.trang_thai = $${params.length}`); }
   if (clean(loc.tim)) {
@@ -291,6 +320,8 @@ const COT_TEST_RUN = [
 async function runTestRun({ loc = {}, gioi_han }) {
   const params = [];
   const conds = ["ls.trang_thai <> 'HUY'", 'info.ma_phan IS NOT NULL'];
+  const nb = dkNhomBoSung(loc, FROM_DOT_LENH('ls.id'));
+  if (nb) conds.push(nb);
   if (clean(loc.chuyen)) { params.push(mauTim(loc.chuyen)); conds.push(`cs.ten_chuyen ~* $${params.length}`); }
   if (clean(loc.tim)) {
     params.push(mauTim(loc.tim));
@@ -391,6 +422,8 @@ async function runTem({ loc = {}, gioi_han }) {
   const conds = ["t.trang_thai <> 'HUY'"];
   const nc = ngayCond('t.created_date', loc.ngay, true);
   if (nc) conds.push(nc);
+  const nb = dkNhomBoSung(loc, FROM_DOT_LENH('ls.id'));
+  if (nb) conds.push(nb);
   if (clean(loc.trang_thai)) { params.push(clean(loc.trang_thai)); conds.push(`t.trang_thai = $${params.length}`); }
   if (clean(loc.chuyen)) { params.push(mauTim(loc.chuyen)); conds.push(`cs.ten_chuyen ~* $${params.length}`); }
   if (clean(loc.tim)) {
@@ -475,6 +508,8 @@ async function runHoanThanhTram({ loc = {}, gioi_han }) {
   const conds = ['z.tg_ra IS NOT NULL'];
   const nc = ngayCond('z.tg_ra', loc.ngay, true);
   if (nc) conds.push(nc);
+  const nb = dkNhomBoSung(loc, FROM_DOT_PIN('pin.id'));
+  if (nb) conds.push(nb);
   if (clean(loc.tim)) {
     params.push(mauTim(loc.tim));
     const i2 = params.length;
@@ -591,6 +626,8 @@ async function runReadyDangO({ loc = {}, gioi_han }) {
   //   hơn màn READY đúng nhóm phần in vừa có đợt vải mới về — 2 con số trong cùng hệ đá nhau.
   const conds = ['pin.dang_hoat_dong', READY_MEMBER,
     `(NOT ${QC_DONE_EXISTS} OR ${conDotChuaReadySql('pin.id')})`, khongReadyTuDongSql('pin.id')];
+  const nb = dkNhomBoSung(loc, FROM_DOT_PIN('pin.id'));
+  if (nb) conds.push(nb);
   if (clean(loc.khach)) { pc.push(mauTim(loc.khach)); conds.push(`kh.ten_khach_hang ~* $${pc.length}`); }
   if (clean(loc.tim)) {
     pc.push(mauTim(loc.tim)); const i = pc.length;
@@ -613,6 +650,7 @@ async function runReadyDangO({ loc = {}, gioi_han }) {
     const dconds = ["cp.ma_checkpoint = 'QC_XAC_NHAN'", "kq.trang_thai = 'DAT'", 'pin.dang_hoat_dong', khongReadyTuDongSql('pin.id')];
     const nc = ngayCond(READY_TS, ngay, true);
     if (nc) dconds.push(nc);
+    if (nb) dconds.push(nb);
     if (clean(loc.khach)) { dc.push(mauTim(loc.khach)); dconds.push(`kh.ten_khach_hang ~* $${dc.length}`); }
     if (clean(loc.tim)) {
       dc.push(mauTim(loc.tim)); const i = dc.length;
@@ -668,6 +706,8 @@ async function runReadyHoanThanh({ loc = {}, gioi_han }) {
   const conds = ["cp.ma_checkpoint = 'QC_XAC_NHAN'", "kq.trang_thai = 'DAT'", 'pin.dang_hoat_dong', khongReadyTuDongSql('pin.id')];
   const nc = ngayCond(READY_TS, loc.ngay, true);
   if (nc) conds.push(nc);
+  const nb = dkNhomBoSung(loc, FROM_DOT_PIN('pin.id'));
+  if (nb) conds.push(nb);
   if (clean(loc.tim)) {
     params.push(mauTim(loc.tim));
     const i = params.length;
@@ -725,6 +765,8 @@ async function runPhanInVaoTram({ loc = {}, gioi_han }) {
   const conds = ['z.tg_vao IS NOT NULL'];
   const nc = ngayCond('z.tg_vao', loc.ngay, true);
   if (nc) conds.push(nc);
+  const nb = dkNhomBoSung(loc, FROM_DOT_PIN('pin.id'));
+  if (nb) conds.push(nb);
   if (clean(loc.tim)) {
     params.push(mauTim(loc.tim));
     const i2 = params.length;
@@ -842,6 +884,12 @@ const LOC_DEF = {
     chon: () => Object.entries(LSX_TT).filter(([v]) => v !== 'HUY').map(([v, ten]) => ({ v, ten })) },
   trang_thai_tem: { ma: 'trang_thai', ten: 'Trạng thái tem', kieu: 'chon',
     chon: () => Object.entries(TEM_TT).filter(([v]) => v !== 'HUY').map(([v, ten]) => ({ v, ten })) },
+  nhom_bo_sung: { ma: 'nhom_bo_sung', ten: 'Nhóm bổ sung', kieu: 'chon',
+    mo_ta: 'Để trống = tất cả. "Có bổ sung" = có đợt vải BỔ SUNG (ERP 5I) SL > 0 — khi đó "SL thực tính" = Σ SL bổ sung.',
+    chon: () => [
+      { v: 'CO', ten: 'Có bổ sung' },
+      { v: 'KHONG', ten: 'Không bổ sung' },
+    ] },
   loai_ds_testrun: { ma: 'loai_ds', ten: 'Loại danh sách', kieu: 'chon',
     mo_ta: 'Để trống = cả hai (có mặt + đã test).',
     chon: () => [
@@ -858,37 +906,37 @@ const locList = (keys) => keys.map((k) => {
 const DEFS = [
   { ma: 'DS_PHAN_IN', ten: 'Phần in / đợt vải (theo ngày, trạm)', don_vi_dong: 'đợt vải',
     mo_ta: '1 dòng = 1 đợt vải của phần in, kèm trạm hiện tại + SLA. Dựng bảng kiểu "Hệ điều hành nhà máy in lụa".',
-    loc: locList(['ngay', 'tram', 'khach', 'tim']), cot: COT_PHAN_IN, run: runPhanIn },
+    loc: locList(['ngay', 'tram', 'khach', 'nhom_bo_sung', 'tim']), cot: COT_PHAN_IN, run: runPhanIn },
   { ma: 'DS_DOT_SAN_XUAT', ten: 'Đợt sản xuất / lệnh SX (theo ngày, chuyền)', don_vi_dong: 'lệnh SX',
     mo_ta: '1 dòng = 1 đợt sản xuất (lệnh SX) theo ngày kế hoạch. Dựng bảng kiểu "Test Run bàn A/B / máy tự động".',
-    loc: locList(['ngay', 'chuyen', 'trang_thai_lsx', 'tim']), cot: COT_DOT_SX, run: runDotSanXuat },
+    loc: locList(['ngay', 'chuyen', 'trang_thai_lsx', 'nhom_bo_sung', 'tim']), cot: COT_DOT_SX, run: runDotSanXuat },
   { ma: 'DS_TEST_RUN', ten: 'Test Run hôm nay (có mặt / đã test)', don_vi_dong: 'lệnh SX',
     mo_ta: '1 dòng = 1 lệnh liên quan Test Run. Mặc định (để trống Ngày) = "đang chờ test ở Test Run hiện tại" + "đã test '
       + 'HÔM NAY" (kèm kết quả + thông tin test của QC: người test, loại, giờ, ghi chú, QC xác nhận). Đặt Ngày cụ thể để xem '
       + 'nhánh "đã test" của ngày khác; chọn "Loại danh sách" để chỉ xem 1 nhóm. Cột "Tình trạng" phân biệt Đang chờ test / Đã test.',
-    loc: locList(['ngay_testrun', 'loai_ds_testrun', 'chuyen', 'tim']), cot: COT_TEST_RUN, run: runTestRun },
+    loc: locList(['ngay_testrun', 'loai_ds_testrun', 'chuyen', 'nhom_bo_sung', 'tim']), cot: COT_TEST_RUN, run: runTestRun },
   { ma: 'DS_TEM', ten: 'Tem (KCS / Sửa / OQC / Giao)', don_vi_dong: 'tem',
     mo_ta: '1 dòng = 1 tem theo ngày in tem, kèm sổ cái số lượng từng công đoạn.',
-    loc: locList(['ngay', 'trang_thai_tem', 'chuyen', 'tim']), cot: COT_TEM, run: runTem },
+    loc: locList(['ngay', 'trang_thai_tem', 'chuyen', 'nhom_bo_sung', 'tim']), cot: COT_TEM, run: runTem },
   { ma: 'DS_PHAN_IN_VAO_TRAM', ten: 'Phần in VÀO checkpoint trong ngày (+ cờ hoàn thành)', don_vi_dong: 'phần in',
     mo_ta: '1 dòng = 1 PHẦN IN có thời gian VÀO 1 checkpoint trong ngày (nguồn lịch sử luân chuyển). '
       + 'Cột "Hoàn thành trong ngày" cho biết phần in nào đã rời checkpoint đó trong cùng ngày. '
       + 'Lọc Trạm = READY + Ngày = Hôm nay ⇒ "toàn bộ phần in vào READY hôm nay + cái nào đã hoàn thành". (best-effort tracking.)',
-    loc: locList(['ngay', 'tram', 'tim']), cot: COT_VAO_TRAM, run: runPhanInVaoTram },
+    loc: locList(['ngay', 'tram', 'nhom_bo_sung', 'tim']), cot: COT_VAO_TRAM, run: runPhanInVaoTram },
   { ma: 'DS_HOAN_THANH_TRAM', ten: 'Phần in hoàn thành / rời checkpoint (theo ngày)', don_vi_dong: 'phần in',
     mo_ta: '1 dòng = 1 phần in ĐÃ HOÀN THÀNH / rời 1 checkpoint. Lọc trạm = READY + ngày = Hôm nay '
       + '⇒ "danh sách READY đã hoàn thành hôm nay". (Nguồn lịch sử luân chuyển — best-effort.) '
       + 'Xem "đang ở READY hiện tại" ở nguồn "Phần in / đợt vải" với bộ lọc Trạm = READY.',
-    loc: locList(['ngay', 'tram', 'tim']), cot: COT_HOAN_THANH, run: runHoanThanhTram },
+    loc: locList(['ngay', 'tram', 'nhom_bo_sung', 'tim']), cot: COT_HOAN_THANH, run: runHoanThanhTram },
   { ma: 'DS_READY_DANG_O', ten: 'Đang ở READY (hiện tại / theo ngày)', don_vi_dong: 'phần in',
     mo_ta: '1 dòng = 1 PHẦN IN. Để TRỐNG ngày = danh sách đang ở READY hiện tại (chưa QC, còn đợt chưa release — khớp màn '
       + 'Chuẩn bị KT/QC). CHỌN ngày (Hôm nay/cụ thể) = GỘP thêm phần in ĐÃ QA xác nhận READY ngày đó (kèm giờ/người QA). '
       + 'Cột "Tình trạng" phân biệt "Đang ở READY" / "Đã READY (QA)".',
-    loc: locList(['ngay_ready', 'khach', 'tim']), cot: COT_READY_DANG_O, run: runReadyDangO },
+    loc: locList(['ngay_ready', 'khach', 'nhom_bo_sung', 'tim']), cot: COT_READY_DANG_O, run: runReadyDangO },
   { ma: 'DS_READY_HOAN_THANH', ten: 'Phần in đã hoàn thành READY (QC xác nhận, theo ngày)', don_vi_dong: 'phần in',
     mo_ta: '1 dòng = 1 PHẦN IN được QC xác nhận READY. Lọc ngày = Hôm nay ⇒ khớp sidebar "Đã hoàn thành" của màn QC READY '
       + '(kèm người xác nhận + giờ).',
-    loc: locList(['ngay', 'tim']), cot: COT_READY_HOAN_THANH, run: runReadyHoanThanh },
+    loc: locList(['ngay', 'nhom_bo_sung', 'tim']), cot: COT_READY_HOAN_THANH, run: runReadyHoanThanh },
   { ma: 'DS_TONG_HOP_TRAM', ten: 'Tổng hợp theo trạm (checkpoint)', don_vi_dong: 'trạm',
     mo_ta: '1 dòng = 1 checkpoint: vào/rời hôm nay, đang ở, đúng hạn, sắp nghẽn, nghẽn, điểm nghẽn. '
       + 'Dựng bảng kiểu "Kết quả pha màu - chụp khuôn - film - CNSP".',

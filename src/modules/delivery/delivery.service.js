@@ -119,7 +119,8 @@ async function getDetail(giaoHangId) {
 //   nguyên địa điểm đã giao. Thiếu migration ⇒ repository tự bỏ qua, không chặn việc lập phiếu.
 async function createGiaoHang({ items, temIds, ngayGiao, ghiChu, giaoHangTai, xacNhan }, actorId) {
   const list = Array.isArray(items) && items.length
-    ? items.map((it) => ({ temId: it.temId, nguon: it.nguon === 'SUA' ? 'SUA' : 'KCS', soLuong: it.soLuong != null ? Number(it.soLuong) : null }))
+    ? items.map((it) => ({ temId: it.temId, nguon: it.nguon === 'SUA' ? 'SUA' : 'KCS', soLuong: it.soLuong != null ? Number(it.soLuong) : null,
+      klg: it.klg }))
     : (Array.isArray(temIds) ? temIds.map((t) => ({ temId: t, nguon: 'KCS', soLuong: null })) : []);
   if (list.length === 0) throw new AppError('Chọn ít nhất một tem để giao', { status: 422, errorCode: 'NO_TEM' });
   const temIdList = [...new Set(list.map((x) => x.temId))];
@@ -133,6 +134,11 @@ async function createGiaoHang({ items, temIds, ngayGiao, ghiChu, giaoHangTai, xa
       giaoHangTai: typeof giaoHangTai === 'string' ? giaoHangTai.trim().slice(0, 500) || null : null,
     }, actorId);
     for (const it of list) await repo.addTem(client, ghId, it.temId, it.soLuong, it.nguon, actorId);
+    // KLG hàng RCS (mig 102) nhập ở modal in — ghi cùng transaction; thiếu cột thì repository bỏ qua.
+    const coKlg = list.filter((it) => it.klg != null && it.klg !== '');
+    if (coKlg.length) {
+      await repo.setKlgDong(client, ghId, coKlg.map((it) => ({ tem_id: it.temId, nguon: it.nguon, klg: it.klg })), actorId);
+    }
     return ghId;
   });
   sockets.emit('delivery:updated', { giaoHangId: id, stage: 'TAO' });
@@ -246,9 +252,11 @@ async function confirmGiao(giaoHangId, actorId) {
 //   ChiTiet[]… — nên router ERP nhận `undefined` cả 4 tham số và proc GHI RỖNG mà vẫn trả
 //   `success:true`. Sửa 16/09/2026 theo router ERP người dùng gửi.)
 // ⚠ Bọc try/catch TOÀN BỘ: kể cả câu đọc dữ liệu mô tả hỏng cũng không được kéo theo lỗi cho `confirmGiao`.
+// ⚠ TRẢ kết quả `{ ok, error?, bo_qua? }` của `erp.guiPhieuGiao` — nhánh `confirmGiao` không `await`
+//   nên không dùng tới, nhưng nút "Gửi lại ERP" thì cần để báo cho người bấm. Lỗi vẫn bị NUỐT như cũ.
 async function guiErpPhieuGiao(giaoHangId, gh, tems, actorId) {
   try {
-    await erp.guiPhieuGiao({
+    return await erp.guiPhieuGiao({
       IDPhieuGiao: gh.ma_phieu_giao,
       // Ngày chứng từ = NGÀY GIAO của phiếu (lùi về hôm nay nếu thiếu).
       Ngayct: ngayErp(gh.ngay_giao),
@@ -257,7 +265,80 @@ async function guiErpPhieuGiao(giaoHangId, gh, tems, actorId) {
     }, { giaoHangId, actorId });
   } catch (e) {
     console.error(`[gui-erp-phieu-giao] ✗ Không gửi được (phiếu ${gh.ma_phieu_giao}): ${e.message}`);
+    return { ok: false, error: e.message };
   }
+}
+
+// ─── GỬI LẠI PHIẾU GIAO SANG ERP (bằng tay) ───────────────────────────────────────────────────
+// ⚠⚠ VÌ SAO CẦN: chiều đẩy chạy NGẦM và KHÔNG BAO GIỜ ném lỗi ⇒ ERP hỏng thì phiếu vẫn giao bình
+//   thường trong MES, nhưng bên ERP **không có gì cả** và chẳng ai biết cho tới khi mở
+//   *Hệ thống → Cài đặt API → Lịch sử*. Trước khi có nút này, phiếu đã trượt là **mất luôn** — không
+//   có đường nào đẩy lại ngoài việc sửa tay dưới DB.
+//   Ca thật: 16/09 → 18/09/2026 có 3 phiếu (`SQ026LA-009547` · `-009612` · `-009650`) ăn HTTP 500
+//   *"MES_spr_MES2SQ0 expects parameter '@pID', which was not supplied"* — lỗi nằm ở ROUTER ERP
+//   (`request.input('pIDPhieuGiao', …)` trong khi proc khai `@pID`), payload MES gửi đã đúng hợp đồng.
+//   Sửa xong bên ERP thì bấm nút này để đẩy lại 3 phiếu đó, không phải giao lại hàng.
+// ⚠ Khác 2 đường gọi kia: hàm này **CÓ `await`** và TRẢ KẾT QUẢ cho người bấm (họ đang đứng chờ để
+//   biết ERP đã nhận chưa) — đừng chạy ngầm ở đây.
+// ⚠ CHỈ cho phiếu ĐÃ XÁC NHẬN GIAO: phiếu `TAO` chưa cộng sổ cái, phiếu `HUY` thì ERP không nên nhận.
+async function guiLaiErp(giaoHangId, actorId) {
+  const gh = await repo.getGiaoHang(giaoHangId);
+  if (!gh) throw new AppError('Phiếu giao không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  if (gh.trang_thai !== 'DA_GIAO') {
+    throw new AppError('Chỉ gửi lại được phiếu ĐÃ xác nhận giao', { status: 409, errorCode: 'CHUA_GIAO' });
+  }
+  const tems = await repo.getGiaoHangTems(giaoHangId);
+  const kq = await guiErpPhieuGiao(giaoHangId, gh, tems, actorId);
+  // `guiErpPhieuGiao` nuốt mọi lỗi (trả undefined khi ném) ⇒ chuẩn hóa về 1 hình dạng cho FE.
+  if (kq && kq.ok) return { ok: true, ma_phieu_giao: gh.ma_phieu_giao, so_tem: tems.length };
+  if (kq && kq.bo_qua) {
+    throw new AppError('API "Gửi phiếu giao" đang TẮT ở Hệ thống → Cài đặt API',
+      { status: 409, errorCode: 'API_DANG_TAT' });
+  }
+  throw new AppError((kq && kq.error) || 'ERP không nhận được phiếu — xem Hệ thống → Cài đặt API → Lịch sử',
+    { status: 502, errorCode: 'ERP_LOI' });
+}
+
+// ─── ĐẶT "GIAO HÀNG TẠI" CHO PHIẾU ĐÃ LẬP (dùng khi IN LẠI) ────────────────────────────────
+// Lúc TẠO phiếu, địa điểm được hỏi trước rồi lưu vào chính phiếu (mig 099). Nhưng in LẠI từ tab
+// *Phiếu giao* / 2 sidebar thì phiếu đã tồn tại ⇒ muốn đổi nơi giao phải ghi đè vào phiếu, nếu không
+// tờ in ra vẫn mang địa điểm cũ mà người dùng tưởng đã sửa.
+// ⚠⚠ GHI ĐÈ VÀO PHIẾU là CỐ Ý (không phải "chỉ áp cho lần in này"): địa điểm là thuộc tính của
+//   CHUYẾN GIAO — in 2 tờ cho cùng một phiếu mà mỗi tờ một nơi giao thì không đối soát được.
+//   Mọi lần đổi đều ghi `audit_log` (`SUA_GIAO_HANG_TAI`, lưu cả giá trị cũ).
+// ⚠ Phiếu ĐÃ HỦY thì chặn — sửa dữ liệu của phiếu không còn hiệu lực chỉ gây hiểu nhầm khi tra cứu.
+async function datGiaoHangTai(giaoHangId, giaoHangTai, actorId) {
+  const gh = await repo.getGiaoHang(giaoHangId);
+  if (!gh) throw new AppError('Phiếu giao không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  if (gh.trang_thai === 'HUY') {
+    throw new AppError('Phiếu đã hủy — không sửa được nơi giao', { status: 409, errorCode: 'DA_HUY' });
+  }
+  const moi = giaoHangTai == null ? '' : String(giaoHangTai).trim().slice(0, 500);
+  // Không đổi gì ⇒ không ghi, không audit (in lại nhiều lần không được đẻ ra hàng chục dòng audit).
+  if ((gh.giao_hang_tai || '') === moi) return { id: giaoHangId, giao_hang_tai: gh.giao_hang_tai || null, doi: false };
+
+  const kq = await repo.setGiaoHangTai(giaoHangId, moi, actorId);
+  if (!kq) {
+    throw new AppError('Chưa chạy migration 099 — chưa lưu được "Giao hàng tại"',
+      { status: 409, errorCode: 'THIEU_MIGRATION' });
+  }
+  try { await repo.insertGiaoHangTaiAudit(giaoHangId, gh, moi, actorId); }
+  catch (e) { console.error(`[giao-hang] ✗ Ghi audit SUA_GIAO_HANG_TAI lỗi: ${e.message}`); }
+  return { id: giaoHangId, giao_hang_tai: kq.giao_hang_tai, doi: true };
+}
+
+// ─── KLG HÀNG RCS KHI IN LẠI (mig 102) ────────────────────────────────────────────────────────
+// `dong` = [{ id (giao_hang_tem.id), klg }]. Ghi đè vào phiếu (in lại ra đúng số) — như "Giao hàng tại".
+async function datKlg(giaoHangId, dong, actorId) {
+  const gh = await repo.getGiaoHang(giaoHangId);
+  if (!gh) throw new AppError('Phiếu giao không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  if (gh.trang_thai === 'HUY') throw new AppError('Phiếu đã hủy — không sửa được KLG', { status: 409, errorCode: 'DA_HUY' });
+  if (!(await repo.coCotKlg())) {
+    throw new AppError('Chưa chạy migration 102 — chưa lưu được KLG', { status: 409, errorCode: 'THIEU_MIGRATION' });
+  }
+  const ds = (Array.isArray(dong) ? dong : []).filter((d) => d && d.id);
+  const n = await repo.setKlgDong(null, giaoHangId, ds, actorId);
+  return { id: giaoHangId, so_dong: n };
 }
 
 // `sql.DateTime` bên ERP: gửi chuỗi `YYYY/MM/DD` (khuôn của `ghi-in-tem` đang chạy thật).
@@ -274,4 +355,5 @@ module.exports = {
   listTemChoTich, tichTem, boTichTem, traCuuTemTich,
   historyGiao, doneGiao, huyPhieuGiao, listPhieuGiaoCancelable,
   guiErpPhieuGiao, // export để kiểm thực payload + gửi lại bằng tay khi ERP lỗi
+  guiLaiErp, datGiaoHangTai, datKlg,
 };

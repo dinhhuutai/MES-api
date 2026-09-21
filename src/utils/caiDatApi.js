@@ -98,6 +98,17 @@ const DANH_MUC_API = [
     macDinh: () => env.erp.guiPhanLoaiLoiEnabled,
     url: () => env.erp.guiPhanLoaiLoiUrl,
   },
+  // SỬA ĐẠT tem 17 (21/09/2026) — proc RIÊNG `MES_spr_MES2SK6` để KHÔNG cộng vào sản lượng in.
+  {
+    ma: 'ERP_GUI_SUA_DAT',
+    ten: 'Gửi sửa đạt (tem 17) sang ERP',
+    mo_ta: 'Gửi ĐÚNG 1 LẦN mỗi lượt xác nhận SỬA ĐẠT (proc MES_spr_MES2SK6, cùng 20 tham số với "Báo ERP mỗi lần in tem"). '
+      + 'In lại tem 17 KHÔNG gửi lại. Chạy ngầm — TẮT hay lỗi đều KHÔNG chặn việc xác nhận sửa; '
+      + 'lượt trượt gửi lại ở sidebar "Đã hoàn thành" của màn Sửa.',
+    canh_bao: null,
+    macDinh: () => env.erp.guiSuaDatEnabled,
+    url: () => env.erp.guiSuaDatUrl,
+  },
   {
     ma: 'ERP_DONG_BO_VAI',
     ten: 'Đồng bộ đợt vải từ ERP',

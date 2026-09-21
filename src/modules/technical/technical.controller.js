@@ -93,11 +93,16 @@ const confirmBulk = asyncHandler(async (req, res) => {
   return ok(res, data, `Đã xác nhận ${data.okCount} phần in`);
 });
 
-const confirmQC = asyncHandler(async (req, res) =>
-  ok(res, await service.confirmQC(req.params.phanInId, req.user.id), 'Đã QC xác nhận — READY hoàn thành'));
+// `dotVaiIds` (tùy chọn) = QC xác nhận THEO ĐỢT VẢI (21/09/2026).
+const confirmQC = asyncHandler(async (req, res) => {
+  const dv = Array.isArray(req.body?.dotVaiIds) ? req.body.dotVaiIds : [];
+  return ok(res, await service.confirmQC(req.params.phanInId, req.user.id, dv), 'Đã QC xác nhận');
+});
 
+// Nhận `items: [{ id, dot_vai_ids }]` (theo đợt) hoặc `phanInIds` (cũ, mức phần in).
 const qcConfirmBatch = asyncHandler(async (req, res) => {
-  const ids = Array.isArray(req.body.phanInIds) ? req.body.phanInIds : [];
+  const ids = Array.isArray(req.body.items) ? req.body.items
+    : (Array.isArray(req.body.phanInIds) ? req.body.phanInIds : []);
   const data = await service.confirmQcBatch(ids, req.user.id);
   return ok(res, data, `Đã QC xác nhận ${data.okCount} phần in`);
 });

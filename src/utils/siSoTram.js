@@ -48,7 +48,7 @@
 //   không viết comment `-- …` bên trong chuỗi SQL; chú thích để ngoài như file này.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const { khongReadyTuDongSql, conDotChuaReadySql } = require('./tech');
+const { khongReadyTuDongSql, conDotChuaReadySql, conDotChoQcSql } = require('./tech');
 
 const VN = "AT TIME ZONE 'Asia/Ho_Chi_Minh'";
 
@@ -63,7 +63,11 @@ const LAT_READY = (pinCol) => `LEFT JOIN LATERAL (
   SELECT count(*) FILTER (WHERE xcp.ma_checkpoint IN ('KHUON','MUC'))::int AS n_km,
          max(xkq.tg_xac_nhan) FILTER (WHERE xcp.ma_checkpoint IN ('KHUON','MUC')) AS moc_km,
          max(xkq.tg_xac_nhan) FILTER (WHERE xcp.ma_checkpoint = 'MUC') AS moc_muc,
-         max(xkq.tg_xac_nhan) FILTER (WHERE xcp.ma_checkpoint = 'QC_XAC_NHAN') AS moc_qc
+         max(xkq.tg_xac_nhan) FILTER (WHERE xcp.ma_checkpoint = 'QC_XAC_NHAN') AS moc_qc,
+         (SELECT max(xd.tg_xac_nhan) FROM ready_xac_nhan_dot xd JOIN checkpoint xdc ON xdc.id = xd.checkpoint_id
+           WHERE xd.phan_in_id = ${pinCol} AND xd.trang_thai = 'DAT' AND xdc.ma_checkpoint IN ('KHUON','MUC')) AS moc_dot_kt,
+         (SELECT max(xd.tg_xac_nhan) FROM ready_xac_nhan_dot xd JOIN checkpoint xdc ON xdc.id = xd.checkpoint_id
+           WHERE xd.phan_in_id = ${pinCol} AND xd.trang_thai = 'DAT' AND xdc.ma_checkpoint = 'QC_XAC_NHAN') AS moc_dot_qc
     FROM ket_qua_checkpoint xkq JOIN checkpoint xcp ON xcp.id = xkq.checkpoint_id
    WHERE xkq.phan_in_id = ${pinCol} AND xkq.trang_thai = 'DAT'
 ) rdy ON true`;
@@ -222,8 +226,16 @@ const DV = {
   //   sau khi kỹ thuật xong, không tồn đọng; đừng thấy tồn nhỏ mà tưởng hỏng.
   // ⚠⚠ BẮT BUỘC có `${JOIN_PIN}`: `MOC_KT_XONG` đọc `kh.ten_khach_hang` (khách II/AD miễn Khuôn).
   //   Bản cũ KHÔNG join vì không cần `kh` — bỏ quên là lỗi `missing FROM-clause entry for table "kh"`.
-  READY_QC: `SELECT pin.id AS phan_in_id, ${MOC_KT_XONG} AS tg_vao,
-      CASE WHEN ${conDotChuaReadySql('pin.id')} THEN NULL ELSE COALESCE(rdy.moc_qc, roi.moc_roi) END AS tg_ra, ${NHAN_TRONG}
+  // ⚠⚠⚠ ĐỔI 21/09/2026 — QC XÁC NHẬN THEO ĐỢT VẢI + HÀNG ĐỢI QC CHỈ GỒM ĐỢT KỸ THUẬT ĐÃ XONG.
+  //   Bản cũ: tg_vao = mốc KT xong ở dòng TỔNG (có thể là của đợt CŨ) và tg_ra = NULL hễ còn đợt chưa
+  //   Ready ⇒ phần in có đợt vải MỚI mà kỹ thuật CHƯA đụng tới vẫn bị đếm vào ô TỒN CUỐI của QC (lỗi
+  //   người dùng báo). Nay gương `technical.repository` OUTER_WHERE màn QC: đang ở hàng đợi QC ⇔ còn
+  //   đợt đang chờ mà KT đã xong + QC chưa xác nhận (`conDotChoQcSql`).
+  READY_QC: `SELECT pin.id AS phan_in_id,
+      CASE WHEN ${conDotChoQcSql('pin.id', 'kh.ten_khach_hang')} THEN GREATEST(${MOC_KT_XONG}, rdy.moc_dot_kt)
+           ELSE ${MOC_KT_XONG} END AS tg_vao,
+      CASE WHEN ${conDotChoQcSql('pin.id', 'kh.ten_khach_hang')} THEN NULL
+           ELSE COALESCE(GREATEST(rdy.moc_qc, rdy.moc_dot_qc), roi.moc_roi) END AS tg_ra, ${NHAN_TRONG}
     FROM phan_in pin ${JOIN_PIN}
     ${LAT_READY('pin.id')} ${LAT_ROI_READY('pin.id')}
     WHERE pin.dang_hoat_dong AND ${khongReadyTuDongSql('pin.id')}`,

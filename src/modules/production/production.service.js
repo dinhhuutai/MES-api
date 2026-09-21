@@ -14,7 +14,7 @@ const qaRepo = require('../quality/quality.repository');          // qc_tra_ve (
 const thongBao = require('../thongbao/thongbao.service');         // chuông Kỹ thuật (mig 085)
 const { caFromParts, maNgayCa, ngayTuMaNgayCa } = require('../../utils/ca');
 const { layBarcodeTem, layNhieuBarcodeTem } = require('../../utils/erpTemBarcode');
-const { ghiInTem } = require('../../utils/erpGhiInTem');
+const { ghiInTem, taoPayload } = require('../../utils/erpGhiInTem');
 const { apiChoPhepPhanIn } = require('../../utils/caiDatApi');
 
 // Gắn `phan_in_list` (1 dòng / phần in) cho các lệnh GOM SET — màn Xác nhận chạy tách dòng theo phần in,
@@ -415,35 +415,12 @@ async function guiGhiInTem(items, actorId, ngayCt = null) {
       const idMes = await repo.capIdMes();
       if (idMes == null) return; // hỏng khâu cấp số thì các tem sau cũng vậy — dừng luôn cho khỏi spam log
 
-      const laBoSung = r.la_bo_sung === true;
-      const payload = {
-        IDMES: idMes,
-        Ngayct: r.ngay_ct,
-        Ngayca: r.ma_ngay_ca,
-        Tugio: r.tu_gio,
-        Dengio: r.den_gio,
-        Chuyentruong: r.chuyen_truong,
-        Catruong: r.ca_truong,
-        dsthoin: r.tho_in,
-        // TỔ IN (mig 084) — `ma_to` của tổ gán cho phiếu ở khối Phân công. Chưa gán / chưa chạy
-        // migration ⇒ `chuanHoa` đổi thành '' (đúng bằng hiện trạng trước mig 084).
-        Toin: r.ma_to,
-        banin: r.ma_chuyen,
-        IDDotNhanvai: r.id_dot_nhan_vai,
-        DDHID: r.ddh_id,
-        DDHsubID: r.ddh_sub_id,
-        BarcodeIn: r.ma_tem,
-        // Chỉ điền khi đợt vải THẬT SỰ là loại BỔ SUNG; ngược lại gửi giá trị RỖNG ĐÚNG KIỂU
-        // (`0` / `''`) chứ không gửi null — xem `chuanHoa` trong `utils/erpGhiInTem.js`.
-        inbosung: laBoSung ? 1 : 0,
-        Lenhbosung: laBoSung ? r.ma_lenh_san_xuat : '',
-        // Bên gọi truyền `soLuong` khi SL tem ≠ SL cần báo — tem gia công lưu `so_luong = đạt + hủy`
-        // (vải thực nhận) nên phải báo ĐẠT ở đây và HỦY ở `Soluongloi`, không thì ERP đếm hủy 2 lần.
-        Soluong: it.soLuong != null ? Number(it.soLuong) || 0 : r.so_luong,
-        Soluongloi: Number(it.soLuongHuy) || 0,
-        SOLUONGTHIEU: Number(it.soLuongThieu) || 0,
-        GCMauvai: r.gc_mau_vai,
-      };
+      // Dựng 20 trường ở NGUỒN CHUNG `utils/erpGhiInTem.taoPayload` (dùng chung với sửa đạt tem 17).
+      // Bên gọi truyền `soLuong` khi SL tem ≠ SL cần báo — tem gia công lưu `so_luong = đạt + hủy`
+      // (vải thực nhận) nên phải báo ĐẠT ở đây và HỦY ở `Soluongloi`, không thì ERP đếm hủy 2 lần.
+      const payload = taoPayload(r, {
+        idMes, soLuong: it.soLuong, soLuongHuy: it.soLuongHuy, soLuongThieu: it.soLuongThieu,
+      });
       const kq = await ghiInTem(payload);
       if (kq.bo_qua) continue; // tắt qua ERP_GHI_IN_TEM_ENABLED — không ghi audit lỗi
       // ⚠ Truyền cả `kq.data` (phản hồi ERP) để lịch sử hiện được "gửi gì → nhận gì" trong 1 màn.

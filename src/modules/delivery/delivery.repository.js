@@ -253,6 +253,50 @@ async function coCotGiaoHangTai() {
   return _coGiaoHangTai;
 }
 
+// Sửa "Giao hàng tại" của phiếu ĐÃ LẬP (dùng khi IN LẠI — xem `delivery.service.datGiaoHangTai`).
+// ⚠ Thiếu mig 099 ⇒ không có cột ⇒ trả `null`; service đổi thành 409 có thông điệp rõ thay vì ghi
+//   lặng lẽ vào hư vô. Chuỗi rỗng ⇒ xóa trắng (NULL), đúng quy ước `khachhang.update`.
+async function setGiaoHangTai(giaoHangId, giaoHangTai, actorId) {
+  if (!(await coCotGiaoHangTai())) return null;
+  const { rows } = await query(
+    `UPDATE giao_hang SET giao_hang_tai = $2, updated_by = $3, updated_date = CURRENT_TIMESTAMP
+      WHERE id = $1 RETURNING id, giao_hang_tai`.replace(/\s+/g, ' '),
+    [giaoHangId, giaoHangTai === '' || giaoHangTai == null ? null : giaoHangTai, actorId || null]
+  );
+  return rows[0] || null;
+}
+
+// KLG hàng RCS (mig 102) — dò RIÊNG, chỉ cache khi ĐÃ có cột (chạy migration xong nhận ngay).
+let _coKlg = false;
+async function coCotKlg() {
+  if (_coKlg) return true;
+  const { rows } = await query(
+    "SELECT 1 FROM information_schema.columns WHERE table_name='giao_hang_tem' AND column_name='klg' LIMIT 1");
+  _coKlg = rows.length > 0;
+  return _coKlg;
+}
+
+// Ghi KLG cho các dòng của phiếu. `dong` = [{ id (giao_hang_tem.id) | tem_id+nguon, klg }].
+// ⚠ KLG rỗng / ≤ 0 / không phải số ⇒ NULL (xóa), không ghi số rác. Trả số dòng đã ghi (0 nếu thiếu cột).
+// ⚠ Chỉ đụng dòng THUỘC ĐÚNG phiếu (`giao_hang_id = $1`) — id lạ gửi lên bị bỏ qua, không ghi nhầm phiếu khác.
+async function setKlgDong(clientOrNull, giaoHangId, dong = [], actorId) {
+  if (!(await coCotKlg())) return 0;
+  const run = clientOrNull ? clientOrNull.query.bind(clientOrNull) : query;
+  let n = 0;
+  for (const d of dong) {
+    const so = Number(String(d.klg ?? '').replace(',', '.'));
+    const klg = Number.isFinite(so) && so > 0 ? so : null;
+    const r = d.id
+      ? await run(`UPDATE giao_hang_tem SET klg=$3, updated_by=$4, updated_date=CURRENT_TIMESTAMP
+                    WHERE giao_hang_id=$1 AND id=$2`.replace(/\s+/g, ' '), [giaoHangId, d.id, klg, actorId || null])
+      : await run(`UPDATE giao_hang_tem SET klg=$4, updated_by=$5, updated_date=CURRENT_TIMESTAMP
+                    WHERE giao_hang_id=$1 AND tem_id=$2 AND nguon=$3`.replace(/\s+/g, ' '),
+        [giaoHangId, d.tem_id, d.nguon === 'SUA' ? 'SUA' : 'KCS', klg, actorId || null]);
+    n += r.rowCount || 0;
+  }
+  return n;
+}
+
 // Thêm tem vào phiếu giao TỪNG PHẦN, TÁCH THEO NGUỒN (KCS 15- / SỬA 17- — như OQC).
 // so_luong bị chặn theo SL CÒN GIAO của ĐÚNG nguồn: KCS = (sl_oqc_dat−sl_oqc_dat_sua)−(sl_da_giao−sl_da_giao_sua);
 // SỬA = sl_oqc_dat_sua−sl_da_giao_sua. 1 tem có thể vào phiếu 2 dòng (KCS + SỬA) — khớp unique
@@ -277,13 +321,14 @@ async function addTem(client, giaoHangId, temId, soLuong, nguon, actorId) {
 //   · `giao_hang.giao_hang_tai`   (mig 099)
 //   · `khach_hang.dia_chi(_giao)` (mig 099)
 //   · `don_hang.bo_phan_bh`       (mig 090)
+//   · `khach_hang.ten_day_du`     (mig 101)
 let _cotThem = null;
 async function cotPhieuThem() {
   if (_cotThem && _cotThem.du) return _cotThem;      // chỉ cache khi ĐÃ đủ ⇒ chạy migration xong nhận ngay
   const { rows } = await query(
     `SELECT table_name, column_name FROM information_schema.columns
       WHERE (table_name='giao_hang'  AND column_name='giao_hang_tai')
-         OR (table_name='khach_hang' AND column_name IN ('dia_chi','dia_chi_giao'))
+         OR (table_name='khach_hang' AND column_name IN ('dia_chi','dia_chi_giao','ten_day_du'))
          OR (table_name='don_hang'   AND column_name='bo_phan_bh')`.replace(/\s+/g, ' ')
   );
   const co = (t, c) => rows.some((r) => r.table_name === t && r.column_name === c);
@@ -291,8 +336,9 @@ async function cotPhieuThem() {
     giaoHangTai: co('giao_hang', 'giao_hang_tai'),
     diaChi: co('khach_hang', 'dia_chi') && co('khach_hang', 'dia_chi_giao'),
     boPhanBh: co('don_hang', 'bo_phan_bh'),
+    tenDayDu: co('khach_hang', 'ten_day_du'),
   };
-  _cotThem.du = _cotThem.giaoHangTai && _cotThem.diaChi && _cotThem.boPhanBh;
+  _cotThem.du = _cotThem.giaoHangTai && _cotThem.diaChi && _cotThem.boPhanBh && _cotThem.tenDayDu;
   return _cotThem;
 }
 
@@ -304,9 +350,10 @@ async function getGiaoHang(giaoHangId) {
   const colDc = c.diaChi ? 'kh.dia_chi, kh.dia_chi_giao'
     : "NULL::text AS dia_chi, NULL::text AS dia_chi_giao";
   const colBp = c.boPhanBh ? 'dh.bo_phan_bh' : "NULL::text AS bo_phan_bh";
+  const colTen = c.tenDayDu ? 'kh.ten_day_du AS ten_day_du_khach' : "NULL::text AS ten_day_du_khach";
   const { rows } = await query(
     `SELECT gh.id, gh.ma_phieu_giao, gh.ngay_giao, gh.trang_thai, gh.ghi_chu, gh.created_date,
-            ${colGht}, ${colDc}, ${colBp},
+            ${colGht}, ${colDc}, ${colBp}, ${colTen},
             dh.ma_don_hang, kh.ten_khach_hang,
             (SELECT count(*) FROM giao_hang_tem gt WHERE gt.giao_hang_id = gh.id)::int AS so_tem,
             (SELECT COALESCE(SUM(gt.so_luong_giao),0)::int FROM giao_hang_tem gt WHERE gt.giao_hang_id = gh.id) AS tong_sl
@@ -486,6 +533,19 @@ async function insertHuyPhieuAudit(giaoHangId, gh, lyDo, actorId) {
   );
 }
 
+// Audit khi sửa "Giao hàng tại" lúc in lại (lưu CẢ giá trị cũ để truy được ai đổi, từ đâu sang đâu).
+async function insertGiaoHangTaiAudit(giaoHangId, gh, moi, actorId) {
+  await query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('giao_hang', $1, 'SUA_GIAO_HANG_TAI', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`,
+    [String(giaoHangId), JSON.stringify({
+      ma_phieu_giao: gh.ma_phieu_giao,
+      giao_hang_tai_cu: gh.giao_hang_tai || null,
+      giao_hang_tai_moi: moi || null,
+    }), actorId]
+  );
+}
+
 // Dòng tem của 1 phiếu giao. Trả ĐỦ thông tin để IN PHIẾU (code phần · mã hàng · màu · kích) — bản
 // cũ chỉ có mã tem + mã lệnh nên phiếu in ra không đọc được là hàng gì.
 // ⚠ `tem` KHÔNG lưu phần in (giới hạn đã biết, DATABASE.md §4) ⇒ phải đi vòng qua LỆNH:
@@ -493,11 +553,15 @@ async function insertHuyPhieuAudit(giaoHangId, gh, lyDo, actorId) {
 //   ĐẠI DIỆN như `listTemSanSang`. Kiểu in GỘP nhóm theo chính `phan_list` nên vẫn nhất quán.
 // ⚠ KHÔNG đặt comment `--` trong chuỗi SQL: nó bị `.replace(/\s+/g,' ')` gộp 1 dòng (§9).
 async function getGiaoHangTems(giaoHangId) {
+  // Tên đầy đủ công ty (mig 101) ở MỨC DÒNG — phiếu có thể gom nhiều đơn/khách.
+  const c = await cotPhieuThem();
+  const colTen = c.tenDayDu ? 'kh.ten_day_du' : 'NULL::text';
+  const colKlg = (await coCotKlg()) ? 'gt.klg' : 'NULL::numeric AS klg';
   const sql =
     // ⚠ `gt.ghi_chu` + SL OQC đạt phục vụ 2 cột tùy chọn của mẫu phiếu (xem `TRUONG_DONG_PHIEU`).
     //   Trả CẢ `sl_oqc_dat_sua` để FE lấy đúng số theo NGUỒN của dòng: nguồn SỬA thì SL đạt là
     //   `sl_oqc_dat_sua`, nguồn KCS là phần còn lại — lấy nhầm là in ra số lớn hơn thực tế.
-    `SELECT gt.id, gt.tem_id, gt.so_luong_giao, gt.nguon, gt.ghi_chu, t.ma_tem, t.trang_thai,
+    `SELECT gt.id, gt.tem_id, gt.so_luong_giao, gt.nguon, gt.ghi_chu, ${colKlg}, t.ma_tem, t.trang_thai, t.gc_mau_vai,
             COALESCE(t.sl_oqc_dat,0) AS sl_oqc_dat, COALESCE(t.sl_oqc_dat_sua,0) AS sl_oqc_dat_sua,
             (t.tem_goc_id IS NOT NULL) AS la_tem_sua,
             ls.ma_lenh_san_xuat,
@@ -505,13 +569,14 @@ async function getGiaoHangTems(giaoHangId) {
                FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
                JOIN phan_in pin ON pin.id = dv.phan_in_id WHERE lsd.lenh_san_xuat_id = ls.id) AS phan_list,
             info.ma_hang, info.mau_vai, info.kich_vai, info.kich_phim,
-            info.ten_khach_hang, info.ma_don_hang
+            info.ten_khach_hang, info.ma_don_hang, info.ten_day_du_khach
      FROM giao_hang_tem gt
      JOIN tem t ON t.id = gt.tem_id
      LEFT JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
      LEFT JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
      LEFT JOIN LATERAL (
-       SELECT mh.ma_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim, kh.ten_khach_hang, dh.ma_don_hang
+       SELECT mh.ma_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim, kh.ten_khach_hang, dh.ma_don_hang,
+              ${colTen} AS ten_day_du_khach
        FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
        JOIN phan_in pin ON pin.id = dv.phan_in_id JOIN ma_hang mh ON mh.id = pin.ma_hang_id
        JOIN don_hang dh ON dh.id = mh.don_hang_id JOIN khach_hang kh ON kh.id = dh.khach_hang_id
@@ -567,7 +632,9 @@ async function applyGiaoLedger(client, giaoHangId, actorId) {
 module.exports = {
   listTemSanSang, listTemChoTich, donHangIdsForTems, nextMaPhieuGiao, maPhieuGiaoDaDung, createGiaoHang, addTem,
   getGiaoHang, listGiaoHang, getGiaoHangTems, markGiaoDone, applyGiaoLedger, insertGiaoAudit,
-  coCotTichGiao, coCotGiaoHangTai, cotPhieuThem, tichTem, boTichTem, temDaVaoPhieu, traCuuTemTich, ghiAuditTich,
+  coCotTichGiao, coCotGiaoHangTai, cotPhieuThem, setGiaoHangTai,
+  tichTem, boTichTem, temDaVaoPhieu, traCuuTemTich, ghiAuditTich,
   historyGiaoByDate, doneGiaoByDate,
   listPhieuGiaoCancelable, temThieuSoDeHuy, revertGiaoLedger, markGiaoHuy, insertHuyPhieuAudit,
+  insertGiaoHangTaiAudit, coCotKlg, setKlgDong,
 };

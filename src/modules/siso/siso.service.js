@@ -2,6 +2,7 @@
 
 const repo = require('./siso.repository');
 const { MAN, LOAI_NGAY, O_SI_SO } = require('../../utils/siSoTram');
+const { BANG_THEO_DOI, DO_SL } = require('../../utils/bangTheoDoi');
 const AppError = require('../../utils/AppError');
 
 // Ngày mặc định = HÔM NAY theo giờ VN (server có thể chạy múi giờ khác — đừng dùng new Date() trần).
@@ -118,4 +119,81 @@ async function tomTatNgayGiao(maTrang, o, q) {
   };
 }
 
-module.exports = { siSo, chiTiet, danhMuc, tomTatNgayGiao };
+// ─── BẢNG THEO DÕI 10 CHECKPOINT (Dashboard → Tổng quan) ─────────────────────
+// Luật + danh mục: `utils/bangTheoDoi.js`. Truy vấn: `siso.repository.motDongBang`.
+//
+// ⚠⚠ CACHE 30s LÀ BẮT BUỘC, KHÔNG PHẢI TỐI ƯU CHO ĐẸP: 10 dòng = 10 query nặng (đo prod 20/09/2026:
+//   **2,7 giây** khi chạy SONG SONG, dòng chậm nhất 2,6s). Trang Dashboard tải lại theo socket
+//   BROADCAST ⇒ không cache thì mỗi lượt broadcast × N người đăng nhập là N×10 query nặng — đúng
+//   cơ chế "càng nhiều người càng chậm" mà `utils/flowCache.js` sinh ra để chặn.
+// ⚠ Cache giữ PROMISE (gộp cả những lượt gọi tới lúc query đang chạy) và **XÓA NGAY KHI LỖI** —
+//   giữ promise reject lại là mọi lượt trong 30s kế tiếp cùng hỏng theo (bài học `metrics.js`).
+// ⚠ Khóa cache gồm kỳ báo cáo: xem ngày khác nhau là 2 tập số khác nhau.
+const TTL_BANG_MS = 30000;
+const _nhoBang = new Map();
+
+function bangCached(tu, den) {
+  const khoa = `${tu}|${den}`;
+  const cu = _nhoBang.get(khoa);
+  if (cu && Date.now() - cu.at < TTL_BANG_MS) return cu.p;
+  const p = tinhBang(tu, den).catch((e) => { _nhoBang.delete(khoa); throw e; });
+  _nhoBang.set(khoa, { at: Date.now(), p });
+  // Dọn khóa cũ — người dùng đổi ngày nhiều lần thì Map không phình mãi.
+  if (_nhoBang.size > 8) {
+    [..._nhoBang.entries()].filter(([, v]) => Date.now() - v.at > TTL_BANG_MS)
+      .forEach(([k]) => _nhoBang.delete(k));
+  }
+  return p;
+}
+
+const slaCua = (dong, slaRows) => {
+  if (!dong.sla) return null;
+  const cap = dong.sla.checkpoint ? 'CHECKPOINT' : 'TRAM';
+  const ma = dong.sla.checkpoint || dong.sla.tram;
+  const r = slaRows.find((x) => x.cap === cap && x.ma === ma);
+  return r && r.sla != null ? Number(r.sla) : null;
+};
+
+// %: Xong & Tồn cuối chia (Tồn đầu + Nhận) ⇒ 2 số cộng lại = 100%; Nghẽn chia TỒN CUỐI (nghẽn là
+// tập con của tồn cuối). Người dùng chốt 20/09/2026. Mẫu số 0 ⇒ `null` (FE hiện "—", KHÔNG hiện 0%).
+const pct = (tu, mau) => (mau > 0 ? Math.round((tu / mau) * 1000) / 10 : null);
+
+async function tinhBang(tu, den) {
+  const slaRows = await repo.dsSlaHienHanh();
+  // ⚠ 10 dòng ĐỘC LẬP ⇒ chạy SONG SONG (mạng tới DB ~25ms/lượt là nút cổ chai — CLAUDE.md §11.5).
+  const so = await Promise.all(BANG_THEO_DOI.map((d) => repo.motDongBang(d, slaCua(d, slaRows), { tu, den })));
+  const rows = BANG_THEO_DOI.map((d, i) => {
+    const r = so[i];
+    const n = (k) => Number(r[k]) || 0;
+    const vao = n('ton_dau_phan') + n('nhan_phan');
+    const vaoSl = n('ton_dau_sl') + n('nhan_sl');
+    return {
+      ma: d.ma,
+      ten: d.ten,
+      ghi_chu: d.ghiChu,
+      sla_phut: slaCua(d, slaRows),
+      don_vi_sl: DO_SL[d.sl].nhan,
+      ton_dau: { phan: n('ton_dau_phan'), sl: n('ton_dau_sl') },
+      nhan: { phan: n('nhan_phan'), sl: n('nhan_sl') },
+      xong: { phan: n('xong_phan'), sl: n('xong_sl'), pt: pct(n('xong_phan'), vao), pt_sl: pct(n('xong_sl'), vaoSl) },
+      ton_cuoi: {
+        phan: n('ton_cuoi_phan'), sl: n('ton_cuoi_sl'),
+        pt: pct(n('ton_cuoi_phan'), vao), pt_sl: pct(n('ton_cuoi_sl'), vaoSl),
+      },
+      nghen: {
+        phan: n('nghen_phan'), sl: n('nghen_sl'),
+        pt: pct(n('nghen_phan'), n('ton_cuoi_phan')), pt_sl: pct(n('nghen_sl'), n('ton_cuoi_sl')),
+      },
+      // ⚠ Trả cờ cân để FE hiện ⚠ thay vì im lặng cho số sai (khuôn của `siSo()` ở trên).
+      can: n('ton_dau_phan') + n('nhan_phan') - n('xong_phan') === n('ton_cuoi_phan'),
+    };
+  });
+  return rows;
+}
+
+async function bangTheoDoi(q = {}) {
+  const { tu, den, denHienThi } = chuanHoaKy(q);
+  return { rows: await bangCached(tu, den), tu, den: denHienThi, ttl_ms: TTL_BANG_MS };
+}
+
+module.exports = { siSo, chiTiet, danhMuc, tomTatNgayGiao, bangTheoDoi };

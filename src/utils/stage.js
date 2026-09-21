@@ -46,6 +46,7 @@ const { techDoneSqlByPin, qcDotSql } = require('./tech');
 // CASE tính stage cho 1 ĐỢT VẢI, dựa trên rowsource alias `a` có cột:
 //   a.phan_in_id, a.lenh_id (lệnh non-HUY mới nhất của đợt, NULL nếu chưa release), a.lenh_tt,
 //   a.tg_chuyen_ready, a.created_date  ← 2 cột sau THÊM 16/09/2026 cho `qcDotSql` (xem ngay dưới).
+//   a.id (id ĐỢT VẢI) ← THÊM 21/09/2026: `qcDotSql` nay đọc cả dòng QC THEO ĐỢT (`ready_xac_nhan_dot`).
 // ⚠⚠ THÊM CỘT VÀO ĐÂY PHẢI SỬA KÈM 3 ROWSOURCE: `dotSource()` bên dưới · `dvs` trong
 //   `dashboard.repository.stageCounts` · `NGUON_DOT` của `phaninadmin.repository` (nguồn này dùng
 //   `d.*` nên đã có sẵn). Thiếu là `column a.tg_chuyen_ready does not exist`.
@@ -104,7 +105,7 @@ function readyFallback(pinId) {
 // Đợt CHỜ chuyển (pending) bị loại ⇒ dominant chỉ tính đợt đã vào dòng chảy; pending → readyFallback ('CHO_CHUYEN').
 function dotSource(pinId) {
   const lenh = (col) => `(SELECT ls.${col} FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id WHERE lsd.dot_vai_ve_id=d.id AND ls.trang_thai<>'HUY' ORDER BY ls.created_date DESC LIMIT 1)`;
-  return `SELECT d.phan_in_id, d.tg_chuyen_ready, d.created_date, ${lenh('id')} AS lenh_id, ${lenh('trang_thai')} AS lenh_tt FROM dot_vai_ve d WHERE d.phan_in_id=${pinId} AND d.trang_thai NOT IN ('DA_GOP','DA_HUY') AND d.tg_chuyen_ready IS NOT NULL`;
+  return `SELECT d.id, d.phan_in_id, d.tg_chuyen_ready, d.created_date, ${lenh('id')} AS lenh_id, ${lenh('trang_thai')} AS lenh_tt FROM dot_vai_ve d WHERE d.phan_in_id=${pinId} AND d.trang_thai NOT IN ('DA_GOP','DA_HUY') AND d.tg_chuyen_ready IS NOT NULL`;
 }
 
 // Biểu thức SCALAR: stage dominant của phần in `pinId` (dùng ở orders.stageCondition).

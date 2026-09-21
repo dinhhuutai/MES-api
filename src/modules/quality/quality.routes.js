@@ -24,6 +24,8 @@ router.get('/sua/done', rbac('SUA'), c.suaDone);
 // ⚠ Route TĨNH phải đặt TRƯỚC `/sua/:temId` — nếu không sẽ bị route động nuốt (temId='nguoi-sua'
 //   → lỗi 'invalid input syntax for type uuid'), cùng bẫy với nhóm `/sua/tem-sua/*` bên dưới.
 router.post('/sua/nguoi-sua', rbac('SUA'), c.luuNguoiSua);
+// Gửi LẠI sửa đạt sang ERP (proc MES_spr_MES2SK6) cho 1 lượt trượt — 4 đoạn nên không va `/sua/:temId`.
+router.post('/sua/luot/:suaId/gui-lai-erp', rbac('SUA'), c.guiLaiErpSua);
 router.post('/sua/:temId', rbac('SUA'), c.recordSua);
 
 router.get('/oqc/candidates', rbac('OQC'), c.oqcCandidates);

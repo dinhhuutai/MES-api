@@ -31,6 +31,10 @@ router.get('/', rbac('DELIVERY_VIEW', 'DELIVERY_MANAGE'), c.list);
 router.get('/:id', rbac('DELIVERY_VIEW', 'DELIVERY_MANAGE'), c.detail);
 router.post('/', rbac('DELIVERY_MANAGE'), c.create);
 router.post('/:id/confirm', rbac('DELIVERY_MANAGE'), c.confirm);
+router.post('/:id/gui-lai-erp', rbac('DELIVERY_MANAGE'), c.guiLaiErp);
+// Đổi "Giao hàng tại" của phiếu ĐÃ lập (hỏi trong modal trước khi IN LẠI) — ghi đè vào phiếu + audit.
+router.patch('/:id/giao-hang-tai', rbac('DELIVERY_MANAGE'), c.datGiaoHangTai);
+router.patch('/:id/klg', rbac('DELIVERY_MANAGE'), c.datKlg);
 // Hủy phiếu giao = ĐẢO sổ cái đã giao ⇒ đòi quyền quản lý giao hàng, lý do bắt buộc (kiểm ở service).
 router.post('/:id/huy', rbac('DELIVERY_MANAGE'), c.huy);
 

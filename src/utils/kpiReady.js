@@ -46,24 +46,41 @@ const VN = "AT TIME ZONE 'Asia/Ho_Chi_Minh'";
 // `tram` / `checkpoint` → khóa tra owner (`tram.ma_tram` / `checkpoint.ma_checkpoint` của workflow
 //   đang hiện hành). Cột không khai gì thì dòng owner để trống.
 // `col` → tên cột trong kết quả SQL.
+//
+// ⚠⚠ `tgTu` = CHUỖI MỐC NGUỒN để tính **cột thời gian** đứng ngay cạnh cột mốc (20/09/2026, người
+//   dùng chốt "mốc cột này − mốc bước liền trước"): lấy mốc nguồn ĐẦU TIÊN có giá trị trong danh
+//   sách, thời gian = `mốc cột này − mốc nguồn` ⇒ "phần in nằm ở bước đó bao lâu".
+//   · Chỉ cột `nhom: 'moc'` mới có — cột SỐ LƯỢNG và cột % không có mốc nên không có thời gian.
+//   · Cột `vai` CỐ Ý không khai: nó là điểm BẮT ĐẦU của cả dòng chảy, không có bước nào trước.
+//   ⚠ Chuỗi nguồn theo **NGHIỆP VỤ**, KHÔNG phải cột liền trước trong bảng: Film/Khuôn/Mực chạy SONG
+//     SONG sau HSKT nên cả ba đều đo từ `moc_hskt` (lấy "cột liền trước" sẽ ra Mực − Khuôn, có thể ÂM).
+//   ⚠ Nhánh lùi là bắt buộc: HSKT có thể trống (ERP không gửi `BarcodeHKT`), lệnh ĐI TẮT Test Run thì
+//     `moc_test_run` trống ⇒ Release 2 phải lùi về `moc_release_1`, nếu không cột thời gian rỗng
+//     đúng ở nhóm hàng chạy nhanh nhất.
+//   ⚠ `moc_kt_xong` KHÔNG phải cột hiển thị — là mốc kỹ thuật xác nhận xong mục CUỐI CÙNG
+//     (`GREATEST(film, khuôn, mực)`), sinh trong `CAU_CHINH` chỉ để làm mẫu số cho QA ready.
 const COT_KPI = [
   { ma: 'vai', ten: 'Vải', nhom: 'moc', col: 'moc_vai', tram: 'PIPELINE',
     ghiChu: 'Phần in lên MES (có đợt vải đầu tiên)' },
-  { ma: 'hskt', ten: 'HSKT', nhom: 'moc', col: 'moc_hskt', checkpoint: 'HSKT',
+  { ma: 'hskt', ten: 'HSKT', nhom: 'moc', col: 'moc_hskt', checkpoint: 'HSKT', tgTu: ['moc_vai'],
     ghiChu: 'Hồ sơ kỹ thuật được tạo trên MES' },
-  { ma: 'film', ten: 'Film', nhom: 'moc', col: 'moc_film', checkpoint: 'FILM',
+  { ma: 'film', ten: 'Film', nhom: 'moc', col: 'moc_film', checkpoint: 'FILM', tgTu: ['moc_hskt', 'moc_vai'],
     ghiChu: 'Xác nhận Film (tự đạt theo Khuôn)' },
-  { ma: 'khuon', ten: 'Khuôn', nhom: 'moc', col: 'moc_khuon', checkpoint: 'KHUON',
+  { ma: 'khuon', ten: 'Khuôn', nhom: 'moc', col: 'moc_khuon', checkpoint: 'KHUON', tgTu: ['moc_hskt', 'moc_vai'],
     ghiChu: 'Xác nhận Khuôn' },
-  { ma: 'muc', ten: 'Mực', nhom: 'moc', col: 'moc_muc', checkpoint: 'MUC',
+  { ma: 'muc', ten: 'Mực', nhom: 'moc', col: 'moc_muc', checkpoint: 'MUC', tgTu: ['moc_hskt', 'moc_vai'],
     ghiChu: 'Xác nhận Mực' },
   { ma: 'qa_ready', ten: 'QA ready', nhom: 'moc', col: 'moc_qa_ready', checkpoint: 'QC_XAC_NHAN',
+    tgTu: ['moc_kt_xong', 'moc_hskt', 'moc_vai'],
     ghiChu: 'IQC/QA xác nhận READY' },
   { ma: 'release_1', ten: 'Release 1', nhom: 'moc', col: 'moc_release_1', tram: 'RELEASE_1',
+    tgTu: ['moc_qa_ready', 'moc_kt_xong', 'moc_vai'],
     ghiChu: 'Lệnh sản xuất đầu tiên được tạo' },
   { ma: 'test_run', ten: 'Test run', nhom: 'moc', col: 'moc_test_run', tram: 'TEST_RUN',
+    tgTu: ['moc_release_1'],
     ghiChu: 'QA xác nhận test đạt' },
   { ma: 'release_2', ten: 'Release 2', nhom: 'moc', col: 'moc_release_2', tram: 'RELEASE_2',
+    tgTu: ['moc_test_run', 'moc_release_1'],
     ghiChu: 'Lệnh rời chặng Release 1 (được duyệt / đi tắt)' },
   { ma: 'sl_in', ten: 'SL in', nhom: 'so', col: 'sl_in', tram: 'SAN_XUAT',
     ghiChu: 'Σ số lượng trên tem đã in' },
@@ -88,10 +105,12 @@ const COT_KPI = [
   { ma: 'tong_huy', ten: 'Tổng hủy', nhom: 'so', col: 'tong_huy', tram: 'KIEM',
     ghiChu: 'SL hủy (KCS) + SL sửa hủy' },
   { ma: 'finish', ten: 'Finish', nhom: 'moc', col: 'moc_finish', tram: 'FINISH',
+    tgTu: ['moc_release_2', 'moc_test_run', 'moc_release_1'],
     ghiChu: 'Hết hàng chờ ở KCS/Sửa/OQC và tổng đạt ≥ SLĐH' },
   { ma: 'sl_giao', ten: 'SL giao', nhom: 'so', col: 'sl_giao', tram: 'DONE_DELIVERY',
     ghiChu: 'Σ số lượng đã giao' },
   { ma: 'done_delivery', ten: 'Done Delivery', nhom: 'moc', col: 'moc_done_delivery', tram: 'DONE_DELIVERY',
+    tgTu: ['moc_finish', 'moc_release_2'],
     ghiChu: 'Phiếu giao đầu tiên được lập' },
 ];
 
@@ -324,6 +343,7 @@ SELECT pin.id AS phan_in_id, dh.id AS don_hang_id,
   dvs.ngay_vai_ve, dvs.han_giao_hang, COALESCE(dvs.so_dot_vai, 0)::int AS so_dot_vai,
   dvs.moc_vai, hs.moc_hskt,
   rdy.moc_film, rdy.moc_khuon, rdy.moc_muc, rdy.moc_qa_ready,
+  GREATEST(rdy.moc_film, rdy.moc_khuon, rdy.moc_muc) AS moc_kt_xong,
   ln.moc_release_1, ln.moc_test_run, ln.moc_release_2, COALESCE(ln.so_lenh, 0)::int AS so_lenh,
   COALESCE(tm.sl_in, 0)::int AS sl_in, COALESCE(tm.sl_kiem, 0)::int AS sl_kiem,
   COALESCE(tm.sl_kiem_dat, 0)::int AS sl_kiem_dat, COALESCE(tm.sl_huy, 0)::int AS sl_huy,

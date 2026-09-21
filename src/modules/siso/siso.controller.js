@@ -24,6 +24,12 @@ const guard = (req, res) => {
 
 const danhMuc = asyncHandler(async (req, res) => ok(res, service.danhMuc()));
 
+// Bảng theo dõi 10 checkpoint (Dashboard → Tổng quan).
+// ⚠ CỐ Ý KHÔNG gác quyền theo màn như 3 route kia: đây là bảng TỔNG HỢP toàn nhà máy nằm trên trang
+//   Dashboard — mà cả module Dashboard vốn mở cho mọi người đăng nhập (chỉ trang *Theo dõi PO* có
+//   quyền riêng). Gác theo 10 quyền của 10 màn thì hầu như không ai xem được đủ bảng.
+const bangTheoDoi = asyncHandler(async (req, res) => ok(res, await service.bangTheoDoi(req.query)));
+
 const siSo = asyncHandler(async (req, res) => {
   if (!guard(req, res)) return undefined;
   return ok(res, await service.siSo(req.params.maTrang, req.query));
@@ -40,4 +46,4 @@ const tomTatNgayGiao = asyncHandler(async (req, res) => {
   return ok(res, await service.tomTatNgayGiao(req.params.maTrang, req.params.o, req.query));
 });
 
-module.exports = { danhMuc, siSo, chiTiet, tomTatNgayGiao };
+module.exports = { danhMuc, siSo, chiTiet, tomTatNgayGiao, bangTheoDoi };

@@ -40,6 +40,13 @@ const cancelledQc = (alias, table) =>
   `EXISTS (SELECT 1 FROM audit_log a WHERE a.ten_bang='${table}' AND a.hanh_dong='HUY_XAC_NHAN' AND a.id_ban_ghi = ${alias}.id::text)`;
 const notCancelledQc = (alias, table) => `NOT ${cancelledQc(alias, table)}`;
 
+// ⚠⚠ `nha_gia_cong` (mig 072) THÊM 20/09/2026 — trước đó 3 màn KCS · Sửa · OQC đều VẼ cột "Nhà gia
+//   công" nhưng `TEM_CTX` không trả cột này ⇒ ô luôn hiện "—" (cột chết, không ai báo vì trông như
+//   "đợt này không có nhà gia công"). Gộp `string_agg(DISTINCT …)` theo CẢ LỆNH, KHÔNG đọc thẳng
+//   `dv.nha_gia_cong` của LATERAL `info`: LATERAL đó `LIMIT 1` nên lệnh gộp nhiều đợt khác nhà sẽ
+//   giấu mất nhà thứ hai (cùng luật đã ghi ở `TEM_INFO_LATERAL`).
+// ⚠ Chú thích để NGOÀI chuỗi: `TEM_CTX` được gộp 1 dòng (`replace(/\s+/g,' ')`) nên `--` bên trong
+//   sẽ nuốt sạch phần SQL còn lại (bẫy §9 CLAUDE.md).
 const TEM_CTX = `
   SELECT t.id AS tem_id, t.ma_tem, t.so_luong, t.trang_thai, t.da_qua_phoi, t.sl_chenh_lech, t.created_date AS ngay_in_tem,
          t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy, t.sl_sua_dat, t.sl_sua_huy, t.sl_oqc_dat, t.sl_da_giao,
@@ -53,7 +60,10 @@ const TEM_CTX = `
          sla.canh_bao_truoc_phut,
          (SELECT string_agg(DISTINCT pin.ma_phan, ', ')
             FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
-            JOIN phan_in pin ON pin.id = dv.phan_in_id WHERE lsd.lenh_san_xuat_id = ls.id) AS phan_list
+            JOIN phan_in pin ON pin.id = dv.phan_in_id WHERE lsd.lenh_san_xuat_id = ls.id) AS phan_list,
+         (SELECT string_agg(DISTINCT dvg.nha_gia_cong, ', ')
+            FROM lenh_sx_dot_vai lsg JOIN dot_vai_ve dvg ON dvg.id = lsg.dot_vai_ve_id
+           WHERE lsg.lenh_san_xuat_id = ls.id AND dvg.nha_gia_cong IS NOT NULL) AS nha_gia_cong
   FROM tem t
   JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
   JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id

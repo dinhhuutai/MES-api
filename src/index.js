@@ -64,6 +64,9 @@ async function start() {
     console.log(`[erp] Gửi PL lỗi   : ${env.erp.guiPhanLoaiLoiUrl}`
       + (env.erp.guiPhanLoaiLoiEnabled ? '' : '   (ĐANG TẮT qua ERP_GUI_PHAN_LOAI_LOI_ENABLED=false)')
       + (process.env.ERP_GUI_PHAN_LOAI_LOI_URL ? '' : '   ⚠ CHƯA đặt ERP_GUI_PHAN_LOAI_LOI_URL — đang suy theo gốc URL nhận vải'));
+    console.log(`[erp] Gửi sửa đạt  : ${env.erp.guiSuaDatUrl}`
+      + (env.erp.guiSuaDatEnabled ? '' : '   (ĐANG TẮT qua ERP_GUI_SUA_DAT_ENABLED=false)')
+      + (process.env.ERP_GUI_SUA_DAT_URL ? '' : '   ⚠ CHƯA đặt ERP_GUI_SUA_DAT_URL — đang suy theo gốc URL nhận vải'));
     // ⚠ Web Push (mig 085): thiếu VAPID key / chưa cài `web-push` thì TỰ TẮT — chuông và popup khi
     //   app đang mở vẫn chạy, chỉ mất phần "báo cả khi đóng app". In ra để khỏi phải đi dò vì sao.
     const tt = webPush.trangThai();
