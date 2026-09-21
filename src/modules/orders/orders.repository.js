@@ -286,7 +286,7 @@ async function getPhanInTimeline(phanInId) {
   // Danh sách đợt SX (lệnh ≠ HUY) + đợt vải của mỗi lệnh
   const lenhSql = `
     SELECT ls.id, ls.ma_lenh_san_xuat, ls.giai_doan, ls.created_date,
-           COALESCE(json_agg(json_build_object('ma_dot_vai', dv.ma_dot_vai, 'so_luong', lsd.so_luong, 'so_luong_vai_ve', dv.so_luong_vai_ve, 'ngay_vai_ve', dv.ngay_vai_ve, 'tg_len_mes', dv.created_date)
+           COALESCE(json_agg(json_build_object('id', dv.id, 'ma_dot_vai', dv.ma_dot_vai, 'so_luong', lsd.so_luong, 'so_luong_vai_ve', dv.so_luong_vai_ve, 'ngay_vai_ve', dv.ngay_vai_ve, 'tg_len_mes', dv.created_date, 'tg_ready', COALESCE(dv.tg_chuyen_ready, dv.created_date), 'kt_can_kiem_tra', dv.kt_can_kiem_tra)
                     ORDER BY dv.ma_dot_vai), '[]') AS dot_vai
     FROM lenh_san_xuat ls
     JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
@@ -378,8 +378,9 @@ async function getPhanInTimeline(phanInId) {
 
   // Đợt vải CHƯA release (chưa có lệnh ≠ HUY nào) — để hiện hành trình READY NGAY, không chờ tạo lệnh.
   const pendingSql = `
-    SELECT dv.ma_dot_vai, COALESCE(dv.so_luong_vai_ve,0)::int AS so_luong, dv.ngay_vai_ve, dv.created_date AS tg_len_mes
-    FROM dot_vai_ve dv
+    SELECT dv.id, dv.ma_dot_vai, COALESCE(dv.so_luong_vai_ve,0)::int AS so_luong, dv.ngay_vai_ve, dv.created_date AS tg_len_mes,
+           COALESCE(dv.tg_chuyen_ready, dv.created_date) AS tg_ready, dv.kt_can_kiem_tra, ldv.ten_loai AS loai_dot_vai
+    FROM dot_vai_ve dv LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id
     WHERE dv.phan_in_id = $1 AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY')
       AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
                       WHERE lsd.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY')
@@ -396,7 +397,16 @@ async function getPhanInTimeline(phanInId) {
      WHERE kq.phan_in_id = $1 AND cp.ma_checkpoint = 'QC_XAC_NHAN'
        AND kq.trang_thai = 'DAT' AND kq.nguoi_xac_nhan_id IS NULL) AS e`;
 
-  const [tramR, readyR, readyEvR, lenhR, lenhCklR, mocR, qtyR, pendingR, ktR] = await Promise.all([
+  // Xác nhận READY RIÊNG CỦA TỪNG ĐỢT (mig 098 `ready_xac_nhan_dot`) — nguồn ưu tiên cho READY theo đợt.
+  // ⚠ Thiếu bảng (chưa chạy mig 098) thì câu này lỗi ⇒ bắt lại, coi như rỗng (không chặn hành trình).
+  const readyDotSql = `
+    SELECT x.dot_vai_ve_id, cp.ma_checkpoint, cp.ten_checkpoint, cp.thu_tu AS cp_thu_tu,
+           COALESCE(x.tg_xac_nhan, x.updated_date) AS tg, nd.ho_ten AS nguoi, (x.nguoi_xac_nhan_id IS NULL) AS tu_dong
+    FROM ready_xac_nhan_dot x JOIN checkpoint cp ON cp.id = x.checkpoint_id
+    LEFT JOIN nguoi_dung nd ON nd.id = x.nguoi_xac_nhan_id
+    WHERE x.phan_in_id = $1 AND x.trang_thai = 'DAT'`;
+
+  const [tramR, readyR, readyEvR, lenhR, lenhCklR, mocR, qtyR, pendingR, ktR, readyDotR] = await Promise.all([
     query(tramSql.replace(/\s+/g, ' ')),
     query(readyCklSql.replace(/\s+/g, ' '), [phanInId]),
     query(readyEventsSql.replace(/\s+/g, ' '), [phanInId]),
@@ -406,6 +416,7 @@ async function getPhanInTimeline(phanInId) {
     query(qtySql.replace(/\s+/g, ' '), [phanInId]),
     query(pendingSql.replace(/\s+/g, ' '), [phanInId]),
     query(khongQuaKtSql.replace(/\s+/g, ' '), [phanInId]),
+    query(readyDotSql.replace(/\s+/g, ' '), [phanInId]).catch(() => ({ rows: [] })),
   ]);
   const khongQuaKt = !!ktR.rows[0].e;
   const qtyByLenh = new Map(qtyR.rows.map((r) => [r.lenh_id, r]));
@@ -473,6 +484,44 @@ async function getPhanInTimeline(phanInId) {
     };
   };
 
+  // ⚠⚠⚠ READY THEO TỪNG ĐỢT VẢI (22/09/2026 — người dùng: "2 đợt vải thì phải có 2 lần xác nhận ready,
+  //   hiện đợt 1, đợt 2 kèm thời gian"). Mỗi mục Khuôn/Film/Mực/QC của đợt d lấy:
+  //   (1) dòng RIÊNG của đợt trong `ready_xac_nhan_dot` (DAT) nếu có; nếu không
+  //   (2) LẦN XÁC NHẬN ĐẦU TIÊN trong `lich_su_trang_thai` KỂ TỪ lúc đợt lên READY — chính lần đã "phủ"
+  //       đợt đó (luật mốc `utils/tech.js dotMucDatSql` nhánh a), chỉ khi dòng tổng hiện còn DAT.
+  //   ⚠ KHÔNG đọc `ket_qua_checkpoint.tg_xac_nhan`: dòng tổng bị ghi đè mỗi lần xác nhận lại (vd lần
+  //     hệ thống tự xác nhận cho đợt sau) ⇒ đợt cũ sẽ hiện người/giờ của đợt mới. Lịch sử giữ TỪNG lần.
+  const tongDat = new Set(readyR.rows.map((r) => r.ma_checkpoint));
+  const readyDotBy = new Map(); // dot_id -> ma_checkpoint -> row
+  readyDotR.rows.forEach((r) => {
+    if (!readyDotBy.has(r.dot_vai_ve_id)) readyDotBy.set(r.dot_vai_ve_id, new Map());
+    readyDotBy.get(r.dot_vai_ve_id).set(r.ma_checkpoint, r);
+  });
+  const readyForDot = (d) => {
+    if (!d || !d.id) return null;
+    const T0 = new Date(d.tg_ready || d.tg_len_mes).getTime();
+    const rieng = readyDotBy.get(d.id) || new Map();
+    const byCp = new Map();
+    rieng.forEach((r, ma) => byCp.set(ma, r));
+    for (const e of readyEvents) {
+      if (byCp.has(e.ma_checkpoint) || !tongDat.has(e.ma_checkpoint)) continue;
+      if (Number.isFinite(T0) && new Date(e.tg).getTime() < T0) continue;
+      byCp.set(e.ma_checkpoint, e); // events ORDER BY tg ⇒ giữ lần ĐẦU TIÊN sau khi đợt lên READY
+    }
+    const checklists = [...byCp.values()].sort((a, b) => a.cp_thu_tu - b.cp_thu_tu).map((e) => ({
+      ma_checkpoint: e.ma_checkpoint, ten_checkpoint: e.ten_checkpoint,
+      gia_tri_text: null, tg: e.tg, nguoi: e.nguoi || null, tu_dong: !!e.tu_dong,
+    }));
+    const qc = byCp.get('QC_XAC_NHAN');
+    return {
+      ma_tram: 'READY', ten_tram: tenTram('READY'), thu_tu: thuTu('READY'),
+      // Theo ĐỢT: ERP `KTCankiemtra = 0` ⇒ đợt này đi thẳng, hệ thống tự xác nhận.
+      khong_qua_ky_thuat: d.kt_can_kiem_tra === false,
+      checklists, moc: null,
+      da_ready: !!qc, tg_ready_xong: qc ? qc.tg : null,
+    };
+  };
+
   const journeys = lenhR.rows.map((l) => {
     const ckl = cklByLenh.get(l.id) || new Map();
     const moc = mocByLenh.get(l.id) || new Map();
@@ -483,7 +532,9 @@ async function getPhanInTimeline(phanInId) {
       checklists: ckl.get(ma) || [], moc: moc.get(ma) || null, qty: nodeQty(ma, q),
     })).sort((a, b) => a.thu_tu - b.thu_tu);
     // READY của chu kỳ ứng với lệnh (từ lịch sử); thiếu lịch sử (dữ liệu cũ/seed) → dùng READY hiện tại.
-    const readyNode = readyForLenh(l.created_date) || ready;
+    // 1 đợt vải (thuộc phần in này) ⇒ READY CỦA CHÍNH ĐỢT ĐÓ; lệnh gộp nhiều đợt ⇒ giữ chu kỳ READY cũ.
+    const dsDotL = (l.dot_vai || []).filter((d) => d && d.id);
+    const readyNode = (dsDotL.length === 1 ? readyForDot(dsDotL[0]) : null) || readyForLenh(l.created_date) || ready;
     return {
       lenh_id: l.id, ma_lenh_san_xuat: l.ma_lenh_san_xuat, giai_doan: l.giai_doan,
       dot_vai: l.dot_vai || [], trams: readyNode ? [readyNode, ...trams] : trams,
@@ -491,9 +542,15 @@ async function getPhanInTimeline(phanInId) {
   });
 
   // Khối "chờ release": các đợt vải chưa có lệnh → hiện node READY hiện tại (mức phần in), KHÔNG có LSX.
+  // ⚠ `dots` (22/09/2026) = MỖI ĐỢT 1 khối kèm READY RIÊNG của đợt đó. `dot_vai` + `trams` giữ nguyên hình
+  //   dạng cũ cho chỗ nào chưa chuyển (`PhanInTraCuuPanel`).
   const pending = pendingR.rows.length ? {
     dot_vai: pendingR.rows.map((r) => ({ ma_dot_vai: r.ma_dot_vai, so_luong: r.so_luong, ngay_vai_ve: r.ngay_vai_ve, tg_len_mes: r.tg_len_mes })),
     trams: ready ? [ready] : [],
+    dots: pendingR.rows.map((r) => ({
+      id: r.id, ma_dot_vai: r.ma_dot_vai, so_luong: r.so_luong, ngay_vai_ve: r.ngay_vai_ve,
+      tg_len_mes: r.tg_len_mes, loai_dot_vai: r.loai_dot_vai, ready: readyForDot(r),
+    })),
   } : null;
 
   return { ready, journeys, pending };
