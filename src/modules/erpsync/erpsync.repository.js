@@ -450,7 +450,8 @@ async function readyCheckpointIds() {
 // `dotVaiIds` = đợt vải vừa kích hoạt lần tự động này — chỉ để ghi mã đợt vào ghi chú cho dễ truy vết.
 const GHI_CHU_TU_DONG = 'Hệ thống tự xác nhận — không qua kỹ thuật (ERP KTCankiemtra=0)';
 
-// Phần in còn đợt vải KHÁC (ngoài `boQua`) đang chờ ở READY (chưa release) mà CHƯA Ready?
+// Phần in còn đợt vải KHÁC (ngoài `boQua`) đang chờ ở READY (chưa release) mà CHƯA Ready? ⚠ Từ 22/09/2026
+// `simulateReadyDone` KHÔNG còn dùng hàm này (thay bằng `coDotKhac`) — giữ lại cho tham chiếu.
 async function coDotKhacDangCho(pinId, boQua = []) {
   const { qcDotSql } = require('../../utils/tech');
   const { rows } = await query(
@@ -459,6 +460,16 @@ async function coDotKhacDangCho(pinId, boQua = []) {
        AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai zl JOIN lenh_san_xuat zls ON zls.id = zl.lenh_san_xuat_id
                         WHERE zl.dot_vai_ve_id = zd.id AND zls.trang_thai <> 'HUY')
        AND NOT ${qcDotSql('zd', '$1::uuid')}) AS e`.replace(/\s+/g, ' '),
+    [pinId, boQua]);
+  return !!rows[0].e;
+}
+
+// Phần in có đợt vải KHÁC (ngoài `boQua`) còn hiệu lực không — BẤT KỂ đợt đó đang chờ, đã Ready hay đã
+// release (22/09/2026). Có ⇒ `simulateReadyDone` chỉ được ghi dòng THEO ĐỢT, không đụng dòng tổng.
+async function coDotKhac(pinId, boQua = []) {
+  const { rows } = await query(
+    `SELECT EXISTS (SELECT 1 FROM dot_vai_ve zd WHERE zd.phan_in_id = $1 AND zd.trang_thai NOT IN ('DA_GOP','DA_HUY')
+       AND NOT (zd.id = ANY($2::uuid[]))) AS e`.replace(/\s+/g, ' '),
     [pinId, boQua]);
   return !!rows[0].e;
 }
@@ -494,7 +505,14 @@ async function simulateReadyDone(pinId, dotVaiIds = []) {
   //   mốc `qcDotSql`, đợt 1 (lên READY trước mốc) bị coi là "đã Ready" ⇒ BIẾN MẤT khỏi màn Kỹ thuật dù
   //   chưa ai đụng tới. Nay: còn đợt KHÁC đang chờ chưa Ready ⇒ chỉ ghi dòng THEO ĐỢT (`ready_xac_nhan_dot`)
   //   cho đúng các đợt vừa về; dòng tổng giữ nguyên. Không còn đợt nào khác ⇒ đi đường cũ.
-  if (dsDot.length && await coDotKhacDangCho(pinId, dsDot)) {
+  // ⚠⚠⚠ MỞ RỘNG 22/09/2026 (người dùng báo `GL-2608-020-A03-F01-C02`): bản 21/09 chỉ đi đường theo đợt khi
+  //   đợt khác còn ĐANG CHỜ. Đợt 1 đã được NGƯỜI THẬT làm xong READY (Khuôn/Film/Mực + QC 14/09) đang
+  //   chờ release ⇒ không "đang chờ" ⇒ rơi vào đường cũ ⇒ 4 dòng TỔNG bị ghi đè thành "Hệ thống tự xác
+  //   nhận" (mất tên người, mốc nhảy sang 21/09) ⇒ màn READY/hành trình/sidebar chỉ còn thấy lần tự động.
+  //   Nay: phần in có BẤT KỲ đợt vải nào khác còn hiệu lực ⇒ chỉ ghi dòng THEO ĐỢT cho đúng đợt vừa về;
+  //   đường ghi dòng tổng chỉ còn cho phần in mà đợt vừa về là đợt DUY NHẤT (hoàn toàn tự động).
+  //   Đo prod 22/09: 48 phần in đã bị đè kiểu này — nắn bằng `database/scripts/khoi_phuc_ready_bi_tu_dong_de.sql`.
+  if (dsDot.length && await coDotKhac(pinId, dsDot)) {
     await withTransaction(async (client) => {
       for (const cpId of ids) {
         for (const dvId of dsDot) {
@@ -515,10 +533,19 @@ async function simulateReadyDone(pinId, dotVaiIds = []) {
   }
 
   await withTransaction(async (client) => {
+    // ⚠⚠ MỐC KHÔNG ĐƯỢC SỚM HƠN lúc đợt lên READY (fix 22/09/2026): luật `qcDotSql` so
+    //   `tg_xac_nhan >= tg_chuyen_ready`; `now()` của transaction này từng SỚM hơn vài chục ms
+    //   (đo prod: 7 đợt, lệch tối đa 0,42 giây) ⇒ đợt vừa được tự xác nhận vẫn bị coi là "chưa Ready".
+    const { rows: mr } = await client.query(
+      // ⚠ Trả CHUỖI (`::text`), KHÔNG để node-pg đổi sang `Date` của JS — Date chỉ giữ tới mili-giây,
+      //   mất phần micro-giây ⇒ mốc lại SỚM hơn `tg_chuyen_ready` vài µs (bắt được lúc kiểm thực).
+      'SELECT GREATEST(now(), (SELECT max(tg_chuyen_ready) FROM dot_vai_ve WHERE id = ANY($1::uuid[])))::text AS moc',
+      [dsDot]);
+    const moc = mr[0].moc;
     for (const id of ids) {
       const { rows } = await client.query(
-        `WITH upd AS (UPDATE ket_qua_checkpoint SET trang_thai='DAT', tg_xac_nhan=now(), updated_date=now(), nguoi_xac_nhan_id=NULL, ghi_chu=$3 WHERE phan_in_id=$1 AND checkpoint_id=$2 RETURNING id) INSERT INTO ket_qua_checkpoint (checkpoint_id, phan_in_id, trang_thai, tg_xac_nhan, ghi_chu) SELECT $2,$1,'DAT',now(),$3 WHERE NOT EXISTS (SELECT 1 FROM upd) RETURNING id`,
-        [pinId, id, ghiChu]
+        `WITH upd AS (UPDATE ket_qua_checkpoint SET trang_thai='DAT', tg_xac_nhan=$4::timestamptz, updated_date=$4::timestamptz, nguoi_xac_nhan_id=NULL, ghi_chu=$3 WHERE phan_in_id=$1 AND checkpoint_id=$2 RETURNING id) INSERT INTO ket_qua_checkpoint (checkpoint_id, phan_in_id, trang_thai, tg_xac_nhan, ghi_chu) SELECT $2,$1,'DAT',$4::timestamptz,$3 WHERE NOT EXISTS (SELECT 1 FROM upd) RETURNING id`,
+        [pinId, id, ghiChu, moc]
       );
       // `RETURNING` của CTE `upd` không ra ngoài — nhánh UPDATE trả rỗng, nên tra lại id để ghi lịch sử.
       let kqId = rows[0] && rows[0].id;
@@ -532,8 +559,8 @@ async function simulateReadyDone(pinId, dotVaiIds = []) {
       //   `nguoi_thuc_hien_id` để NULL = hệ thống làm, không gán cho ai.
       if (kqId && ttDat) {
         await client.query(
-          'INSERT INTO lich_su_trang_thai (ket_qua_checkpoint_id, trang_thai_moi_id, ly_do, tg_thuc_hien) VALUES ($1,$2,$3,now())',
-          [kqId, ttDat, 'Tự động xác nhận — đợt vải không cần kỹ thuật kiểm tra']
+          'INSERT INTO lich_su_trang_thai (ket_qua_checkpoint_id, trang_thai_moi_id, ly_do, tg_thuc_hien) VALUES ($1,$2,$3,$4::timestamptz)',
+          [kqId, ttDat, 'Tự động xác nhận — đợt vải không cần kỹ thuật kiểm tra', moc]
         );
       }
     }
