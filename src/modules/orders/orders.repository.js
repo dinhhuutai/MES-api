@@ -233,7 +233,8 @@ async function findById(id) {
 async function listDotVai(phanInId) {
   const sql = `
     SELECT dv.id, dv.ma_dot_vai, dv.ngay_vai_ve, dv.han_giao_hang, dv.so_luong_vai_ve,
-           dv.so_luong_thieu, dv.so_luong_hu, dv.trang_thai, ldv.ten_loai AS loai_dot_vai
+           dv.so_luong_thieu, dv.so_luong_hu, dv.trang_thai, ldv.ten_loai AS loai_dot_vai,
+           dv.created_date AS tg_len_mes
     FROM dot_vai_ve dv
     LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id
     WHERE dv.phan_in_id = $1
@@ -285,7 +286,7 @@ async function getPhanInTimeline(phanInId) {
   // Danh sách đợt SX (lệnh ≠ HUY) + đợt vải của mỗi lệnh
   const lenhSql = `
     SELECT ls.id, ls.ma_lenh_san_xuat, ls.giai_doan, ls.created_date,
-           COALESCE(json_agg(json_build_object('ma_dot_vai', dv.ma_dot_vai, 'so_luong', lsd.so_luong, 'so_luong_vai_ve', dv.so_luong_vai_ve)
+           COALESCE(json_agg(json_build_object('ma_dot_vai', dv.ma_dot_vai, 'so_luong', lsd.so_luong, 'so_luong_vai_ve', dv.so_luong_vai_ve, 'ngay_vai_ve', dv.ngay_vai_ve, 'tg_len_mes', dv.created_date)
                     ORDER BY dv.ma_dot_vai), '[]') AS dot_vai
     FROM lenh_san_xuat ls
     JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
@@ -377,7 +378,7 @@ async function getPhanInTimeline(phanInId) {
 
   // Đợt vải CHƯA release (chưa có lệnh ≠ HUY nào) — để hiện hành trình READY NGAY, không chờ tạo lệnh.
   const pendingSql = `
-    SELECT dv.ma_dot_vai, COALESCE(dv.so_luong_vai_ve,0)::int AS so_luong
+    SELECT dv.ma_dot_vai, COALESCE(dv.so_luong_vai_ve,0)::int AS so_luong, dv.ngay_vai_ve, dv.created_date AS tg_len_mes
     FROM dot_vai_ve dv
     WHERE dv.phan_in_id = $1 AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY')
       AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
@@ -491,7 +492,7 @@ async function getPhanInTimeline(phanInId) {
 
   // Khối "chờ release": các đợt vải chưa có lệnh → hiện node READY hiện tại (mức phần in), KHÔNG có LSX.
   const pending = pendingR.rows.length ? {
-    dot_vai: pendingR.rows.map((r) => ({ ma_dot_vai: r.ma_dot_vai, so_luong: r.so_luong })),
+    dot_vai: pendingR.rows.map((r) => ({ ma_dot_vai: r.ma_dot_vai, so_luong: r.so_luong, ngay_vai_ve: r.ngay_vai_ve, tg_len_mes: r.tg_len_mes })),
     trams: ready ? [ready] : [],
   } : null;
 

@@ -603,7 +603,7 @@ function lenhListSql(extraWhere, dkPain = 'TRUE') {
            info.loai_dot_vai, info.nha_gia_cong,
            EXISTS (SELECT 1 FROM ket_qua_checkpoint k WHERE k.lenh_san_xuat_id = ls.id AND k.checkpoint_id = $2 AND k.trang_thai='DAT') AS cnsp_done,
            EXISTS (SELECT 1 FROM ket_qua_checkpoint k WHERE k.lenh_san_xuat_id = ls.id AND k.checkpoint_id = $3 AND k.trang_thai='DAT') AS qa_done,
-           (SELECT count(*) FROM test_run tr WHERE tr.lenh_san_xuat_id = ls.id)::int AS so_lan_test,
+           (SELECT count(*) FROM test_run tr WHERE tr.lenh_san_xuat_id = ls.id AND tr.ket_qua IS DISTINCT FROM 'HUY')::int AS so_lan_test,
            (SELECT count(*) FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id)::int AS so_dot_vai,
            (SELECT count(DISTINCT dv.phan_in_id) FROM lenh_sx_dot_vai lsd2 JOIN dot_vai_ve dv ON dv.id = lsd2.dot_vai_ve_id JOIN phan_in pin2 ON pin2.id = dv.phan_in_id AND pin2.dang_hoat_dong WHERE lsd2.lenh_san_xuat_id = ls.id)::int AS so_phan_in,
            ${CHO_KY_THUAT_SQL('ls.id')} AS cho_ky_thuat
@@ -1453,6 +1453,41 @@ async function cancelTestResults(client, lenhId, actorId) {
   );
 }
 
+// ─── LƯỢT TEST BỊ GỠ KHI HOÀN TÁC VỀ TEST RUN (22/09/2026, KHÔNG migration) ─────────────────────
+// Tab "Hủy lệnh sản xuất" → đích TEST_RUN cho người dùng CHỌN lượt test nào giữ lại (vd bỏ tích lượt
+// "Đạt" bấm nhầm). Lượt bị bỏ tích KHÔNG xóa cứng: `test_run.ket_qua = 'HUY'` + ghi chú nêu kết quả cũ
+// (+ audit ở service) ⇒ vẫn tra được vết. `test_run` không có cột trạng thái nên mượn `ket_qua`.
+// ⚠⚠ MỌI chỗ ĐỌC `test_run` phải loại `ket_qua = 'HUY'` (hằng dưới) — đã áp 5 chỗ: `so_lan_test` ở
+//   `lenhListSql` + 2 dataset báo cáo, `getTestRuns`, `testRunsByLenh`. Thêm chỗ đọc mới thì nhớ lọc.
+// ⚠ `lan_test` của lượt mới vẫn = MAX+1 tính CẢ lượt đã gỡ ⇒ số lần test có thể nhảy cóc (vd 1, 3) —
+//   cố ý, để số lần in trên phiếu/tem cũ không bị trùng với lượt mới.
+const TEST_RUN_SONG = "tr.ket_qua IS DISTINCT FROM 'HUY'";
+
+async function testRunsChoHuy(lenhId) {
+  const { rows } = await query(
+    `SELECT tr.id, tr.lan_test, tr.so_luong, tr.ket_qua, tr.ghi_chu, tr.created_date, nd.ho_ten AS nguoi
+       FROM test_run tr LEFT JOIN nguoi_dung nd ON nd.id = tr.created_by
+      WHERE tr.lenh_san_xuat_id = $1 AND ${TEST_RUN_SONG}
+      ORDER BY tr.lan_test, tr.created_date`.replace(/\s+/g, ' '),
+    [lenhId]);
+  return rows;
+}
+
+// Gỡ các lượt test (chỉ lượt THUỘC lệnh này và chưa gỡ). Trả về danh sách đã gỡ kèm kết quả CŨ.
+async function huyTestRunsTx(client, lenhId, ids, actorId) {
+  if (!ids || !ids.length) return [];
+  const { rows } = await client.query(
+    `WITH cu AS (SELECT tr.id, tr.lan_test, tr.ket_qua FROM test_run tr
+                  WHERE tr.lenh_san_xuat_id = $1 AND tr.id = ANY($2::uuid[]) AND ${TEST_RUN_SONG} FOR UPDATE)
+     UPDATE test_run t SET ket_qua = 'HUY',
+            ghi_chu = concat_ws(' · ', NULLIF(t.ghi_chu, ''), 'Gỡ khi hoàn tác về Test Run (kết quả cũ: ' || COALESCE(cu.ket_qua, '—') || ')'),
+            updated_by = $3, updated_date = CURRENT_TIMESTAMP
+       FROM cu WHERE t.id = cu.id
+     RETURNING t.id, cu.lan_test, cu.ket_qua AS ket_qua_cu`.replace(/\s+/g, ' '),
+    [lenhId, ids, actorId]);
+  return rows;
+}
+
 // Lệnh đã có kết quả Test Run nào chưa (TEST_CNSP hoặc TEST_QA còn DAT)?
 // Dùng ở `rollbackLenh` đích TEST_RUN: có kết quả thì phải gỡ, không thì mới là NOOP thật.
 async function coKetQuaTest(lenhId) {
@@ -1671,7 +1706,7 @@ async function getTestRuns(lenhId) {
   const { rows } = await query(
     `SELECT tr.id, tr.lan_test, tr.so_luong, tr.ket_qua, tr.tg_bd_test, tr.tg_kt_test, tr.ghi_chu, tr.created_date,
             ${OWNER_CHO_IN_SQL('tr')}
-     FROM test_run tr WHERE tr.lenh_san_xuat_id = $1 ORDER BY tr.lan_test`.replace(/\s+/g, ' '),
+     FROM test_run tr WHERE tr.lenh_san_xuat_id = $1 AND tr.ket_qua IS DISTINCT FROM 'HUY' ORDER BY tr.lan_test`.replace(/\s+/g, ' '),
     [lenhId]
   );
   return rows;
@@ -1861,7 +1896,7 @@ async function testRunsByLenh(lenhIds = []) {
   if (!lenhIds.length) return [];
   const { rows } = await query(
     `SELECT tr.lenh_san_xuat_id, tr.lan_test, tr.ket_qua, tr.ghi_chu, ${OWNER_CHO_IN_SQL('tr')}
-     FROM test_run tr WHERE tr.lenh_san_xuat_id = ANY($1::uuid[])
+     FROM test_run tr WHERE tr.lenh_san_xuat_id = ANY($1::uuid[]) AND tr.ket_qua IS DISTINCT FROM 'HUY'
      ORDER BY tr.lenh_san_xuat_id, tr.lan_test, tr.created_date`.replace(/\s+/g, ' '),
     [lenhIds]
   );
@@ -2019,7 +2054,7 @@ module.exports = {
   logKeHoachTam, keHoachTamHistoryByDate, keHoachTamDoneByDate,
   listCancelableLenh, getLenhForCancel, cancelLenhOrder, cancelReadyQcForDotVai, logLenhCancel,
   cancelPhieuTemByLenhTx,
-  cancelReadyItemsByPhanIn, cancelTestResults, coKetQuaTest, phanInIdsByLenh, lenhChoKyThuat,
+  cancelReadyItemsByPhanIn, cancelTestResults, coKetQuaTest, testRunsChoHuy, huyTestRunsTx, phanInIdsByLenh, lenhChoKyThuat,
   listReleasableSets, getOpenSetMembers, getSetForRelease, getSetMembersForRelease, markSetReleased, logGomSetReleased,
   dongSetDaReleaseHet,
 };

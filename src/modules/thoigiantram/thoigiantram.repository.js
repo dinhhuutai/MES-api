@@ -11,6 +11,49 @@
 const { query } = require('../../config/db');
 const { mauTim } = require('../../utils/timKiem');
 const { DV, VN } = require('../../utils/siSoTram');
+const { mocDotMucSql, khongReadyTuDongSql, KHUON_OPT_SQL_LIST } = require('../../utils/tech');
+
+// ─── 2 NGUỒN READY RIÊNG CỦA TRANG NÀY — ĐO THEO TỪNG ĐỢT VẢI (22/09/2026) ─────
+// ⚠⚠ Nguồn `DV.READY_KT/READY_QC` của sĩ số ở MỨC PHẦN IN: vào = đợt vải MỚI NHẤT lên READY, ra = mốc
+//   kỹ thuật/QC của dòng TỔNG ⇒ phần in có 2 đợt thì lấy mốc của đợt này trừ mốc của đợt kia (người
+//   dùng báo "thời gian tồn sai"). READY đi theo đợt vải từ 16/09/2026 nên ở đây đo 1 dòng / ĐỢT VẢI:
+//   · READY_KT: vào = đợt lên READY · ra = đợt đủ mục KT (Mực + Khuôn; khách II/AD chỉ Mực), hoặc
+//     rời READY vì đợt đã được release (lệnh ≠ HUY tạo sớm nhất) — mốc nào tới TRƯỚC.
+//   · READY_QC: vào = đợt đủ mục KT · ra = QC xác nhận đợt đó, hoặc đợt được release.
+//     Đợt release TRƯỚC khi KT xong ⇒ không hề qua hàng đợi QC ⇒ loại (tg_vao NULL).
+// ⚠⚠ `GREATEST(a, NULL)` = a (Postgres BỎ QUA NULL) ⇒ mốc ra PHẢI bọc `CASE WHEN … IS NOT NULL`, nếu
+//   không đợt CHƯA xong vẫn có mốc ra = mốc vào và KHÔNG đợt nào hiện "đang ở" (đã mắc khi viết).
+// ⚠ CỐ Ý KHÔNG sửa `DV` của sĩ số: dải "Theo dõi" các màn READY vẫn đếm theo phần in như cũ.
+const NGUON_READY_DOT = (loai) => `SELECT dv.phan_in_id, dv.ma_dot_vai,
+    ${loai === 'KT' ? 'dv.tg_chuyen_ready' : 'CASE WHEN m.kt IS NOT NULL AND (rl.moc IS NULL OR rl.moc >= m.kt) THEN m.kt END'} AS tg_vao,
+    ${loai === 'KT'
+    ? 'CASE WHEN LEAST(m.kt, rl.moc) IS NOT NULL THEN GREATEST(dv.tg_chuyen_ready, LEAST(m.kt, rl.moc)) END'
+    : 'CASE WHEN LEAST(m.qc, rl.moc) IS NOT NULL THEN GREATEST(m.kt, LEAST(m.qc, rl.moc)) END'} AS tg_ra,
+    NULL::text AS ma_lenh_san_xuat, NULL::text AS ten_chuyen
+  FROM dot_vai_ve dv
+  JOIN phan_in pin ON pin.id = dv.phan_in_id AND pin.dang_hoat_dong
+  JOIN ma_hang zmh ON zmh.id = pin.ma_hang_id
+  JOIN don_hang zdh ON zdh.id = zmh.don_hang_id
+  JOIN khach_hang zkh ON zkh.id = zdh.khach_hang_id
+  LEFT JOIN LATERAL (SELECT
+      CASE WHEN z.muc IS NOT NULL AND (zkh.ten_khach_hang IN (${KHUON_OPT_SQL_LIST}) OR z.khuon IS NOT NULL)
+           THEN GREATEST(z.muc, CASE WHEN zkh.ten_khach_hang IN (${KHUON_OPT_SQL_LIST}) THEN NULL ELSE z.khuon END) END AS kt,
+      z.qc
+    FROM (SELECT ${mocDotMucSql('dv', 'dv.phan_in_id', 'MUC')} AS muc,
+                 ${mocDotMucSql('dv', 'dv.phan_in_id', 'KHUON')} AS khuon,
+                 ${loai === 'KT' ? 'NULL::timestamptz' : mocDotMucSql('dv', 'dv.phan_in_id', 'QC_XAC_NHAN')} AS qc) z
+  ) m ON true
+  LEFT JOIN LATERAL (SELECT min(xls.created_date) AS moc FROM lenh_sx_dot_vai xlsd
+      JOIN lenh_san_xuat xls ON xls.id = xlsd.lenh_san_xuat_id AND xls.trang_thai <> 'HUY'
+     WHERE xlsd.dot_vai_ve_id = dv.id) rl ON true
+  WHERE dv.trang_thai NOT IN ('DA_GOP','DA_HUY') AND dv.tg_chuyen_ready IS NOT NULL
+    AND ${khongReadyTuDongSql('pin.id')}`;
+
+const NGUON = {
+  ...DV,
+  READY_KT_DOT: NGUON_READY_DOT('KT'),
+  READY_QC_DOT: NGUON_READY_DOT('QC'),
+};
 
 // Danh mục trạm đo. `donVi` = đơn vị vận hành THẬT của trạm (khóa gom mốc):
 //   pin = phần in · dot_vai = đợt vải · lenh = lệnh SX · tem = tem.
@@ -25,16 +68,20 @@ const { DV, VN } = require('../../utils/siSoTram');
 // ⚠ `QC_XAC_NHAN` thuộc trạm READY trong DB nhưng gắn vào dòng **READY_QC** (hàng đợi của QC) chứ
 //   không phải READY_KT — nếu không, mốc "chờ QC" bị trộn vào thời gian của tổ kỹ thuật.
 const TRAM_TG = [
-  { ma: 'READY_KT', ten: 'READY — Kỹ thuật', nguon: 'READY_KT', donVi: 'pin', sla: { tram: 'READY' },
+  { ma: 'READY_KT', ten: 'READY — Kỹ thuật', nguon: 'READY_KT_DOT', donVi: 'dot_vai', sla: { tram: 'READY' },
     checklist: ['KHUON', 'FILM', 'MUC'],
-    moTa: 'Vào = đợt vải lên READY · Ra = kỹ thuật xác nhận đủ mục (hoặc phần in rời READY)' },
-  { ma: 'READY_QC', ten: 'READY — QC xác nhận', nguon: 'READY_QC', donVi: 'pin', sla: { checkpoint: 'QC_XAC_NHAN' },
+    moTa: 'Theo đợt vải · Vào = đợt lên READY · Ra = đợt đủ mục kỹ thuật (hoặc đợt được release)' },
+  { ma: 'READY_QC', ten: 'READY — QC xác nhận', nguon: 'READY_QC_DOT', donVi: 'dot_vai', sla: { checkpoint: 'QC_XAC_NHAN' },
     checklist: ['QC_XAC_NHAN'],
-    moTa: 'Vào = kỹ thuật xong hết mục · Ra = QC xác nhận READY' },
+    moTa: 'Theo đợt vải · Vào = đợt đủ mục kỹ thuật · Ra = QC xác nhận đợt (hoặc đợt được release)' },
   { ma: 'RELEASE_1', ten: 'Release 1', nguon: 'RELEASE_1', donVi: 'dot_vai', sla: { tram: 'RELEASE_1' },
     moTa: 'Vào = đợt vải lên READY · Ra = release hết SL (hoặc sang Kế hoạch tạm)' },
   { ma: 'KE_HOACH_TAM', ten: 'Kế hoạch tạm', nguon: 'KE_HOACH_TAM', donVi: 'dot_vai', sla: null,
     moTa: 'Vào = lưu kế hoạch tạm · Ra = xác nhận Release 1 / xóa' },
+  // ⚠ Gia công đứng NGAY SAU Release 1 (22/09/2026): từ Release 1 hàng rẽ 2 nhánh — gia công HOẶC
+  //   Test Run → Release 2 → Sản xuất. Đặt sau Sản xuất như trước là sai dòng chảy.
+  { ma: 'GIA_CONG', ten: 'Gia công', nguon: 'GIA_CONG', donVi: 'lenh', sla: null,
+    moTa: 'Nhánh rẽ từ Release 1 · Vào = tạo lệnh gia công · Ra = nhận đủ hàng về' },
   { ma: 'TEST_RUN', ten: 'Test Run', nguon: 'TEST_RUN', donVi: 'lenh', sla: { tram: 'TEST_RUN' },
     checklist: ['TEST_CNSP', 'TEST_QA'],
     moTa: 'Vào = tạo lệnh · Ra = QA đạt (hoặc lệnh rời chặng Release 1)' },
@@ -42,8 +89,6 @@ const TRAM_TG = [
     moTa: 'Vào = test xong · Ra = duyệt Release 2' },
   { ma: 'SAN_XUAT', ten: 'Sản xuất (chờ chạy + chạy)', nguon: 'SAN_XUAT', donVi: 'lenh', sla: { tram: 'SAN_XUAT' },
     moTa: 'Vào = duyệt Release 2 · Ra = chạy hoàn tất' },
-  { ma: 'GIA_CONG', ten: 'Gia công', nguon: 'GIA_CONG', donVi: 'lenh', sla: null,
-    moTa: 'Vào = tạo lệnh gia công · Ra = nhận đủ hàng về' },
   { ma: 'CHO_KHO', ten: 'Chờ khô', nguon: 'CHO_KHO', donVi: 'tem', sla: { tram: 'CHO_KHO' },
     moTa: 'Vào = in tem · Ra = tem khô' },
   { ma: 'KIEM', ten: 'KCS', nguon: 'KIEM', donVi: 'tem', sla: { tram: 'KIEM' },
@@ -139,7 +184,15 @@ async function donViTaiTram(tram, loc = {}, maChecklist = null) {
   let clJoin = '';
   let tgRa = 'u.tg_ra';
   let daXacNhan = 'true';
-  if (maChecklist) {
+  if (maChecklist && tram.donVi === 'dot_vai') {
+    // READY đo theo ĐỢT VẢI ⇒ mốc checklist cũng của CHÍNH đợt đó (không lấy mốc dòng tổng của phần in,
+    // mốc đó có thể thuộc đợt khác). ⚠ `maChecklist` luôn là mã khai cứng ở `TRAM_TG` (service chỉ
+    // nhận mã trong danh sách) nên nội suy thẳng được.
+    clJoin = `LEFT JOIN LATERAL (SELECT ${mocDotMucSql('zdv', 'zdv.phan_in_id', maChecklist)} AS moc
+        FROM dot_vai_ve zdv WHERE zdv.ma_dot_vai = u.don_vi LIMIT 1) cl ON true`;
+    tgRa = 'CASE WHEN cl.moc IS NULL THEN u.tg_ra WHEN cl.moc < u.tg_vao THEN u.tg_vao ELSE cl.moc END';
+    daXacNhan = 'cl.moc IS NOT NULL';
+  } else if (maChecklist) {
     params.push(maChecklist);
     const n = `$${params.length}`;
     clJoin = tram.donVi === 'lenh'
@@ -154,7 +207,7 @@ async function donViTaiTram(tram, loc = {}, maChecklist = null) {
     daXacNhan = 'cl.moc IS NOT NULL';
   }
 
-  const sql = `WITH x AS (${DV[tram.nguon]}),
+  const sql = `WITH x AS (${NGUON[tram.nguon]}),
     u AS (SELECT x.phan_in_id, ${khoa} AS don_vi,
         ${coDot ? "string_agg(DISTINCT x.ma_dot_vai, ', ')" : 'NULL::text'} AS ma_dot_vai,
         string_agg(DISTINCT x.ma_lenh_san_xuat, ', ') AS ma_lenh_san_xuat,

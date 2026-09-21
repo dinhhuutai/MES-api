@@ -239,7 +239,7 @@ async function runDotSanXuat({ loc = {}, gioi_han }) {
            to_char(ls.ngay_ke_hoach, 'DD/MM/YYYY') AS ngay_ke_hoach,
            to_char(ls.tg_bd_kh AT TIME ZONE 'Asia/Ho_Chi_Minh', 'HH24:MI') AS gio_bd,
            to_char(ls.tg_kt_kh AT TIME ZONE 'Asia/Ho_Chi_Minh', 'HH24:MI') AS gio_kt,
-           (SELECT count(*) FROM test_run tr WHERE tr.lenh_san_xuat_id = ls.id)::int AS so_lan_test,
+           (SELECT count(*) FROM test_run tr WHERE tr.lenh_san_xuat_id = ls.id AND tr.ket_qua IS DISTINCT FROM 'HUY')::int AS so_lan_test,
            (SELECT kq.gia_tri_text FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
               WHERE kq.lenh_san_xuat_id = ls.id AND cp.ma_checkpoint = 'TEST_CNSP' AND kq.trang_thai = 'DAT' LIMIT 1) AS nguoi_test,
            (SELECT kq.gia_tri_text FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
@@ -348,7 +348,7 @@ async function runTestRun({ loc = {}, gioi_han }) {
            to_char(tq.tg AT TIME ZONE 'Asia/Ho_Chi_Minh', 'DD/MM/YYYY') AS ngay_test,
            tq.loai_raw AS loai_test_raw, tq.ghi_chu AS test_ghi_chu, nqa.ho_ten AS nguoi_qa,
            tc.nguoi AS nguoi_test,
-           (SELECT count(*) FROM test_run tr WHERE tr.lenh_san_xuat_id = ls.id)::int AS so_lan_test,
+           (SELECT count(*) FROM test_run tr WHERE tr.lenh_san_xuat_id = ls.id AND tr.ket_qua IS DISTINCT FROM 'HUY')::int AS so_lan_test,
            to_char((SELECT min(dvh.han_giao_hang) FROM lenh_sx_dot_vai lsh JOIN dot_vai_ve dvh ON dvh.id = lsh.dot_vai_ve_id
               WHERE lsh.lenh_san_xuat_id = ls.id), 'DD/MM/YYYY') AS han_giao_hang,
            cs.ten_chuyen,

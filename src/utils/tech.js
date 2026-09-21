@@ -159,6 +159,23 @@ const dotMucDatSql = (dvAlias, pinCol, ma) => `(EXISTS (SELECT 1 FROM ket_qua_ch
 
 const qcDotSql = (dvAlias, pinCol) => dotMucDatSql(dvAlias, pinCol, 'QC_XAC_NHAN');
 
+// MỐC (timestamptz) đợt d xác nhận mục `ma` — cùng 2 nhánh với `dotMucDatSql`, trả NULL nếu chưa.
+// Lấy mốc SỚM NHẤT của 2 nhánh (LEAST bỏ qua NULL). Dùng để ĐO THỜI GIAN theo từng đợt vải
+// (Dashboard › Thời gian trạm), KHÔNG dùng để quyết định trạng thái — việc đó vẫn là `dotMucDatSql`.
+// ⚠ Nhánh (a) đọc dòng TỔNG: `tg_xac_nhan` bị ghi đè mỗi lần xác nhận lại ⇒ với đợt cũ mốc có thể
+//   muộn hơn thực tế (giới hạn đã biết của mô hình mức phần in, DATABASE.md §11.3).
+const mocDotMucSql = (dvAlias, pinCol, ma) => `LEAST(
+  (SELECT max(COALESCE(zq.tg_xac_nhan, zq.updated_date)) FROM ket_qua_checkpoint zq
+     JOIN checkpoint zc ON zc.id = zq.checkpoint_id AND zc.ma_checkpoint = '${ma}'
+    WHERE zq.phan_in_id = ${pinCol} AND zq.trang_thai = 'DAT'
+      AND COALESCE(zq.tg_xac_nhan, zq.updated_date) >= COALESCE(${dvAlias}.tg_chuyen_ready, ${dvAlias}.created_date)),
+  (SELECT min(COALESCE(zx.tg_xac_nhan, zx.updated_date)) FROM ready_xac_nhan_dot zx
+     JOIN checkpoint zxc ON zxc.id = zx.checkpoint_id AND zxc.ma_checkpoint = '${ma}'
+    WHERE zx.dot_vai_ve_id = ${dvAlias}.id AND zx.trang_thai = 'DAT'
+      AND NOT EXISTS (SELECT 1 FROM ket_qua_checkpoint zk WHERE zk.phan_in_id = ${pinCol}
+                      AND zk.checkpoint_id = zx.checkpoint_id AND zk.trang_thai = 'HUY'
+                      AND zk.updated_date > zx.updated_date)))`;
+
 // Đợt đã xong KỸ THUẬT (Mực + Khuôn; khách gia công II/AD chỉ cần Mực) — gương `techDoneNhom` ở service.
 // `khachExpr` = biểu thức tên khách của phần in (vd `kh.ten_khach_hang`).
 const ktDotXongSql = (dvAlias, pinCol, khachExpr) => `(${dotMucDatSql(dvAlias, pinCol, 'MUC')}
@@ -191,5 +208,5 @@ module.exports = {
   requiredTechItems, hienFilm, techDoneSql, techDoneSqlByPin,
   NHAN_HE_THONG, nguoiXacNhanSql,
   readyTuDongSql, khongReadyTuDongSql,
-  dotMucDatSql, qcDotSql, ktDotXongSql, conDotChuaReadySql, conDotChoQcSql, conDotChuaKtSql,
+  dotMucDatSql, mocDotMucSql, qcDotSql, ktDotXongSql, conDotChuaReadySql, conDotChoQcSql, conDotChuaKtSql,
 };

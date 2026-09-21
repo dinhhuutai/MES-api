@@ -957,7 +957,12 @@ async function listCancelableLenh({ search, page, limit, offset, moRong }) {
 // KHÔNG tự tin FE). Bỏ giới hạn trạng thái + cho hủy cả lệnh đã in tem: tem/phiếu của lệnh bị HỦY kèm.
 // ⚠ VẪN CHẶN khi tem đã đi tiếp (KCS/Sửa/OQC/giao) — hủy lúc đó làm hỏng SỔ CÁI SỐ LƯỢNG (§11.4);
 // muốn gỡ thì đảo từng công đoạn ở tab "Hủy xác nhận KCS/Sửa/OQC" trước.
-async function rollbackLenh(lenhId, { target, lyDo, force = false }, actorId) {
+// Lượt test của lệnh (chưa bị gỡ) — tab Hủy lệnh sản xuất, đích TEST_RUN: người dùng chọn lượt nào GIỮ.
+async function testRunsChoHuy(lenhId) {
+  return repo.testRunsChoHuy(lenhId);
+}
+
+async function rollbackLenh(lenhId, { target, lyDo, force = false, boTestRunIds }, actorId) {
   const TARGET = ['READY', 'RELEASE_1', 'TEST_RUN'].includes(target) ? target : 'RELEASE_1';
   const lenh = await repo.getLenhForCancel(lenhId);
   if (!lenh) throw new AppError('Lệnh sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
@@ -994,22 +999,29 @@ async function rollbackLenh(lenhId, { target, lyDo, force = false }, actorId) {
   if (TARGET === 'TEST_RUN') {
     const laR2 = lenh.trang_thai === 'RELEASE_2';
     const coKqTest = await repo.coKetQuaTest(lenhId);
-    if (!laR2 && !coKqTest) {
+    // Lượt test người dùng BỎ TÍCH (22/09/2026) — chỉ nhận id dạng uuid, việc "có thuộc lệnh này không"
+    // do chính câu UPDATE lọc theo `lenh_san_xuat_id` (id lạ bị bỏ qua êm, không gỡ nhầm lệnh khác).
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const boIds = [...new Set((Array.isArray(boTestRunIds) ? boTestRunIds : []).map(String).filter((x) => UUID_RE.test(x)))];
+    if (!laR2 && !coKqTest && !boIds.length) {
       throw new AppError('Lệnh đang ở Test Run và chưa có kết quả test — không có gì để hoàn tác',
         { status: 409, errorCode: 'NOOP' });
     }
+    let daGo = [];
     await withTransaction(async (client) => {
       if (laR2) await repo.setLenhTrangThai(client, lenhId, 'RELEASE_1', actorId);
       // Gỡ kết quả TEST_CNSP + TEST_QA ⇒ lệnh hiện lại ở màn Test Run - QA để test lại từ đầu.
       if (coKqTest) await repo.cancelTestResults(client, lenhId, actorId);
+      daGo = await repo.huyTestRunsTx(client, lenhId, boIds, actorId);
       await repo.logPlanChange(client, lenhId, 'HUY_RELEASE_2',
         { trang_thai: lenh.trang_thai, co_ket_qua_test: coKqTest },
-        { trang_thai: 'RELEASE_1', huy_ket_qua_test: coKqTest, ly_do: (lyDo || '').trim() || null }, actorId);
+        { trang_thai: 'RELEASE_1', huy_ket_qua_test: coKqTest, ly_do: (lyDo || '').trim() || null,
+          go_lan_test: daGo.map((r) => ({ id: r.id, lan_test: r.lan_test, ket_qua_cu: r.ket_qua_cu })) }, actorId);
     });
     await tracking.revertToTram(dotVaiIds, 'TEST_RUN', actorId);
     sockets.emit('workflow:updated', { lenhId, stage: 'RELEASE_1' });
     sockets.emit('dashboard:refresh', {});
-    return { id: lenhId, target: TARGET, dot_vai: dotVaiIds.length, huy_ket_qua_test: coKqTest };
+    return { id: lenhId, target: TARGET, dot_vai: dotVaiIds.length, huy_ket_qua_test: coKqTest, so_lan_test_go: daGo.length };
   }
 
   // RELEASE_1 / READY: hủy lệnh (đợt vải rời lệnh) + (READY) hủy QC.
@@ -1921,7 +1933,7 @@ module.exports = {
   listReplanCandidates, replan, replanBatch, planHistory,
   listGiaCong, confirmGiaCongToOqc, giaCongHistory, listGiaCongTemCancelable, cancelGiaCongTem, traLaiNhaGiaCong,
   listKeHoachTam, keHoachTamSet, confirmKeHoachTam, updateKeHoachTam, deleteKeHoachTam, keHoachTamHistory, keHoachTamDone, keHoachTamTheoDoi,
-  listCancelableLenh, rollbackLenh,
+  listCancelableLenh, rollbackLenh, testRunsChoHuy,
   release1Done, release2Done, replanDone, testCnspDone, testQaDone,
   releaseList,
   listCaTuan, upsertCaTuan,

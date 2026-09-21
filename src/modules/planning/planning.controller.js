@@ -215,6 +215,8 @@ const cancelableLenh = asyncHandler(async (req, res) => {
   return ok(res, { ...data, mo_rong: moRong, cho_phep_tuy_chon: coQuyenHuyTuyChon(req) });
 });
 
+const lanTestChoHuy = asyncHandler(async (req, res) => ok(res, await service.testRunsChoHuy(req.params.lenhId)));
+
 const cancelLenh = asyncHandler(async (req, res) => {
   const force = !!req.body?.force && coQuyenHuyTuyChon(req);
   const r = await service.rollbackLenh(req.params.lenhId, { ...req.body, force }, req.user.id);
@@ -250,6 +252,6 @@ module.exports = {
   replanCandidates, replan, replanDetail, replanBatch, planHistory,
   giaCongList, giaCongToOqc, giaCongHistory, giaCongTemCancelable, giaCongTemHuy, giaCongTraLai,
   keHoachTamList, keHoachTamSet, keHoachTamConfirm, keHoachTamUpdate, keHoachTamDelete, keHoachTamHistory, keHoachTamDone, keHoachTamTheoDoi,
-  cancelableLenh, cancelLenh, returnTestRunToReady,
+  cancelableLenh, cancelLenh, lanTestChoHuy, returnTestRunToReady,
   release1Done, release2Done, replanDone, testCnspDone, testQaDone,
 };
