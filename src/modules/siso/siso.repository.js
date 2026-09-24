@@ -7,6 +7,7 @@ const { query } = require('../../config/db');
 const { mauTim } = require('../../utils/timKiem');
 const { MAN, LOAI_NGAY, O_SI_SO, VN } = require('../../utils/siSoTram');
 const { DO_SL } = require('../../utils/bangTheoDoi');
+const { slaReadySql, TEST_RUN_TRUOC_SX_PHUT, gioSxKhSql } = require('../../utils/slaTheoGio');
 
 // ⚠⚠ MỐC KỲ ĐẶT TRONG CTE `ky`, KHÔNG nội suy `$1`/`$2` thẳng vào từng điều kiện.
 //   Lý do (lỗi thật đã bắt): ô `ton_dau` chỉ dùng $1, ô `ton_cuoi` chỉ dùng $2 ⇒ tham số còn lại
@@ -227,8 +228,20 @@ async function motDongBang(dong, slaPhut, { tu, den }) {
   const m = nguon(dong.man);
   const sqlPin = m.donVis.pin.sql;             // cột "Phần" LUÔN đếm theo PHẦN IN ở cả 10 dòng
   const slSql = DO_SL[dong.sl].sql;
-  const dkNghen = slaPhut == null ? 'false'
-    : `(${dkO('ton_cuoi')}) AND EXTRACT(EPOCH FROM (LEAST((SELECT den FROM ky), now()) - q.tg_vao)) / 60 > ${Number(slaPhut)}`;
+  // ⚠ SLA KHÔNG CỐ ĐỊNH (24/09/2026, `utils/slaTheoGio.js`) — gương đúng bản đồ nghẽn `dashboard.flowRows`:
+  //   READY KT theo giờ phần in lên READY (mốc vào sớm nhất của nó), Test Run theo giờ SX kế hoạch SỚM
+  //   NHẤT của các lệnh RELEASE_1 của phần in (thiếu ⇒ SLA trạm).
+  const moc = 'LEAST((SELECT den FROM ky), now())';
+  const daO = `EXTRACT(EPOCH FROM (${moc} - q.tg_vao)) / 60`;
+  let dkSla = slaPhut == null ? null : `${daO} > ${Number(slaPhut)}`;
+  if (slaPhut != null && dong.slaKieu === 'READY_THEO_GIO') dkSla = `${daO} > ${slaReadySql('q.tg_vao', Number(slaPhut))}`;
+  if (slaPhut != null && dong.slaKieu === 'TEST_RUN_KE_HOACH') {
+    const bdKh = `(SELECT min(${gioSxKhSql('lsb.tg_bd_kh', 'lsb.ngay_ke_hoach')}) FROM lenh_sx_dot_vai ldb JOIN dot_vai_ve dvb ON dvb.id = ldb.dot_vai_ve_id
+      JOIN lenh_san_xuat lsb ON lsb.id = ldb.lenh_san_xuat_id WHERE dvb.phan_in_id = q.id AND lsb.trang_thai = 'RELEASE_1')`;
+    dkSla = `(CASE WHEN ${bdKh} IS NULL THEN ${daO} > ${Number(slaPhut)}
+      ELSE ${moc} > ${bdKh} - interval '${TEST_RUN_TRUOC_SX_PHUT} minutes' END)`;
+  }
+  const dkNghen = dkSla == null ? 'false' : `(${dkO('ton_cuoi')}) AND ${dkSla}`;
   const cum = (ten, dk) => `count(*) FILTER (WHERE ${dk})::int AS ${ten}_phan,
     COALESCE(sum(${slSql}) FILTER (WHERE ${dk}), 0)::int AS ${ten}_sl`;
   const sql = `WITH ${CTE_KY}, q AS (${sqlPin}) SELECT

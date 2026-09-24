@@ -6,7 +6,10 @@ const { dkTrang } = require('../../utils/phuongAnIn');
 // ⚠⚠ ĐÃ BỎ `khongReadyTuDongSql` KHỎI FILE NÀY (10/09/2026): 2 sidebar *Lịch sử* + *Đã hoàn thành*
 //   của READY KT & QC READY nay HIỆN CẢ phần in đi thẳng PKH (ERP `KTCankiemtra=0`) — xem ghi chú ở
 //   `listConfirmHistory` / `doneByDate`. Luật loại-khỏi-số-liệu vẫn còn hiệu lực ở sĩ số + báo cáo.
-const { techDoneSql, KHUON_OPT_SQL_LIST, nguoiXacNhanSql, conDotChuaReadySql, qcDotSql, conDotChoQcSql } = require('../../utils/tech');
+// ⚠ `conDotChoQcSql` KHÔNG import ở đây nữa (23/09/2026): màn QC dùng chung vị từ với màn Kỹ thuật —
+//   xem ghi chú ở `OUTER_WHERE`. Helper đó nay chỉ còn phục vụ dải "Theo dõi" (`utils/siSoTram.js`).
+const { techDoneSql, KHUON_OPT_SQL_LIST, nguoiXacNhanSql, conDotChuaReadySql, qcDotSql } = require('../../utils/tech');
+const { slaReadySql } = require('../../utils/slaTheoGio');
 const { mauTim } = require('../../utils/timKiem');
 const { sqlKhopMa } = require('../../utils/maPhanIn');
 
@@ -90,7 +93,6 @@ async function listCandidates({
               WHERE k.phan_in_id = pin.id AND k.checkpoint_id = ANY($2::uuid[]) AND k.trang_thai = 'DAT')::int AS n_tech_done,
            ${doneExpr('$3')} AS qc_done,
            ${conDotChuaReadySql('pin.id')} AS con_dot_chua_ready,
-           ${conDotChoQcSql('pin.id', 'kh.ten_khach_hang')} AS con_dot_cho_qc,
            EXISTS (SELECT 1 FROM dot_vai_ve dvr WHERE dvr.phan_in_id = pin.id AND dvr.trang_thai NOT IN ('DA_GOP','DA_HUY')
                      AND dvr.tg_chuyen_ready IS NOT NULL
                      AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsr2 JOIN lenh_san_xuat lr2 ON lr2.id = lsr2.lenh_san_xuat_id
@@ -175,11 +177,19 @@ async function listCandidates({
   //   đợt đã thuộc lệnh RELEASE_1). Có đợt chưa release thì `con_dot_chua_ready` đã nói đủ; để vế
   //   `qc_done = false` chạy trần thì phần in mà mọi đợt đã được QC THEO ĐỢT (dòng tổng chưa có) vẫn
   //   bị kéo lại màn READY dù không còn việc gì (21/09/2026).
-  // ⚠⚠ MÀN QC ($11) CHỈ LẤY HÀNG ĐỢI CỦA QC: đợt vải KỸ THUẬT ĐÃ XONG mà QC chưa xác nhận (người dùng
-  //   chốt 21/09/2026 — "QC ready phải hiện khi Ready KT xác nhận xong"). Gương `DV.READY_QC` của sĩ số.
-  const OUTER_WHERE = `WHERE CASE WHEN $11
-      THEN (q.con_dot_cho_qc OR (NOT q.co_dot_chua_release AND q.qc_done = false AND q.tech_done))
-      ELSE (q.con_dot_chua_ready OR (NOT q.co_dot_chua_release AND q.qc_done = false)) END`;
+  // ⚠⚠⚠ 2 MÀN (Kỹ thuật + QC) DÙNG CHUNG MỘT VỊ TỪ — ĐẢO LẠI thay đổi 21/09/2026 (người dùng chốt
+  //   23/09/2026: *"lúc bên READY Kỹ thuật chưa xác nhận đủ thì vẫn hiện danh sách phần in ở đây mà;
+  //   cái tôi nói hiện khi Ready kỹ thuật xác nhận đủ checklist là ở phần SĨ SỐ góc trên bên phải thôi,
+  //   chứ danh sách vẫn cho như cũ"*).
+  //   Bản 21/09 lọc màn QC bằng `con_dot_cho_qc` (đợt KT ĐÃ XONG) ⇒ đo prod 23/09: bảng tụt từ
+  //   **105 phần in xuống ~5** — QC gần như không còn gì để xem, mất luôn khả năng theo dõi hàng sắp tới.
+  // ⚠⚠ HỆ QUẢ CỐ Ý: dải "Theo dõi" của màn QC (`DV.READY_QC` — GIỮ NGUYÊN `conDotChoQcSql`) đếm ÍT HƠN
+  //   số dòng trên bảng, vì nó đo ĐÚNG hàng đợi của QC còn bảng cho thấy toàn cảnh READY.
+  //   **ĐỪNG "sửa cho khớp"** — cùng họ với chênh lệch đã ghi ở §6 (*Đã hoàn thành* đếm lượt xác nhận,
+  //   dải Theo dõi đếm phần in rời trạm).
+  // ⚠ QC vẫn CHỈ XÁC NHẬN ĐƯỢC phần in đủ mục KT — chặn ở `confirmQC` (409 `TECH_NOT_DONE`) + FE khóa
+  //   checkbox theo `tech_done`. Hiện ra để THẤY, không phải để bấm.
+  const OUTER_WHERE = 'WHERE q.con_dot_chua_ready OR (NOT q.co_dot_chua_release AND q.qc_done = false)';
 
   // SLA theo GIAI ĐOẠN (task 3): $11=onlyQcReady. Màn QC → SLA QC_XAC_NHAN ($12) đếm từ kt_done_tg;
   // màn Kỹ thuật → SLA trạm READY ($9) từ ready_tg_vao, và KHI ĐỦ 3 mục KT → sla NULL (ngừng đếm, không đỏ ở KT).
@@ -187,7 +197,7 @@ async function listCandidates({
   const dataSql = `
     SELECT q.*,
            CASE WHEN $11 THEN (CASE WHEN q.tech_done THEN q.kt_done_tg ELSE NULL END) ELSE q.ready_tg_vao END AS tg_vao,
-           CASE WHEN $11 THEN (CASE WHEN q.tech_done THEN $12::int ELSE NULL END) WHEN q.tech_done THEN NULL ELSE $9::int END AS sla_phut,
+           CASE WHEN $11 THEN (CASE WHEN q.tech_done THEN $12::int ELSE NULL END) WHEN q.tech_done THEN NULL ELSE ${slaReadySql('q.ready_tg_vao', '$9::int')} END AS sla_phut,
            CASE WHEN $11 THEN $13::int ELSE $10::int END AS canh_bao_truoc_phut,
            count(*) OVER()::int AS total_count
     FROM (${selectBase(true)}) q

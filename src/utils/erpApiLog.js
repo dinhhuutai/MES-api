@@ -38,6 +38,8 @@ const TEN_BANG = {
   // ⚠ Gắn theo LƯỢT SỬA (`sua.id`), KHÔNG theo tem con: khi API mã tem 17 tắt thì nhiều lượt cộng dồn
   //   vào CÙNG 1 tem con — khóa theo tem là lượt thứ hai bị coi như "đã gửi" và mất luôn.
   ERP_GUI_SUA_DAT: 'sua',
+  // Gắn theo LƯỢT KIỂM (`kcs.id`) — 1 tem có thể kiểm nhiều lượt; khóa chống gửi trùng mỗi lượt.
+  ERP_GUI_KIEM_PHAM: 'kcs',
 };
 
 // Cắt bớt phản hồi ERP trước khi lưu — tránh 1 lần lỗi bất thường nhồi cả trang HTML vào audit_log.

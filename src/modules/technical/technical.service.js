@@ -11,6 +11,7 @@ const { buildMeta } = require('../../utils/pagination');
 const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
 const { isKhuonOptional } = require('../../utils/tech');
+const { slaReady } = require('../../utils/slaTheoGio');
 const hsktRepo = require('../hskt/hskt.repository');
 
 // Đổi phương án in của HSKT active của phần in (khi xác nhận Khuôn có nhập phương án in).
@@ -388,19 +389,23 @@ async function listCandidates({ search, page, limit, offset, onlyQcReady = false
       //   được ngay, không phải chờ đợt 2. Màn QC CHỈ hiện đợt KỸ THUẬT ĐÃ XONG (hàng đợi của QC);
       //   `tech_done` nay = của CHÍNH ĐỢT đó. Ghi chú cũ phía trên ("QC vẫn xác nhận ở mức phần in")
       //   ĐÃ LỖI THỜI — giữ để thấy vì sao từng làm khác.
-      const choQc = nhom.filter((g) => techDoneNhom(g, r.ten_khach_hang));
-      const nhieuQc = choQc.length > 1;
-      choQc.forEach((g) => {
+      // ⚠⚠⚠ SỬA 24/09/2026 (người dùng chốt 23/09): DANH SÁCH màn QC = y như màn READY Kỹ thuật —
+      //   hiện MỌI đợt đang chờ, kể cả đợt kỹ thuật CHƯA xác nhận đủ. Bản 21/09 chỉ đẩy các đợt đã đủ
+      //   mục KT (`choQc`) ⇒ đo prod 24/09: màn QC 23 dòng vs màn KT 83 dòng. Luật "chỉ đợt KT đã xong"
+      //   CHỈ còn áp cho dải "Theo dõi" (`siSoTram DV.READY_QC`), KHÔNG áp cho bảng.
+      //   `tech_done` vẫn THEO ĐỢT ⇒ đợt chưa xong hiện ra nhưng khóa checkbox, không tính SLA QC.
+      nhom.forEach((g) => {
         const it = g.items;
         const vao = g.dots.map((d) => tMs(d.tg_chuyen_ready)).filter(Boolean);
         const han = g.dots.map((d) => d.han_giao_hang).filter(Boolean).sort();
-        const xongDot = true;
+        const xongDot = techDoneNhom(g, r.ten_khach_hang);
+        const nDone = ['KHUON', 'FILM', 'MUC'].filter((ma) => it[ma]?.done).length;
         // Mốc KT xong CỦA ĐỢT = lần xác nhận muộn nhất (Khuôn/Mực) — bắt đầu đếm SLA của QC.
         const ktTg = [it.KHUON?.tg, it.MUC?.tg].map(tMs).filter(Boolean);
         items.push({
           ...r,
           _key: nhieu ? `${r.id}|${g.key}` : r.id,
-          tach_theo_loai: nhieuQc || nhieu,
+          tach_theo_loai: nhieu,
           so_nhom_loai: nhom.length,
           thu_tu_dot: nhom.indexOf(g) + 1,
           so_luong_dot: g.dots.reduce((s, d) => s + (Number(d.so_luong_vai_ve) || 0), 0),
@@ -413,11 +418,13 @@ async function listCandidates({ search, page, limit, offset, onlyQcReady = false
           tg_qua_ready: vao.length ? new Date(Math.max(...vao)).toISOString() : r.tg_qua_ready,
           khuon_done: !!it.KHUON?.done, film_done: !!it.FILM?.done, muc_done: !!it.MUC?.done,
           tech_done_dot: xongDot,
-          tech_done: true,
+          tech_done: xongDot,
+          n_tech_done: nDone,
           loai_dot_vai_chua_xong: tatCaXong ? null : (chuaXong.length ? chuaXong.join(', ') : null),
-          tg_vao: ktTg.length ? new Date(Math.max(...ktTg)).toISOString() : r.tg_vao,
-          sla_phut: qcSla,
-          trang_thai_ready: 'CHO_QC',
+          // SLA QC chỉ đếm khi KT của đợt đã xong (mốc = mục KT cuối); chưa xong ⇒ không đỏ ở QC.
+          tg_vao: xongDot ? (ktTg.length ? new Date(Math.max(...ktTg)).toISOString() : r.tg_vao) : null,
+          sla_phut: xongDot ? qcSla : null,
+          trang_thai_ready: xongDot ? 'CHO_QC' : nDone > 0 ? 'DANG' : 'CHUA',
         });
       });
       return;
@@ -455,7 +462,8 @@ async function listCandidates({ search, page, limit, offset, onlyQcReady = false
         trang_thai_ready: techDone ? 'CHO_QC' : nDone > 0 ? 'DANG' : 'CHUA',
         // SLA màn Kỹ thuật theo NHÓM: đếm từ đợt về sớm nhất của nhóm, đủ mục thì ngừng.
         tg_vao: vao.length ? new Date(Math.min(...vao)).toISOString() : r.tg_vao,
-        sla_phut: techDone ? null : r.sla_phut ?? readySla,
+        // SLA READY theo GIỜ ĐỢT LÊN MES (utils/slaTheoGio — 24/09/2026): 07:30–15:00 ⇒ 8h, 15:00–20:30 ⇒ 21h.
+        sla_phut: techDone ? null : slaReady(vao.length ? new Date(Math.min(...vao)) : r.tg_vao, readySla),
         film_nguoi: it.FILM?.nguoi || null, film_tg: it.FILM?.tg || null,
         khuon_nguoi: it.KHUON?.nguoi || null, khuon_tg: it.KHUON?.tg || null,
         muc_nguoi: it.MUC?.nguoi || null, muc_tg: it.MUC?.tg || null,

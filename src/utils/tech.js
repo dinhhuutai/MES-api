@@ -146,12 +146,16 @@ const khongReadyTuDongSql = (pinExpr) => `NOT ${readyTuDongSql(pinExpr)}`;
 //   khi phần in còn đợt khác đang chờ (không thì mốc QC tổng = now() PHỦ LUÔN đợt 1 chưa ai làm — đúng
 //   lỗi người dùng báo 18/09).
 // ⚠ Alias `zq*`/`zx*`/`zk*` đặt hiếm để không đụng alias của query lớn bọc ngoài; mã checkpoint là hằng code.
-const dotMucDatSql = (dvAlias, pinCol, ma) => `(EXISTS (SELECT 1 FROM ket_qua_checkpoint zq
-  JOIN checkpoint zc ON zc.id = zq.checkpoint_id AND zc.ma_checkpoint = '${ma}'
+// ⚠ `maLaBieuThuc = true` ⇒ `ma` được dùng NGUYÊN VĂN như một biểu thức SQL (vd cột `zcpm.ma` của một
+//   `CROSS JOIN (VALUES ...)`) thay vì nội suy thành hằng chuỗi. Dùng khi cần cả 3 mục trong MỘT câu
+//   mà chỉ viết biểu thức này ĐÚNG MỘT LẦN — biểu thức dài 653 ký tự, lặp 3 lần là câu SQL vượt
+//   ngưỡng IPS (~1400) và bị reset kết nối (§9). Mặc định `false` ⇒ mọi call-site cũ không đổi.
+const dotMucDatSql = (dvAlias, pinCol, ma, maLaBieuThuc = false) => `(EXISTS (SELECT 1 FROM ket_qua_checkpoint zq
+  JOIN checkpoint zc ON zc.id = zq.checkpoint_id AND zc.ma_checkpoint = ${maLaBieuThuc ? ma : `'${ma}'`}
   WHERE zq.phan_in_id = ${pinCol} AND zq.trang_thai = 'DAT'
     AND COALESCE(zq.tg_xac_nhan, zq.updated_date) >= COALESCE(${dvAlias}.tg_chuyen_ready, ${dvAlias}.created_date))
  OR EXISTS (SELECT 1 FROM ready_xac_nhan_dot zx
-  JOIN checkpoint zxc ON zxc.id = zx.checkpoint_id AND zxc.ma_checkpoint = '${ma}'
+  JOIN checkpoint zxc ON zxc.id = zx.checkpoint_id AND zxc.ma_checkpoint = ${maLaBieuThuc ? ma : `'${ma}'`}
   WHERE zx.dot_vai_ve_id = ${dvAlias}.id AND zx.trang_thai = 'DAT'
     AND NOT EXISTS (SELECT 1 FROM ket_qua_checkpoint zk WHERE zk.phan_in_id = ${pinCol}
                     AND zk.checkpoint_id = zx.checkpoint_id AND zk.trang_thai = 'HUY'
@@ -190,9 +194,12 @@ const conDotChuaReadySql = (pinCol) => `EXISTS (SELECT 1 FROM dot_vai_ve zd
                      WHERE zl.dot_vai_ve_id = zd.id AND zls.trang_thai <> 'HUY')
     AND NOT ${qcDotSql('zd', pinCol)})`;
 
-// ⚠⚠ HÀNG ĐỢI CỦA QC = đợt vải đang chờ (chưa release) mà KỸ THUẬT ĐÃ XONG nhưng QC CHƯA xác nhận
-// (người dùng chốt 21/09/2026: "QC ready phải hiện khi Ready KT xác nhận xong"). Dùng cho màn QC READY +
-// sĩ số `DV.READY_QC` — 2 chỗ phải cùng một luật, lệch là ô Tồn cuối đá với bảng.
+// ⚠⚠ HÀNG ĐỢI CỦA QC = đợt vải đang chờ (chưa release) mà KỸ THUẬT ĐÃ XONG nhưng QC CHƯA xác nhận.
+// ⚠⚠⚠ CHỈ DÙNG CHO DẢI "THEO DÕI" (`utils/siSoTram.js` `DV.READY_QC`) — **KHÔNG dùng lọc BẢNG của màn
+//   QC** (đảo lại 23/09/2026). Bản 21/09 áp cho cả `technical.listCandidates` ⇒ bảng tụt từ 105 phần in
+//   xuống ~5, QC không còn gì để xem. Người dùng chốt: danh sách giữ như cũ (thấy cả phần in KT chưa
+//   xong, chỉ không bấm xác nhận được), việc "chỉ tính khi KT xong" là của SĨ SỐ.
+//   ⇒ Số trên dải Theo dõi NHỎ HƠN số dòng bảng là CỐ Ý — xem CLAUDE.md §6 *Chuẩn bị kỹ thuật*.
 const dotChoReadySql = (alias, pinCol) => `${alias}.phan_in_id = ${pinCol} AND ${alias}.trang_thai NOT IN ('DA_GOP','DA_HUY')
     AND ${alias}.tg_chuyen_ready IS NOT NULL
     AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai zl2 JOIN lenh_san_xuat zls2 ON zls2.id = zl2.lenh_san_xuat_id

@@ -134,6 +134,12 @@ const KENH = {
     timeoutMs: () => env.erp.guiSuaDatTimeoutMs,
     retry: () => env.erp.guiSuaDatRetry,
   },
+  ERP_GUI_KIEM_PHAM: {
+    nhan: 'gui-kiem-pham',
+    url: () => env.erp.guiKiemPhamUrl,
+    timeoutMs: () => env.erp.guiKiemPhamTimeoutMs,
+    retry: () => env.erp.guiKiemPhamRetry,
+  },
 };
 
 // Dựng 20 trường từ 1 dòng `production.repository.duLieuGhiInTem` — DÙNG CHUNG cho tem 15

@@ -16,7 +16,7 @@
 const { query } = require('../../config/db');
 const { slaStatus } = require('../../utils/sla');
 const { flowRowsCached } = require('./flowCache');
-const { KHUON_OPT_SQL_LIST, nguoiXacNhanSql, khongReadyTuDongSql, conDotChuaReadySql } = require('../../utils/tech');
+const { KHUON_OPT_SQL_LIST, KHUON_OPTIONAL_KH, nguoiXacNhanSql, khongReadyTuDongSql, conDotChuaReadySql, dotMucDatSql } = require('../../utils/tech');
 const { mauTim } = require('../../utils/timKiem');
 const { CP_PHAN_IN } = require('../../utils/siSoTram');
 
@@ -564,6 +564,89 @@ const QC_DONE_EXISTS = `EXISTS (SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoi
 const readyMark = (maCp) => `(CASE WHEN EXISTS (SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint cp ON cp.id = k.checkpoint_id
     WHERE k.phan_in_id = pin.id AND cp.ma_checkpoint = '${maCp}' AND k.trang_thai = 'DAT') THEN 'Đã' ELSE '' END)`;
 
+// ── "CÒN CHỜ MỤC KỸ THUẬT NÀO" (Film / Khuôn / Mực) — thêm 23/09/2026 ─────────────────────────
+// Dùng cho CẢ HAI: cột "Tình trạng chờ" của danh sách Open, và 3 nguồn "Open chờ <mục>" (`mucCho`).
+// ⇒ 1 nguồn luật duy nhất: dòng nằm trong "Open chờ Mực" thì cột Tình trạng chờ CHẮC CHẮN có "Mực".
+//
+// ⚠⚠ TÍNH THEO **ĐỢT VẢI**, KHÔNG theo dòng tổng `ket_qua_checkpoint` (chốt 16/09/2026 — READY đi
+//   theo đợt vải). Phần in có đợt 1 đã xác nhận Film + đợt 2 mới về chưa ai làm thì dòng tổng vẫn
+//   'DAT', nhưng màn READY đang hiện nó là CÒN VIỆC ⇒ tính mức phần in sẽ báo THIẾU so với màn thao
+//   tác. Đo prod 23/09/2026: tính theo đợt là SIÊU TẬP an toàn của mức phần in — bắt thêm đúng 10
+//   phần in mỗi mục, KHÔNG mất dòng nào.
+//   ⇒ Hệ quả PHẢI BIẾT: 3 cột `ready_khuon`/`ready_film`/`ready_muc` là trạng thái MỨC PHẦN IN nên có
+//   thể hiện "Đã" trong khi "Tình trạng chờ" vẫn ghi đang chờ mục đó. Không phải lỗi — đối chiếu bằng
+//   cột "Số đợt vải đang chờ" của 3 nguồn "Open chờ <mục>".
+//
+// ⚠⚠⚠ FILM VÀ KHUÔN LUÔN CÙNG TRẠNG THÁI ⇒ thực tế chỉ ra 3 nhãn: "Chờ Film, Khuôn, Mực" ·
+//   "Chờ Film, Khuôn" · "Chờ Mực" (+ "Chờ QC" khi đã đủ mục). Từ 14/08/2026 xác nhận Khuôn thì hệ
+//   thống TỰ ĐẶT Film (`technical.service` `keoTheoFilm`, ghi cả dòng theo đợt ở `xacNhanTheoNhom`).
+//   Đo prod 23/09: 181 phần in chờ cả hai, **0 phần in chỉ chờ một bên**. Các tổ hợp còn lại
+//   ("Chờ Khuôn, Mực" / "Chờ Film, Mực" / "Chờ Khuôn" / "Chờ Film") vẫn được dựng đúng nếu dữ liệu
+//   có — đừng bỏ bớt nhánh vì "thực tế không thấy".
+//
+// ⚠ Khách GIA CÔNG (II/AD) MIỄN Khuôn + Film ⇒ 2 cờ đó luôn false (họ chỉ có thể "Chờ Mực").
+const TEN_MUC_KT = { FILM: 'Film', KHUON: 'Khuôn', MUC: 'Mực' };
+// Đợt vải ĐANG CHỜ ở READY (đã lên READY, CHƯA release) — gương `conDotChuaReadySql`, alias riêng.
+const DOT_DANG_CHO = (alias, pinCol) => `${alias}.phan_in_id = ${pinCol}
+  AND ${alias}.trang_thai NOT IN ('DA_GOP','DA_HUY') AND ${alias}.tg_chuyen_ready IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai zlm JOIN lenh_san_xuat zlsm ON zlsm.id = zlm.lenh_san_xuat_id
+                   WHERE zlm.dot_vai_ve_id = ${alias}.id AND zlsm.trang_thai <> 'HUY')`;
+const conDotChuaMucSql = (pinCol, ma) => `EXISTS (SELECT 1 FROM dot_vai_ve zdm
+  WHERE ${DOT_DANG_CHO('zdm', pinCol)} AND NOT ${dotMucDatSql('zdm', pinCol, ma)})`;
+// ⚠ "Số đợt vải đang chờ" (`so_dot_cho`) KHÔNG tính ở đây mà lấy từ `SQL_CHO_MUC` bên dưới — thêm 1
+//   subquery nữa vào SELECT chính là đúng thứ vừa gây IPS reset. Đừng khôi phục `soDotChuaMucSql`.
+// ⚠⚠⚠ 3 CỜ TÍNH BẰNG **QUERY PHỤ NHẸ THEO PK**, TUYỆT ĐỐI KHÔNG nhét vào `READY_INFO_SELECT`.
+// Bản đầu 23/09/2026 đặt 3 EXISTS thẳng trong khối SELECT chính ⇒ **`read ECONNRESET` 3/3 lần, đúng
+// 19,2 giây** — và KHÔNG phụ thuộc `LIMIT` (thử 10/50/150/300 dòng đều chết y hệt) ⇒ không phải chậm
+// do dữ liệu mà là **IPS reset vì câu SQL quá dài** (§9). Câu chính vốn đã rất dài (READY_MEMBER +
+// loaiDotTheoPin + 3 readyMark + so_muc_kt); cộng thêm 3 × `conDotChuaMucSql` là vượt ngưỡng.
+// ⇒ Tách ra query riêng gom theo `phan_in_id` (khuôn "suy-ca bằng query nhẹ theo PK" đã dùng ở
+//   `confirmInfoByPins` / `prevConfirmerByTems` / `caPartsForTems`). Tốn thêm 1 round-trip (~25ms)
+//   nhưng câu chính giữ nguyên hình dạng đã chạy ổn định. **Đừng gộp ngược lại vào SELECT chính.**
+// ⚠⚠ NGƯỠNG IPS ĐO ĐƯỢC 23/09/2026: câu chứa **2** biểu thức `dotMucDatSql` (1400 ký tự) chạy tốt,
+//   **3** biểu thức (2060 ký tự) là `read ECONNRESET` sau đúng 19,2 giây — mọi lần, không phụ thuộc
+//   `LIMIT`. ⇒ `CROSS JOIN (VALUES ...)` để viết biểu thức ĐÚNG MỘT LẦN (cờ `maLaBieuThuc` của
+//   `dotMucDatSql`), trả 1 dòng / (phần in × mục) rồi gom ở JS. Câu còn ~1050 ký tự.
+//   **Đừng "gộp cho gọn" thành 3 cột bool_or — đó chính là bản đã chết.**
+const SQL_CHO_MUC = `SELECT zdm.phan_in_id, zcpm.ma,
+    count(*) FILTER (WHERE NOT ${dotMucDatSql('zdm', 'zdm.phan_in_id', 'zcpm.ma', true)})::int AS so_cho
+  FROM dot_vai_ve zdm CROSS JOIN (VALUES ('FILM'),('KHUON'),('MUC')) zcpm(ma)
+  WHERE zdm.phan_in_id = ANY($1::uuid[])
+    AND zdm.trang_thai NOT IN ('DA_GOP','DA_HUY') AND zdm.tg_chuyen_ready IS NOT NULL
+    AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai zlm JOIN lenh_san_xuat zlsm ON zlsm.id = zlm.lenh_san_xuat_id
+                     WHERE zlm.dot_vai_ve_id = zdm.id AND zlsm.trang_thai <> 'HUY')
+  GROUP BY zdm.phan_in_id, zcpm.ma`;
+
+// Ghép nhãn cột "Tình trạng chờ" từ 3 cờ — ở JS, KHÔNG ở SQL: dựng chuỗi trong SQL phải lặp cả 3 khối
+// EXISTS hai lần (một lần để nối, một lần để kiểm rỗng) ⇒ lại phình đúng chỗ vừa phải gỡ ra.
+function nhanChoMuc(r) {
+  if (r.tinh_trang === 'Đã READY (QA)') return '—'; // đã xong READY, không còn chờ mục nào
+  const ds = ['FILM', 'KHUON', 'MUC'].filter((ma) => r[`cho_${ma.toLowerCase()}`]).map((ma) => TEN_MUC_KT[ma]);
+  return ds.length ? `Chờ ${ds.join(', ')}` : 'Chờ QC';
+}
+
+// Gắn `cho_film`/`cho_khuon`/`cho_muc` + nhãn `cho_muc_kt` (+ `so_dot_cho` khi ở chế độ "Open chờ <mục>").
+// ⚠ Khách gia công (II/AD) MIỄN Khuôn + Film ⇒ ép 2 cờ đó về false Ở ĐÂY (không lọc trong SQL cho câu
+//   phụ khỏi phải JOIN thêm 3 bảng để lấy tên khách — hàng đã có sẵn `ten_khach_hang`).
+// ⚠ Phần in KHÔNG còn đợt vải đang chờ (vd dòng "Đã READY (QA)") không có dòng nào trong query phụ ⇒
+//   cả 3 cờ false ⇒ `nhanChoMuc` trả "—" hoặc "Chờ QC" tùy `tinh_trang`.
+async function ganChoMuc(rows, mucCho) {
+  if (!rows.length) return rows;
+  const ids = [...new Set(rows.map((r) => r.phan_in_id))];
+  const { rows: m } = await query(SQL_CHO_MUC.replace(/\s+/g, ' ').trim(), [ids]);
+  const so = new Map(m.map((x) => [`${x.phan_in_id}|${x.ma}`, x.so_cho])); // số ĐỢT còn chờ mục đó
+  for (const r of rows) {
+    const giaCong = KHUON_OPTIONAL_KH.includes(String(r.ten_khach_hang || '').trim());
+    const lay = (ma) => so.get(`${r.phan_in_id}|${ma}`) || 0;
+    r.cho_film = giaCong ? false : lay('FILM') > 0;
+    r.cho_khuon = giaCong ? false : lay('KHUON') > 0;
+    r.cho_muc = lay('MUC') > 0;
+    r.cho_muc_kt = nhanChoMuc(r);
+    if (mucCho) r.so_dot_cho = lay(mucCho);
+  }
+  return rows;
+}
+
 // Khối cột thông tin phần in dùng CHUNG cho 2 nhánh của DS_READY_DANG_O (đang ở READY / đã QA theo ngày).
 // Yêu cầu alias sẵn: pin, mh, dh, kh.
 const READY_INFO_SELECT = `
@@ -600,19 +683,61 @@ const COT_READY_DANG_O = [
   { key: 'ready_film', ten: 'Film', kieu: 'text' },
   { key: 'ready_muc', ten: 'Mực', kieu: 'text' },
   { key: 'so_muc_kt', ten: 'Mục KT xong', kieu: 'text' },
+  // Còn chờ mục KT nào — "Chờ Film, Khuôn, Mực" / "Chờ Mực" / "Chờ QC" (đủ mục, chờ QC duyệt) /
+  // "—" (dòng đã READY). ⚠ Tên cột là "Tình trạng CHỜ" để không lẫn với cột "Tình trạng" ngay trên
+  // (cột đó phân biệt "Đang ở READY" ↔ "Đã READY (QA)"). Nhãn dựng ở JS bởi `nhanChoMuc`.
+  { key: 'cho_muc_kt', ten: 'Tình trạng chờ', kieu: 'text' },
   { key: 'qc_ready', ten: 'QC READY', kieu: 'text' },
   { key: 'ngay_ready', ten: 'Ngày QA READY', kieu: 'text' },
   { key: 'gio_ready', ten: 'Giờ QA READY', kieu: 'text' },
   { key: 'nguoi_ready', ten: 'Người QA', kieu: 'text' },
 ];
 
+// Bộ cột cho 3 nguồn "Open chờ <mục>" — y hệt "Đang ở READY" nhưng BỎ 4 cột QA (ở đây luôn rỗng vì
+// hàng đã QA thì không còn chờ mục nào) và THÊM "Số đợt vải đang chờ".
+// ⚠ 3 cột Khuôn/Film/Mực giữ nguyên nghĩa CŨ = trạng thái MỨC PHẦN IN (lần xác nhận gần nhất). Dòng
+//   lọt vào đây là do CÒN ĐỢT VẢI chưa xác nhận mục đó ⇒ có thể thấy ô "Đã" mà vẫn nằm trong danh
+//   sách chờ — đối chiếu bằng cột "Số đợt vải đang chờ".
+const COT_READY_CHO_MUC = [
+  ...COT_READY_DANG_O.filter((c) => !['qc_ready', 'ngay_ready', 'gio_ready', 'nguoi_ready'].includes(c.key)),
+  { key: 'so_dot_cho', ten: 'Số đợt vải đang chờ', kieu: 'so' },
+];
+
+// ── OPEN CHỜ TỪNG MỤC KỸ THUẬT (Film / Khuôn / Mực) — thêm 23/09/2026 ──────────────────────────
+// 3 nguồn "Open chờ <mục>" dùng CHUNG `runReadyDangO` (tham số `mucCho`), chỉ thêm 1 điều kiện lọc
+// ⇒ không thể lệch tập với "Đang ở READY": mỗi danh sách là TẬP CON của nó.
+//
+// ⚠⚠ LỌC THEO **ĐỢT VẢI**, KHÔNG theo dòng tổng `ket_qua_checkpoint` (chốt 16/09/2026 — READY đi theo
+//   đợt vải). Phần in có đợt 1 đã xác nhận Film + đợt 2 mới về chưa ai làm thì dòng tổng vẫn 'DAT',
+//   nhưng màn READY đang hiện nó là CÒN VIỆC ⇒ lọc mức phần in sẽ báo THIẾU so với màn thao tác.
+//   Đo prod 23/09/2026: lọc theo đợt là SIÊU TẬP an toàn của lọc mức phần in — bắt thêm đúng 10 phần
+//   in mỗi mục, KHÔNG mất dòng nào (0 ca "chưa DAT tổng mà hết đợt chờ").
+//
+// ⚠⚠⚠ "CHỜ FILM" VÀ "CHỜ KHUÔN" LUÔN RA CÙNG MỘT DANH SÁCH — không phải lỗi: từ 14/08/2026 xác nhận
+//   Khuôn thì hệ thống TỰ ĐẶT Film (`technical.service` `keoTheoFilm`, ghi cả dòng theo đợt ở
+//   `xacNhanTheoNhom`) ⇒ 2 mục luôn cùng trạng thái. Đo prod 23/09: 181 phần in chờ cả hai,
+//   **0 phần in chỉ chờ một bên**. Giữ 2 nguồn riêng vì người dùng cần 2 file riêng.
+//
+// ⚠ Khách GIA CÔNG (II/AD) được MIỄN Khuôn + Film ⇒ loại khỏi 2 nguồn đó (nếu không, toàn bộ hàng
+//   II/AD sẽ lọt vào "chờ khuôn/chờ film" trong khi không ai phải làm gì). "Chờ Mực" thì tính đủ.
+// ⚠ Helper `TEN_MUC_KT` · `DOT_DANG_CHO` · `conDotChuaMucSql` · `SQL_CHO_MUC` · `ganChoMuc` khai Ở TRÊN
+//   (ngay trước `READY_INFO_SELECT`): `const` KHÔNG hoisted và template literal đánh giá NGAY lúc nạp
+//   module ⇒ khai ở đây là ReferenceError.
+
 // DS_READY_DANG_O — 2 chế độ theo bộ lọc NGÀY:
 //   - Để trống ngày  → CHỈ "đang ở READY hiện tại" (snapshot, như cũ).
 //   - Chọn ngày (Hôm nay/cụ thể) → GỘP: phần in ĐÃ QA xác nhận READY trong ngày đó (throughput)
 //     + phần in ĐANG ở READY hiện tại (backlog). Cột "Tình trạng" phân biệt 2 nhóm; nhóm "đã QA" kèm ngày/giờ/người.
-async function runReadyDangO({ loc = {}, gioi_han }) {
+// `mucCho` (FILM|KHUON|MUC) → chuyển sang chế độ "Open chờ <mục>": chỉ ảnh chụp HIỆN TẠI, BỎ HẲN
+//   nhánh "đã QA theo ngày" (hàng đã QA là hàng XONG READY, không còn chờ mục nào — gộp vào là sai).
+async function runReadyDangO({ loc = {}, gioi_han, mucCho = null }) {
   const lim = limitOf(gioi_han);
-  const ngay = clean(loc.ngay);
+  // ⚠⚠⚠ ĐỔI 24/09/2026 (người dùng báo "Open đang ở READY đang lấy luôn cái đã READY"): nguồn này nay
+  //   CHỈ còn ẢNH CHỤP "đang ở READY" — BỎ HẲN nhánh gộp "đã QA theo ngày". Ca thật: BC0010 *Open Kỹ
+  //   Thuật* ô A7 đặt ngày = Hôm nay ⇒ danh sách ra 208 dòng = 92 đang ở + **116 đã READY (QA)**.
+  //   Hàng đã QA trong ngày xem ở nguồn RIÊNG `DS_READY_HOAN_THANH`. Báo cáo cũ còn lưu `loc.ngay` thì
+  //   bộ lọc đó bị BỎ QUA (không lỗi). Code nhánh "đã QA" giữ lại bên dưới nhưng không bao giờ chạy.
+  const ngay = '';
   const JOINS = `
     JOIN ma_hang mh ON mh.id = pin.ma_hang_id
     JOIN don_hang dh ON dh.id = mh.don_hang_id
@@ -626,6 +751,11 @@ async function runReadyDangO({ loc = {}, gioi_han }) {
   //   hơn màn READY đúng nhóm phần in vừa có đợt vải mới về — 2 con số trong cùng hệ đá nhau.
   const conds = ['pin.dang_hoat_dong', READY_MEMBER,
     `(NOT ${QC_DONE_EXISTS} OR ${conDotChuaReadySql('pin.id')})`, khongReadyTuDongSql('pin.id')];
+  if (mucCho) {
+    conds.push(conDotChuaMucSql('pin.id', mucCho));
+    // Khách gia công miễn Khuôn + Film ⇒ không phải "đang chờ" 2 mục đó.
+    if (mucCho !== 'MUC') conds.push(`kh.ten_khach_hang NOT IN (${KHUON_OPT_SQL_LIST})`);
+  }
   const nb = dkNhomBoSung(loc, FROM_DOT_PIN('pin.id'));
   if (nb) conds.push(nb);
   if (clean(loc.khach)) { pc.push(mauTim(loc.khach)); conds.push(`kh.ten_khach_hang ~* $${pc.length}`); }
@@ -635,7 +765,7 @@ async function runReadyDangO({ loc = {}, gioi_han }) {
   }
   const sqlCur = `
     SELECT ${READY_INFO_SELECT},
-           'Đang ở READY'::text AS tinh_trang, ''::text AS qc_ready,
+           ${mucCho ? `'Chờ ${TEN_MUC_KT[mucCho]}'` : `'Đang ở READY'`}::text AS tinh_trang, ''::text AS qc_ready,
            ''::text AS ngay_ready, ''::text AS gio_ready, ''::text AS nguoi_ready
     FROM phan_in pin ${JOINS}
     WHERE ${conds.join(' AND ')}
@@ -680,7 +810,7 @@ async function runReadyDangO({ loc = {}, gioi_han }) {
     seen.add(r.phan_in_id);
     all.push(r);
   }
-  return all.slice(0, lim).map((r, i) => ({ ...r, stt: i + 1 }));
+  return ganChoMuc(all.slice(0, lim).map((r, i) => ({ ...r, stt: i + 1 })), mucCho);
 }
 
 const COT_READY_HOAN_THANH = [
@@ -928,11 +1058,29 @@ const DEFS = [
       + '⇒ "danh sách READY đã hoàn thành hôm nay". (Nguồn lịch sử luân chuyển — best-effort.) '
       + 'Xem "đang ở READY hiện tại" ở nguồn "Phần in / đợt vải" với bộ lọc Trạm = READY.',
     loc: locList(['ngay', 'tram', 'nhom_bo_sung', 'tim']), cot: COT_HOAN_THANH, run: runHoanThanhTram },
-  { ma: 'DS_READY_DANG_O', ten: 'Đang ở READY (hiện tại / theo ngày)', don_vi_dong: 'phần in',
-    mo_ta: '1 dòng = 1 PHẦN IN. Để TRỐNG ngày = danh sách đang ở READY hiện tại (chưa QC, còn đợt chưa release — khớp màn '
-      + 'Chuẩn bị KT/QC). CHỌN ngày (Hôm nay/cụ thể) = GỘP thêm phần in ĐÃ QA xác nhận READY ngày đó (kèm giờ/người QA). '
-      + 'Cột "Tình trạng" phân biệt "Đang ở READY" / "Đã READY (QA)".',
-    loc: locList(['ngay_ready', 'khach', 'nhom_bo_sung', 'tim']), cot: COT_READY_DANG_O, run: runReadyDangO },
+  { ma: 'DS_READY_DANG_O', ten: 'Open — đang ở READY (hiện tại)', don_vi_dong: 'phần in',
+    mo_ta: '1 dòng = 1 PHẦN IN ĐANG Ở READY hiện tại (còn đợt vải chưa Ready — khớp màn Chuẩn bị KT/QC). '
+      + 'KHÔNG gồm phần in đã QA xác nhận READY — xem nguồn "READY đã hoàn thành" (24/09/2026).',
+    loc: locList(['khach', 'nhom_bo_sung', 'tim']), cot: COT_READY_DANG_O, run: runReadyDangO },
+  { ma: 'DS_READY_CHO_FILM', ten: 'Open chờ Film (đang ở READY, chưa xác nhận Film)', don_vi_dong: 'phần in',
+    mo_ta: '1 dòng = 1 PHẦN IN đang ở READY mà CÒN ĐỢT VẢI chưa xác nhận Film. Cùng bộ cột với "Đang ở READY" '
+      + '(nguồn Open) — luôn là TẬP CON của nguồn đó. Ảnh chụp HIỆN TẠI (không có bộ lọc ngày). '
+      + '⚠ Khách gia công (II/AD) được miễn Film nên không có trong danh sách. '
+      + '⚠ Danh sách này LUÔN trùng "Open chờ Khuôn": xác nhận Khuôn thì hệ thống tự đặt Film.',
+    loc: locList(['khach', 'nhom_bo_sung', 'tim']), cot: COT_READY_CHO_MUC,
+    run: (a) => runReadyDangO({ ...a, mucCho: 'FILM' }) },
+  { ma: 'DS_READY_CHO_KHUON', ten: 'Open chờ Khuôn (đang ở READY, chưa xác nhận Khuôn)', don_vi_dong: 'phần in',
+    mo_ta: '1 dòng = 1 PHẦN IN đang ở READY mà CÒN ĐỢT VẢI chưa xác nhận Khuôn. Cùng bộ cột với "Đang ở READY" '
+      + '(nguồn Open) — luôn là TẬP CON của nguồn đó. Ảnh chụp HIỆN TẠI (không có bộ lọc ngày). '
+      + '⚠ Khách gia công (II/AD) được miễn Khuôn nên không có trong danh sách.',
+    loc: locList(['khach', 'nhom_bo_sung', 'tim']), cot: COT_READY_CHO_MUC,
+    run: (a) => runReadyDangO({ ...a, mucCho: 'KHUON' }) },
+  { ma: 'DS_READY_CHO_MUC', ten: 'Open chờ Mực (đang ở READY, chưa xác nhận Mực)', don_vi_dong: 'phần in',
+    mo_ta: '1 dòng = 1 PHẦN IN đang ở READY mà CÒN ĐỢT VẢI chưa xác nhận Mực. Cùng bộ cột với "Đang ở READY" '
+      + '(nguồn Open) — luôn là TẬP CON của nguồn đó. Ảnh chụp HIỆN TẠI (không có bộ lọc ngày). '
+      + 'Mực là mục BẮT BUỘC với mọi khách, kể cả hàng gia công (II/AD).',
+    loc: locList(['khach', 'nhom_bo_sung', 'tim']), cot: COT_READY_CHO_MUC,
+    run: (a) => runReadyDangO({ ...a, mucCho: 'MUC' }) },
   { ma: 'DS_READY_HOAN_THANH', ten: 'Phần in đã hoàn thành READY (QC xác nhận, theo ngày)', don_vi_dong: 'phần in',
     mo_ta: '1 dòng = 1 PHẦN IN được QC xác nhận READY. Lọc ngày = Hôm nay ⇒ khớp sidebar "Đã hoàn thành" của màn QC READY '
       + '(kèm người xác nhận + giờ).',

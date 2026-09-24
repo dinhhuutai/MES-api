@@ -110,6 +110,12 @@ const env = {
     guiSuaDatTimeoutMs: parseInt(process.env.ERP_GUI_SUA_DAT_TIMEOUT_MS || '10000', 10),
     guiSuaDatRetry: parseInt(process.env.ERP_GUI_SUA_DAT_RETRY || '3', 10),
     guiSuaDatEnabled: String(process.env.ERP_GUI_SUA_DAT_ENABLED || 'true').toLowerCase() === 'true',
+    // Đẩy KẾT QUẢ KIỂM KCS (kiểm phẩm) sang ERP lúc xác nhận KCS (24/09/2026). Chưa có hợp đồng tham số
+    // riêng ⇒ dùng cùng 20 tham số với `ghi-in-tem` (khuôn sửa đạt) — xem `quality/kiemPhamErp.js`.
+    guiKiemPhamUrl: process.env.ERP_GUI_KIEM_PHAM_URL || `${ERP_GOC}/gui-erp-kiem-pham`,
+    guiKiemPhamTimeoutMs: parseInt(process.env.ERP_GUI_KIEM_PHAM_TIMEOUT_MS || '10000', 10),
+    guiKiemPhamRetry: parseInt(process.env.ERP_GUI_KIEM_PHAM_RETRY || '3', 10),
+    guiKiemPhamEnabled: String(process.env.ERP_GUI_KIEM_PHAM_ENABLED || 'true').toLowerCase() === 'true',
 
     // Bật/tắt job tự đồng bộ theo chu kỳ (mặc định 5 phút/lần).
     syncEnabled: String(process.env.ERP_SYNC_ENABLED || 'true').toLowerCase() === 'true',

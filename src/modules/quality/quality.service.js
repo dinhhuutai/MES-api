@@ -12,6 +12,7 @@ const { caFromParts } = require('../../utils/ca');
 const { temCode } = require('../../utils/temPrefix');
 const { layBarcodeTem17 } = require('../../utils/erpTemBarcode');
 const suaDatErp = require('./suaDatErp');
+const kiemPhamErp = require('./kiemPhamErp');
 
 const num = (x) => Math.max(0, Number(x) || 0);
 
@@ -231,8 +232,9 @@ async function recordKcs(temId, body, actorId) {
     ketQua: (hu > 0 || huyTrucTiep > 0) ? 'CO_LOI' : 'DAT', ghiChu: body.ghiChu,
   };
 
+  let kcsId = null;
   await withTransaction(async (client) => {
-    await repo.insertKcs(client, temId, data, actorId);
+    kcsId = await repo.insertKcs(client, temId, data, actorId);
     // Cộng dồn sổ cái: đạt → chờ OQC; quyết định sửa → chờ sửa; (hư không sửa + hủy) → loại; chênh lệch → tổng cần kiểm.
     await repo.addKcsLedger(client, temId, { dat, sua: quyetDinhSua, huy: huyTaiKcs, chenh }, actorId);
     await repo.recomputeTemStage(client, temId, actorId);
@@ -241,6 +243,8 @@ async function recordKcs(temId, body, actorId) {
   await repo.resolveReturns('OQC', temId); // KCS làm lại xong → tắt cờ "bị OQC trả về"
   sockets.emit('quality:updated', { temId, stage: 'KCS' });
   sockets.emit('dashboard:refresh', {});
+  // Đẩy kết quả kiểm sang ERP (/gui-erp-kiem-pham) — NGẦM, không bao giờ chặn việc xác nhận KCS.
+  if (kcsId) kiemPhamErp.guiNgam(kcsId, temId, { dat, hu, thieu }, actorId);
   const conLai = conSauChenh - kiem; // luôn = 0 từ 04/09 (cân đối bắt buộc); giữ để không đổi hình dạng trả về
   return { tem_id: temId, next: 'KCS', so_luong_dat: dat, so_luong_sua: quyetDinhSua, so_luong_huy: huyTaiKcs, con_kcs: conLai };
 }

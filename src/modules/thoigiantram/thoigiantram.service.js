@@ -6,6 +6,7 @@
 //   đổi tab không gọi lại API và không bao giờ ra 2 con số đá nhau.
 
 const repo = require('./thoigiantram.repository');
+const { slaReady, TEST_RUN_TRUOC_SX_PHUT } = require('../../utils/slaTheoGio');
 
 const LOC_KEYS = ['timKiem', 'khach', 'don', 'maHang', 'codePhan', 'mauVai', 'chuyen',
   'loaiMoc', 'tuNgay', 'denNgay', 'trangThai'];
@@ -27,6 +28,25 @@ function slaCua(tram, slaRows) {
   const ma = tram.sla.checkpoint || tram.sla.tram;
   const r = slaRows.find((x) => x.cap === cap && x.ma === ma);
   return r && r.sla != null ? Number(r.sla) : null;
+}
+
+// ⚠⚠ SLA KHÔNG CỐ ĐỊNH (24/09/2026, luật ở `utils/slaTheoGio.js`) — gắn `sla_phut` cho TỪNG DÒNG:
+//   · READY_KT (+ 3 checklist Khuôn/Film/Mực): theo GIỜ ĐỢT LÊN READY (07:30–15:00 ⇒ 8h · 15:00–20:30 ⇒ 21h)
+//   · TEST_RUN: hạn = giờ SX kế hoạch của lệnh − 1h ⇒ sla = phút từ lúc vào tới hạn
+//   Dòng không áp được luật ⇒ giữ SLA trạm/checklist. FE (`thongKe`) ưu tiên `sla_phut` của dòng.
+async function ganSlaDong(maTram, ds, slaMacDinh) {
+  if (!ds.length) return ds;
+  if (maTram === 'READY_KT') return ds.map((r) => ({ ...r, sla_phut: slaReady(r.tg_vao, slaMacDinh) }));
+  if (maTram === 'TEST_RUN') {
+    const bd = await repo.gioSxKeHoach([...new Set(ds.map((r) => r.ma_lenh_san_xuat).filter(Boolean))]);
+    return ds.map((r) => {
+      const h = bd.get(r.ma_lenh_san_xuat);
+      if (!h || !r.tg_vao) return { ...r, sla_phut: slaMacDinh };
+      const han = new Date(h).getTime() - TEST_RUN_TRUOC_SX_PHUT * 60000;
+      return { ...r, sla_phut: Math.max(1, Math.floor((han - new Date(r.tg_vao).getTime()) / 60000)) };
+    });
+  }
+  return ds;
 }
 
 async function duLieu(q = {}) {
@@ -55,6 +75,13 @@ async function duLieu(q = {}) {
     }
     ds.forEach((r) => rows.push({ ...r, ma_tram: t.ma }));
   });
+  // Gắn SLA từng dòng cho 2 trạm có luật riêng (song song, không chặn nhau).
+  await Promise.all(['READY_KT', 'TEST_RUN'].map(async (ma) => {
+    const idx = rows.map((r, i) => (r.ma_tram === ma ? i : -1)).filter((i) => i >= 0);
+    if (!idx.length) return;
+    const moi = await ganSlaDong(ma, idx.map((i) => rows[i]), tram.find((x) => x.ma === ma).sla_phut);
+    idx.forEach((i, j) => { rows[i] = moi[j]; });
+  }));
   return { loc, tram, rows, cat, tran_dong: repo.TRAN_DONG, bay_gio: new Date().toISOString() };
 }
 
@@ -81,6 +108,9 @@ async function duLieuChecklist(maTram, q = {}) {
     let ds = kq[i];
     let cat = false;
     if (ds.length > repo.TRAN_DONG) { ds = ds.slice(0, repo.TRAN_DONG); cat = true; }
+    const slaCl = info.sla != null ? Number(info.sla) : null;
+    // Khuôn/Film/Mực cũng theo giờ đợt lên MES (người dùng chốt 24/09/2026); QC/Test giữ SLA checklist.
+    if (maTram === 'READY_KT') ds = ds.map((r) => ({ ...r, sla_phut: slaReady(r.tg_vao, slaCl) }));
     ds.forEach((r) => rows.push({ ...r, ma_tram: maTram, ma_checkpoint: ma }));
     return {
       ma,

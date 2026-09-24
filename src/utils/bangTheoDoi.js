@@ -70,16 +70,18 @@ const DO_SL = {
 // `man` = mã màn trong `MAN` của `utils/siSoTram.js` (nguồn mốc vào/ra).
 // `sla` = nơi lấy SLA trong workflow HIỆN HÀNH — khớp hằng `TRAM_TG` của *Thời gian trạm* để
 //   "nghẽn" ở 2 trang không bao giờ lệch nhau. `null` ⇒ trạm không đo nghẽn được.
+// `slaKieu` (24/09/2026) = SLA KHÔNG cố định, luật ở `utils/slaTheoGio.js`: READY theo giờ đợt lên MES,
+//   Test Run theo giờ SX kế hoạch − 1h. Không khai ⇒ SLA cố định của trạm như cũ.
 // ⚠ CỐ Ý bỏ *Kế hoạch tạm* và *Gia công* khỏi bảng: tờ giấy của xưởng không có 2 dòng đó, và cả hai
 //   là nhánh rẽ chứ không nằm trên dòng chảy chính. Muốn thêm thì khai thêm 1 dòng ở đây là đủ.
 const BANG_THEO_DOI = [
-  { ma: 'READY_KT', ten: 'READY KT', man: 'KT_READY', sla: { tram: 'READY' }, sl: 'vai',
+  { ma: 'READY_KT', ten: 'READY KT', man: 'KT_READY', sla: { tram: 'READY' }, slaKieu: 'READY_THEO_GIO', sl: 'vai',
     ghiChu: 'Vào = đợt vải lên READY · Xong = kỹ thuật xác nhận đủ mục' },
   { ma: 'READY_QA', ten: 'READY QA', man: 'CL_QC_READY', sla: { checkpoint: 'QC_XAC_NHAN' }, sl: 'vai',
     ghiChu: 'Vào = kỹ thuật xong hết mục · Xong = QC xác nhận READY' },
   { ma: 'RELEASE_1', ten: 'RELEASE 1', man: 'KH_RELEASE1', sla: { tram: 'RELEASE_1' }, sl: 'vai',
     ghiChu: 'Vào = đợt vải lên READY · Xong = release hết SL (hoặc sang Kế hoạch tạm)' },
-  { ma: 'TEST_RUN', ten: 'TEST RUN', man: 'CL_TEST_RUN', sla: { tram: 'TEST_RUN' }, sl: 'lenh',
+  { ma: 'TEST_RUN', ten: 'TEST RUN', man: 'CL_TEST_RUN', sla: { tram: 'TEST_RUN' }, slaKieu: 'TEST_RUN_KE_HOACH', sl: 'lenh',
     ghiChu: 'Vào = tạo lệnh · Xong = QA xác nhận đạt (lệnh đi tắt Test Run không tính vào trạm này)' },
   { ma: 'RELEASE_2', ten: 'RELEASE 2', man: 'KH_RELEASE2', sla: { tram: 'RELEASE_2' }, sl: 'lenh',
     ghiChu: 'Vào = test xong · Xong = duyệt Release 2' },

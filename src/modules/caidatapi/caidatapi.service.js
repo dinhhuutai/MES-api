@@ -91,7 +91,7 @@ function erpProxy() {
 //   ⇒ Thêm API mới có ghi vết thì sửa **CẢ HAI** chỗ (ở đây + `CO_LICH_SU` bên FE).
 const MA_CO_LICH_SU = new Set([
   'ERP_BARCODE_TEM', 'ERP_BARCODE_TEM_17', 'ERP_BARCODE_TEM_13', 'ERP_GHI_IN_TEM',
-  'ERP_LAY_ID_PHIEU_GIAO', 'ERP_GUI_PHIEU_GIAO', 'ERP_GUI_PHAN_LOAI_LOI', 'ERP_GUI_SUA_DAT',
+  'ERP_LAY_ID_PHIEU_GIAO', 'ERP_GUI_PHIEU_GIAO', 'ERP_GUI_PHAN_LOAI_LOI', 'ERP_GUI_SUA_DAT', 'ERP_GUI_KIEM_PHAM',
 ]);
 
 async function lichSu(ma, { date, search, page, limit, offset }) {

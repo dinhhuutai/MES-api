@@ -109,6 +109,16 @@ const DANH_MUC_API = [
     macDinh: () => env.erp.guiSuaDatEnabled,
     url: () => env.erp.guiSuaDatUrl,
   },
+  // KẾT QUẢ KIỂM KCS (24/09/2026) — /gui-erp-kiem-pham.
+  {
+    ma: 'ERP_GUI_KIEM_PHAM',
+    ten: 'Gửi kết quả kiểm KCS (kiểm phẩm) sang ERP',
+    mo_ta: 'Gửi ĐÚNG 1 LẦN mỗi lượt xác nhận KCS (cùng 20 tham số với "Báo ERP mỗi lần in tem": Soluong = SL đạt, '
+      + 'Soluongloi = SL hư, SOLUONGTHIEU = SL thiếu). Chạy ngầm — TẮT hay lỗi đều KHÔNG chặn việc xác nhận KCS.',
+    canh_bao: null,
+    macDinh: () => env.erp.guiKiemPhamEnabled,
+    url: () => env.erp.guiKiemPhamUrl,
+  },
   {
     ma: 'ERP_DONG_BO_VAI',
     ten: 'Đồng bộ đợt vải từ ERP',

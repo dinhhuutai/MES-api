@@ -4,6 +4,7 @@ const { query } = require('../../config/db');
 const ordersRepo = require('../orders/orders.repository');
 const { dotStageCase, readyFallback, ORDER_SQL_ARRAY } = require('../../utils/stage');
 const { techDoneSql } = require('../../utils/tech');
+const { slaReadySql, slaTestRunSql, canhBaoTestRunSql, gioSxKhSql } = require('../../utils/slaTheoGio');
 // Hiển thị theo PHƯƠNG ÁN IN — cấu hình động từng trang (mig 067), mặc định BẬT HẾT = không lọc.
 const { dkTrang } = require('../../utils/phuongAnIn');
 const { maTemUngVien } = require('../../utils/temPrefix');
@@ -638,7 +639,7 @@ async function flowRows(tramMa = '') {
       WHERE dv.trang_thai NOT IN ('DA_GOP','DA_HUY')
     ),
     lk AS (
-      SELECT DISTINCT ON (lsd.dot_vai_ve_id) lsd.dot_vai_ve_id, ls.id AS lenh_id, ls.trang_thai AS lenh_tt, ls.created_date AS lenh_tg
+      SELECT DISTINCT ON (lsd.dot_vai_ve_id) lsd.dot_vai_ve_id, ls.id AS lenh_id, ls.trang_thai AS lenh_tt, ls.created_date AS lenh_tg, ${gioSxKhSql('ls.tg_bd_kh', 'ls.ngay_ke_hoach')} AS lenh_bd_kh
       FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
       WHERE ls.trang_thai <> 'HUY'
       ORDER BY lsd.dot_vai_ve_id, ls.created_date DESC
@@ -715,9 +716,13 @@ async function flowRows(tramMa = '') {
            cur.ma_tram, tr.ten_tram, tr.thu_tu,
            CASE WHEN cur.ma_tram='OQC' AND COALESCE(gc.is_gia_cong,false) THEN 0
                 WHEN cur.ma_tram='READY' AND ${KT_DONE_FLOW} THEN qcp.sla
+                WHEN cur.ma_tram='READY' THEN ${slaReadySql('b.dv_tg', 'tr.thoi_gian_quy_dinh_phut')}
+                WHEN cur.ma_tram='TEST_RUN' THEN ${slaTestRunSql('tv.tg_vao', 'lk.lenh_bd_kh', 'tr.thoi_gian_quy_dinh_phut')}
                 WHEN cur.ma_tram='CHO_KHO' THEN tr.thoi_gian_quy_dinh_phut + COALESCE(b.cho_kho_phut, 60)
                 ELSE tr.thoi_gian_quy_dinh_phut END AS sla_phut,
-           CASE WHEN cur.ma_tram='READY' AND ${KT_DONE_FLOW} THEN qcp.cb ELSE tr.canh_bao_truoc_phut END AS canh_bao_truoc_phut,
+           CASE WHEN cur.ma_tram='READY' AND ${KT_DONE_FLOW} THEN qcp.cb
+                WHEN cur.ma_tram='TEST_RUN' THEN ${canhBaoTestRunSql('lk.lenh_bd_kh', 'tr.canh_bao_truoc_phut')}
+                ELSE tr.canh_bao_truoc_phut END AS canh_bao_truoc_phut,
            tv.tg_vao,
            floor(EXTRACT(EPOCH FROM (now() - tv.tg_vao)) / 60)::int AS phut_da_o,
            NULL::text AS owner_ho_ten

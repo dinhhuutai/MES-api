@@ -25,8 +25,29 @@ const { ghiLog } = require('../../utils/erpApiLog');
 const { capIdMes } = require('../../utils/idMes');
 const prodRepo = require('../production/production.repository');
 const repo = require('./quality.repository');
+const { maNgayCa } = require('../../utils/ca');
 
 const MA_API = 'ERP_GUI_SUA_DAT';
+
+// ⚠⚠ `@pNgayca` BẮT BUỘC ở proc `MES_spr_MES2SK6` (ca thật 23/09/2026: gửi `Ngayca: ""` ⇒ HTTP 500
+//   "expects parameter '@pNgayca', which was not supplied"). Tem 17 không do ai đứng chuyền nên KHÔNG
+//   có mã ngày ca ⇒ người dùng chốt 24/09: **lấy NGÀY HÔM NAY**. Gửi đúng định dạng mã ngày ca mà tem
+//   15 đang gửi (`YYMMDD` + mã ca, vd `260924C1`) — suy từ giờ hiện tại & loại ca của tuần ISO, y
+//   như gợi ý "Ngày ca" ở màn Sản xuất. Lỗi gì cũng lùi về `YYMMDD` trần, không để trống.
+async function maNgayCaHomNay() {
+  let ymd = null;
+  try {
+    const planningRepo = require('../planning/planning.repository');
+    const [g, modeMap] = await Promise.all([prodRepo.goiYTemMeta(null, null), planningRepo.caModeMap()]);
+    if (g) {
+      ymd = g.ymd;
+      return maNgayCa(g.ymd, g.gio, g.phut, modeMap.get(`${g.nam}-${g.tuan}`) || 'NGAN');
+    }
+  } catch { /* lùi xuống dưới */ }
+  if (ymd) return ymd;
+  const { rows } = await query(`SELECT to_char(now() AT TIME ZONE 'Asia/Ho_Chi_Minh','YYMMDD') AS ymd`);
+  return rows[0].ymd;
+}
 
 // Lượt sửa này đã gửi ERP THÀNH CÔNG chưa.
 async function daGuiThanhCong(suaId) {
@@ -80,6 +101,7 @@ async function guiSuaDat(suaId, actorId) {
   if (idMes == null) return { ok: false, error: 'Không cấp được IDMES' };
 
   const payload = taoPayload(r, { idMes, soLuong: dat, soLuongHuy: Number(s.so_luong_sua_huy) || 0 });
+  if (!payload.Ngayca) payload.Ngayca = await maNgayCaHomNay();
   const kq = await ghiInTem(payload, { maApi: MA_API });
   if (kq.bo_qua) return { ok: false, bo_qua: true, ly_do: 'API_DANG_TAT' };
 
@@ -108,4 +130,4 @@ function guiNgam(suaId, actorId) {
   });
 }
 
-module.exports = { guiSuaDat, guiNgam, trangThaiGui, daGuiThanhCong, MA_API };
+module.exports = { guiSuaDat, guiNgam, trangThaiGui, daGuiThanhCong, maNgayCaHomNay, MA_API };

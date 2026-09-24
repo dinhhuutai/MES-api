@@ -526,13 +526,15 @@ async function getTemForSplit(temId) {
 }
 
 async function insertKcs(client, temId, d, actorId) {
-  await client.query(
+  const { rows } = await client.query(
     `INSERT INTO kcs (tem_id, so_luong_kiem, so_luong_mau, so_luong_dat, so_luong_loi, so_luong_huy,
                       so_luong_chenh_lech, ket_qua, ghi_chu, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
     [temId, d.soLuongKiem, d.soLuongMau, d.soLuongDat, d.soLuongLoi, d.soLuongHuy,
      d.soLuongChenhLech, d.ketQua, d.ghiChu || null, actorId]
   );
+  // Trả id lượt kiểm — khóa chống gửi trùng của chiều đẩy kiểm phẩm sang ERP (`quality/kiemPhamErp.js`).
+  return rows[0] ? rows[0].id : null;
 }
 
 // ⚠⚠ DÒ CỘT `sua.tem_con_id` (mig 100) TRƯỚC KHI DÙNG — khuôn `temCoCot` mig 066. KHÔNG try/catch
