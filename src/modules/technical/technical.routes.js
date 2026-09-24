@@ -2,6 +2,7 @@
 
 const express = require('express');
 const c = require('./technical.controller');
+const { ctl: gc } = require('./ghiChu');
 const auth = require('../../middlewares/auth');
 const rbac = require('../../middlewares/rbac');
 
@@ -25,6 +26,13 @@ router.post('/reopen/:phanInId', rbac('READY_CANCEL'), c.reopenReady);
 router.post('/qc-confirm-batch', rbac('READY_QC'), c.qcConfirmBatch);
 // Bulk 1 mục cho nhiều phần in (theo mã hàng/chọn nhiều). Controller kiểm tra quyền theo mục.
 router.post('/confirm-bulk', rbac('READY_KHUON', 'READY_FILM', 'READY_MUC', 'READY_HSKT'), c.confirmBulk);
+// GHI CHÚ + PHẦN IN BẤT THƯỜNG (mig 103, 24/09/2026). Đọc: ai xem được READY/QC · Ghi: tổ kỹ thuật + QC.
+const GHI_CHU_GHI = ['READY_KHUON', 'READY_FILM', 'READY_MUC', 'READY_QC', 'READY_CANCEL'];
+router.get('/bat-thuong', rbac('READY_VIEW', 'READY_QC'), gc.dsBatThuong);
+router.post('/bat-thuong', rbac(...GHI_CHU_GHI), gc.danhDauBatThuong);
+router.post('/bat-thuong/go', rbac(...GHI_CHU_GHI), gc.goBatThuong);
+router.get('/:phanInId/ghi-chu', rbac('READY_VIEW', 'READY_QC'), gc.cuaPhanIn);
+router.post('/:phanInId/ghi-chu', rbac(...GHI_CHU_GHI), gc.themGhiChu);
 router.get('/:phanInId', rbac('READY_VIEW'), c.detail);
 // Xác nhận từng mục / hàng loạt: cần >=1 quyền tech; controller kiểm tra đúng quyền theo mục.
 router.post('/:phanInId/confirm-batch', rbac('READY_KHUON', 'READY_FILM', 'READY_MUC', 'READY_HSKT'), c.confirmItemsBatch);
