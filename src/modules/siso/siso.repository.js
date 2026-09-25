@@ -7,7 +7,7 @@ const { query } = require('../../config/db');
 const { mauTim } = require('../../utils/timKiem');
 const { MAN, LOAI_NGAY, O_SI_SO, VN } = require('../../utils/siSoTram');
 const { DO_SL } = require('../../utils/bangTheoDoi');
-const { slaReadySql, TEST_RUN_TRUOC_SX_PHUT, gioSxKhSql } = require('../../utils/slaTheoGio');
+const { slaReadySql, slaQcReadySql, TEST_RUN_TRUOC_SX_PHUT, gioSxKhSql } = require('../../utils/slaTheoGio');
 
 // ⚠⚠ MỐC KỲ ĐẶT TRONG CTE `ky`, KHÔNG nội suy `$1`/`$2` thẳng vào từng điều kiện.
 //   Lý do (lỗi thật đã bắt): ô `ton_dau` chỉ dùng $1, ô `ton_cuoi` chỉ dùng $2 ⇒ tham số còn lại
@@ -235,6 +235,8 @@ async function motDongBang(dong, slaPhut, { tu, den }) {
   const daO = `EXTRACT(EPOCH FROM (${moc} - q.tg_vao)) / 60`;
   let dkSla = slaPhut == null ? null : `${daO} > ${Number(slaPhut)}`;
   if (slaPhut != null && dong.slaKieu === 'READY_THEO_GIO') dkSla = `${daO} > ${slaReadySql('q.tg_vao', Number(slaPhut))}`;
+  // QC READY: q.tg_vao = lúc Kỹ thuật xác nhận xong ⇒ sau 16:30 thì QC có 16 giờ (KHUNG_SLA_QC).
+  if (slaPhut != null && dong.slaKieu === 'QC_THEO_GIO') dkSla = `${daO} > ${slaQcReadySql('q.tg_vao', Number(slaPhut))}`;
   if (slaPhut != null && dong.slaKieu === 'TEST_RUN_KE_HOACH') {
     const bdKh = `(SELECT min(${gioSxKhSql('lsb.tg_bd_kh', 'lsb.ngay_ke_hoach')}) FROM lenh_sx_dot_vai ldb JOIN dot_vai_ve dvb ON dvb.id = ldb.dot_vai_ve_id
       JOIN lenh_san_xuat lsb ON lsb.id = ldb.lenh_san_xuat_id WHERE dvb.phan_in_id = q.id AND lsb.trang_thai = 'RELEASE_1')`;

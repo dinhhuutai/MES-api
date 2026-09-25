@@ -37,6 +37,7 @@ const mauTemRoutes = require('./modules/mautem/mautem.routes');
 // Thiết kế PHIẾU (mig 094) — cùng khuôn mẫu tem, nhưng bố cục có VÙNG LẶP DÒNG.
 const mauPhieuRoutes = require('./modules/mauphieu/mauphieu.routes');
 const khachHangRoutes = require('./modules/khachhang/khachhang.routes');
+const suaThongTinRoutes = require('./modules/suathongtin/suathongtin.routes');
 const presenceRoutes = require('./modules/presence/presence.routes');
 const phienRoutes = require('./modules/phien/phien.routes');
 const financeRoutes = require('./modules/finance/finance.routes');
@@ -62,6 +63,7 @@ app.get('/api/health', (req, res) => ok(res, { status: 'up', time: new Date().to
 // Modules
 app.use('/api/auth', authRoutes);
 app.use('/api/users', usersRoutes);
+app.use('/api/phong-ban', require('./modules/phongban/phongban.routes'));   // mig 104 — phòng ban & tổ
 app.use('/api/roles', rolesRoutes);
 app.use('/api/permissions', permissionsRoutes);
 app.use('/api/catalog', catalogRoutes);
@@ -98,6 +100,8 @@ app.use('/api/mau-tem', mauTemRoutes);
 app.use('/api/mau-phieu', mauPhieuRoutes);
 // Hệ thống > Khách hàng (địa chỉ + địa chỉ giao mặc định, in lên phiếu giao — mig 099)
 app.use('/api/khach-hang', khachHangRoutes);
+// READY trả về Giao nhận sửa thông tin (mig 105).
+app.use('/api/sua-thong-tin', suaThongTinRoutes);
 app.use('/api/presence', presenceRoutes);
 app.use('/api/phien', phienRoutes);
 app.use('/api/tai-chinh', financeRoutes);

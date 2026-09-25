@@ -30,9 +30,13 @@ async function list({ search = '', active = null, offset = 0, limit = 20 }) {
   const where = `WHERE ($1 = '' OR u.ho_ten ~* $1 OR u.ten_dang_nhap ~* $1
                  OR u.ma_user ~* $1)${activeCond}`;
 
+  // Tổ (mig 104) — dò bảng trước, thiếu migration thì cột ra NULL (không 42703).
+  const coTo = await require('../phongban/phongban.service').coBangTo();
+  const toSql = coTo ? '(SELECT t.ten_to FROM to_phong_ban t WHERE t.id = u.to_phong_ban_id)' : 'NULL::text';
   const dataSql = `
     SELECT u.id, u.ma_user, u.ten_dang_nhap, u.ho_ten, u.email, u.so_dien_thoai, u.chuc_vu,
            u.gioi_tinh, u.avatar_url, u.trang_thai, u.dang_hoat_dong, u.phong_ban_id, pb.ten_phong_ban,
+           ${toSql} AS ten_to,
            COALESCE(array_agg(r.ma_role) FILTER (WHERE r.id IS NOT NULL), '{}') AS roles
     FROM nguoi_dung u
     LEFT JOIN phong_ban pb ON pb.id = u.phong_ban_id

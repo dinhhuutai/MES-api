@@ -11,7 +11,7 @@ const { buildMeta } = require('../../utils/pagination');
 const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
 const { isKhuonOptional } = require('../../utils/tech');
-const { slaReady } = require('../../utils/slaTheoGio');
+const { slaReady, slaQcReady } = require('../../utils/slaTheoGio');
 const hsktRepo = require('../hskt/hskt.repository');
 
 // Đổi phương án in của HSKT active của phần in (khi xác nhận Khuôn có nhập phương án in).
@@ -145,6 +145,9 @@ async function traCuuMaQuet(code) {
   const base = { tim_thay: true, ma_phan: r.ma_phan };
   if (r.dang_hoat_dong === false) {
     return { ...base, ly_do: 'DA_HUY', mo_ta: 'Phần in đã bị hủy (xóa mềm) — xem Hệ thống > Hủy lệnh xác nhận > Mở phần in' };
+  }
+  if (r.dang_o_gn === true) {
+    return { ...base, ly_do: 'DANG_O_GN', mo_ta: 'Phần in đã bị TRẢ VỀ GIAO NHẬN sửa thông tin — chờ GN xác nhận lại (Đơn hàng › Phần in chờ sửa thông tin)' };
   }
   if (r.qc_done === true) {
     const tg = gioVN(r.qc_tg);
@@ -423,7 +426,8 @@ async function listCandidates({ search, page, limit, offset, onlyQcReady = false
           loai_dot_vai_chua_xong: tatCaXong ? null : (chuaXong.length ? chuaXong.join(', ') : null),
           // SLA QC chỉ đếm khi KT của đợt đã xong (mốc = mục KT cuối); chưa xong ⇒ không đỏ ở QC.
           tg_vao: xongDot ? (ktTg.length ? new Date(Math.max(...ktTg)).toISOString() : r.tg_vao) : null,
-          sla_phut: xongDot ? qcSla : null,
+          // KT xong sau 16:30 ⇒ QC có 16 giờ (utils/slaTheoGio KHUNG_SLA_QC — 25/09/2026).
+          sla_phut: xongDot ? slaQcReady(ktTg.length ? new Date(Math.max(...ktTg)) : r.tg_vao, qcSla) : null,
           trang_thai_ready: xongDot ? 'CHO_QC' : nDone > 0 ? 'DANG' : 'CHUA',
         });
       });

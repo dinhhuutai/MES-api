@@ -6,7 +6,7 @@
 //   đổi tab không gọi lại API và không bao giờ ra 2 con số đá nhau.
 
 const repo = require('./thoigiantram.repository');
-const { slaReady, TEST_RUN_TRUOC_SX_PHUT } = require('../../utils/slaTheoGio');
+const { slaReady, slaQcReady, TEST_RUN_TRUOC_SX_PHUT } = require('../../utils/slaTheoGio');
 
 const LOC_KEYS = ['timKiem', 'khach', 'don', 'maHang', 'codePhan', 'mauVai', 'chuyen',
   'loaiMoc', 'tuNgay', 'denNgay', 'trangThai'];
@@ -37,6 +37,8 @@ function slaCua(tram, slaRows) {
 async function ganSlaDong(maTram, ds, slaMacDinh) {
   if (!ds.length) return ds;
   if (maTram === 'READY_KT') return ds.map((r) => ({ ...r, sla_phut: slaReady(r.tg_vao, slaMacDinh) }));
+  // READY_QC: tg_vao = lúc KT xác nhận xong ⇒ sau 16:30 thì QC có 16 giờ (25/09/2026).
+  if (maTram === 'READY_QC') return ds.map((r) => ({ ...r, sla_phut: slaQcReady(r.tg_vao, slaMacDinh) }));
   if (maTram === 'TEST_RUN') {
     const bd = await repo.gioSxKeHoach([...new Set(ds.map((r) => r.ma_lenh_san_xuat).filter(Boolean))]);
     return ds.map((r) => {
@@ -76,7 +78,7 @@ async function duLieu(q = {}) {
     ds.forEach((r) => rows.push({ ...r, ma_tram: t.ma }));
   });
   // Gắn SLA từng dòng cho 2 trạm có luật riêng (song song, không chặn nhau).
-  await Promise.all(['READY_KT', 'TEST_RUN'].map(async (ma) => {
+  await Promise.all(['READY_KT', 'READY_QC', 'TEST_RUN'].map(async (ma) => {
     const idx = rows.map((r, i) => (r.ma_tram === ma ? i : -1)).filter((i) => i >= 0);
     if (!idx.length) return;
     const moi = await ganSlaDong(ma, idx.map((i) => rows[i]), tram.find((x) => x.ma === ma).sla_phut);
@@ -111,6 +113,7 @@ async function duLieuChecklist(maTram, q = {}) {
     const slaCl = info.sla != null ? Number(info.sla) : null;
     // Khuôn/Film/Mực cũng theo giờ đợt lên MES (người dùng chốt 24/09/2026); QC/Test giữ SLA checklist.
     if (maTram === 'READY_KT') ds = ds.map((r) => ({ ...r, sla_phut: slaReady(r.tg_vao, slaCl) }));
+    if (maTram === 'READY_QC' && ma === 'QC_XAC_NHAN') ds = ds.map((r) => ({ ...r, sla_phut: slaQcReady(r.tg_vao, slaCl) }));
     ds.forEach((r) => rows.push({ ...r, ma_tram: maTram, ma_checkpoint: ma }));
     return {
       ma,

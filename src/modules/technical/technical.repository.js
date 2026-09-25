@@ -9,7 +9,9 @@ const { dkTrang } = require('../../utils/phuongAnIn');
 // ⚠ `conDotChoQcSql` KHÔNG import ở đây nữa (23/09/2026): màn QC dùng chung vị từ với màn Kỹ thuật —
 //   xem ghi chú ở `OUTER_WHERE`. Helper đó nay chỉ còn phục vụ dải "Theo dõi" (`utils/siSoTram.js`).
 const { techDoneSql, KHUON_OPT_SQL_LIST, nguoiXacNhanSql, conDotChuaReadySql, qcDotSql } = require('../../utils/tech');
-const { slaReadySql } = require('../../utils/slaTheoGio');
+const { slaReadySql, slaQcReadySql } = require('../../utils/slaTheoGio');
+// Phần in đang được trả về GIAO NHẬN sửa thông tin ⇒ rời màn READY cho tới khi GN xác nhận lại.
+const { CHO_GN_SQL } = require('../../utils/traVeGn');
 const { mauTim } = require('../../utils/timKiem');
 const { sqlKhopMa } = require('../../utils/maPhanIn');
 
@@ -159,6 +161,7 @@ async function listCandidates({
                          WHERE dvt.phan_in_id = pin.id AND dvt.trang_thai NOT IN ('DA_GOP','DA_HUY') AND dvt.tg_chuyen_ready IS NOT NULL
                            AND NOT EXISTS (SELECT 1 FROM phieu_san_xuat pst WHERE pst.lenh_san_xuat_id = lt.id)))
       AND pin.dang_hoat_dong
+      AND NOT ${CHO_GN_SQL('pin.id')}
       AND ${dkPain}
       AND ${SEARCH}`;
 
@@ -197,7 +200,7 @@ async function listCandidates({
   const dataSql = `
     SELECT q.*,
            CASE WHEN $11 THEN (CASE WHEN q.tech_done THEN q.kt_done_tg ELSE NULL END) ELSE q.ready_tg_vao END AS tg_vao,
-           CASE WHEN $11 THEN (CASE WHEN q.tech_done THEN $12::int ELSE NULL END) WHEN q.tech_done THEN NULL ELSE ${slaReadySql('q.ready_tg_vao', '$9::int')} END AS sla_phut,
+           CASE WHEN $11 THEN (CASE WHEN q.tech_done THEN ${slaQcReadySql('q.kt_done_tg', '$12::int')} ELSE NULL END) WHEN q.tech_done THEN NULL ELSE ${slaReadySql('q.ready_tg_vao', '$9::int')} END AS sla_phut,
            CASE WHEN $11 THEN $13::int ELSE $10::int END AS canh_bao_truoc_phut,
            count(*) OVER()::int AS total_count
     FROM (${selectBase(true)}) q
@@ -240,7 +243,7 @@ async function countReadyItems({ khuonId, filmId, mucId, qcId }) {
       WHERE EXISTS (SELECT 1 FROM dot_vai_ve dvu WHERE dvu.phan_in_id = pin.id AND dvu.trang_thai NOT IN ('DA_GOP','DA_HUY') AND dvu.tg_chuyen_ready IS NOT NULL
                        AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsu JOIN lenh_san_xuat lu ON lu.id = lsu.lenh_san_xuat_id
                                        WHERE lsu.dot_vai_ve_id = dvu.id AND lu.trang_thai <> 'HUY'))
-        AND pin.dang_hoat_dong
+        AND pin.dang_hoat_dong AND NOT ${CHO_GN_SQL('pin.id')}
         AND ${conDotChuaReadySql('pin.id')} AND ($4::uuid IS NULL OR true)
     ) q`;
   // ⚠ Đã có đợt chưa release (WHERE trên) thì "còn ở READY" = còn đợt chưa Ready — gương OUTER_WHERE của
@@ -411,7 +414,7 @@ async function readyCancelState(phanInId) {
 // Trả 1 dòng hoặc rỗng; service dựng câu mô tả.
 async function traCuuMaQuet(code) {
   const sql = `
-    SELECT pin.ma_phan, pin.dang_hoat_dong,
+    SELECT pin.ma_phan, pin.dang_hoat_dong, ${CHO_GN_SQL('pin.id')} AS dang_o_gn,
            kq.tg_xac_nhan AS qc_tg, nd.ho_ten AS qc_nguoi,
            (kq.id IS NOT NULL) AS qc_done,
            EXISTS (SELECT 1 FROM dot_vai_ve dv2

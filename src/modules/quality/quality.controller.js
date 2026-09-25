@@ -54,6 +54,7 @@ const temSuaMo = asyncHandler(async (req, res) => {
 });
 
 // Lịch sử QC trả về (toggle 3 loại)
+const traVeDanhSach = asyncHandler(async (req, res) => ok(res, await service.traVeDanhSach(req.query)));
 const qcTraVeHistory = asyncHandler(async (req, res) =>
   ok(res, await service.qcTraVeHistory(req.query.loai || 'READY', req.query.date || new Date().toISOString().slice(0, 10))));
 
@@ -115,7 +116,7 @@ module.exports = {
   inlineCandidates, inlineLoaiLoi, inlineHistory, recordInline,
   loaiLoiList, loaiLoiCreate, loaiLoiUpdate, loaiLoiToggle,
   giaoDacBietActive, giaoDacBietList, giaoDacBietCreate, giaoDacBietUpdate, giaoDacBietToggle,
-  oqcReturn, qcTraVeHistory, temHanhTrinh,
+  oqcReturn, qcTraVeHistory, traVeDanhSach, temHanhTrinh,
   cancelKcsList, cancelSuaList, cancelOqcList, cancelKcs, cancelSua, cancelOqc,
   temSuaList, temSuaDeletedList, temSuaHuy, temSuaMo,
 };

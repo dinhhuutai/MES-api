@@ -52,6 +52,11 @@ router.post('/oqc/:id/huy', rbac('OQC'), c.cancelOqc);
 
 // Lịch sử QC trả về (toggle READY/TEST_RUN/OQC)
 router.get('/qc-tra-ve', rbac('QC_TRAVE_VIEW'), c.qcTraVeHistory);
+// Modal "Danh sách trả về" của TỪNG màn nhận hàng trả về (READY · QC READY · Release 1 · Test Run · KCS ·
+// Sửa · Gia công · Sửa thông tin GN). Chỉ ĐỌC ⇒ mở cho quyền của mọi màn đó. ⚠ Route TĨNH, 2 đoạn —
+// không va route động nào của module này.
+router.get('/tra-ve/danh-sach', rbac('QC_TRAVE_VIEW', 'READY_VIEW', 'READY_QC', 'READY_KHUON', 'READY_FILM', 'READY_MUC',
+  'RELEASE1', 'RELEASE2', 'TESTRUN_QA', 'KCS', 'SUA', 'OQC', 'GN_SUA_THONG_TIN'), c.traVeDanhSach);
 
 // QC in-line (kiểm tại chuyền) — route tĩnh trước route động /:phieuId
 router.get('/inline/candidates', rbac('QC_INLINE'), c.inlineCandidates);

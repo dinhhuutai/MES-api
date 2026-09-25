@@ -19,6 +19,11 @@
 //     ⇒ sla_phut = phút từ lúc vào Test Run tới hạn; canh_bao = 60.
 //     · lệnh chưa đặt GIỜ SX ⇒ ngày SX kế hoạch lúc 07:30; không có cả ngày ⇒ SLA trạm TEST_RUN như cũ.
 //     · hạn đã qua ngay lúc vào trạm ⇒ sla = 1 phút (không để 0 — 0 nghĩa là "không tính SLA").
+//
+// (3) QC READY (checklist QC_XAC_NHAN) — theo GIỜ KỸ THUẬT XÁC NHẬN XONG (mốc vào hàng đợi QC, giờ VN):
+//     · 16:30 ≤ giờ < 24:00 ⇒ 16 giờ (960 phút) — KT xong cuối ca thì QC làm sáng hôm sau
+//     · còn lại           ⇒ SLA cấu hình của checklist QC_XAC_NHAN như cũ
+//     (chốt 25/09/2026). Thêm/sửa khung = sửa mảng `KHUNG_SLA_QC`.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const VN = "AT TIME ZONE 'Asia/Ho_Chi_Minh'";
@@ -28,7 +33,12 @@ const KHUNG_SLA_READY = [
   { tu: '15:00', den: '20:30', phut: 1260 },
 ];
 
-const TEST_RUN_TRUOC_SX_PHUT = 60;   // phải xong Test Run trước giờ SX bao nhiêu phút
+// ⚠ '24:00' là giá trị `time` HỢP LỆ trong Postgres (= cuối ngày) ⇒ `t < '24:00'` phủ tới 23:59:59.
+const KHUNG_SLA_QC = [
+  { tu: '16:30', den: '24:00', phut: 960 },
+];
+
+const TEST_RUN_TRUOC_SX_PHUT = 60;  // phải xong Test Run trước giờ SX bao nhiêu phút
 const TEST_RUN_CANH_BAO_PHUT = 60;   // vàng sớm hơn hạn bao nhiêu phút (⇒ 2 giờ trước giờ SX)
 // ⚠⚠ GIỜ SX KẾ HOẠCH = `tg_bd_kh`; THIẾU (đo prod 24/09: 117/163 lệnh chờ test chỉ có NGÀY) ⇒ lấy
 //   `ngay_ke_hoach` lúc `GIO_SX_MAC_DINH` (giờ mặc định của form Release 1). Bản đầu lùi thẳng về SLA
@@ -41,11 +51,14 @@ const hhmm = (s) => { const [h, m] = String(s).split(':').map(Number); return h 
 
 // ── SQL ──
 // `tgCol` = mốc đợt vải lên MES; `macDinh` = biểu thức SLA trạm (fallback).
-function slaReadySql(tgCol, macDinh) {
+function slaKhungSql(khung, tgCol, macDinh) {
   const t = `(${tgCol} ${VN})::time`;
-  const nhanh = KHUNG_SLA_READY.map((k) => `WHEN ${t} >= '${k.tu}' AND ${t} < '${k.den}' THEN ${Number(k.phut)}`).join(' ');
+  const nhanh = khung.map((k) => `WHEN ${t} >= '${k.tu}' AND ${t} < '${k.den}' THEN ${Number(k.phut)}`).join(' ');
   return `(CASE WHEN ${tgCol} IS NULL THEN ${macDinh} ${nhanh} ELSE ${macDinh} END)`;
 }
+const slaReadySql = (tgCol, macDinh) => slaKhungSql(KHUNG_SLA_READY, tgCol, macDinh);
+// `tgCol` = mốc Kỹ thuật xác nhận XONG (vào hàng đợi QC); `macDinh` = SLA checklist QC_XAC_NHAN.
+const slaQcReadySql = (tgCol, macDinh) => slaKhungSql(KHUNG_SLA_QC, tgCol, macDinh);
 
 // `tgVaoCol` = lúc vào Test Run; `tgBdKhCol` = giờ SX kế hoạch; `macDinh` = SLA trạm TEST_RUN.
 function slaTestRunSql(tgVaoCol, tgBdKhCol, macDinh) {
@@ -68,14 +81,16 @@ function phutTrongNgayVN(tg) {
   const m = Number(p.find((x) => x.type === 'minute').value);
   return g * 60 + m;
 }
-function slaReady(tg, macDinh) {
+function slaKhung(khung, tg, macDinh) {
   const p = phutTrongNgayVN(tg);
   if (p == null) return macDinh;
-  const k = KHUNG_SLA_READY.find((x) => p >= hhmm(x.tu) && p < hhmm(x.den));
+  const k = khung.find((x) => p >= hhmm(x.tu) && p < hhmm(x.den));
   return k ? k.phut : macDinh;
 }
+const slaReady = (tg, macDinh) => slaKhung(KHUNG_SLA_READY, tg, macDinh);
+const slaQcReady = (tg, macDinh) => slaKhung(KHUNG_SLA_QC, tg, macDinh);
 
 module.exports = {
-  KHUNG_SLA_READY, TEST_RUN_TRUOC_SX_PHUT, TEST_RUN_CANH_BAO_PHUT, GIO_SX_MAC_DINH, gioSxKhSql,
-  slaReadySql, slaTestRunSql, canhBaoTestRunSql, slaReady, phutTrongNgayVN,
+  KHUNG_SLA_READY, KHUNG_SLA_QC, TEST_RUN_TRUOC_SX_PHUT, TEST_RUN_CANH_BAO_PHUT, GIO_SX_MAC_DINH, gioSxKhSql,
+  slaReadySql, slaQcReadySql, slaTestRunSql, canhBaoTestRunSql, slaReady, slaQcReady, phutTrongNgayVN,
 };

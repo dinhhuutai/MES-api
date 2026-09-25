@@ -71,13 +71,13 @@ const DO_SL = {
 // `sla` = nơi lấy SLA trong workflow HIỆN HÀNH — khớp hằng `TRAM_TG` của *Thời gian trạm* để
 //   "nghẽn" ở 2 trang không bao giờ lệch nhau. `null` ⇒ trạm không đo nghẽn được.
 // `slaKieu` (24/09/2026) = SLA KHÔNG cố định, luật ở `utils/slaTheoGio.js`: READY theo giờ đợt lên MES,
-//   Test Run theo giờ SX kế hoạch − 1h. Không khai ⇒ SLA cố định của trạm như cũ.
+//   Test Run theo giờ SX kế hoạch − 1h, QC READY theo giờ KT xong (sau 16:30 ⇒ 16h). Không khai ⇒ SLA cố định của trạm như cũ.
 // ⚠ CỐ Ý bỏ *Kế hoạch tạm* và *Gia công* khỏi bảng: tờ giấy của xưởng không có 2 dòng đó, và cả hai
 //   là nhánh rẽ chứ không nằm trên dòng chảy chính. Muốn thêm thì khai thêm 1 dòng ở đây là đủ.
 const BANG_THEO_DOI = [
   { ma: 'READY_KT', ten: 'READY KT', man: 'KT_READY', sla: { tram: 'READY' }, slaKieu: 'READY_THEO_GIO', sl: 'vai',
     ghiChu: 'Vào = đợt vải lên READY · Xong = kỹ thuật xác nhận đủ mục' },
-  { ma: 'READY_QA', ten: 'READY QA', man: 'CL_QC_READY', sla: { checkpoint: 'QC_XAC_NHAN' }, sl: 'vai',
+  { ma: 'READY_QA', ten: 'READY QA', man: 'CL_QC_READY', sla: { checkpoint: 'QC_XAC_NHAN' }, slaKieu: 'QC_THEO_GIO', sl: 'vai',
     ghiChu: 'Vào = kỹ thuật xong hết mục · Xong = QC xác nhận READY' },
   { ma: 'RELEASE_1', ten: 'RELEASE 1', man: 'KH_RELEASE1', sla: { tram: 'RELEASE_1' }, sl: 'vai',
     ghiChu: 'Vào = đợt vải lên READY · Xong = release hết SL (hoặc sang Kế hoạch tạm)' },

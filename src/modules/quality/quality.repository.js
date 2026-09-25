@@ -794,6 +794,9 @@ const RETURN_COL = {
   READY: 'phan_in_id', RELEASE1: 'phan_in_id', TEST_RUN_KT: 'phan_in_id',
   TEST_RUN: 'dot_vai_ve_id', OQC: 'tem_id', OQC_SUA: 'tem_id',
   OQC_GIA_CONG: 'lenh_san_xuat_id',
+  // READY (Kỹ thuật / QC) trả phần in về GIAO NHẬN sửa thông tin (25/09/2026). Mức phần in; khi còn cờ
+  // chưa xử lý thì phần in RỜI màn READY (xem technical.repository `CHO_GN_SQL`), GN xác nhận lại là quay về.
+  TRA_VE_GN: 'phan_in_id',
 };
 
 // Ghi 1 lần QC trả về (không transaction — gọi sau khi commit nghiệp vụ chính).
@@ -873,6 +876,62 @@ async function listQcTraVe(loaiList, date) {
     WHERE qtv.loai = ANY($1) AND (qtv.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $2::date
     ORDER BY qtv.created_date DESC`;
   const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [loais, date]);
+  return rows;
+}
+
+// ============ DANH SÁCH TRẢ VỀ THEO TRẠM (modal "Danh sách trả về" ở mọi màn nhận hàng trả về) ============
+// 1 dòng = 1 lượt trả về. Đối tượng có thể ở 4 mức (phần in / đợt vải / lệnh / tem — xem RETURN_COL) ⇒
+// quy HẾT về 1 phần in để hiện đủ khách · đơn · mã hàng · code phần · màu · kích.
+//   · tem  → ưu tiên `tem.dot_vai_ve_id` (mig 095), không có thì phần in ĐẠI DIỆN của lệnh (tem không lưu
+//     phần in — giới hạn đã biết DATABASE.md §4).
+//   · lệnh → phần in đại diện (ma_phan nhỏ nhất) của lệnh.
+// Thời gian "ở đây bao lâu" = (đã xử lý ? updated_date : now) − created_date; FE tự tính cho ô đang chờ
+// (đồng hồ chạy) nên backend chỉ trả 2 mốc.
+// ⚠ Lọc ngày theo NGÀY TRẢ VỀ (created_date, giờ VN). Để trống 2 đầu = mọi ngày.
+// ⚠ Chú thích để NGOÀI chuỗi SQL (bẫy §9: câu bị gộp 1 dòng thì `--` nuốt phần còn lại).
+async function listTraVeChiTiet({ loais, tuNgay, denNgay }) {
+  const sql = `
+    SELECT q.id, q.loai, q.ly_do, q.checklist_list, q.da_xu_ly,
+           q.created_date AS tg_tra_ve,
+           CASE WHEN q.da_xu_ly THEN q.updated_date END AS tg_xu_ly,
+           nd.ho_ten AS nguoi_tra_ve, nd2.ho_ten AS nguoi_xu_ly,
+           x.pin_id AS phan_in_id, x.lenh_id,
+           pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in, pin.so_luong_don_hang,
+           mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
+           dv.ma_dot_vai, t.ma_tem, ls.ma_lenh_san_xuat, cs.ten_chuyen,
+           COALESCE(dv.han_giao_hang, (SELECT min(d4.han_giao_hang) FROM dot_vai_ve d4
+              WHERE d4.phan_in_id = x.pin_id AND d4.trang_thai NOT IN ('DA_GOP','DA_HUY'))) AS han_giao_hang,
+           (SELECT string_agg(DISTINCT ldv.ten_loai, ', ') FROM dot_vai_ve d5
+              JOIN loai_dot_vai ldv ON ldv.id = d5.loai_dot_vai_id
+             WHERE d5.phan_in_id = x.pin_id AND d5.trang_thai NOT IN ('DA_GOP','DA_HUY')) AS loai_dot_vai
+    FROM qc_tra_ve q
+    LEFT JOIN nguoi_dung nd ON nd.id = q.created_by
+    LEFT JOIN nguoi_dung nd2 ON nd2.id = q.updated_by
+    LEFT JOIN tem t ON t.id = q.tem_id
+    LEFT JOIN phieu_san_xuat pst ON pst.id = t.phieu_san_xuat_id
+    LEFT JOIN dot_vai_ve dv ON dv.id = COALESCE(q.dot_vai_ve_id, t.dot_vai_ve_id)
+    LEFT JOIN LATERAL (
+      SELECT COALESCE(q.lenh_san_xuat_id, pst.lenh_san_xuat_id) AS lenh_id
+    ) l0 ON true
+    LEFT JOIN LATERAL (
+      SELECT COALESCE(q.phan_in_id, dv.phan_in_id,
+               (SELECT d3.phan_in_id FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve d3 ON d3.id = lsd.dot_vai_ve_id
+                  JOIN phan_in p3 ON p3.id = d3.phan_in_id
+                 WHERE lsd.lenh_san_xuat_id = l0.lenh_id ORDER BY p3.ma_phan LIMIT 1)) AS pin_id,
+             l0.lenh_id
+    ) x ON true
+    LEFT JOIN lenh_san_xuat ls ON ls.id = x.lenh_id
+    LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+    LEFT JOIN phan_in pin ON pin.id = x.pin_id
+    LEFT JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+    LEFT JOIN don_hang dh ON dh.id = mh.don_hang_id
+    LEFT JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+    WHERE q.loai = ANY($1::text[])
+      AND ($2::date IS NULL OR (q.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date >= $2::date)
+      AND ($3::date IS NULL OR (q.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date <= $3::date)
+    ORDER BY q.da_xu_ly, q.created_date DESC
+    LIMIT 3000`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [loais, tuNgay || null, denNgay || null]);
   return rows;
 }
 
@@ -1126,7 +1185,7 @@ module.exports = {
   // ⚠ Export để `phanloailoi.repository` dùng CHUNG một luật con_kcs (kẹp 0 cho tem con mig 091) —
   //   viết lại biểu thức ở file khác là sớm muộn 2 màn ra 2 con số.
   conKcsSql,
-  insertQcTraVe, activeReturnsMap, resolveReturns, resolveReturnsMany, listQcTraVe,
+  insertQcTraVe, activeReturnsMap, resolveReturns, resolveReturnsMany, listQcTraVe, listTraVeChiTiet,
   listTemSua, listTemSuaDaHuy, getTemSuaRow, getTemSuaRows, applyTemSuaLedgerMany, logTemSuaMany,
   getTemsForMerge, addTemSoLuong, logGopTem,
   listCancelKcs, listCancelSua, listCancelOqc, getCancelKcsRow, getCancelSuaRow, getCancelOqcRow, logCancelQc,

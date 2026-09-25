@@ -183,6 +183,17 @@ async function qcTraVeHistory(loai, date) {
   return repo.listQcTraVe(L === 'OQC' ? ['OQC', 'OQC_SUA'] : [L], date);
 }
 
+// Danh sách trả về theo loại (modal "Danh sách trả về" ở từng màn). Chỉ nhận loại đã khai ở RETURN_COL
+// (whitelist) — loại lạ bị bỏ, không nội suy chuỗi client vào SQL.
+const LOAI_TRA_VE_HOP_LE = ['READY', 'RELEASE1', 'TEST_RUN_KT', 'TEST_RUN', 'OQC', 'OQC_SUA', 'OQC_GIA_CONG', 'TRA_VE_GN'];
+async function traVeDanhSach({ loai, tuNgay, denNgay }) {
+  const loais = String(loai || '').split(',').map((x) => x.trim().toUpperCase())
+    .filter((x) => LOAI_TRA_VE_HOP_LE.includes(x));
+  if (!loais.length) throw new AppError('Thiếu loại trả về hợp lệ', { status: 422, errorCode: 'NO_LOAI' });
+  const ngay = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? v : null);
+  return repo.listTraVeChiTiet({ loais, tuNgay: ngay(tuNgay), denNgay: ngay(denNgay) });
+}
+
 async function recordKcs(temId, body, actorId) {
   const tem = await repo.getTemLedger(temId);
   if (!tem) throw new AppError('Tem không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
@@ -902,5 +913,5 @@ module.exports = {
   listInlineCandidates, listLoaiLoi, recordQcInline, inlineHistory,
   listLoaiLoiAll, createLoaiLoi, updateLoaiLoi, toggleLoaiLoi,
   listGiaoDacBiet, listGiaoDacBietAll, createGiaoDacBiet, updateGiaoDacBiet, toggleGiaoDacBiet,
-  returnOqcToKcs, qcTraVeHistory,
+  returnOqcToKcs, qcTraVeHistory, traVeDanhSach,
 };
