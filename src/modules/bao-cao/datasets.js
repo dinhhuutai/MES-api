@@ -123,6 +123,27 @@ const readyChoiceSub = (maCp) =>
 
 const SLA_LABEL = { NGHEN: 'Nghẽn', SAP_NGHEN: 'Sắp nghẽn', OK: 'Đúng hạn' };
 
+// ⚠⚠ READY THEO ĐỢT VẢI cho nguồn 1 dòng / đợt vải (25/09/2026): mỗi đợt × mục (Khuôn/Film/Mực/QC)
+//   đã xác nhận chưa — ĐÚNG luật `dotMucDatSql` của màn READY. Query phụ theo PK, biểu thức viết ĐÚNG 1
+//   LẦN qua `CROSS JOIN (VALUES …)` (ngưỡng IPS §9 — đừng nhét vào câu chính).
+const SQL_DOT_MUC = `SELECT zd.id AS dot_vai_ve_id, zvm.ma, ${dotMucDatSql('zd', 'zd.phan_in_id', 'zvm.ma', true)} AS dat
+  FROM dot_vai_ve zd CROSS JOIN (VALUES ('FILM'),('KHUON'),('MUC'),('QC_XAC_NHAN')) zvm(ma)
+  WHERE zd.id = ANY($1::uuid[])`;
+async function ganReadyTheoDot(rows) {
+  if (!rows.length) return rows;
+  const { rows: m } = await query(SQL_DOT_MUC.replace(/\s+/g, ' ').trim(), [[...new Set(rows.map((r) => r.dot_vai_ve_id))]]);
+  const dat = new Set(m.filter((x) => x.dat).map((x) => `${x.dot_vai_ve_id}|${x.ma}`));
+  for (const r of rows) {
+    const giaCong = KHUON_OPTIONAL_KH.includes(String(r.ten_khach_hang || '').trim());
+    const co = (ma) => dat.has(`${r.dot_vai_ve_id}|${ma}`);
+    r.ready_khuon = giaCong ? '—' : (co('KHUON') ? (r.ready_khuon || 'Đã') : '');
+    r.ready_film = giaCong ? '—' : (co('FILM') ? (r.ready_film || 'Đã') : '');
+    r.ready_muc = co('MUC') ? (r.ready_muc || 'Đã') : '';
+    r.ready_qc = co('QC_XAC_NHAN') ? 'Đã QC' : '';
+  }
+  return rows;
+}
+
 async function runPhanIn({ loc = {}, gioi_han }) {
   const params = [];
   const conds = ["dv.trang_thai NOT IN ('DA_GOP','DA_HUY')", 'pin.dang_hoat_dong'];
@@ -160,7 +181,7 @@ async function runPhanIn({ loc = {}, gioi_han }) {
     WHERE ${conds.join(' AND ')}
     ORDER BY dv.ngay_vai_ve DESC NULLS LAST, kh.ten_khach_hang, dh.ma_don_hang, pin.ma_phan
     LIMIT ${limitOf(gioi_han)}`;
-  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), params);
+  const rows = await ganReadyTheoDot((await query(sql.replace(/\s+/g, ' ').trim(), params)).rows);
 
   // Gắn trạm hiện tại + SLA từ flowRows (đúng nguồn dashboard). Lọc trạm sau khi gắn.
   const flow = await flowRowsCached();
@@ -573,9 +594,8 @@ const readyMark = (maCp) => `(CASE WHEN EXISTS (SELECT 1 FROM ket_qua_checkpoint
 //   'DAT', nhưng màn READY đang hiện nó là CÒN VIỆC ⇒ tính mức phần in sẽ báo THIẾU so với màn thao
 //   tác. Đo prod 23/09/2026: tính theo đợt là SIÊU TẬP an toàn của mức phần in — bắt thêm đúng 10
 //   phần in mỗi mục, KHÔNG mất dòng nào.
-//   ⇒ Hệ quả PHẢI BIẾT: 3 cột `ready_khuon`/`ready_film`/`ready_muc` là trạng thái MỨC PHẦN IN nên có
-//   thể hiện "Đã" trong khi "Tình trạng chờ" vẫn ghi đang chờ mục đó. Không phải lỗi — đối chiếu bằng
-//   cột "Số đợt vải đang chờ" của 3 nguồn "Open chờ <mục>".
+//   ⇒ Từ 25/09/2026 3 cột `ready_khuon`/`ready_film`/`ready_muc` CŨNG tính theo đợt (`ganChoMuc`) —
+//   hết cảnh ô "Đã" mà "Tình trạng chờ" vẫn ghi đang chờ mục đó.
 //
 // ⚠⚠⚠ FILM VÀ KHUÔN LUÔN CÙNG TRẠNG THÁI ⇒ thực tế chỉ ra 3 nhãn: "Chờ Film, Khuôn, Mực" ·
 //   "Chờ Film, Khuôn" · "Chờ Mực" (+ "Chờ QC" khi đã đủ mục). Từ 14/08/2026 xác nhận Khuôn thì hệ
@@ -608,7 +628,7 @@ const conDotChuaMucSql = (pinCol, ma) => `EXISTS (SELECT 1 FROM dot_vai_ve zdm
 //   `LIMIT`. ⇒ `CROSS JOIN (VALUES ...)` để viết biểu thức ĐÚNG MỘT LẦN (cờ `maLaBieuThuc` của
 //   `dotMucDatSql`), trả 1 dòng / (phần in × mục) rồi gom ở JS. Câu còn ~1050 ký tự.
 //   **Đừng "gộp cho gọn" thành 3 cột bool_or — đó chính là bản đã chết.**
-const SQL_CHO_MUC = `SELECT zdm.phan_in_id, zcpm.ma,
+const SQL_CHO_MUC = `SELECT zdm.phan_in_id, zcpm.ma, count(*)::int AS so_dot,
     count(*) FILTER (WHERE NOT ${dotMucDatSql('zdm', 'zdm.phan_in_id', 'zcpm.ma', true)})::int AS so_cho
   FROM dot_vai_ve zdm CROSS JOIN (VALUES ('FILM'),('KHUON'),('MUC')) zcpm(ma)
   WHERE zdm.phan_in_id = ANY($1::uuid[])
@@ -635,12 +655,24 @@ async function ganChoMuc(rows, mucCho) {
   const ids = [...new Set(rows.map((r) => r.phan_in_id))];
   const { rows: m } = await query(SQL_CHO_MUC.replace(/\s+/g, ' ').trim(), [ids]);
   const so = new Map(m.map((x) => [`${x.phan_in_id}|${x.ma}`, x.so_cho])); // số ĐỢT còn chờ mục đó
+  const tongDot = new Map(m.map((x) => [x.phan_in_id, x.so_dot]));        // số ĐỢT đang chờ ở READY
   for (const r of rows) {
     const giaCong = KHUON_OPTIONAL_KH.includes(String(r.ten_khach_hang || '').trim());
     const lay = (ma) => so.get(`${r.phan_in_id}|${ma}`) || 0;
     r.cho_film = giaCong ? false : lay('FILM') > 0;
     r.cho_khuon = giaCong ? false : lay('KHUON') > 0;
     r.cho_muc = lay('MUC') > 0;
+    // ⚠⚠ 25/09/2026 (người dùng báo "đợt vải chưa làm mà báo cáo điền đã làm"): 3 cột Khuôn/Film/Mực
+    //   + "Mục KT xong" nay THEO ĐỢT VẢI ĐANG CHỜ — "Đã" chỉ khi MỌI đợt đang chờ đã xác nhận mục đó.
+    //   Bản cũ đọc dòng TỔNG `ket_qua_checkpoint` (mức phần in) nên đợt 1 xác nhận rồi thì đợt 2 mới về
+    //   cũng hiện "Đã". Phần in KHÔNG còn đợt đang chờ (dòng đã READY / nhánh Test Run trả về) giữ giá
+    //   trị mức phần in như cũ.
+    if ((tongDot.get(r.phan_in_id) || 0) > 0) {
+      r.ready_khuon = giaCong ? '—' : (r.cho_khuon ? '' : 'Đã');
+      r.ready_film = giaCong ? '—' : (r.cho_film ? '' : 'Đã');
+      r.ready_muc = r.cho_muc ? '' : 'Đã';
+      r.so_muc_kt = `${(r.cho_muc ? 0 : 1) + (giaCong ? 0 : (r.cho_khuon ? 0 : 1))}/${giaCong ? 1 : 2}`;
+    }
     r.cho_muc_kt = nhanChoMuc(r);
     if (mucCho) r.so_dot_cho = lay(mucCho);
   }
@@ -695,9 +727,7 @@ const COT_READY_DANG_O = [
 
 // Bộ cột cho 3 nguồn "Open chờ <mục>" — y hệt "Đang ở READY" nhưng BỎ 4 cột QA (ở đây luôn rỗng vì
 // hàng đã QA thì không còn chờ mục nào) và THÊM "Số đợt vải đang chờ".
-// ⚠ 3 cột Khuôn/Film/Mực giữ nguyên nghĩa CŨ = trạng thái MỨC PHẦN IN (lần xác nhận gần nhất). Dòng
-//   lọt vào đây là do CÒN ĐỢT VẢI chưa xác nhận mục đó ⇒ có thể thấy ô "Đã" mà vẫn nằm trong danh
-//   sách chờ — đối chiếu bằng cột "Số đợt vải đang chờ".
+// ⚠ 3 cột Khuôn/Film/Mực tính THEO ĐỢT VẢI đang chờ (25/09/2026) — ô của chính mục đang lọc luôn trống.
 const COT_READY_CHO_MUC = [
   ...COT_READY_DANG_O.filter((c) => !['qc_ready', 'ngay_ready', 'gio_ready', 'nguoi_ready'].includes(c.key)),
   { key: 'so_dot_cho', ten: 'Số đợt vải đang chờ', kieu: 'so' },

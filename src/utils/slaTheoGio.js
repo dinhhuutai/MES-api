@@ -24,9 +24,19 @@
 //     · 16:30 ≤ giờ < 24:00 ⇒ 16 giờ (960 phút) — KT xong cuối ca thì QC làm sáng hôm sau
 //     · còn lại           ⇒ SLA cấu hình của checklist QC_XAC_NHAN như cũ
 //     (chốt 25/09/2026). Thêm/sửa khung = sửa mảng `KHUNG_SLA_QC`.
+//
+// (4) ⚠⚠⚠ READY KỸ THUẬT — THEO HẠN GIAO CỦA ĐỢT VẢI (chốt 25/09/2026, THAY luật (1) khi có hạn giao):
+//     · còn ≤ 1 ngày tới hạn giao (từ 00:00 ngày H−1, giờ VN) mà chưa xác nhận đủ ⇒ ĐỎ
+//     · còn 2 ngày (từ 00:00 ngày H−2)                                              ⇒ VÀNG
+//     Ví dụ hạn 26: ngày 25 đỏ, ngày 24 vàng. Quy về cặp số quen thuộc: sla_phut = phút từ lúc vào
+//     READY tới 00:00 ngày H−1 (tối thiểu 1), canh_bao = 1440. Đợt KHÔNG có hạn giao ⇒ lùi về luật (1).
+//     ⚠ Hạn giao phải là của ĐÚNG ĐỢT đang chờ (đợt bổ sung ≠ đợt số lượng đã release).
 // ─────────────────────────────────────────────────────────────────────────────
 
 const VN = "AT TIME ZONE 'Asia/Ho_Chi_Minh'";
+const READY_HAN_DO_NGAY = 1;     // còn ≤ 1 ngày ⇒ đỏ
+const READY_HAN_VANG_NGAY = 2;   // còn 2 ngày ⇒ vàng
+const READY_HAN_CANH_BAO = (READY_HAN_VANG_NGAY - READY_HAN_DO_NGAY) * 1440;
 
 const KHUNG_SLA_READY = [
   { tu: '07:30', den: '15:00', phut: 480 },
@@ -60,6 +70,15 @@ const slaReadySql = (tgCol, macDinh) => slaKhungSql(KHUNG_SLA_READY, tgCol, macD
 // `tgCol` = mốc Kỹ thuật xác nhận XONG (vào hàng đợi QC); `macDinh` = SLA checklist QC_XAC_NHAN.
 const slaQcReadySql = (tgCol, macDinh) => slaKhungSql(KHUNG_SLA_QC, tgCol, macDinh);
 
+// Mốc ĐỎ của READY theo hạn giao = 00:00 (giờ VN) ngày (hạn − 1).
+const mocDoReadySql = (hanCol) => `(((${hanCol})::date - ${READY_HAN_DO_NGAY}) + time '00:00') ${VN}`;
+// `hanCol` = hạn giao (DATE) của đợt; `macDinh` = SLA theo giờ lên MES (luật (1)) khi thiếu hạn.
+function slaReadyHanSql(tgVaoCol, hanCol, tgLenMesCol, macDinh) {
+  return `(CASE WHEN ${hanCol} IS NULL OR ${tgVaoCol} IS NULL THEN ${slaReadySql(tgLenMesCol, macDinh)}
+    ELSE GREATEST(1, floor(EXTRACT(EPOCH FROM (${mocDoReadySql(hanCol)} - ${tgVaoCol})) / 60))::int END)`;
+}
+const canhBaoReadyHanSql = (hanCol, macDinh) => `(CASE WHEN ${hanCol} IS NULL THEN ${macDinh} ELSE ${READY_HAN_CANH_BAO} END)`;
+
 // `tgVaoCol` = lúc vào Test Run; `tgBdKhCol` = giờ SX kế hoạch; `macDinh` = SLA trạm TEST_RUN.
 function slaTestRunSql(tgVaoCol, tgBdKhCol, macDinh) {
   return `(CASE WHEN ${tgBdKhCol} IS NULL OR ${tgVaoCol} IS NULL THEN ${macDinh}
@@ -88,9 +107,35 @@ function slaKhung(khung, tg, macDinh) {
   return k ? k.phut : macDinh;
 }
 const slaReady = (tg, macDinh) => slaKhung(KHUNG_SLA_READY, tg, macDinh);
+
+// Ngày YYYY-MM-DD của hạn giao. node-pg trả cột DATE thành Date lúc 00:00 GIỜ MÁY CHỦ ⇒ đọc thành phần
+// LOCAL (đừng toISOString — lùi 1 ngày ở UTC+7). Chuỗi thì cắt 10 ký tự đầu.
+function ngayHan(han) {
+  if (!han) return null;
+  if (han instanceof Date) {
+    if (Number.isNaN(han.getTime())) return null;
+    return [han.getFullYear(), han.getMonth() + 1, han.getDate()];
+  }
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(han));
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+}
+// Mốc ĐỎ (ms) = 00:00 giờ VN (UTC+7, không DST) ngày hạn − 1.
+function mocDoReady(han) {
+  const n = ngayHan(han);
+  return n ? Date.UTC(n[0], n[1] - 1, n[2] - READY_HAN_DO_NGAY) - 7 * 3600000 : null;
+}
+// Luật (4) cho service: trả { sla, canhBao }. Thiếu hạn / thiếu mốc vào ⇒ luật (1).
+function slaReadyHan(tgVao, han, tgLenMes, macDinh, canhBaoMacDinh) {
+  const moc = mocDoReady(han);
+  const vao = tgVao ? new Date(tgVao).getTime() : NaN;
+  if (moc == null || Number.isNaN(vao)) return { sla: slaReady(tgLenMes, macDinh), canhBao: canhBaoMacDinh };
+  return { sla: Math.max(1, Math.floor((moc - vao) / 60000)), canhBao: READY_HAN_CANH_BAO };
+}
 const slaQcReady = (tg, macDinh) => slaKhung(KHUNG_SLA_QC, tg, macDinh);
 
 module.exports = {
   KHUNG_SLA_READY, KHUNG_SLA_QC, TEST_RUN_TRUOC_SX_PHUT, TEST_RUN_CANH_BAO_PHUT, GIO_SX_MAC_DINH, gioSxKhSql,
+  READY_HAN_DO_NGAY, READY_HAN_VANG_NGAY, READY_HAN_CANH_BAO, mocDoReadySql, slaReadyHanSql, canhBaoReadyHanSql,
+  mocDoReady, slaReadyHan,
   slaReadySql, slaQcReadySql, slaTestRunSql, canhBaoTestRunSql, slaReady, slaQcReady, phutTrongNgayVN,
 };

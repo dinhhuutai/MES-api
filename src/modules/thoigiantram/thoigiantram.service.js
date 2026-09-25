@@ -6,7 +6,7 @@
 //   đổi tab không gọi lại API và không bao giờ ra 2 con số đá nhau.
 
 const repo = require('./thoigiantram.repository');
-const { slaReady, slaQcReady, TEST_RUN_TRUOC_SX_PHUT } = require('../../utils/slaTheoGio');
+const { slaReadyHan, slaQcReady, TEST_RUN_TRUOC_SX_PHUT } = require('../../utils/slaTheoGio');
 
 const LOC_KEYS = ['timKiem', 'khach', 'don', 'maHang', 'codePhan', 'mauVai', 'chuyen',
   'loaiMoc', 'tuNgay', 'denNgay', 'trangThai'];
@@ -36,7 +36,8 @@ function slaCua(tram, slaRows) {
 //   Dòng không áp được luật ⇒ giữ SLA trạm/checklist. FE (`thongKe`) ưu tiên `sla_phut` của dòng.
 async function ganSlaDong(maTram, ds, slaMacDinh) {
   if (!ds.length) return ds;
-  if (maTram === 'READY_KT') return ds.map((r) => ({ ...r, sla_phut: slaReady(r.tg_vao, slaMacDinh) }));
+  // READY_KT: theo HẠN GIAO của đợt (còn ≤1 ngày ⇒ đỏ — 25/09/2026); thiếu hạn ⇒ theo giờ lên MES.
+  if (maTram === 'READY_KT') return ds.map((r) => ({ ...r, sla_phut: slaReadyHan(r.tg_vao, r.han_giao_hang, r.tg_vao, slaMacDinh).sla }));
   // READY_QC: tg_vao = lúc KT xác nhận xong ⇒ sau 16:30 thì QC có 16 giờ (25/09/2026).
   if (maTram === 'READY_QC') return ds.map((r) => ({ ...r, sla_phut: slaQcReady(r.tg_vao, slaMacDinh) }));
   if (maTram === 'TEST_RUN') {
@@ -112,7 +113,7 @@ async function duLieuChecklist(maTram, q = {}) {
     if (ds.length > repo.TRAN_DONG) { ds = ds.slice(0, repo.TRAN_DONG); cat = true; }
     const slaCl = info.sla != null ? Number(info.sla) : null;
     // Khuôn/Film/Mực cũng theo giờ đợt lên MES (người dùng chốt 24/09/2026); QC/Test giữ SLA checklist.
-    if (maTram === 'READY_KT') ds = ds.map((r) => ({ ...r, sla_phut: slaReady(r.tg_vao, slaCl) }));
+    if (maTram === 'READY_KT') ds = ds.map((r) => ({ ...r, sla_phut: slaReadyHan(r.tg_vao, r.han_giao_hang, r.tg_vao, slaCl).sla }));
     if (maTram === 'READY_QC' && ma === 'QC_XAC_NHAN') ds = ds.map((r) => ({ ...r, sla_phut: slaQcReady(r.tg_vao, slaCl) }));
     ds.forEach((r) => rows.push({ ...r, ma_tram: maTram, ma_checkpoint: ma }));
     return {

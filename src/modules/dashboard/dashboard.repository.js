@@ -4,7 +4,7 @@ const { query } = require('../../config/db');
 const ordersRepo = require('../orders/orders.repository');
 const { dotStageCase, readyFallback, ORDER_SQL_ARRAY } = require('../../utils/stage');
 const { techDoneSql } = require('../../utils/tech');
-const { slaReadySql, slaQcReadySql, slaTestRunSql, canhBaoTestRunSql, gioSxKhSql } = require('../../utils/slaTheoGio');
+const { slaReadyHanSql, canhBaoReadyHanSql, slaQcReadySql, slaTestRunSql, canhBaoTestRunSql, gioSxKhSql } = require('../../utils/slaTheoGio');
 // Hiển thị theo PHƯƠNG ÁN IN — cấu hình động từng trang (mig 067), mặc định BẬT HẾT = không lọc.
 const { dkTrang } = require('../../utils/phuongAnIn');
 const { maTemUngVien } = require('../../utils/temPrefix');
@@ -716,11 +716,12 @@ async function flowRows(tramMa = '') {
            cur.ma_tram, tr.ten_tram, tr.thu_tu,
            CASE WHEN cur.ma_tram='OQC' AND COALESCE(gc.is_gia_cong,false) THEN 0
                 WHEN cur.ma_tram='READY' AND ${KT_DONE_FLOW} THEN ${slaQcReadySql('kt.kt_tg', 'qcp.sla')}
-                WHEN cur.ma_tram='READY' THEN ${slaReadySql('b.dv_tg', 'tr.thoi_gian_quy_dinh_phut')}
+                WHEN cur.ma_tram='READY' THEN ${slaReadyHanSql('tv.tg_vao', 'b.han_giao_hang', 'b.dv_tg', 'tr.thoi_gian_quy_dinh_phut')}
                 WHEN cur.ma_tram='TEST_RUN' THEN ${slaTestRunSql('tv.tg_vao', 'lk.lenh_bd_kh', 'tr.thoi_gian_quy_dinh_phut')}
                 WHEN cur.ma_tram='CHO_KHO' THEN tr.thoi_gian_quy_dinh_phut + COALESCE(b.cho_kho_phut, 60)
                 ELSE tr.thoi_gian_quy_dinh_phut END AS sla_phut,
            CASE WHEN cur.ma_tram='READY' AND ${KT_DONE_FLOW} THEN qcp.cb
+                WHEN cur.ma_tram='READY' THEN ${canhBaoReadyHanSql('b.han_giao_hang', 'tr.canh_bao_truoc_phut')}
                 WHEN cur.ma_tram='TEST_RUN' THEN ${canhBaoTestRunSql('lk.lenh_bd_kh', 'tr.canh_bao_truoc_phut')}
                 ELSE tr.canh_bao_truoc_phut END AS canh_bao_truoc_phut,
            tv.tg_vao,

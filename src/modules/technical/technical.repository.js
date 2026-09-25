@@ -9,7 +9,7 @@ const { dkTrang } = require('../../utils/phuongAnIn');
 // ⚠ `conDotChoQcSql` KHÔNG import ở đây nữa (23/09/2026): màn QC dùng chung vị từ với màn Kỹ thuật —
 //   xem ghi chú ở `OUTER_WHERE`. Helper đó nay chỉ còn phục vụ dải "Theo dõi" (`utils/siSoTram.js`).
 const { techDoneSql, KHUON_OPT_SQL_LIST, nguoiXacNhanSql, conDotChuaReadySql, qcDotSql } = require('../../utils/tech');
-const { slaReadySql, slaQcReadySql } = require('../../utils/slaTheoGio');
+const { slaReadySql, slaQcReadySql, slaReadyHanSql, canhBaoReadyHanSql } = require('../../utils/slaTheoGio');
 // Phần in đang được trả về GIAO NHẬN sửa thông tin ⇒ rời màn READY cho tới khi GN xác nhận lại.
 const { CHO_GN_SQL } = require('../../utils/traVeGn');
 const { mauTim } = require('../../utils/timKiem');
@@ -74,8 +74,16 @@ async function listCandidates({
            (SELECT string_agg(DISTINCT ldv.ten_loai, ', ')
               FROM dot_vai_ve dv3 JOIN loai_dot_vai ldv ON ldv.id = dv3.loai_dot_vai_id
               WHERE dv3.phan_in_id = pin.id AND dv3.trang_thai NOT IN ('DA_GOP','DA_HUY')) AS loai_dot_vai,
-           (SELECT min(dv4.han_giao_hang) FROM dot_vai_ve dv4
-              WHERE dv4.phan_in_id = pin.id AND dv4.trang_thai NOT IN ('DA_GOP','DA_HUY')) AS han_giao_hang,
+           -- Hạn giao = của đợt ĐANG CHỜ (chưa release), lùi về mọi đợt còn hiệu lực — 25/09/2026: đợt bổ sung
+           -- từng hiện hạn của đợt số lượng đã release từ lâu (min mọi đợt) nên SLA theo hạn tính sai.
+           COALESCE(
+             (SELECT min(dv4.han_giao_hang) FROM dot_vai_ve dv4
+               WHERE dv4.phan_in_id = pin.id AND dv4.trang_thai NOT IN ('DA_GOP','DA_HUY')
+                 AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsh JOIN lenh_san_xuat lh ON lh.id = lsh.lenh_san_xuat_id
+                                 WHERE lsh.dot_vai_ve_id = dv4.id AND lh.trang_thai <> 'HUY')),
+             (SELECT min(dv7.han_giao_hang) FROM dot_vai_ve dv7
+               WHERE dv7.phan_in_id = pin.id AND dv7.trang_thai NOT IN ('DA_GOP','DA_HUY'))
+           ) AS han_giao_hang,
            -- "Thời gian ERP lên MES" = lúc đợt vải MỚI NHẤT lên (chốt 2026-08-07). Trước đây lấy MIN của
            -- MỌI đợt ⇒ phần in mở lại READY vì đợt vải mới vẫn hiện giờ của đợt CŨ (ca thật
            -- KN-2607-004-A02-F01-C02: đợt mới lên 07/08 11:09 nhưng cột hiện 06/08 13:05).
@@ -200,8 +208,8 @@ async function listCandidates({
   const dataSql = `
     SELECT q.*,
            CASE WHEN $11 THEN (CASE WHEN q.tech_done THEN q.kt_done_tg ELSE NULL END) ELSE q.ready_tg_vao END AS tg_vao,
-           CASE WHEN $11 THEN (CASE WHEN q.tech_done THEN ${slaQcReadySql('q.kt_done_tg', '$12::int')} ELSE NULL END) WHEN q.tech_done THEN NULL ELSE ${slaReadySql('q.ready_tg_vao', '$9::int')} END AS sla_phut,
-           CASE WHEN $11 THEN $13::int ELSE $10::int END AS canh_bao_truoc_phut,
+           CASE WHEN $11 THEN (CASE WHEN q.tech_done THEN ${slaQcReadySql('q.kt_done_tg', '$12::int')} ELSE NULL END) WHEN q.tech_done THEN NULL ELSE ${slaReadyHanSql('q.ready_tg_vao', 'q.han_giao_hang', 'q.ready_tg_vao', '$9::int')} END AS sla_phut,
+           CASE WHEN $11 THEN $13::int ELSE ${canhBaoReadyHanSql('q.han_giao_hang', '$10::int')} END AS canh_bao_truoc_phut,
            count(*) OVER()::int AS total_count
     FROM (${selectBase(true)}) q
     ${OUTER_WHERE}

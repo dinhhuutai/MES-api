@@ -25,7 +25,7 @@ const { mocDotMucSql, khongReadyTuDongSql, KHUON_OPT_SQL_LIST } = require('../..
 // ⚠⚠ `GREATEST(a, NULL)` = a (Postgres BỎ QUA NULL) ⇒ mốc ra PHẢI bọc `CASE WHEN … IS NOT NULL`, nếu
 //   không đợt CHƯA xong vẫn có mốc ra = mốc vào và KHÔNG đợt nào hiện "đang ở" (đã mắc khi viết).
 // ⚠ CỐ Ý KHÔNG sửa `DV` của sĩ số: dải "Theo dõi" các màn READY vẫn đếm theo phần in như cũ.
-const NGUON_READY_DOT = (loai) => `SELECT dv.phan_in_id, dv.ma_dot_vai,
+const NGUON_READY_DOT = (loai) => `SELECT dv.phan_in_id, dv.ma_dot_vai, dv.han_giao_hang,
     ${loai === 'KT' ? 'dv.tg_chuyen_ready' : 'CASE WHEN m.kt IS NOT NULL AND (rl.moc IS NULL OR rl.moc >= m.kt) THEN m.kt END'} AS tg_vao,
     ${loai === 'KT'
     ? 'CASE WHEN LEAST(m.kt, rl.moc) IS NOT NULL THEN GREATEST(dv.tg_chuyen_ready, LEAST(m.kt, rl.moc)) END'
@@ -208,16 +208,19 @@ async function donViTaiTram(tram, loc = {}, maChecklist = null) {
     daXacNhan = 'cl.moc IS NOT NULL';
   }
 
+  // Hạn giao chỉ có ở 2 nguồn READY theo đợt (luật SLA theo hạn giao — 25/09/2026).
+  const coHan = String(tram.nguon).endsWith('_DOT');
   const sql = `WITH x AS (${NGUON[tram.nguon]}),
     u AS (SELECT x.phan_in_id, ${khoa} AS don_vi,
         ${coDot ? "string_agg(DISTINCT x.ma_dot_vai, ', ')" : 'NULL::text'} AS ma_dot_vai,
         string_agg(DISTINCT x.ma_lenh_san_xuat, ', ') AS ma_lenh_san_xuat,
         string_agg(DISTINCT x.ten_chuyen, ', ') AS ten_chuyen,
+        ${coHan ? 'min(x.han_giao_hang)' : 'NULL::date'} AS han_giao_hang,
         min(x.tg_vao) AS tg_vao,
         CASE WHEN count(*) FILTER (WHERE x.tg_ra IS NULL) = 0 THEN max(x.tg_ra) END AS tg_ra
       FROM x WHERE x.phan_in_id IS NOT NULL AND x.tg_vao IS NOT NULL AND ${khoa} IS NOT NULL
       GROUP BY 1, 2)
-    SELECT u.phan_in_id, u.don_vi, u.ma_dot_vai, u.ma_lenh_san_xuat, u.ten_chuyen, u.tg_vao,
+    SELECT u.phan_in_id, u.don_vi, u.ma_dot_vai, u.ma_lenh_san_xuat, u.ten_chuyen, u.han_giao_hang, u.tg_vao,
       (${tgRa}) AS tg_ra, (${daXacNhan}) AS da_xac_nhan,
       round(EXTRACT(EPOCH FROM (COALESCE((${tgRa}), now()) - u.tg_vao)) / 60)::int AS phut,
       kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim

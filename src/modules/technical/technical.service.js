@@ -11,7 +11,7 @@ const { buildMeta } = require('../../utils/pagination');
 const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
 const { isKhuonOptional } = require('../../utils/tech');
-const { slaReady, slaQcReady } = require('../../utils/slaTheoGio');
+const { slaQcReady, slaReadyHan } = require('../../utils/slaTheoGio');
 const hsktRepo = require('../hskt/hskt.repository');
 
 // Đổi phương án in của HSKT active của phần in (khi xác nhận Khuôn có nhập phương án in).
@@ -417,7 +417,9 @@ async function listCandidates({ search, page, limit, offset, onlyQcReady = false
           dot_vai_ids: g.dot_vai_ids,
           ma_dot_vai_list: nhieu ? g.dots.map((d) => d.ma_dot_vai).join(', ') : r.ma_dot_vai_list,
           barcode: nhieu ? [...new Set(g.dots.map((d) => d.barcode).filter(Boolean))].join(',') : r.barcode,
-          han_giao_hang: nhieu ? (han[0] || null) : r.han_giao_hang,
+          // ⚠ Hạn giao của CHÍNH các đợt trên dòng (25/09/2026) — kể cả khi chỉ 1 đợt chờ: giá trị mức
+          //   phần in lấy min MỌI đợt nên đợt bổ sung từng hiện hạn của đợt số lượng đã release.
+          han_giao_hang: han[0] || r.han_giao_hang,
           tg_qua_ready: vao.length ? new Date(Math.max(...vao)).toISOString() : r.tg_qua_ready,
           khuon_done: !!it.KHUON?.done, film_done: !!it.FILM?.done, muc_done: !!it.MUC?.done,
           tech_done_dot: xongDot,
@@ -458,7 +460,8 @@ async function listCandidates({ search, page, limit, offset, onlyQcReady = false
         dot_vai_ids: g.dot_vai_ids,
         ma_dot_vai_list: nhieu ? g.dots.map((d) => d.ma_dot_vai).join(', ') : r.ma_dot_vai_list,
         barcode: nhieu ? [...new Set(g.dots.map((d) => d.barcode).filter(Boolean))].join(',') : r.barcode,
-        han_giao_hang: nhieu ? (han[0] || null) : r.han_giao_hang,
+        // ⚠ Hạn giao của CHÍNH các đợt trên dòng (25/09/2026) — xem nhánh QC ở trên.
+        han_giao_hang: han[0] || r.han_giao_hang,
         tg_qua_ready: vao.length ? new Date(Math.max(...vao)).toISOString() : r.tg_qua_ready,
         khuon_done: !!it.KHUON?.done, film_done: !!it.FILM?.done, muc_done: !!it.MUC?.done,
         tech_done: techDone,
@@ -466,8 +469,14 @@ async function listCandidates({ search, page, limit, offset, onlyQcReady = false
         trang_thai_ready: techDone ? 'CHO_QC' : nDone > 0 ? 'DANG' : 'CHUA',
         // SLA màn Kỹ thuật theo NHÓM: đếm từ đợt về sớm nhất của nhóm, đủ mục thì ngừng.
         tg_vao: vao.length ? new Date(Math.min(...vao)).toISOString() : r.tg_vao,
-        // SLA READY theo GIỜ ĐỢT LÊN MES (utils/slaTheoGio — 24/09/2026): 07:30–15:00 ⇒ 8h, 15:00–20:30 ⇒ 21h.
-        sla_phut: techDone ? null : slaReady(vao.length ? new Date(Math.min(...vao)) : r.tg_vao, readySla),
+        // ⚠⚠ SLA READY THEO HẠN GIAO CỦA ĐỢT (utils/slaTheoGio luật (4) — 25/09/2026): còn ≤1 ngày ⇒ đỏ,
+        //   còn 2 ngày ⇒ vàng. Đợt thiếu hạn ⇒ lùi về luật giờ lên MES (07:30–15:00 ⇒ 8h, 15:00–20:30 ⇒ 21h).
+        ...(() => {
+          if (techDone) return { sla_phut: null };
+          const moc = vao.length ? new Date(Math.min(...vao)) : r.tg_vao;
+          const k = slaReadyHan(moc, han[0] || r.han_giao_hang, moc, readySla, readyCanhBao);
+          return { sla_phut: k.sla, canh_bao_truoc_phut: k.canhBao };
+        })(),
         film_nguoi: it.FILM?.nguoi || null, film_tg: it.FILM?.tg || null,
         khuon_nguoi: it.KHUON?.nguoi || null, khuon_tg: it.KHUON?.tg || null,
         muc_nguoi: it.MUC?.nguoi || null, muc_tg: it.MUC?.tg || null,

@@ -12,7 +12,7 @@
 const { query } = require('../../config/db');
 const dashboardRepo = require('../dashboard/dashboard.repository');
 const { dominantStageScalar } = require('../../utils/stage');
-const { techDoneSql, techDoneSqlByPin, KHUON_OPT_SQL_LIST, khongReadyTuDongSql } = require('../../utils/tech');
+const { techDoneSql, techDoneSqlByPin, KHUON_OPT_SQL_LIST, khongReadyTuDongSql, dotMucDatSql } = require('../../utils/tech');
 const { nguonPhanIn } = require('../../utils/siSoTram');
 
 // ─── CACHE 3 TRUY VẤN NẶNG DÙNG CHUNG NHIỀU METRIC ──────────────────────────
@@ -140,14 +140,19 @@ const cpDoneToday = (maCp) => {
 // Đếm phần in đang HOẠT ĐỘNG, CHƯA QC-READY và CHƯA xác nhận mã checkpoint `maCp` (đang chờ mục đó).
 // KHUON: bỏ khách II/AD (Khuôn không bắt buộc nên không tính là "chờ khuôn").
 const readyChoCp = (maCp) => {
-  const khuonExtra = maCp === 'KHUON'
+  const khuonExtra = (maCp === 'KHUON' || maCp === 'FILM') // khách gia công II/AD miễn cả Khuôn lẫn Film
     ? ` AND (SELECT kh.ten_khach_hang FROM ma_hang mh JOIN don_hang dh ON dh.id = mh.don_hang_id JOIN khach_hang kh ON kh.id = dh.khach_hang_id WHERE mh.id = pin.ma_hang_id) NOT IN (${KHUON_OPT_SQL_LIST})`
     : '';
+  // ⚠⚠ THEO ĐỢT VẢI (25/09/2026): phần in CÒN ĐỢT ĐANG CHỜ ở READY (đã lên READY, chưa release) mà
+  //   đợt đó chưa xác nhận mục — ĐÚNG luật `dotMucDatSql` của màn READY + nguồn "Open chờ <mục>".
+  //   Bản cũ đọc dòng TỔNG ⇒ đợt 1 đã xác nhận thì đợt 2 mới về không được đếm là "chờ".
   return `SELECT count(*)::numeric AS v FROM phan_in pin WHERE pin.dang_hoat_dong
-     AND NOT EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
-       WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT')
-     AND NOT EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cp ON cp.id = kq.checkpoint_id
-       WHERE kq.phan_in_id = pin.id AND cp.ma_checkpoint = '${maCp}' AND kq.trang_thai = 'DAT')${khuonExtra}`;
+     AND EXISTS (SELECT 1 FROM dot_vai_ve zdm WHERE zdm.phan_in_id = pin.id
+       AND zdm.trang_thai NOT IN ('DA_GOP','DA_HUY') AND zdm.tg_chuyen_ready IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai zlm JOIN lenh_san_xuat zlsm ON zlsm.id = zlm.lenh_san_xuat_id
+                       WHERE zlm.dot_vai_ve_id = zdm.id AND zlsm.trang_thai <> 'HUY')
+       AND NOT ${dotMucDatSql('zdm', 'pin.id', maCp)})
+     AND ${khongReadyTuDongSql('pin.id')}${khuonExtra}`;
 };
 
 // Đếm đợt vải đang ở 1 trạm hiện tại (ton_tram) theo mã trạm (cần migration 029 mới có dữ liệu).
