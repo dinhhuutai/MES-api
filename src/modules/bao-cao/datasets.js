@@ -136,9 +136,9 @@ async function ganReadyTheoDot(rows) {
   for (const r of rows) {
     const giaCong = KHUON_OPTIONAL_KH.includes(String(r.ten_khach_hang || '').trim());
     const co = (ma) => dat.has(`${r.dot_vai_ve_id}|${ma}`);
-    r.ready_khuon = giaCong ? '—' : (co('KHUON') ? (r.ready_khuon || 'Đã') : '');
-    r.ready_film = giaCong ? '—' : (co('FILM') ? (r.ready_film || 'Đã') : '');
-    r.ready_muc = co('MUC') ? (r.ready_muc || 'Đã') : '';
+    r.ready_khuon = giaCong ? '—' : (co('KHUON') ? (r.ready_khuon || OK_READY) : '');
+    r.ready_film = giaCong ? '—' : (co('FILM') ? (r.ready_film || OK_READY) : '');
+    r.ready_muc = co('MUC') ? (r.ready_muc || OK_READY) : '';
     r.ready_qc = co('QC_XAC_NHAN') ? 'Đã QC' : '';
   }
   return rows;
@@ -582,8 +582,10 @@ const READY_MEMBER = `(EXISTS (SELECT 1 FROM dot_vai_ve dvu WHERE dvu.phan_in_id
                   AND NOT EXISTS (SELECT 1 FROM phieu_san_xuat pst WHERE pst.lenh_san_xuat_id = lt.id)))`;
 const QC_DONE_EXISTS = `EXISTS (SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint cp ON cp.id = k.checkpoint_id
     WHERE k.phan_in_id = pin.id AND cp.ma_checkpoint = 'QC_XAC_NHAN' AND k.trang_thai = 'DAT')`;
+// Chữ ở ô checklist READY đã làm (Khuôn/Film/Mực) — người dùng chốt 25/09/2026: "OK" thay "Đã".
+const OK_READY = 'OK';
 const readyMark = (maCp) => `(CASE WHEN EXISTS (SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint cp ON cp.id = k.checkpoint_id
-    WHERE k.phan_in_id = pin.id AND cp.ma_checkpoint = '${maCp}' AND k.trang_thai = 'DAT') THEN 'Đã' ELSE '' END)`;
+    WHERE k.phan_in_id = pin.id AND cp.ma_checkpoint = '${maCp}' AND k.trang_thai = 'DAT') THEN '${OK_READY}' ELSE '' END)`;
 
 // ── "CÒN CHỜ MỤC KỸ THUẬT NÀO" (Film / Khuôn / Mực) — thêm 23/09/2026 ─────────────────────────
 // Dùng cho CẢ HAI: cột "Tình trạng chờ" của danh sách Open, và 3 nguồn "Open chờ <mục>" (`mucCho`).
@@ -668,11 +670,16 @@ async function ganChoMuc(rows, mucCho) {
     //   cũng hiện "Đã". Phần in KHÔNG còn đợt đang chờ (dòng đã READY / nhánh Test Run trả về) giữ giá
     //   trị mức phần in như cũ.
     if ((tongDot.get(r.phan_in_id) || 0) > 0) {
-      r.ready_khuon = giaCong ? '—' : (r.cho_khuon ? '' : 'Đã');
-      r.ready_film = giaCong ? '—' : (r.cho_film ? '' : 'Đã');
-      r.ready_muc = r.cho_muc ? '' : 'Đã';
+      r.ready_khuon = giaCong ? '—' : (r.cho_khuon ? '' : OK_READY);
+      r.ready_film = giaCong ? '—' : (r.cho_film ? '' : OK_READY);
+      r.ready_muc = r.cho_muc ? '' : OK_READY;
       r.so_muc_kt = `${(r.cho_muc ? 0 : 1) + (giaCong ? 0 : (r.cho_khuon ? 0 : 1))}/${giaCong ? 1 : 2}`;
     }
+    // "Mục KT xong" kèm các mục CÒN CHỜ trong ngoặc (25/09/2026): "1/2 (chờ Khuôn-Film)". Suy từ 3 ô
+    //   đã chốt ở trên ⇒ luôn khớp đúng những ô đang trống trên cùng dòng. Đủ hết thì giữ "2/2".
+    const conCho = [['Khuôn', r.ready_khuon], ['Film', r.ready_film], ['Mực', r.ready_muc]]
+      .filter(([, v]) => v === '' || v == null).map(([t]) => t);
+    if (r.so_muc_kt && conCho.length) r.so_muc_kt = `${r.so_muc_kt} (chờ ${conCho.join('-')})`;
     r.cho_muc_kt = nhanChoMuc(r);
     if (mucCho) r.so_dot_cho = lay(mucCho);
   }
