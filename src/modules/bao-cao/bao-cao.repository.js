@@ -26,7 +26,8 @@ async function list({ search = '', userId, all = false }) {
   const { rows } = await query(
     `SELECT b.id, b.ma_bao_cao, b.ten_bao_cao, b.mo_ta, b.ky_tu, b.ky_den,
             b.nguoi_dung_id, u.ho_ten AS nguoi_tao, b.updated_date, b.created_date,
-            (b.noi_dung_truoc_json IS NOT NULL) AS co_the_hoan_tac
+            (b.noi_dung_truoc_json IS NOT NULL) AS co_the_hoan_tac,
+            jsonb_build_object('o', b.noi_dung_json->'o') AS noi_dung_json
      FROM bao_cao b
      LEFT JOIN nguoi_dung u ON u.id = b.nguoi_dung_id
      WHERE b.dang_hoat_dong = true

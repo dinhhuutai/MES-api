@@ -718,6 +718,7 @@ const COT_READY_DANG_O = [
   { key: 'so_luong_vai_ve', ten: 'SL nhận vải', kieu: 'so' },
   ...COT_LOAI_DOT,
   { key: 'han_giao_hang', ten: 'Hạn giao', kieu: 'ngay' },
+  { key: 'ngay_len_ready', ten: 'Ngày lên READY', kieu: 'text' },
   { key: 'ready_khuon', ten: 'Khuôn', kieu: 'text' },
   { key: 'ready_film', ten: 'Film', kieu: 'text' },
   { key: 'ready_muc', ten: 'Mực', kieu: 'text' },
@@ -795,13 +796,23 @@ async function runReadyDangO({ loc = {}, gioi_han, mucCho = null }) {
   }
   const nb = dkNhomBoSung(loc, FROM_DOT_PIN('pin.id'));
   if (nb) conds.push(nb);
+  // Theo NGÀY LÊN READY (26/09/2026): phần in có ĐỢT VẢI CÒN CHỜ (sống, chưa release) mà ERP đẩy lên MES
+  //   trong ngày đó. `ngayCond` chỉ nhận ''/HOM_NAY/YYYY-MM-DD nên nội suy an toàn.
+  const ncLen = ngayCond('COALESCE(dvn.tg_chuyen_ready, dvn.created_date)', loc.ngay, true);
+  if (ncLen) {
+    conds.push(`EXISTS (SELECT 1 FROM dot_vai_ve dvn WHERE dvn.phan_in_id = pin.id AND dvn.trang_thai NOT IN ('DA_GOP','DA_HUY')`
+      + ` AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai ln JOIN lenh_san_xuat lsn ON lsn.id = ln.lenh_san_xuat_id WHERE ln.dot_vai_ve_id = dvn.id AND lsn.trang_thai <> 'HUY')`
+      + ` AND ${ncLen})`);
+  }
   if (clean(loc.khach)) { pc.push(mauTim(loc.khach)); conds.push(`kh.ten_khach_hang ~* $${pc.length}`); }
   if (clean(loc.tim)) {
     pc.push(mauTim(loc.tim)); const i = pc.length;
     conds.push(`(pin.ma_phan ~* $${i} OR mh.ma_hang ~* $${i} OR dh.ma_don_hang ~* $${i} OR pin.mau_vai ~* $${i})`);
   }
+  // Ngày lên READY = mốc ERP lên MES MUỘN NHẤT của các đợt vải còn sống (đợt mới nhất = đợt đang làm READY).
+  const cotLen = `to_char((SELECT max(COALESCE(d8.tg_chuyen_ready, d8.created_date)) FROM dot_vai_ve d8 WHERE d8.phan_in_id = pin.id AND d8.trang_thai NOT IN ('DA_GOP','DA_HUY')) AT TIME ZONE 'Asia/Ho_Chi_Minh', 'DD/MM/YYYY HH24:MI') AS ngay_len_ready`;
   const sqlCur = `
-    SELECT ${READY_INFO_SELECT},
+    SELECT ${READY_INFO_SELECT}, ${cotLen},
            ${mucCho ? `'Chờ ${TEN_MUC_KT[mucCho]}'` : `'Đang ở READY'`}::text AS tinh_trang, ''::text AS qc_ready,
            ''::text AS ngay_ready, ''::text AS gio_ready, ''::text AS nguoi_ready
     FROM phan_in pin ${JOINS}
@@ -1043,6 +1054,9 @@ const LOC_DEF = {
     mo_ta: 'Lọc NGÀY cho nhánh "đã test". Để trống = HÔM NAY. Nhánh "chờ test" luôn hiện theo hiện tại.' },
   ngay_ready: { ma: 'ngay', ten: 'Ngày (đã QA READY)', kieu: 'ngay',
     mo_ta: 'Để trống = CHỈ danh sách đang ở READY hiện tại · Chọn ngày (Hôm nay/cụ thể) = THÊM phần in đã QA xác nhận READY ngày đó.' },
+  // Nguồn "Open" (26/09/2026): phần in đang ở READY có ĐỢT VẢI CÒN CHỜ lên READY (ERP lên MES) trong ngày đó.
+  ngay_len_ready: { ma: 'ngay', ten: 'Ngày lên READY (ERP lên MES)', kieu: 'ngay',
+    mo_ta: 'Để trống = mọi phần in đang ở READY · "Hôm nay"/ngày cụ thể = chỉ phần in có đợt vải đang chờ READY được ERP đẩy lên MES trong ngày đó.' },
   tram: { ma: 'tram', ten: 'Trạm (checkpoint)', kieu: 'chon', chon: TRAM_OPTS },
   chuyen: { ma: 'chuyen', ten: 'Chuyền', kieu: 'chu' },
   khach: { ma: 'khach', ten: 'Khách hàng', kieu: 'chu' },
@@ -1095,10 +1109,11 @@ const DEFS = [
       + '⇒ "danh sách READY đã hoàn thành hôm nay". (Nguồn lịch sử luân chuyển — best-effort.) '
       + 'Xem "đang ở READY hiện tại" ở nguồn "Phần in / đợt vải" với bộ lọc Trạm = READY.',
     loc: locList(['ngay', 'tram', 'nhom_bo_sung', 'tim']), cot: COT_HOAN_THANH, run: runHoanThanhTram },
-  { ma: 'DS_READY_DANG_O', ten: 'Open — đang ở READY (hiện tại)', don_vi_dong: 'phần in',
+  { ma: 'DS_READY_DANG_O', ten: 'Open — đang ở READY (hiện tại / theo ngày lên READY)', don_vi_dong: 'phần in',
     mo_ta: '1 dòng = 1 PHẦN IN ĐANG Ở READY hiện tại (còn đợt vải chưa Ready — khớp màn Chuẩn bị KT/QC). '
+      + 'Chọn Ngày ⇒ chỉ phần in có đợt vải đang chờ READY được ERP đẩy lên MES trong ngày đó. '
       + 'KHÔNG gồm phần in đã QA xác nhận READY — xem nguồn "READY đã hoàn thành" (24/09/2026).',
-    loc: locList(['khach', 'nhom_bo_sung', 'tim']), cot: COT_READY_DANG_O, run: runReadyDangO },
+    loc: locList(['ngay_len_ready', 'khach', 'nhom_bo_sung', 'tim']), cot: COT_READY_DANG_O, run: runReadyDangO },
   { ma: 'DS_READY_CHO_FILM', ten: 'Open chờ Film (đang ở READY, chưa xác nhận Film)', don_vi_dong: 'phần in',
     mo_ta: '1 dòng = 1 PHẦN IN đang ở READY mà CÒN ĐỢT VẢI chưa xác nhận Film. Cùng bộ cột với "Đang ở READY" '
       + '(nguồn Open) — luôn là TẬP CON của nguồn đó. Ảnh chụp HIỆN TẠI (không có bộ lọc ngày). '
@@ -1130,6 +1145,9 @@ const DEFS = [
 
 const BY_MA = Object.fromEntries(DEFS.map((d) => [d.ma, d]));
 
+// Nguồn có bộ lọc NGÀY (khóa `ngay`) — trang "Báo cáo của tôi" dùng để hiện ô chọn ngày ngoài danh sách.
+const coLocNgay = (nguon) => !!(BY_MA[nguon] && (BY_MA[nguon].loc || []).some((l) => l.ma === 'ngay'));
+
 // Danh mục cho FE (không kèm run).
 const catalog = () => DEFS.map(({ run, ...d }) => d);
 
@@ -1157,4 +1175,4 @@ async function computeBlocks(blocks) {
   return Object.fromEntries(entries);
 }
 
-module.exports = { catalog, runOne, computeBlocks, MAX_ROWS };
+module.exports = { catalog, runOne, computeBlocks, MAX_ROWS, coLocNgay };

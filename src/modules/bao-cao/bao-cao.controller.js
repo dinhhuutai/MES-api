@@ -29,7 +29,7 @@ const remove = asyncHandler(async (req, res) =>
   ok(res, await service.deleteReport(req.params.id, req.user), 'Đã xóa báo cáo'));
 
 const render = asyncHandler(async (req, res) =>
-  ok(res, await service.renderReport(req.params.id, { noiDung: req.body.noiDung })));
+  ok(res, await service.renderReport(req.params.id, { noiDung: req.body.noiDung, ngay: req.body.ngay })));
 
 const history = asyncHandler(async (req, res) =>
   ok(res, await service.history(req.params.id, req.query.date)));

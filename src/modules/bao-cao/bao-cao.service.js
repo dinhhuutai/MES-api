@@ -15,8 +15,20 @@ function listDatasets() {
   return datasets.catalog();
 }
 
+// Khối danh sách "THEO NGÀY" = nguồn có bộ lọc ngày VÀ khối đang đặt ngày (HOM_NAY / cụ thể).
+const khoiTheoNgay = (noiDung) => Object.entries((noiDung && noiDung.o) || {})
+  .filter(([, c]) => c && c.loai === 'danh_sach' && c.ds && c.ds.nguon && datasets.coLocNgay(c.ds.nguon)
+    && String((c.ds.loc || {}).ngay || '').trim());
+const NGAY_HOP_LE = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) || String(v || '').toUpperCase() === 'HOM_NAY';
+
+// Danh sách báo cáo + `loc_ngay` (giá trị ngày đang đặt trong báo cáo) khi có khối danh sách THEO NGÀY ⇒
+// trang "Báo cáo của tôi" hiện ô chọn ngày ngay trên dòng (26/09/2026). KHÔNG trả nguyên `noi_dung_json`.
 async function listReports({ search, userId, all }) {
-  return repo.list({ search: search || '', userId, all: !!all });
+  const rows = await repo.list({ search: search || '', userId, all: !!all });
+  return rows.map(({ noi_dung_json: nd, ...r }) => {
+    const ks = khoiTheoNgay(nd);
+    return { ...r, co_loc_ngay: ks.length > 0, loc_ngay: ks.length ? String(ks[0][1].ds.loc.ngay) : null };
+  });
 }
 
 async function getReport(id) {
@@ -107,10 +119,17 @@ async function renderContent(rep) {
   };
 }
 
-async function renderReport(id, { noiDung } = {}) {
+async function renderReport(id, { noiDung, ngay } = {}) {
   const rep = await getReport(id);
   // Cho phép xem trước layout CHƯA lưu (noiDung gửi từ FE) mà không ghi DB.
   if (noiDung && typeof noiDung === 'object') rep.noi_dung_json = noiDung;
+  // `ngay` (26/09/2026, từ "Báo cáo của tôi"): ĐÈ ngày của MỌI khối danh sách THEO NGÀY cho lượt xem/xuất
+  //   này — KHÔNG ghi DB, báo cáo lưu giữ nguyên. Khối không đặt ngày (ảnh chụp hiện tại) không bị đụng.
+  if (NGAY_HOP_LE(ngay)) {
+    const nd = JSON.parse(JSON.stringify(rep.noi_dung_json || {}));
+    for (const [, c] of khoiTheoNgay(nd)) c.ds.loc = { ...c.ds.loc, ngay: String(ngay) };
+    rep.noi_dung_json = nd;
+  }
   return renderContent(rep);
 }
 
