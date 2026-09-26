@@ -119,6 +119,17 @@ const DANH_MUC_API = [
     macDinh: () => env.erp.guiKiemPhamEnabled,
     url: () => env.erp.guiKiemPhamUrl,
   },
+  // KÉO phần in đã sửa thông tin bên ERP về trang "Phần in chờ sửa thông tin" (25/09/2026).
+  {
+    ma: 'ERP_DS_SUA_THONG_TIN',
+    ten: 'Lấy phần in đã sửa thông tin từ ERP',
+    mo_ta: 'Job ' + env.erp.syncIntervalMin + ' phút/lần gọi /ds-phan-in-sua-thong-tin, cập nhật lại thông tin các phần in '
+      + 'đang ở trang "Phần in chờ sửa thông tin" (READY trả về Giao nhận). Không có phần in nào chờ thì không gọi ERP. '
+      + 'GN vẫn phải bấm "Xác nhận lại" để phần in quay về READY.',
+    canh_bao: null,
+    macDinh: () => env.erp.dsSuaThongTinEnabled,
+    url: () => env.erp.dsSuaThongTinUrl,
+  },
   {
     ma: 'ERP_DONG_BO_VAI',
     ten: 'Đồng bộ đợt vải từ ERP',

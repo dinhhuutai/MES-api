@@ -22,6 +22,10 @@ router.patch('/phan-in/:id', rbac(...BEN_SUA), c.suaPhanIn);
 router.patch('/dot-vai/:id', rbac(...BEN_SUA), c.suaDotVai);
 // ĐỌC mở rộng cho Đơn hàng + bên trả về (theo dõi phần in mình đã trả đi) — SỬA/XÁC NHẬN chỉ GN.
 const BEN_XEM = [...BEN_SUA, 'ORDER_VIEW', 'READY_VIEW', 'READY_QC'];
+// Kéo thông tin đã sửa từ ERP (/ds-phan-in-sua-thong-tin) — job 5 phút tự chạy; nút bấm tay chỉ GN.
+router.get('/erp/trang-thai', rbac(...BEN_XEM), c.erpTrangThai);
+router.post('/erp/dong-bo', rbac(...BEN_SUA), c.erpDongBo);
+router.post('/xac-nhan', rbac(...BEN_SUA), c.xacNhanLaiNhieu); // hàng loạt — route TĨNH, trước /:phanInId
 router.get('/', rbac(...BEN_XEM), c.danhSach);
 router.get('/:phanInId', rbac(...BEN_XEM), c.chiTiet);
 router.post('/:phanInId/xac-nhan', rbac(...BEN_SUA), c.xacNhanLai);

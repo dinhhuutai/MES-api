@@ -76,6 +76,8 @@ async function start() {
     console.log(`[push] Web Push : ${tt.san_sang ? 'sẵn sàng' : `TẮT — ${tt.ly_do}`}`);
     // [ERP TẮT TẠM] không tự đồng bộ ERP. Bỏ comment để bật lại.
      startErpSyncJob();
+    // Kéo phần in GN đã sửa thông tin bên ERP (/ds-phan-in-sua-thong-tin, 25/09/2026) — cùng nhịp 5 phút.
+    require('./modules/suathongtin/erpCapNhat').startJob();
     startCleanupJob();
     startDryingJob();
   });

@@ -144,12 +144,13 @@ function isTransientErp(e) {
 }
 
 // Gọi ERP có TỰ THỬ LẠI khi lỗi tạm thời (proc ERP hay deadlock — nó bảo "Rerun the transaction").
-async function fetchErp(baseUrl, fromDate) {
+// `them` = tham số query THÊM (vd `{ dsPhan: 'A,B' }` cho /ds-phan-in-sua-thong-tin) — không truyền thì y như cũ.
+async function fetchErp(baseUrl, fromDate, them = null) {
   const maxTry = Math.max(1, env.erp.retry || 3);
   let lastErr;
   for (let i = 1; i <= maxTry; i += 1) {
     try {
-      return await fetchErpAttempt(baseUrl, fromDate);
+      return await fetchErpAttempt(baseUrl, fromDate, them);
     } catch (e) {
       lastErr = e;
       if (i < maxTry && isTransientErp(e)) {
@@ -166,8 +167,11 @@ async function fetchErp(baseUrl, fromDate) {
 
 // Gọi ERP bằng AXIOS (không phải fetch của Node/undici). Lý do: app cũ dùng axios chạy được vì axios
 // TỰ dùng proxy từ biến môi trường, còn `fetch`(undici) thì KHÔNG → hay timeout UND_ERR_CONNECT_TIMEOUT.
-async function fetchErpAttempt(baseUrl, fromDate) {
-  const url = `${baseUrl}?fromDate=${encodeURIComponent(fromDate)}`;
+async function fetchErpAttempt(baseUrl, fromDate, them = null) {
+  let url = `${baseUrl}?fromDate=${encodeURIComponent(fromDate)}`;
+  for (const [k, v] of Object.entries(them || {})) {
+    if (v != null && v !== '') url += `&${encodeURIComponent(k)}=${encodeURIComponent(v)}`;
+  }
   const timeoutMs = env.erp.syncTimeoutMs || 600000;
   const t0 = Date.now();
   console.log(`[erp-sync] → GET ${url} (timeout ${Math.round(timeoutMs / 1000)}s)`);
@@ -662,4 +666,10 @@ module.exports = {
   syncPhieuNhanVai, history, rawData, autoGomSetByHskt, xemTruocCodePhan, capNhatCodePhan,
   // export để kiểm thực
   _runSync: runSync, _XEM_TRUOC: XEM_TRUOC,
+  // Dùng lại cho luồng "phần in chờ sửa thông tin" kéo từ ERP (modules/suathongtin/erpCapNhat.js) —
+  // ĐÚNG hàm đọc trường ERP + gán lại đơn/mã hàng mà đồng bộ chính đang dùng, đừng chép luật ra chỗ mới.
+  _erp: {
+    fetchErp, ganLaiTheoDong, clean, toDate, LOAIKD_MAP,
+    erpTinhChatIn, erpBarcode, erpBarcodePhanIn, erpNhaGiaCong, erpNgayVaiVe, erpDdhSubId,
+  },
 };

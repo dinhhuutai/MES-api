@@ -116,6 +116,10 @@ const env = {
     guiKiemPhamTimeoutMs: parseInt(process.env.ERP_GUI_KIEM_PHAM_TIMEOUT_MS || '10000', 10),
     guiKiemPhamRetry: parseInt(process.env.ERP_GUI_KIEM_PHAM_RETRY || '3', 10),
     guiKiemPhamEnabled: String(process.env.ERP_GUI_KIEM_PHAM_ENABLED || 'true').toLowerCase() === 'true',
+    // KÉO danh sách phần in GN đã sửa thông tin bên ERP (25/09/2026) — job 5 phút/lần, chỉ cập nhật phần in
+    // đang nằm ở *Đơn hàng › Phần in chờ sửa thông tin*. Xem `modules/suathongtin/erpCapNhat.js`.
+    dsSuaThongTinUrl: process.env.ERP_DS_PHAN_IN_SUA_THONG_TIN_URL || `${ERP_GOC}/ds-phan-in-sua-thong-tin`,
+    dsSuaThongTinEnabled: String(process.env.ERP_DS_PHAN_IN_SUA_THONG_TIN_ENABLED || 'true').toLowerCase() === 'true',
 
     // Bật/tắt job tự đồng bộ theo chu kỳ (mặc định 5 phút/lần).
     syncEnabled: String(process.env.ERP_SYNC_ENABLED || 'true').toLowerCase() === 'true',

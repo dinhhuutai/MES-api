@@ -108,4 +108,17 @@ async function xacNhanLai(phanInId, { ghiChu } = {}, actorId) {
   return { phan_in_id: phanInId, ma_phan: pin.ma_phan, so_luot: ids.length };
 }
 
-module.exports = { danhMuc, danhSach, chiTiet, traVe, suaPhanIn, suaDotVai, xacNhanLai };
+// Xác nhận lại NHIỀU phần in cùng lúc (tích checkbox đầu bảng). Mỗi phần in 1 transaction riêng ⇒ 1 phần
+// lỗi (đã có người xác nhận trước) KHÔNG làm hỏng các phần còn lại; trả về danh sách lỗi để FE báo rõ.
+async function xacNhanLaiNhieu({ phanInIds, ghiChu } = {}, actorId) {
+  const ids = [...new Set((Array.isArray(phanInIds) ? phanInIds : []).map(String).filter(Boolean))];
+  if (!ids.length) throw new AppError('Chưa chọn phần in nào', { status: 422, errorCode: 'NO_ITEMS' });
+  if (ids.length > 500) throw new AppError('Tối đa 500 phần in mỗi lần', { status: 422, errorCode: 'QUA_NHIEU' });
+  const ok = []; const loi = [];
+  for (const id of ids) {
+    try { ok.push(await xacNhanLai(id, { ghiChu }, actorId)); } catch (e) { loi.push({ phan_in_id: id, loi: e.message }); }
+  }
+  return { so_ok: ok.length, items: ok, loi };
+}
+
+module.exports = { danhMuc, danhSach, chiTiet, traVe, suaPhanIn, suaDotVai, xacNhanLai, xacNhanLaiNhieu };

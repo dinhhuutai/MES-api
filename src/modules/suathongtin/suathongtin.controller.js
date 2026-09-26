@@ -3,6 +3,7 @@
 const asyncHandler = require('../../utils/asyncHandler');
 const { ok } = require('../../utils/response');
 const service = require('./suathongtin.service');
+const erpCapNhat = require('./erpCapNhat');
 
 const danhMuc = asyncHandler(async (req, res) => ok(res, service.danhMuc()));
 const danhSach = asyncHandler(async (req, res) => ok(res, await service.danhSach(req.query)));
@@ -16,4 +17,13 @@ const suaDotVai = asyncHandler(async (req, res) =>
 const xacNhanLai = asyncHandler(async (req, res) =>
   ok(res, await service.xacNhanLai(req.params.phanInId, req.body || {}, req.user.id), 'Đã xác nhận — phần in quay lại READY'));
 
-module.exports = { danhMuc, danhSach, chiTiet, traVe, suaPhanIn, suaDotVai, xacNhanLai };
+const xacNhanLaiNhieu = asyncHandler(async (req, res) => {
+  const kq = await service.xacNhanLaiNhieu(req.body || {}, req.user.id);
+  ok(res, kq, `Đã xác nhận ${kq.so_ok} phần in — quay lại READY`);
+});
+
+const erpTrangThai = asyncHandler(async (req, res) => ok(res, erpCapNhat.trangThai()));
+const erpDongBo = asyncHandler(async (req, res) =>
+  ok(res, await erpCapNhat.dongBo({ tuDong: false, actorId: req.user.id }), 'Đã lấy dữ liệu từ ERP'));
+
+module.exports = { danhMuc, danhSach, chiTiet, traVe, suaPhanIn, suaDotVai, xacNhanLai, xacNhanLaiNhieu, erpTrangThai, erpDongBo };
