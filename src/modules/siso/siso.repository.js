@@ -224,30 +224,39 @@ async function dsSlaHienHanh() {
 //   khứ thì tính tới cuối ngày đó, xem hôm nay thì tính tới bây giờ — KHÔNG lấy `now()` trần, nếu
 //   không mọi thứ tồn từ tháng trước đều "nghẽn" khi soi lại một ngày cũ.
 // ⚠ SLA null (trạm chưa cấu hình) ⇒ `false` ⇒ nghẽn = 0, KHÔNG đoán bừa một ngưỡng.
+// MỐC BẮT ĐẦU NGHẼN (timestamptz) của 1 phần in ở trạm = mốc vào + SLA — mỗi `slaKieu` một luật
+// (`utils/slaTheoGio.js`), gương đúng bản đồ nghẽn `dashboard.flowRows`. `null` ⇒ trạm chưa có SLA.
+// Nghẽn ⟺ `LEAST(cuối kỳ, now()) > mốc này` — tương đương từng nhánh công thức "đã ở > SLA" cũ.
+// ⚠ Dùng CHUNG cho bảng đếm (`motDongBang`) và danh sách chi tiết (`dsDongBang`, 26/09/2026) ⇒ modal
+//   liệt kê ĐÚNG những phần in mà ô "Nghẽn" đang đếm.
+function batDauNghenSql(dong, slaPhut) {
+  if (slaPhut == null) return null;
+  const s = Number(slaPhut);
+  const cong = (phutSql) => `(q.tg_vao + (${phutSql}) * interval '1 minute')`;
+  // READY KT theo HẠN GIAO (25/09/2026): 00:00 ngày (hạn − 1); thiếu hạn ⇒ theo giờ lên MES.
+  if (dong.slaKieu === 'READY_THEO_GIO') {
+    return `(CASE WHEN q.han_giao_hang IS NULL THEN ${cong(slaReadySql('q.tg_vao', s))}
+      ELSE ${mocDoReadySql('q.han_giao_hang')} END)`;
+  }
+  // QC READY: q.tg_vao = lúc Kỹ thuật xác nhận xong ⇒ sau 16:30 thì QC có 16 giờ (KHUNG_SLA_QC).
+  if (dong.slaKieu === 'QC_THEO_GIO') return cong(slaQcReadySql('q.tg_vao', s));
+  // Test Run theo giờ SX kế hoạch SỚM NHẤT của các lệnh RELEASE_1 của phần in (thiếu ⇒ SLA trạm).
+  if (dong.slaKieu === 'TEST_RUN_KE_HOACH') {
+    const bdKh = `(SELECT min(${gioSxKhSql('lsb.tg_bd_kh', 'lsb.ngay_ke_hoach')}) FROM lenh_sx_dot_vai ldb JOIN dot_vai_ve dvb ON dvb.id = ldb.dot_vai_ve_id
+      JOIN lenh_san_xuat lsb ON lsb.id = ldb.lenh_san_xuat_id WHERE dvb.phan_in_id = q.id AND lsb.trang_thai = 'RELEASE_1')`;
+    return `(CASE WHEN ${bdKh} IS NULL THEN ${cong(s)}
+      ELSE ${bdKh} - interval '${TEST_RUN_TRUOC_SX_PHUT} minutes' END)`;
+  }
+  return cong(s);
+}
+const MOC_DO = 'LEAST((SELECT den FROM ky), now())';
+
 async function motDongBang(dong, slaPhut, { tu, den }) {
   const m = nguon(dong.man);
   const sqlPin = m.donVis.pin.sql;             // cột "Phần" LUÔN đếm theo PHẦN IN ở cả 10 dòng
   const slSql = DO_SL[dong.sl].sql;
-  // ⚠ SLA KHÔNG CỐ ĐỊNH (24/09/2026, `utils/slaTheoGio.js`) — gương đúng bản đồ nghẽn `dashboard.flowRows`:
-  //   READY KT theo giờ phần in lên READY (mốc vào sớm nhất của nó), Test Run theo giờ SX kế hoạch SỚM
-  //   NHẤT của các lệnh RELEASE_1 của phần in (thiếu ⇒ SLA trạm).
-  const moc = 'LEAST((SELECT den FROM ky), now())';
-  const daO = `EXTRACT(EPOCH FROM (${moc} - q.tg_vao)) / 60`;
-  let dkSla = slaPhut == null ? null : `${daO} > ${Number(slaPhut)}`;
-  // READY KT theo HẠN GIAO (25/09/2026): quá 00:00 ngày (hạn − 1) ⇒ nghẽn; thiếu hạn ⇒ theo giờ lên MES.
-  if (slaPhut != null && dong.slaKieu === 'READY_THEO_GIO') {
-    dkSla = `(CASE WHEN q.han_giao_hang IS NULL THEN ${daO} > ${slaReadySql('q.tg_vao', Number(slaPhut))}
-      ELSE ${moc} > ${mocDoReadySql('q.han_giao_hang')} END)`;
-  }
-  // QC READY: q.tg_vao = lúc Kỹ thuật xác nhận xong ⇒ sau 16:30 thì QC có 16 giờ (KHUNG_SLA_QC).
-  if (slaPhut != null && dong.slaKieu === 'QC_THEO_GIO') dkSla = `${daO} > ${slaQcReadySql('q.tg_vao', Number(slaPhut))}`;
-  if (slaPhut != null && dong.slaKieu === 'TEST_RUN_KE_HOACH') {
-    const bdKh = `(SELECT min(${gioSxKhSql('lsb.tg_bd_kh', 'lsb.ngay_ke_hoach')}) FROM lenh_sx_dot_vai ldb JOIN dot_vai_ve dvb ON dvb.id = ldb.dot_vai_ve_id
-      JOIN lenh_san_xuat lsb ON lsb.id = ldb.lenh_san_xuat_id WHERE dvb.phan_in_id = q.id AND lsb.trang_thai = 'RELEASE_1')`;
-    dkSla = `(CASE WHEN ${bdKh} IS NULL THEN ${daO} > ${Number(slaPhut)}
-      ELSE ${moc} > ${bdKh} - interval '${TEST_RUN_TRUOC_SX_PHUT} minutes' END)`;
-  }
-  const dkNghen = dkSla == null ? 'false' : `(${dkO('ton_cuoi')}) AND ${dkSla}`;
+  const batDau = batDauNghenSql(dong, slaPhut);
+  const dkNghen = batDau == null ? 'false' : `(${dkO('ton_cuoi')}) AND ${MOC_DO} > ${batDau}`;
   const cum = (ten, dk) => `count(*) FILTER (WHERE ${dk})::int AS ${ten}_phan,
     COALESCE(sum(${slSql}) FILTER (WHERE ${dk}), 0)::int AS ${ten}_sl`;
   const sql = `WITH ${CTE_KY}, q AS (${sqlPin}) SELECT
@@ -259,6 +268,43 @@ async function motDongBang(dong, slaPhut, { tu, den }) {
   return rows[0] || {};
 }
 
+// DANH SÁCH PHẦN IN của 1 dòng bảng theo dõi (26/09/2026) — Dashboard bấm vào dòng ⇒ modal.
+// Mọi phần in thuộc ÍT NHẤT 1 trong 4 ô + cờ từng ô + nghẽn + mốc bắt đầu nghẽn + SL theo đơn vị dòng.
+// ⚠ Cùng `q`, cùng `dkO`, cùng `batDauNghenSql` với `motDongBang` ⇒ đếm cờ ở FE ra ĐÚNG số trên bảng.
+async function dsDongBang(dong, slaPhut, { tu, den }) {
+  const m = nguon(dong.man);
+  const batDau = batDauNghenSql(dong, slaPhut);
+  const sql = `WITH ${CTE_KY}, q AS (${m.donVis.pin.sql}) SELECT ${COT_DS},
+      (${dkO('ton_dau')}) AS o_ton_dau, (${dkO('nhan')}) AS o_nhan,
+      (${dkO('lam_duoc')}) AS o_xong, (${dkO('ton_cuoi')}) AS o_ton_cuoi,
+      ${batDau == null ? 'NULL::timestamptz' : batDau} AS tg_bat_dau_nghen,
+      ${batDau == null ? 'false' : `(${dkO('ton_cuoi')}) AND ${MOC_DO} > ${batDau}`} AS o_nghen,
+      ${DO_SL[dong.sl].sql} AS sl_dong,
+      ${MOC_DO} AS moc_do
+    FROM q WHERE ${NEN} AND ((${dkO('ton_dau')}) OR (${dkO('nhan')}) OR (${dkO('lam_duoc')}) OR (${dkO('ton_cuoi')}))
+    ORDER BY q.tg_vao DESC NULLS LAST, q.ma_phan LIMIT 5000`;
+  const { rows } = await query(sql.replace(/\s+/g, ' '), [tu, den]);
+  return rows;
+}
+
+// Owner (Chịu trách nhiệm / Xử lý) của trạm hoặc checklist của dòng — cùng nguồn `tram_owner` /
+// `checkpoint_owner` mà trang *Owner checkpoint/checklist* ghi (khuôn `kpiready.repository.dsOwner`).
+async function ownerCuaDong(dong) {
+  const rong = { chiu_trach_nhiem: [], xu_ly: [] };
+  if (!dong.sla) return rong;
+  const laCp = !!dong.sla.checkpoint;
+  const sql = laCp
+    ? `SELECT o.loai, COALESCE(u.ho_ten, r.ten_role, pb.ten_phong_ban) AS ten FROM checkpoint_owner o JOIN checkpoint cp ON cp.id = o.checkpoint_id JOIN tram tr ON tr.id = cp.tram_id JOIN workflow_version wv ON wv.id = tr.workflow_version_id AND wv.la_hien_hanh = true LEFT JOIN nguoi_dung u ON u.id = o.user_id LEFT JOIN vai_tro r ON r.id = o.role_id LEFT JOIN phong_ban pb ON pb.id = o.phong_ban_id WHERE cp.ma_checkpoint = $1`
+    : `SELECT o.loai, COALESCE(u.ho_ten, r.ten_role, pb.ten_phong_ban) AS ten FROM tram_owner o JOIN tram tr ON tr.id = o.tram_id JOIN workflow_version wv ON wv.id = tr.workflow_version_id AND wv.la_hien_hanh = true LEFT JOIN nguoi_dung u ON u.id = o.user_id LEFT JOIN vai_tro r ON r.id = o.role_id LEFT JOIN phong_ban pb ON pb.id = o.phong_ban_id WHERE tr.ma_tram = $1`;
+  try {
+    const { rows } = await query(sql, [laCp ? dong.sla.checkpoint : dong.sla.tram]);
+    return {
+      chiu_trach_nhiem: rows.filter((r) => r.loai !== 'XU_LY' && r.ten).map((r) => r.ten),
+      xu_ly: rows.filter((r) => r.loai === 'XU_LY' && r.ten).map((r) => r.ten),
+    };
+  } catch (e) { return rong; }
+}
+
 module.exports = {
-  demSiSo, chiTiet, nguon, chonDonVi, tomTatTheoNgayGiao, dsSlaHienHanh, motDongBang,
+  demSiSo, chiTiet, nguon, chonDonVi, tomTatTheoNgayGiao, dsSlaHienHanh, motDongBang, dsDongBang, ownerCuaDong,
 };

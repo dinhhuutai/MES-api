@@ -391,6 +391,9 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
         //     hủy xác nhận / trả về kỹ thuật của người dùng.
         // Đợt vải MỚI mới là lúc câu hỏi "kỹ thuật có cần kiểm tra lại không?" có nghĩa.
         if (laDotMoi) {
+          // Phần in đang ẩn vì hết đợt vải (vd GN "Hủy đợt vải — không in") ⇒ có đợt mới là hiện lại.
+          try { await repo.moLaiPhanInCoDotMoi(pinId, affectedDotVaiIds, actorId); }
+          catch (e) { console.error(`[erp-sync] ✗ Mở lại phần in có đợt mới lỗi (${p.maPhan}): ${e.message}`); }
           try {
             // ⚠ Truyền đợt vải vừa nhận để ghi vào `ghi_chu` (biết ĐỢT NÀO kích hoạt lần tự động này).
             if (ktCan === 0) await repo.simulateReadyDone(pinId, affectedDotVaiIds); // giả lập KT xong → Release 1
@@ -435,6 +438,9 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
     // POST-PASS: phương án in theo TỔNG SL VẢI VỀ của cả HSKT (≥2000 → Máy, <2000 → Bàn).
     // Chạy SAU gom set để nhóm set đã đủ thành viên ⇒ tổng cộng đúng cả set. Best-effort.
     let soDoiPain = 0;
+    // + Quét MỌI hồ sơ có đợt BỔ SUNG mà chưa phải Bàn (tự lành hồ sơ cũ — luật khóa chặt 26/09/2026).
+    try { for (const id of await repo.hsktBoSungSaiPain()) hsktTouched.add(id); }
+    catch (e) { console.error(`[erp-sync] ✗ Quét hồ sơ bổ sung sai PA in lỗi: ${e.message}`); }
     for (const hid of hsktTouched) {
       try {
         const r = await repo.applyPainTheoSanLuong(hid, actorId);

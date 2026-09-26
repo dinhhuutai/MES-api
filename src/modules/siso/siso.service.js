@@ -196,4 +196,33 @@ async function bangTheoDoi(q = {}) {
   return { rows: await bangCached(tu, den), tu, den: denHienThi, ttl_ms: TTL_BANG_MS };
 }
 
-module.exports = { siSo, chiTiet, danhMuc, tomTatNgayGiao, bangTheoDoi };
+// DANH SÁCH PHẦN IN của 1 dòng bảng theo dõi (26/09/2026 — Dashboard bấm vào dòng ⇒ modal có toggle
+// Tồn đầu · Nhận · Xong · Tồn cuối · Nghẽn). Kèm owner của trạm + SLA + mốc bắt đầu nghẽn từng phần in.
+// ⚠ Không cache: chỉ gọi khi người dùng BẤM (1 query), khác bảng tổng tải lại theo socket broadcast.
+async function bangTheoDoiChiTiet(ma, q = {}) {
+  const dong = BANG_THEO_DOI.find((d) => d.ma === ma);
+  if (!dong) throw new AppError('Dòng bảng theo dõi không hợp lệ', { status: 404, errorCode: 'NOT_FOUND' });
+  const { tu, den, denHienThi } = chuanHoaKy(q);
+  const slaRows = await repo.dsSlaHienHanh();
+  const sla = slaCua(dong, slaRows);
+  const [rows, owner] = await Promise.all([repo.dsDongBang(dong, sla, { tu, den }), repo.ownerCuaDong(dong)]);
+  const phut = (a, b) => (a && b ? Math.round((new Date(b) - new Date(a)) / 60000) : null);
+  const items = rows.map((r) => {
+    const tgRaHayMoc = r.tg_ra && new Date(r.tg_ra) < new Date(r.moc_do) ? r.tg_ra : r.moc_do;
+    return {
+      ...r,
+      // Đã ở trạm (phút): tới lúc rời, hoặc tới mốc đo (cuối kỳ / bây giờ) nếu còn ở.
+      phut_da_o: phut(r.tg_vao, tgRaHayMoc),
+      // SLA thực của phần in này (luật theo giờ có thể khác SLA trạm) = mốc bắt đầu nghẽn − mốc vào.
+      sla_phut: phut(r.tg_vao, r.tg_bat_dau_nghen),
+      // Nghẽn bao lâu = từ mốc bắt đầu nghẽn tới mốc đo (chỉ khi đang nghẽn).
+      phut_nghen: r.o_nghen ? phut(r.tg_bat_dau_nghen, r.moc_do) : null,
+    };
+  });
+  return {
+    ma: dong.ma, ten: dong.ten, man: dong.man, ghi_chu: dong.ghiChu, sla_phut: sla,
+    don_vi_sl: DO_SL[dong.sl].nhan, owner, tu, den: denHienThi, items,
+  };
+}
+
+module.exports = { siSo, chiTiet, danhMuc, tomTatNgayGiao, bangTheoDoi, bangTheoDoiChiTiet };

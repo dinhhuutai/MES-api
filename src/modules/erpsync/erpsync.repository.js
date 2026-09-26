@@ -796,7 +796,10 @@ async function applyPainTheoSanLuong(hsktId, actorId = null) {
     // ⚠⚠ ĐỢT BỔ SUNG THẮNG NGƯỠNG SẢN LƯỢNG — xem `LOAI_LUON_IN_BAN` ở đầu khối.
     const coLuonBan = Number(sl.n_luon_ban) > 0;
     const pain = coLuonBan ? PAIN_BAN : (tong >= NGUONG_VAI_IN_MAY ? PAIN_MAY : PAIN_BAN);
-    if (h.pa_in_sua_tay === true) return { doi: false, tong, pain, bo_qua: 'sua_tay' };
+    // ⚠⚠ KHÓA CHẶT (26/09/2026): có đợt BỔ SUNG thì LUÔN Bàn, THẮNG CẢ `pa_in_sua_tay` — người dùng
+    //   báo vẫn thấy hồ sơ bổ sung in Máy (đo prod: 26 hồ sơ bị sửa tay sang Máy/Robot). Đường sửa tay
+    //   cũng bị chặn ở `hskt.service.changePhuongAnIn` + `duyet.guiYeuCauDoiPain` nên không đá nhau.
+    if (h.pa_in_sua_tay === true && !coLuonBan) return { doi: false, tong, pain, bo_qua: 'sua_tay' };
     if (Number(h.phuong_an_in) === pain) return { doi: false, tong, pain };
     const { rows: [pin0] } = await client.query(
       'SELECT phan_in_id FROM hskt_phan_in WHERE hskt_id=$1 AND dang_hoat_dong LIMIT 1', [hsktId]);
@@ -813,6 +816,37 @@ async function applyPainTheoSanLuong(hsktId, actorId = null) {
     });
     return { doi: true, tong, pain, hskt_id: newId, luon_ban: coLuonBan };
   });
+}
+
+// ─── ĐỢT VẢI MỚI VỀ ⇒ PHẦN IN ĐANG ẨN VÌ HẾT ĐỢT VẢI HIỆN LẠI (26/09/2026) ─────────────────
+// Phần in bị ẩn khi đợt vải cuối bị hủy (tab Hủy đợt vải · GN "Hủy đợt vải — không in" · script ẩn
+// phần in hết đợt). ERP đẩy ĐỢT MỚI về ⇒ có vải để in ⇒ bật lại phần in.
+// ⚠ KHÔNG bật lại phần in bị hủy CỐ Ý ở tab "Hủy phần in" (thao tác HUY/MO_PHAN_IN mới nhất là HUY_PHAN_IN).
+async function moLaiPhanInCoDotMoi(pinId, dotVaiIds, actorId = null) {
+  const { rows } = await query(
+    `UPDATE phan_in pin SET dang_hoat_dong = true, updated_by = $2, updated_date = CURRENT_TIMESTAMP WHERE pin.id = $1 AND pin.dang_hoat_dong = false AND COALESCE((SELECT a.hanh_dong FROM audit_log a WHERE a.ten_bang = 'phan_in' AND a.id_ban_ghi = pin.id::text AND a.hanh_dong IN ('HUY_PHAN_IN','MO_PHAN_IN') ORDER BY a.thoi_gian DESC LIMIT 1), '') <> 'HUY_PHAN_IN' RETURNING pin.id, pin.ma_phan`,
+    [pinId, actorId]);
+  if (!rows.length) return false;
+  await query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by) VALUES ('phan_in', $1, 'MO_PHAN_IN_DOT_MOI', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`,
+    [String(pinId), JSON.stringify({ ma_phan: rows[0].ma_phan, dot_vai_ids: dotVaiIds || [], ly_do: 'Có đợt vải mới từ ERP' }), actorId]);
+  return true;
+}
+
+// HSKT đang hoạt động CÓ đợt vải BỔ SUNG còn hiệu lực (luật "luôn in Bàn").
+async function hsktCoBoSung(hsktId) {
+  const { rows } = await query(
+    `SELECT 1 FROM hskt_phan_in hp JOIN phan_in pin ON pin.id = hp.phan_in_id AND pin.dang_hoat_dong JOIN dot_vai_ve dv ON dv.phan_in_id = pin.id AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY') JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id AND ldv.ma_loai IN (${LUON_IN_BAN_SQL}) WHERE hp.hskt_id = $1 AND hp.dang_hoat_dong LIMIT 1`,
+    [hsktId]);
+  return rows.length > 0;
+}
+
+// Mọi HSKT active có đợt bổ sung mà phương án in ≠ Bàn — job ERP quét MỖI LƯỢT để tự lành cả hồ sơ
+// cũ (luật bổ sung ra đời sau, hồ sơ không được sync lại thì không bao giờ được tính lại).
+async function hsktBoSungSaiPain() {
+  const { rows } = await query(
+    `SELECT DISTINCT h.id FROM ho_so_ky_thuat h JOIN hskt_phan_in hp ON hp.hskt_id = h.id AND hp.dang_hoat_dong JOIN phan_in pin ON pin.id = hp.phan_in_id AND pin.dang_hoat_dong JOIN dot_vai_ve dv ON dv.phan_in_id = pin.id AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY') JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id AND ldv.ma_loai IN (${LUON_IN_BAN_SQL}) WHERE h.dang_hoat_dong AND COALESCE(h.phuong_an_in,0) <> ${PAIN_BAN}`);
+  return rows.map((r) => r.id);
 }
 
 async function upsertHsktForPin({ pinId, barcodeHskt, pain, inset, maDonReady, maPhan, actorId = null }) {
@@ -911,5 +945,5 @@ module.exports = {
   readyCheckpointIds, simulateReadyDone, isPhanInReleased, canLamLaiReady, flagLamLaiReady,
   chiHuyQcReady, reopenReadyForPhanIn, setDotVaiKtCanKiemTra,
   upsertHsktForPin, eligibleDotVaiByIds, openSetByGhiChu,
-  applyPainTheoSanLuong, NGUONG_VAI_IN_MAY, LOAI_LUON_IN_BAN,
+  applyPainTheoSanLuong, NGUONG_VAI_IN_MAY, LOAI_LUON_IN_BAN, hsktCoBoSung, hsktBoSungSaiPain, moLaiPhanInCoDotMoi,
 };

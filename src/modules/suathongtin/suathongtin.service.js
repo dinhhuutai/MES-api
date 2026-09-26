@@ -50,7 +50,13 @@ async function traVe({ phanInId, thongTin, khac, nguon }, actorId) {
   }
   const ten = ma.map((x) => TEN_THEO_MA[x]);
   if (khacSach) ten.push(`Khác: ${khacSach}`);
-  const lyDo = `Sai thông tin: ${ten.join(' · ')}`;
+  // Mục "Hủy vải không in" không phải thông tin SAI ⇒ tách riêng cho câu lý do đọc đúng nghĩa.
+  const tenSai = ma.filter((x) => x !== 'HUY_VAI').map((x) => TEN_THEO_MA[x]);
+  if (khacSach) tenSai.push(`Khác: ${khacSach}`);
+  const lyDo = [
+    ma.includes('HUY_VAI') ? 'Đề nghị HỦY VẢI — không in' : null,
+    tenSai.length ? `Sai thông tin: ${tenSai.join(' · ')}` : null,
+  ].filter(Boolean).join(' · ');
 
   const kq = await withTransaction(async (client) => {
     const r = await repo.insertTraVe(client, { phanInId, checklistList: ten.join(', '), lyDo }, actorId);
@@ -108,6 +114,65 @@ async function xacNhanLai(phanInId, { ghiChu } = {}, actorId) {
   return { phan_in_id: phanInId, ma_phan: pin.ma_phan, so_luot: ids.length };
 }
 
+// ─── GN HỦY ĐỢT VẢI — KHÔNG IN NỮA (26/09/2026) ──────────────────────────────────────────────
+// Hủy MỌI đợt vải CHƯA release của phần in (tái dùng `orders.softDeleteDotVai` — chính hàm tab
+// "Hủy đợt vải": dọn tồn trạm/gom set, snapshot để mở lại, hết đợt sống ⇒ phần in xóa mềm = ẨN).
+// Rồi đóng lượt trả về GN (audit `GN_HUY_DOT_VAI`) ⇒ phần in rời trang chờ sửa.
+// ⚠ ĐỢT MỚI TỪ ERP VỀ ⇒ phần in TỰ HIỆN LẠI (`erpsync.repository.moLaiPhanInCoDotMoi`).
+// ⚠ Đợt ĐÃ RELEASE không hủy được (phải hủy lệnh trước) — giữ nguyên, báo lại trong `loi`.
+async function huyDotVai(phanInId, { lyDo } = {}, actorId) {
+  const pin = await repo.getPhanInCoBan(phanInId);
+  if (!pin) throw new AppError('Phần in không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  await kiemDangO(phanInId);
+  const lyDoSach = String(lyDo || '').trim().slice(0, 500);
+  if (!lyDoSach) throw new AppError('Nhập lý do hủy đợt vải', { status: 422, errorCode: 'NO_LY_DO' });
+  const dots = await repo.dotVaiSong(phanInId);
+  const huyDuoc = dots.filter((d) => !d.da_release);
+  if (!huyDuoc.length) {
+    throw new AppError(
+      dots.length ? 'Mọi đợt vải của phần in đã release — hủy lệnh sản xuất trước' : 'Phần in không còn đợt vải nào để hủy',
+      { status: 409, errorCode: 'KHONG_CO_DOT' });
+  }
+  // eslint-disable-next-line global-require
+  const ordersService = require('../orders/orders.service');
+  const kq = await ordersService.softDeleteDotVai(huyDuoc.map((d) => d.id), `GN hủy vải — không in: ${lyDoSach}`, actorId);
+  const ids = await withTransaction(async (client) => {
+    const xs = await repo.xuLyHet(client, phanInId, actorId);
+    for (const id of xs) {
+      await repo.ghiAudit(client, id, 'GN_HUY_DOT_VAI', {
+        phan_in_id: phanInId, ma_phan: pin.ma_phan,
+        ghi_chu: `Đã hủy ${kq.count} đợt vải — không in: ${lyDoSach}`,
+        dot_vai: kq.items.map((x) => x.ma),
+      }, actorId);
+    }
+    return xs;
+  });
+  sockets.emit('gn:updated', { phanInId });
+  sockets.emit('ready:confirmed', { phanInId });
+  return {
+    phan_in_id: phanInId, ma_phan: pin.ma_phan, so_dot_huy: kq.count, so_luot: ids.length,
+    so_dot_da_release: dots.length - huyDuoc.length, loi: kq.loi,
+    phan_in_an: kq.items.some((x) => x.phan_in_da_huy),
+  };
+}
+
+// Hủy vải NHIỀU phần in cùng lúc (tích checkbox đầu bảng — 26/09/2026). Mỗi phần in chạy riêng ⇒ 1
+// phần lỗi (vd mọi đợt đã release) KHÔNG làm hỏng các phần còn lại; trả `loi` để FE nêu rõ.
+async function huyDotVaiNhieu({ phanInIds, lyDo } = {}, actorId) {
+  const ids = [...new Set((Array.isArray(phanInIds) ? phanInIds : []).map(String).filter(Boolean))];
+  if (!ids.length) throw new AppError('Chưa chọn phần in nào', { status: 422, errorCode: 'NO_ITEMS' });
+  if (ids.length > 500) throw new AppError('Tối đa 500 phần in mỗi lần', { status: 422, errorCode: 'QUA_NHIEU' });
+  if (!String(lyDo || '').trim()) throw new AppError('Nhập lý do hủy đợt vải', { status: 422, errorCode: 'NO_LY_DO' });
+  const ok = []; const loi = [];
+  for (const id of ids) {
+    try { ok.push(await huyDotVai(id, { lyDo }, actorId)); } catch (e) { loi.push({ phan_in_id: id, loi: e.message }); }
+  }
+  return {
+    so_ok: ok.length, so_dot_huy: ok.reduce((s, x) => s + (x.so_dot_huy || 0), 0),
+    so_an: ok.filter((x) => x.phan_in_an).length, items: ok, loi,
+  };
+}
+
 // Xác nhận lại NHIỀU phần in cùng lúc (tích checkbox đầu bảng). Mỗi phần in 1 transaction riêng ⇒ 1 phần
 // lỗi (đã có người xác nhận trước) KHÔNG làm hỏng các phần còn lại; trả về danh sách lỗi để FE báo rõ.
 async function xacNhanLaiNhieu({ phanInIds, ghiChu } = {}, actorId) {
@@ -121,4 +186,4 @@ async function xacNhanLaiNhieu({ phanInIds, ghiChu } = {}, actorId) {
   return { so_ok: ok.length, items: ok, loi };
 }
 
-module.exports = { danhMuc, danhSach, chiTiet, traVe, suaPhanIn, suaDotVai, xacNhanLai, xacNhanLaiNhieu };
+module.exports = { danhMuc, danhSach, chiTiet, traVe, suaPhanIn, suaDotVai, xacNhanLai, xacNhanLaiNhieu, huyDotVai, huyDotVaiNhieu };

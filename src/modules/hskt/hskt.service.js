@@ -71,10 +71,24 @@ async function byBarcode(barcode, kieu) {
   return { hskt: { ...hskt, phuong_an_in_ten: paLabel(hskt.phuong_an_in) }, phan_in: phanIn };
 }
 
+// ⚠⚠ LUẬT KHÓA CHẶT (26/09/2026): hồ sơ có đợt vải BỔ SUNG ⇒ LUÔN in Bàn. Chặn đổi sang Máy/Robot
+//   ở mọi đường tay (trang HSKT · cột READY/QC · hàng đợi duyệt) — nếu không, job ERP 5 phút sẽ
+//   kéo về Bàn và người dùng thấy "tự đổi lại" mà không hiểu vì sao.
+async function chanDoiPainBoSung(hsktId, pain) {
+  if (Number(pain) === 1) return;
+  // eslint-disable-next-line global-require
+  const erpRepo = require('../erpsync/erpsync.repository');
+  if (await erpRepo.hsktCoBoSung(hsktId)) {
+    throw new AppError('Hồ sơ có đợt vải BỔ SUNG ⇒ phương án in luôn là Bàn, không đổi sang Máy/Robot được',
+      { status: 422, errorCode: 'BO_SUNG_LUON_BAN' });
+  }
+}
+
 // Đổi phương án in → tạo phiên bản mới + ĐỔI SỐ CUỐI mã vạch HSKT theo phương án in.
 async function changePhuongAnIn(id, pain, actorId) {
   const p = Number(pain);
   if (!isValidPain(p)) throw new AppError('Phương án in không hợp lệ (1 Bàn / 2 Máy / 3 Robot)', { status: 422, errorCode: 'INVALID' });
+  await chanDoiPainBoSung(id, p);
   const res = await repo.changePhuongAnIn(id, p, actorId);
   if (!res) throw new AppError('HSKT không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   // ⚠ Trùng mã vạch KHÔNG còn là lỗi (15/09/2026): repository đã GỘP phần in vào hồ sơ đang giữ mã
@@ -91,4 +105,4 @@ async function changePhuongAnIn(id, pain, actorId) {
   };
 }
 
-module.exports = { list, detail, byPhanIn, byBarcode, changePhuongAnIn, PHUONG_AN };
+module.exports = { list, detail, byPhanIn, byBarcode, changePhuongAnIn, chanDoiPainBoSung, PHUONG_AN };

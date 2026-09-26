@@ -26,10 +26,15 @@ async function listVaiVe({ search, filters, stage, page, limit, offset, sortKey,
 async function getPhanIn(id) {
   const phanIn = await repo.findById(id);
   if (!phanIn) throw new AppError('Phần in không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
-  const [dotVai, timeline, temSummary, kcsByDot, stagePcs, dryMin] = await Promise.all([
+  // eslint-disable-next-line global-require
+  const gnRepo = require('../suathongtin/suathongtin.repository');
+  const [dotVai, timeline, temSummary, kcsByDot, stagePcs, dryMin, traVeGn] = await Promise.all([
     repo.listDotVai(id), repo.getPhanInTimeline(id), repo.getPhanInTemSummary(id),
     repo.getPhanInKcsByDot(id), repo.getPhanInStagePcs(id), repo.getDryMin(id),
+    // Hành trình ghi "Đã trả về GN" (26/09/2026). Lỗi (vd thiếu mig 105) KHÔNG được chặn hành trình.
+    gnRepo.lichSu(id).catch(() => []),
   ]);
+  if (timeline) timeline.tra_ve_gn = traVeGn;
   return { ...phanIn, dot_vai: dotVai, timeline, tem_summary: temSummary, kcs_by_dot: kcsByDot, stage_pcs: stagePcs, thoi_gian_cho_kho_phut: dryMin };
 }
 

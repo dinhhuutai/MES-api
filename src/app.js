@@ -64,6 +64,7 @@ app.get('/api/health', (req, res) => ok(res, { status: 'up', time: new Date().to
 app.use('/api/auth', authRoutes);
 app.use('/api/users', usersRoutes);
 app.use('/api/phong-ban', require('./modules/phongban/phongban.routes'));   // mig 104 — phòng ban & tổ
+app.use('/api/ly-do-nghen', require('./modules/lydonghen/lydonghen.routes')); // mig 106 — lý do nghẽn
 app.use('/api/roles', rolesRoutes);
 app.use('/api/permissions', permissionsRoutes);
 app.use('/api/catalog', catalogRoutes);

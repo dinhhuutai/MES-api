@@ -20,4 +20,8 @@ const lichSu = asyncHandler(async (req, res) => {
   }));
 });
 
-module.exports = { list, save, thu, lichSu };
+// Gửi lại 1 dòng lịch sử sang ERP (26/09/2026) — xem `guiLai.js`.
+const guiLai = asyncHandler(async (req, res) =>
+  ok(res, await require('./guiLai').guiLai(req.params.ma, req.params.auditId, req.user.id), 'Đã gửi lại sang ERP'));
+
+module.exports = { list, save, thu, lichSu, guiLai };

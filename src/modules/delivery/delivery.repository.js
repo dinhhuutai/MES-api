@@ -219,6 +219,17 @@ async function nextMaPhieuGiao() {
 
 // Mã ERP cấp có thể trùng phiếu đã có (ERP restart / đếm lại) — `ma_phieu_giao` là UNIQUE nên phải
 // biết TRƯỚC transaction, không thì INSERT nổ giữa chừng.
+// Đổi mã phiếu MES tự sinh (PG0001…) sang ID do ERP cấp khi bấm "Gửi lại ERP" (26/09/2026). Ghi audit
+//   giữ mã CŨ — phiếu giấy đã in mang mã cũ vẫn tra ngược được.
+async function doiMaPhieuGiao(id, maCu, maMoi, actorId) {
+  await query('UPDATE giao_hang SET ma_phieu_giao = $2, updated_by = $3, updated_date = CURRENT_TIMESTAMP WHERE id = $1',
+    [id, maMoi, actorId]);
+  await query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_cu, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('giao_hang', $1, 'DOI_MA_PHIEU_GIAO_ERP', $2::jsonb, $3::jsonb, $4, CURRENT_TIMESTAMP, $4)`,
+    [String(id), JSON.stringify({ ma_phieu_giao: maCu }), JSON.stringify({ ma_phieu_giao: maMoi }), actorId]);
+}
+
 async function maPhieuGiaoDaDung(ma) {
   const { rows } = await query('SELECT 1 FROM giao_hang WHERE ma_phieu_giao = $1 LIMIT 1', [ma]);
   return rows.length > 0;
@@ -630,7 +641,7 @@ async function applyGiaoLedger(client, giaoHangId, actorId) {
 }
 
 module.exports = {
-  listTemSanSang, listTemChoTich, donHangIdsForTems, nextMaPhieuGiao, maPhieuGiaoDaDung, createGiaoHang, addTem,
+  listTemSanSang, listTemChoTich, donHangIdsForTems, nextMaPhieuGiao, maPhieuGiaoDaDung, doiMaPhieuGiao, createGiaoHang, addTem,
   getGiaoHang, listGiaoHang, getGiaoHangTems, markGiaoDone, applyGiaoLedger, insertGiaoAudit,
   coCotTichGiao, coCotGiaoHangTai, cotPhieuThem, setGiaoHangTai,
   tichTem, boTichTem, temDaVaoPhieu, traCuuTemTich, ghiAuditTich,

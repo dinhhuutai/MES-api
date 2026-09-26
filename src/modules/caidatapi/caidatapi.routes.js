@@ -18,5 +18,7 @@ router.post('/thu/:ma', rbac('WORKFLOW_VIEW'), c.thu);
 // Lịch sử gọi API — xem đã LẤY/GỬI những gì (nguồn `audit_log`). Chỉ cần quyền XEM.
 // ⚠ Route TĨNH `/lich-su/...` không đụng route nào khác vì `/` và `/thu/:ma` đã chiếm chỗ riêng.
 router.get('/lich-su/:ma', rbac('WORKFLOW_VIEW'), c.lichSu);
+// Gửi lại 1 dòng lịch sử (5 API đẩy) — là thao tác GHI sang ERP nên cần quyền SỬA cấu hình.
+router.post('/lich-su/:ma/:auditId/gui-lai', rbac('WORKFLOW_MANAGE'), c.guiLai);
 
 module.exports = router;

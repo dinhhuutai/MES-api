@@ -133,12 +133,19 @@ const KENH = {
     url: () => env.erp.guiSuaDatUrl,
     timeoutMs: () => env.erp.guiSuaDatTimeoutMs,
     retry: () => env.erp.guiSuaDatRetry,
+    // ⚠⚠ Cùng proc `MES_spr_MES2SK6` với kiểm phẩm (người dùng xác nhận 26/09/2026) ⇒ mã tem ở `@pBarcodeSua`.
+    //   Ở đây là mã TEM 17 của lượt sửa.
+    them: (b) => ({ BarcodeSua: b.BarcodeIn }),
   },
   ERP_GUI_KIEM_PHAM: {
     nhan: 'gui-kiem-pham',
     url: () => env.erp.guiKiemPhamUrl,
     timeoutMs: () => env.erp.guiKiemPhamTimeoutMs,
     retry: () => env.erp.guiKiemPhamRetry,
+    // ⚠⚠ Proc `MES_spr_MES2SK6` (26/09/2026, người dùng gửi SP thật) nhận mã tem ở tham số `@pBarcodeSua`,
+    //   KHÔNG phải `@pBarcodeIn` ⇒ gửi thêm khóa `BarcodeSua` (= mã tem 15 được kiểm; proc tự đổi
+    //   2 số đầu thành 16 cho `MaboSua`). Giữ cả `BarcodeIn` để log/lịch sử đọc như mọi kênh khác.
+    them: (b) => ({ BarcodeSua: b.BarcodeIn }),
   },
 };
 
@@ -241,6 +248,7 @@ function erpProxy() {
 async function ghiInTem(row, { maApi = 'ERP_GHI_IN_TEM' } = {}) {
   const k = KENH[maApi] || KENH.ERP_GHI_IN_TEM;
   const body = chuanHoa(row);
+  if (k.them) Object.assign(body, k.them(body));
   // Tắt ở Hệ thống > Cài đặt API (mig 083); chưa có dòng cấu hình thì lấy mặc định `.env`.
   if (!(await apiBat(maApi))) {
     console.log(`[${k.nhan}] ⏸ ĐANG TẮT (Hệ thống > Cài đặt API) — bỏ qua tem ${body.BarcodeIn}`);

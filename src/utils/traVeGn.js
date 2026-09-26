@@ -38,6 +38,9 @@ const THONG_TIN_GN = [
   { ma: 'DON_HANG', ten: 'Đơn hàng', nhom: 'Mã ERP (sửa bên ERP)', sua: false },
   { ma: 'MA_HANG', ten: 'Mã hàng', nhom: 'Mã ERP (sửa bên ERP)', sua: false },
   { ma: 'CODE_PHAN', ten: 'Code phần', nhom: 'Mã ERP (sửa bên ERP)', sua: false },
+  // 26/09/2026: không phải thông tin sai mà là đề nghị GN HỦY đợt vải (không in nữa) — GN bấm
+  // "Hủy đợt vải" ở trang chờ sửa thông tin.
+  { ma: 'HUY_VAI', ten: 'Hủy vải không in', nhom: 'Khác', sua: false },
 ];
 const TEN_THEO_MA = Object.fromEntries(THONG_TIN_GN.map((x) => [x.ma, x.ten]));
 

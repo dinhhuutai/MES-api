@@ -172,6 +172,8 @@ async function guiYeuCauDoiPain(user, { hsktId, phuongAnIn, lyDo }) {
   //   Tắt duyệt = "bấm là đổi" (người dùng chọn) ⇒ bắt nhập lý do nữa thì tắt cũng như không.
   //   ⚠ Vẫn kiểm ở SERVICE chứ không tin FE: FE có thể cầm cờ cũ (cache 60s) và gửi lý do rỗng khi
   //   luật vẫn đang bật — lúc đó phải chặn thật.
+  // Chặn SỚM (trước khi vào hàng đợi): hồ sơ có đợt bổ sung luôn in Bàn.
+  await hsktService.chanDoiPainBoSung(hsktId, pa);
   const batBuoc = await batBuocDuyet(LOAI);
   const lyDoSach = String(lyDo || '').trim();
   if (batBuoc && !lyDoSach) {

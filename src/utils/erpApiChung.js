@@ -154,16 +154,21 @@ async function goiErp(maApi, { nhan, url, method = 'POST', body = null, timeoutM
 // Proc `MES2SU6` / `MES2SQ0` chỉ nhận MỘT chuỗi cho toàn bộ chi tiết (không có tham số số lượng),
 // nên định dạng 2 chuỗi này LÀ hợp đồng dữ liệu — đặt ở đây để chỉ có 1 nguồn, sửa 1 chỗ.
 
-// `DsMaloi` = các BỘ BA `mã lỗi, SL sửa, SL hủy` nối tiếp, ngăn bằng dấu phẩy (người dùng chốt
-// 16/09/2026): `L1,2,0,L3,5,1` = lỗi L1 sửa 2 / hủy 0; lỗi L3 sửa 5 / hủy 1.
-// ⚠⚠ Số GIỮA = SL ĐEM SỬA, **KHÔNG gồm phần hủy** ⇒ tổng hư của một mã = số giữa + số cuối.
+// `DsMaloi` = các BỘ BA `mã lỗi, SL HƯ (tổng), SL hủy` nối tiếp, ngăn bằng dấu phẩy:
+//   `L1,2,0,L3,6,1` = lỗi L1 hư 2 (sửa 2, hủy 0); lỗi L3 hư 6 (sửa 5, hủy 1).
+// ⚠⚠ ĐỔI 26/09/2026 theo SP THẬT `MES_spr_MES2SU6`: proc đọc `F_ConvStrToTable3column` rồi tính
+//   `SoluongSuaNhe = Soluong − SoluongHuy` ⇒ số GIỮA là TỔNG HƯ của mã lỗi (= sửa + hủy), KHÔNG phải
+//   riêng SL sửa như chốt 16/09 (gửi SL sửa thì ERP ra SL sửa = sửa − hủy, sai; có thể âm).
 // ⚠ Bỏ dòng KHÔNG có mã lỗi: gửi ô rỗng làm LỆCH VỊ TRÍ mọi bộ ba phía sau (ERP đọc sai toàn bộ).
 // ⚠ Mã lỗi chứa dấu phẩy sẽ phá cấu trúc ⇒ thay bằng khoảng trắng (đo prod: không mã nào có dấu phẩy).
 function dsMaLoi(dong = []) {
   return dong
     .filter((d) => d && d.ma_loi)
-    .map((d) => [String(d.ma_loi).replace(/,/g, ' ').trim(),
-      Number(d.so_luong_sua) || 0, Number(d.so_luong_huy) || 0].join(','))
+    .map((d) => {
+      const sua = Number(d.so_luong_sua) || 0;
+      const huy = Number(d.so_luong_huy) || 0;
+      return [String(d.ma_loi).replace(/,/g, ' ').trim(), sua + huy, huy].join(',');
+    })
     .join(',');
 }
 

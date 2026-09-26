@@ -22,8 +22,18 @@ const xacNhanLaiNhieu = asyncHandler(async (req, res) => {
   ok(res, kq, `Đã xác nhận ${kq.so_ok} phần in — quay lại READY`);
 });
 
-const erpTrangThai = asyncHandler(async (req, res) => ok(res, erpCapNhat.trangThai()));
+const huyDotVai = asyncHandler(async (req, res) => {
+  const kq = await service.huyDotVai(req.params.phanInId, req.body || {}, req.user.id);
+  ok(res, kq, `Đã hủy ${kq.so_dot_huy} đợt vải — phần in không in nữa`);
+});
+
+const huyDotVaiNhieu = asyncHandler(async (req, res) => {
+  const kq = await service.huyDotVaiNhieu(req.body || {}, req.user.id);
+  ok(res, kq, `Đã hủy vải ${kq.so_ok} phần in`);
+});
+
+const erpTrangThai =asyncHandler(async (req, res) => ok(res, erpCapNhat.trangThai()));
 const erpDongBo = asyncHandler(async (req, res) =>
   ok(res, await erpCapNhat.dongBo({ tuDong: false, actorId: req.user.id }), 'Đã lấy dữ liệu từ ERP'));
 
-module.exports = { danhMuc, danhSach, chiTiet, traVe, suaPhanIn, suaDotVai, xacNhanLai, xacNhanLaiNhieu, erpTrangThai, erpDongBo };
+module.exports = { danhMuc, danhSach, chiTiet, traVe, suaPhanIn, suaDotVai, xacNhanLai, xacNhanLaiNhieu, huyDotVai, huyDotVaiNhieu, erpTrangThai, erpDongBo };

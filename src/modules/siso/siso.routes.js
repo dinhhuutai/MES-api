@@ -13,6 +13,8 @@ router.use(auth);
 router.get('/danh-muc', c.danhMuc);
 // ⚠ Route TĨNH — phải đứng TRƯỚC `/:maTrang`, để sau thì `maTrang = "bang-theo-doi"` và trả 404.
 router.get('/bang-theo-doi', c.bangTheoDoi);
+// ⚠ 2 đoạn — PHẢI đứng TRƯỚC `/:maTrang/:o` (Express khớp theo thứ tự).
+router.get('/bang-theo-doi/:ma', c.bangTheoDoiChiTiet);
 router.get('/:maTrang', c.siSo);
 // ⚠ Route 3 đoạn `/:maTrang/:o/ngay-giao` phải đặt TRƯỚC `/:maTrang/:o` — Express khớp theo thứ tự,
 //   để sau thì `/:o` sẽ nuốt mất (`o` = "ton_cuoi", phần "ngay-giao" bị bỏ ⇒ trả nhầm danh sách).

@@ -8,6 +8,8 @@ const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
 // 2 API ERP của phiếu giao (04/09/2026) — helper KHÔNG BAO GIỜ ném lỗi, xem `utils/erpApiChung.js`.
 const erp = require('../../utils/erpApiChung');
+const env = require('../../config/env');
+const { ghiLog } = require('../../utils/erpApiLog');
 
 // Dùng chung 2 màn (xem `repo.listTemGiao`): `SAN_SANG` = Giao hàng · `CHO_TICH` = Tích tem giao hàng.
 async function dsTemGiao(q = {}, cheDo) {
@@ -254,14 +256,40 @@ async function confirmGiao(giaoHangId, actorId) {
 // ⚠ Bọc try/catch TOÀN BỘ: kể cả câu đọc dữ liệu mô tả hỏng cũng không được kéo theo lỗi cho `confirmGiao`.
 // ⚠ TRẢ kết quả `{ ok, error?, bo_qua? }` của `erp.guiPhieuGiao` — nhánh `confirmGiao` không `await`
 //   nên không dùng tới, nhưng nút "Gửi lại ERP" thì cần để báo cho người bấm. Lỗi vẫn bị NUỐT như cũ.
+// ID phiếu do ERP cấp có dạng `SQ026LA-009650`; mã MES tự sinh khi ERP lỗi là `PG0001` (`nextMaPhieuGiao`).
+const laIdErp = (ma) => !!ma && !/^PG\d+$/i.test(String(ma).trim());
+
+// Ghi 1 dòng LỖI vào lịch sử API khi CHƯA đủ điều kiện gửi — để dòng đó hiện ở *Cài đặt API › Lịch sử* kèm
+//   nút "Gửi lại ERP" (nếu im lặng bỏ qua thì phiếu biến mất khỏi mọi chỗ tra cứu).
+async function ghiChuaGui(giaoHangId, gh, loi, actorId) {
+  await ghiLog('ERP_GUI_PHIEU_GIAO', {
+    thanhCong: false, idBanGhi: giaoHangId, url: env.erp.guiPhieuGiaoUrl,
+    gui: { IDPhieuGiao: gh.ma_phieu_giao }, loi, actorId,
+  });
+}
+
 async function guiErpPhieuGiao(giaoHangId, gh, tems, actorId) {
   try {
+    // ⚠⚠ CHỈ GỬI KHI ĐÃ CÓ ID PHIẾU GIAO CỦA ERP + CÓ DỮ LIỆU (người dùng chốt 26/09/2026): phiếu đang mang
+    //   mã MES tự sinh (ERP không cấp được số lúc lập) mà gửi đi thì `@pID` là mã ERP không hề biết. Ghi 1 dòng
+    //   lỗi ⇒ bấm "Gửi lại ERP" (Cài đặt API › Lịch sử / panel phiếu giao) sẽ xin ID rồi mới gửi.
+    if (!laIdErp(gh.ma_phieu_giao)) {
+      const loi = `Chưa có ID phiếu giao của ERP (đang mang mã MES ${gh.ma_phieu_giao}) — bấm "Gửi lại ERP" để xin ID rồi gửi`;
+      await ghiChuaGui(giaoHangId, gh, loi, actorId);
+      return { ok: false, error: loi, chua_co_id: true };
+    }
+    const dsTem = erp.dsTemGiao(tems);
+    if (!dsTem) {
+      const loi = 'Phiếu không có mã tem nào để gửi';
+      await ghiChuaGui(giaoHangId, gh, loi, actorId);
+      return { ok: false, error: loi, thieu_du_lieu: true };
+    }
     return await erp.guiPhieuGiao({
       IDPhieuGiao: gh.ma_phieu_giao,
       // Ngày chứng từ = NGÀY GIAO của phiếu (lùi về hôm nay nếu thiếu).
       Ngayct: ngayErp(gh.ngay_giao),
       user: await erp.tenDangNhap(actorId),
-      DsTemGiao: erp.dsTemGiao(tems),
+      DsTemGiao: dsTem,
     }, { giaoHangId, actorId });
   } catch (e) {
     console.error(`[gui-erp-phieu-giao] ✗ Không gửi được (phiếu ${gh.ma_phieu_giao}): ${e.message}`);
@@ -287,10 +315,29 @@ async function guiLaiErp(giaoHangId, actorId) {
   if (gh.trang_thai !== 'DA_GIAO') {
     throw new AppError('Chỉ gửi lại được phiếu ĐÃ xác nhận giao', { status: 409, errorCode: 'CHUA_GIAO' });
   }
+  const ma0 = gh.ma_phieu_giao;
   const tems = await repo.getGiaoHangTems(giaoHangId);
+  if (!erp.dsTemGiao(tems)) {
+    throw new AppError('Phiếu không có mã tem nào — không có dữ liệu để gửi ERP', { status: 409, errorCode: 'THIEU_DU_LIEU' });
+  }
+  // Phiếu đang mang mã MES tự sinh ⇒ XIN ID ERP TRƯỚC, đổi mã phiếu sang ID đó rồi mới gửi.
+  if (!laIdErp(gh.ma_phieu_giao)) {
+    let moi = null;
+    try { moi = await erp.layIdPhieuGiao(actorId); } catch { moi = null; }
+    if (!moi) {
+      throw new AppError('Chưa lấy được ID phiếu giao từ ERP (API "Lấy ID phiếu giao" lỗi hoặc đang tắt) — chưa gửi',
+        { status: 409, errorCode: 'CHUA_CO_ID' });
+    }
+    if (await repo.maPhieuGiaoDaDung(moi)) {
+      throw new AppError(`ERP cấp số "${moi}" nhưng MES đã có phiếu mang mã này — chưa gửi, thử lại sau`,
+        { status: 409, errorCode: 'TRUNG_ID' });
+    }
+    await repo.doiMaPhieuGiao(giaoHangId, gh.ma_phieu_giao, moi, actorId);
+    gh.ma_phieu_giao = moi;
+  }
   const kq = await guiErpPhieuGiao(giaoHangId, gh, tems, actorId);
   // `guiErpPhieuGiao` nuốt mọi lỗi (trả undefined khi ném) ⇒ chuẩn hóa về 1 hình dạng cho FE.
-  if (kq && kq.ok) return { ok: true, ma_phieu_giao: gh.ma_phieu_giao, so_tem: tems.length };
+  if (kq && kq.ok) return { ok: true, ma_phieu_giao: gh.ma_phieu_giao, so_tem: tems.length, doi_ma: !laIdErp(ma0) };
   if (kq && kq.bo_qua) {
     throw new AppError('API "Gửi phiếu giao" đang TẮT ở Hệ thống → Cài đặt API',
       { status: 409, errorCode: 'API_DANG_TAT' });

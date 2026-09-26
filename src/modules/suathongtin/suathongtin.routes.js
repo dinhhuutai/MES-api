@@ -26,8 +26,10 @@ const BEN_XEM = [...BEN_SUA, 'ORDER_VIEW', 'READY_VIEW', 'READY_QC'];
 router.get('/erp/trang-thai', rbac(...BEN_XEM), c.erpTrangThai);
 router.post('/erp/dong-bo', rbac(...BEN_SUA), c.erpDongBo);
 router.post('/xac-nhan', rbac(...BEN_SUA), c.xacNhanLaiNhieu); // hàng loạt — route TĨNH, trước /:phanInId
+router.post('/huy-dot-vai', rbac(...BEN_SUA), c.huyDotVaiNhieu); // hủy vải hàng loạt — route TĨNH
 router.get('/', rbac(...BEN_XEM), c.danhSach);
 router.get('/:phanInId', rbac(...BEN_XEM), c.chiTiet);
 router.post('/:phanInId/xac-nhan', rbac(...BEN_SUA), c.xacNhanLai);
+router.post('/:phanInId/huy-dot-vai', rbac(...BEN_SUA), c.huyDotVai); // GN hủy vải — không in nữa
 
 module.exports = router;

@@ -142,15 +142,28 @@ router.get('/dieu-phoi', asyncHandler(async (req, res) => {
 router.get('/nghen-map', asyncHandler(async (req, res) => {
   const rows = await flowRowsCached();
   const dot = {}; const phan = {}; const lenh = {};
+  // `tg` (26/09/2026): số phút ĐÃ Ở + SLA của mục nghẽn/sắp nghẽn — để modal "Danh sách nghẽn" + hộp
+  //   hỏi lý do hiện được "nghẽn từ lúc nào / bao lâu" cho họ màn dùng bản đồ này (Release/Test Run…).
+  //   Nhiều đợt vải cùng lệnh/phần in ⇒ giữ đợt QUÁ HẠN NHIỀU NHẤT. Mảng [phut_da_o, sla_phut].
+  const tg = { dot_vai: {}, phan_in: {}, lenh: {} };
   const worse = (map, key, st) => { if (key && (!map[key] || RANK[st] > RANK[map[key]])) map[key] = st; };
+  const tgWorse = (map, key, p, s) => {
+    if (!key) return;
+    const cu = map[key];
+    if (!cu || (p - s) > (cu[0] - cu[1])) map[key] = [p, s];
+  };
   rows.forEach((r) => {
     const st = slaStatus(r.phut_da_o, r.sla_phut, r.canh_bao_truoc_phut);
     if (st === 'OK') return;
     dot[r.dot_vai_ve_id] = st;
     worse(phan, r.phan_in_id, st);
     worse(lenh, r.lenh_id, st);
+    const p = Math.round(Number(r.phut_da_o) || 0); const s = Math.round(Number(r.sla_phut) || 0);
+    tgWorse(tg.dot_vai, r.dot_vai_ve_id, p, s);
+    tgWorse(tg.phan_in, r.phan_in_id, p, s);
+    tgWorse(tg.lenh, r.lenh_id, p, s);
   });
-  return ok(res, { dot_vai: dot, phan_in: phan, lenh });
+  return ok(res, { dot_vai: dot, phan_in: phan, lenh, tg });
 }));
 
 // ---- KIOSK: tình trạng đơn hàng theo trạm ----

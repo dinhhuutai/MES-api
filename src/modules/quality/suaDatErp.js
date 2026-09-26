@@ -72,18 +72,29 @@ async function trangThaiGui(suaIds = []) {
   return Object.fromEntries(rows.map((r) => [r.id_ban_ghi, r.ok ? 'OK' : 'LOI']));
 }
 
+async function mocXacNhanSua(suaId) {
+  try {
+    const { rows } = await query(
+      `SELECT to_char(COALESCE((SELECT created_date FROM sua WHERE id = $1), now()) AT TIME ZONE 'Asia/Ho_Chi_Minh',
+              'YYYY/MM/DD HH24:MI:SS') AS moc`, [suaId]);
+    return rows[0] ? rows[0].moc : null;
+  } catch { return null; }
+}
+
 /**
  * Gửi 1 lượt sửa. Trả { ok, bo_qua?, ly_do?, error? }.
  * @param {string} suaId
  * @param {string} actorId
  */
-async function guiSuaDat(suaId, actorId) {
+// `opts` = { guiLai, idMes } — nút "Gửi lại ERP" ở Cài đặt API › Lịch sử: bỏ chặn "đã gửi" và DÙNG LẠI IDMES cũ
+//   (proc `MES2SK6` xóa phiếu cùng `Soctcu` rồi tạo lại ⇒ không trùng).
+async function guiSuaDat(suaId, actorId, opts = {}) {
   const s = await repo.getCancelSuaRow(suaId);
   if (!s) return { ok: false, bo_qua: true, ly_do: 'NOT_FOUND' };
   if (s.da_huy) return { ok: false, bo_qua: true, ly_do: 'DA_HUY' };
   const dat = Number(s.so_luong_sua_dat) || 0;
   if (dat <= 0) return { ok: false, bo_qua: true, ly_do: 'KHONG_SUA_DAT' };
-  if (await daGuiThanhCong(suaId)) return { ok: true, bo_qua: true, ly_do: 'DA_GUI' };
+  if (!opts.guiLai && await daGuiThanhCong(suaId)) return { ok: true, bo_qua: true, ly_do: 'DA_GUI' };
 
   // Tem con của lượt (mig 100); lượt cũ chưa neo ⇒ lùi về tem con mới nhất của tem gốc.
   let temConId = s.tem_con_id;
@@ -97,11 +108,18 @@ async function guiSuaDat(suaId, actorId) {
   if (!r) return { ok: false, bo_qua: true, ly_do: 'KHONG_DU_LIEU' };
 
   // ⚠ Cấp IDMES SAU mọi guard — mỗi lần cấp là tiêu 1 số của dãy dùng chung.
-  const idMes = await capIdMes('gui-erp-sua-dat');
+  const idMes = opts.idMes != null ? opts.idMes : await capIdMes('gui-erp-sua-dat');
   if (idMes == null) return { ok: false, error: 'Không cấp được IDMES' };
 
   const payload = taoPayload(r, { idMes, soLuong: dat, soLuongHuy: Number(s.so_luong_sua_huy) || 0 });
   if (!payload.Ngayca) payload.Ngayca = await maNgayCaHomNay();
+  // Tem 17 không có giờ SX ⇒ Tugio/Dengio = MỐC XÁC NHẬN SỬA của lượt (proc SK6 dùng `@pDengio` làm
+  //   Ngày/Giờ phiếu chuyển giao — NULL là phiếu mất ngày). Không đọc được ⇒ bây giờ (giờ VN).
+  if (!payload.Tugio || !payload.Dengio) {
+    const moc = await mocXacNhanSua(suaId);
+    if (!payload.Tugio) payload.Tugio = moc;
+    if (!payload.Dengio) payload.Dengio = moc;
+  }
   const kq = await ghiInTem(payload, { maApi: MA_API });
   if (kq.bo_qua) return { ok: false, bo_qua: true, ly_do: 'API_DANG_TAT' };
 

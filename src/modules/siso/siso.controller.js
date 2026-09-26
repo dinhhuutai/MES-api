@@ -46,4 +46,8 @@ const tomTatNgayGiao = asyncHandler(async (req, res) => {
   return ok(res, await service.tomTatNgayGiao(req.params.maTrang, req.params.o, req.query));
 });
 
-module.exports = { danhMuc, siSo, chiTiet, tomTatNgayGiao, bangTheoDoi };
+// Danh sách phần in của 1 dòng bảng theo dõi (bấm dòng ở Dashboard). Cùng mức mở với `bangTheoDoi`.
+const bangTheoDoiChiTiet = asyncHandler(async (req, res) =>
+  ok(res, await service.bangTheoDoiChiTiet(req.params.ma, req.query)));
+
+module.exports = { danhMuc, siSo, chiTiet, tomTatNgayGiao, bangTheoDoi, bangTheoDoiChiTiet };
