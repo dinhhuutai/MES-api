@@ -42,8 +42,13 @@ async function thongTinSua() {
 //   · mọi dòng  (mới): { id_mes, ma_tem, url, gui, nhan, loi, so_lan_thu, thoi_gian_ms }
 //   ⇒ `id_mes`/`ma_tem` phải COALESCE qua cả 3 đường, nếu không dòng lỗi cũ sẽ trống IDMES —
 //     đúng cái cột quan trọng nhất để đối soát với ERP.
-const ID_MES = `COALESCE(a.gia_tri_moi->>'id_mes', a.gia_tri_moi->'gui'->>'IDMES', a.gia_tri_moi->'payload'->>'IDMES')`;
 const MA_TEM = `COALESCE(a.gia_tri_moi->>'ma_tem', a.gia_tri_moi->'gui'->>'BarcodeIn', a.gia_tri_moi->'payload'->>'BarcodeIn')`;
+// ⚠⚠ "ID KẾT NỐI" (27/09/2026) — dòng MỚI luôn có `id_mes`. Dòng CŨ của 3 API qua `goiErp` (phiếu giao ·
+//   phân loại lỗi · lấy ID phiếu giao) và 3 API mã tem KHÔNG ghi `id_mes` ⇒ moi lại từ payload/phản hồi:
+//   `IDMes` (phân loại lỗi, viết thường) · `IDPhieuGiao` (phiếu giao) · `ma_tem` (mã tem ERP cấp — chỉ
+//   dòng xin mã tem, nhận biết bằng `hanh_dong`) · `barcode` trong phản hồi (lấy ID phiếu giao).
+//   Khai SAU `NHAN_JSON` vì dùng nó.
+
 
 // ERP TRẢ VỀ GÌ — thêm 19/08/2026 theo yêu cầu "dù thành công hay thất bại cũng lưu message lại".
 // ⚠⚠ `nhan` được `gonPhanHoi` lưu dưới dạng **CHUỖI JSON**, không phải jsonb lồng ⇒ muốn moi khóa
@@ -56,6 +61,13 @@ const NHAN_JSON = `CASE WHEN left(btrim(COALESCE(a.gia_tri_moi->>'nhan','')), 1)
 const ERP_MESSAGE = `COALESCE(a.gia_tri_moi->>'erp_message', (${NHAN_JSON})->>'message')`;
 const ERP_ERROR = `COALESCE(a.gia_tri_moi->>'erp_error', (${NHAN_JSON})->>'error')`;
 const ERP_RETURN = `COALESCE(a.gia_tri_moi->>'erp_return_value', (${NHAN_JSON})->>'returnValue')`;
+const ID_MES = `COALESCE(a.gia_tri_moi->>'id_mes', a.gia_tri_moi->'gui'->>'IDMES', a.gia_tri_moi->'payload'->>'IDMES',
+  a.gia_tri_moi->'gui'->>'IDMes', a.gia_tri_moi->'gui'->>'IDPhieuGiao', a.gia_tri_moi->'gui'->>'MaPhieuGiao',
+  CASE WHEN a.hanh_dong LIKE 'ERP_BARCODE_TEM%' THEN a.gia_tri_moi->>'ma_tem' END,
+  CASE WHEN a.hanh_dong LIKE 'ERP_LAY_ID_PHIEU_GIAO%' THEN (${NHAN_JSON})->>'barcode' END,
+  'LOG-' || a.id::text)`;
+// ⚠ Lối lùi cuối `LOG-<audit id>`: lượt lỗi CŨ (trước 27/09/2026) chưa từng có mã nào (vd xin mã tem ăn
+//   HTTP 404 trước khi ERP cấp số) — vẫn phải có một ID để nêu tên đúng dòng khi trao đổi.
 
 // `ma` = mã API (ERP_BARCODE_TEM | ERP_GHI_IN_TEM). Lấy cả dòng thành công (`ma`) lẫn lỗi (`ma_LOI`).
 // ⚠ Lọc ngày theo GIỜ VN (khuôn chung của mọi màn lịch sử — §11.8 DATABASE.md).

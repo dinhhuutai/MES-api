@@ -113,11 +113,33 @@ const DANH_MUC_API = [
   {
     ma: 'ERP_GUI_KIEM_PHAM',
     ten: 'Gửi kết quả kiểm KCS (kiểm phẩm) sang ERP',
-    mo_ta: 'Gửi ĐÚNG 1 LẦN mỗi lượt xác nhận KCS (cùng 20 tham số với "Báo ERP mỗi lần in tem": Soluong = SL đạt, '
-      + 'Soluongloi = SL hư, SOLUONGTHIEU = SL thiếu). Chạy ngầm — TẮT hay lỗi đều KHÔNG chặn việc xác nhận KCS.',
+    mo_ta: 'Gửi ĐÚNG 1 LẦN mỗi lượt xác nhận KCS (proc MES_spr_MES2Sh6, cùng 20 tham số với "Báo ERP mỗi lần in tem": '
+      + 'Soluong = SL đạt, Soluongloi = SL hư, SOLUONGTHIEU = SL thiếu). Chạy ngầm — TẮT hay lỗi đều KHÔNG chặn việc xác nhận KCS.',
     canh_bao: null,
     macDinh: () => env.erp.guiKiemPhamEnabled,
     url: () => env.erp.guiKiemPhamUrl,
+  },
+  // TEM 13 GIA CÔNG (27/09/2026) — /gui-du-lieu-tem-gia-cong → proc MES_spr_MES2JQ6.
+  {
+    ma: 'ERP_GUI_TEM_GIA_CONG',
+    ten: 'Gửi dữ liệu tem gia công (tem 13) sang ERP',
+    mo_ta: 'Mỗi tem 13 tạo lúc Kế hoạch nhận hàng gia công = 1 lượt gọi (proc MES_spr_MES2JQ6, cùng 20 tham số với '
+      + '"Báo ERP mỗi lần in tem": Soluong = SL đạt, Soluongloi = SL hủy). In 2 tem cùng lúc ⇒ gọi 2 lần, mỗi tem 1 IDMES. '
+      + 'In lại tem KHÔNG gửi lại. Chạy ngầm — TẮT hay lỗi đều KHÔNG chặn việc nhận hàng.',
+    canh_bao: null,
+    macDinh: () => env.erp.guiTemGiaCongEnabled,
+    url: () => env.erp.guiTemGiaCongUrl,
+  },
+  // GN HỦY VẢI (27/09/2026) — /gui-ds-huy-vai → proc SX_spr_DSPhieuNhanvaiReadyHuy.
+  {
+    ma: 'ERP_GUI_DS_HUY_VAI',
+    ten: 'Gửi danh sách hủy vải (GN) sang ERP',
+    mo_ta: 'Bấm "Hủy vải" ở Đơn hàng › Phần in chờ sửa thông tin ⇒ gửi DANH SÁCH CODE PHẦN vừa hủy (ngăn bằng dấu phẩy) '
+      + 'sang ERP (proc SX_spr_DSPhieuNhanvaiReadyHuy). Hủy nhiều phần cùng lúc = 1 lượt gọi. TẮT hay lỗi đều KHÔNG chặn '
+      + 'việc hủy trong MES; lượt trượt gửi lại ở Lịch sử.',
+    canh_bao: null,
+    macDinh: () => env.erp.guiDsHuyVaiEnabled,
+    url: () => env.erp.guiDsHuyVaiUrl,
   },
   // KÉO phần in đã sửa thông tin bên ERP về trang "Phần in chờ sửa thông tin" (25/09/2026).
   {

@@ -27,6 +27,7 @@ const { query } = require('../config/db');
 const { apiBat } = require('./caiDatApi');
 const { ghiLog } = require('./erpApiLog');
 const { maTemNhan } = require('./temPrefix');
+const { taoIdKetNoi, idTuBody } = require('./idKetNoi');
 
 // ─── CHUẨN HÓA GIÁ TRỊ GỬI ERP ───────────────────────────────────────────────
 // ⚠ Cắt đúng độ dài tham số của proc (`NVARCHAR(20)` / `NVARCHAR(4000)`): tedious KHÔNG tự cắt,
@@ -111,8 +112,16 @@ async function goiMotLan({ nhan, url, method, body, timeoutMs }) {
   return data || {};
 }
 
-// Gọi có retry + ghi vết. KHÔNG NÉM LỖI — luôn trả { ok, data?, error?, bo_qua? }.
-async function goiErp(maApi, { nhan, url, method = 'POST', body = null, timeoutMs, retry, idBanGhi, moTa, actorId }) {
+// Gọi có retry + ghi vết. KHÔNG NÉM LỖI — luôn trả { ok, data?, error?, bo_qua?, id_ket_noi }.
+// ⚠⚠ ID KẾT NỐI (27/09/2026): mọi dòng lịch sử PHẢI có — trước đây 3 API qua hàm này không ghi `id_mes`
+//   nên cột ID của *Cài đặt API › Lịch sử* trống (phiếu giao, phân loại lỗi, lấy ID phiếu giao).
+//   Thứ tự: `idKetNoi` truyền vào → ID trong body (IDMES/IDMes/IDPhieuGiao) → `layIdTuPhanHoi(data)`
+//   (chiều XIN SỐ: chính số ERP cấp) → ID sinh mới (lượt lỗi của chiều xin số).
+async function goiErp(maApi, {
+  nhan, url, method = 'POST', body = null, timeoutMs, retry, idBanGhi, moTa, actorId,
+  idKetNoi = null, layIdTuPhanHoi = null,
+}) {
+  const idCoSan = idKetNoi || idTuBody(body);
   if (!(await apiBat(maApi))) {
     console.log(`[${nhan}] ⏸ ĐANG TẮT (Hệ thống > Cài đặt API) — bỏ qua${moTa ? ` ${moTa}` : ''}`);
     return { ok: false, bo_qua: true };
@@ -123,12 +132,13 @@ async function goiErp(maApi, { nhan, url, method = 'POST', body = null, timeoutM
   for (let i = 1; i <= soLan; i += 1) {
     try {
       const data = await goiMotLan({ nhan, url, method, body, timeoutMs });
+      const idKn = idCoSan || (layIdTuPhanHoi && layIdTuPhanHoi(data)) || taoIdKetNoi();
       await ghiLog(maApi, {
-        thanhCong: true, idBanGhi: idBanGhi || '-', url, soLanThu: i, thoiGianMs: Date.now() - batDau,
+        thanhCong: true, idBanGhi: idBanGhi || '-', idMes: idKn, url, soLanThu: i, thoiGianMs: Date.now() - batDau,
         gui: method === 'POST' ? body : null, nhan: data,
         erpMessage: data && data.message, erpReturnValue: data && data.returnValue, actorId,
       });
-      return { ok: true, data };
+      return { ok: true, data, id_ket_noi: idKn };
     } catch (e) {
       loiCuoi = e;
       if (i < soLan) {
@@ -141,13 +151,14 @@ async function goiErp(maApi, { nhan, url, method = 'POST', body = null, timeoutM
   const ph = loiCuoi && loiCuoi.phanHoi;
   const error = `${loiCuoi && loiCuoi.message} (${url})`;
   console.error(`[${nhan}] ✗ Thất bại sau ${soLan} lần${moTa ? ` — ${moTa}` : ''}: ${error}`);
+  const idKn = idCoSan || taoIdKetNoi();
   await ghiLog(maApi, {
-    thanhCong: false, idBanGhi: idBanGhi || '-', url, soLanThu: soLan, thoiGianMs: Date.now() - batDau,
+    thanhCong: false, idBanGhi: idBanGhi || '-', idMes: idKn, url, soLanThu: soLan, thoiGianMs: Date.now() - batDau,
     gui: method === 'POST' ? body : null, nhan: ph,
     erpMessage: ph && ph.message, erpError: ph && ph.error, erpReturnValue: ph && ph.returnValue,
     loi: error, actorId,
   });
-  return { ok: false, error };
+  return { ok: false, error, id_ket_noi: idKn };
 }
 
 // ─── 2 CHUỖI DANH SÁCH GỬI ERP ───────────────────────────────────────────────
@@ -186,6 +197,14 @@ function dsTemGiao(tems = []) {
 // Trả CHUỖI id do ERP cấp, hoặc `null` khi tắt / lỗi (bên gọi lùi về mã MES tự sinh).
 // ⚠ Mỗi lần gọi TIÊU MỘT SỐ ⇒ chỉ gọi khi THẬT SỰ tạo phiếu giao, và gọi TRƯỚC transaction
 //   (gọi HTTP bên trong transaction sẽ giữ khóa bảng suốt thời gian chờ mạng).
+// ERP có thể đặt tên khóa khác nhau — nhận mọi biến thể hay gặp rồi mới chịu thua.
+function idPhieuTuPhanHoi(d) {
+  const x = d || {};
+  const id = x.id ?? x.ID ?? x.idPhieuGiao ?? x.IDPhieuGiao ?? x.ma_phieu_giao ?? x.maPhieuGiao ?? x.barcode ?? x.data;
+  const s = id == null || typeof id === 'object' ? '' : String(id).trim();
+  return s || null;
+}
+
 async function layIdPhieuGiao(actorId = null) {
   const kq = await goiErp('ERP_LAY_ID_PHIEU_GIAO', {
     nhan: 'lay-id-phieu-giao',
@@ -194,12 +213,11 @@ async function layIdPhieuGiao(actorId = null) {
     timeoutMs: env.erp.layIdPhieuGiaoTimeoutMs,
     retry: env.erp.layIdPhieuGiaoRetry,
     actorId,
+    // ID kết nối = CHÍNH số phiếu ERP cấp ⇒ tra 1 mã là ra cả lượt xin số lẫn lượt gửi phiếu.
+    layIdTuPhanHoi: idPhieuTuPhanHoi,
   });
   if (!kq.ok) return null;
-  const d = kq.data || {};
-  // ERP có thể đặt tên khóa khác nhau — nhận mọi biến thể hay gặp rồi mới chịu thua.
-  const id = d.id ?? d.ID ?? d.idPhieuGiao ?? d.IDPhieuGiao ?? d.ma_phieu_giao ?? d.maPhieuGiao ?? d.barcode ?? d.data;
-  const s = id == null ? '' : String(id).trim();
+  const s = idPhieuTuPhanHoi(kq.data) || '';
   if (!s) {
     console.warn('[lay-id-phieu-giao] ⚠ ERP trả về thành công nhưng không có id — dùng mã MES tự sinh');
     return null;
@@ -268,7 +286,52 @@ async function guiPhanLoaiLoi(payload, { temId = null, actorId = null } = {}) {
   });
 }
 
+// ─── 4. BÁO ERP DANH SÁCH CODE PHẦN GN HỦY VẢI (27/09/2026) ─────────────────────
+// Router ERP `/gui-ds-huy-vai` → proc `SX_spr_DSPhieuNhanvaiReadyHuy`. Body:
+//   `DsPhan`   NVARCHAR(4000) — code phần ngăn bằng dấu phẩy, không khoảng trắng (khuôn `@pDsPhan` của
+//              `SX_spr_DSPhieuNhanvaiReady`, cùng họ proc).
+//   `IDKetNoi` NVARCHAR(50)   — ID kết nối của lượt (truy vết 2 bên); router bỏ qua cũng không sao.
+// ⚠ KHÔNG ném lỗi — trả kết quả để bên gọi báo cho người bấm (nút Hủy vải đang chờ).
+async function guiDsHuyVai(dsPhan, { actorId = null, idKetNoi = null } = {}) {
+  const ds = [...new Set((dsPhan || []).map((x) => String(x || '').trim().replace(/,/g, ' ')).filter(Boolean))];
+  if (!ds.length) return { ok: false, bo_qua: true, ly_do: 'THIEU_DU_LIEU' };
+  // ⚠ Chia LÔ ≤ 4000 ký tự thay vì `catChuoi` — cắt cụt sẽ xé đôi 1 code phần và ERP hủy nhầm/sót mã.
+  const lo = [];
+  let cur = [];
+  for (const m of ds) {
+    if (cur.length && [...cur, m].join(',').length > 4000) { lo.push(cur); cur = []; }
+    cur.push(m);
+  }
+  if (cur.length) lo.push(cur);
+  const ketQua = [];
+  for (let i = 0; i < lo.length; i += 1) {
+    const id = idKetNoi && lo.length === 1 ? idKetNoi : taoIdKetNoi('HV');
+    const body = { DsPhan: lo[i].join(','), IDKetNoi: id };
+    // eslint-disable-next-line no-await-in-loop
+    const kq = await goiErp('ERP_GUI_DS_HUY_VAI', {
+      nhan: 'gui-ds-huy-vai',
+      url: env.erp.guiDsHuyVaiUrl,
+      method: 'POST',
+      body,
+      timeoutMs: env.erp.guiDsHuyVaiTimeoutMs,
+      retry: env.erp.guiDsHuyVaiRetry,
+      moTa: `${lo[i].length} code phần`,
+      actorId,
+    });
+    ketQua.push(kq);
+    if (kq.bo_qua) break; // API đang tắt — các lô sau cũng vậy
+  }
+  const loi = ketQua.filter((k) => !k.ok && !k.bo_qua);
+  return {
+    ok: ketQua.every((k) => k.ok),
+    bo_qua: ketQua.some((k) => k.bo_qua),
+    error: loi.length ? loi.map((k) => k.error).join(' | ') : undefined,
+    id_ket_noi: ketQua.map((k) => k.id_ket_noi).filter(Boolean).join(', '),
+    so_ma: ds.length,
+  };
+}
+
 module.exports = {
-  layIdPhieuGiao, guiPhieuGiao, guiPhanLoaiLoi, goiErp,
+  layIdPhieuGiao, guiPhieuGiao, guiPhanLoaiLoi, guiDsHuyVai, goiErp,
   tenDangNhap, catChuoi, ngayGio, dsMaLoi, dsTemGiao,
 };

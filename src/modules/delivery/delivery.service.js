@@ -263,7 +263,8 @@ const laIdErp = (ma) => !!ma && !/^PG\d+$/i.test(String(ma).trim());
 //   nút "Gửi lại ERP" (nếu im lặng bỏ qua thì phiếu biến mất khỏi mọi chỗ tra cứu).
 async function ghiChuaGui(giaoHangId, gh, loi, actorId) {
   await ghiLog('ERP_GUI_PHIEU_GIAO', {
-    thanhCong: false, idBanGhi: giaoHangId, url: env.erp.guiPhieuGiaoUrl,
+    // ID kết nối = mã phiếu (dù đang là mã MES `PG…`) để tra được cả lượt chưa gửi này.
+    thanhCong: false, idBanGhi: giaoHangId, idMes: gh.ma_phieu_giao || null, url: env.erp.guiPhieuGiaoUrl,
     gui: { IDPhieuGiao: gh.ma_phieu_giao }, loi, actorId,
   });
 }

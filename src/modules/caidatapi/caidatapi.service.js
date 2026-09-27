@@ -92,6 +92,7 @@ function erpProxy() {
 const MA_CO_LICH_SU = new Set([
   'ERP_BARCODE_TEM', 'ERP_BARCODE_TEM_17', 'ERP_BARCODE_TEM_13', 'ERP_GHI_IN_TEM',
   'ERP_LAY_ID_PHIEU_GIAO', 'ERP_GUI_PHIEU_GIAO', 'ERP_GUI_PHAN_LOAI_LOI', 'ERP_GUI_SUA_DAT', 'ERP_GUI_KIEM_PHAM',
+  'ERP_GUI_TEM_GIA_CONG', 'ERP_DS_SUA_THONG_TIN', 'ERP_GUI_DS_HUY_VAI',
 ]);
 
 async function lichSu(ma, { date, search, page, limit, offset }) {

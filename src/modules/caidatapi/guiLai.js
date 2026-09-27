@@ -23,6 +23,7 @@ const erp = require('../../utils/erpApiChung');
 // Mã API có nút gửi lại (FE gương ở `LichSuApiPanel` hằng `CO_GUI_LAI`).
 const MA_GUI_LAI = new Set([
   'ERP_GHI_IN_TEM', 'ERP_GUI_PHIEU_GIAO', 'ERP_GUI_PHAN_LOAI_LOI', 'ERP_GUI_SUA_DAT', 'ERP_GUI_KIEM_PHAM',
+  'ERP_GUI_TEM_GIA_CONG', 'ERP_GUI_DS_HUY_VAI',
 ]);
 
 const soHoacNull = (v) => { const n = Number(v); return v == null || v === '' || !Number.isFinite(n) ? null : n; };
@@ -56,6 +57,16 @@ async function guiLai(ma, auditId, actorId) {
   const d = await docDong(ma, auditId);
   if (!d) throw new AppError('Không tìm thấy dòng lịch sử', { status: 404, errorCode: 'NOT_FOUND' });
   const g = d.gia_tri_moi || {};
+  // GN hủy vải — dòng không gắn bản ghi (1 lượt nhiều phần in) ⇒ gửi lại ĐÚNG danh sách code phần đã gửi,
+  //   giữ nguyên ID kết nối cũ để 2 bên vẫn khớp.
+  if (ma === 'ERP_GUI_DS_HUY_VAI') {
+    const gui = g.gui || {};
+    const ds = String(gui.DsPhan || '').split(',').map((s) => s.trim()).filter(Boolean);
+    if (!ds.length) throw new AppError('Dòng lịch sử không có danh sách code phần', { status: 409, errorCode: 'THIEU_DU_LIEU' });
+    const kq = await erp.guiDsHuyVai(ds, { actorId, idKetNoi: gui.IDKetNoi || g.id_mes || null });
+    loiNeu(kq, 'Gửi danh sách hủy vải');
+    return { ok: true };
+  }
   const id = d.id_ban_ghi;
   if (!id || id === '-') throw new AppError('Dòng lịch sử không gắn bản ghi nào — không gửi lại được', { status: 409, errorCode: 'THIEU_DU_LIEU' });
 
@@ -103,24 +114,31 @@ async function guiLai(ma, auditId, actorId) {
     return { ok: true };
   }
 
-  // ERP_GHI_IN_TEM — dựng lại từ tem + GIỮ các số lượng đã gửi lần trước (tem gia công báo ĐẠT/HỦY riêng,
-  //   không suy lại được từ tem). Ngày chứng từ giữ ngày cũ nếu có.
+  // ERP_GHI_IN_TEM · ERP_GUI_TEM_GIA_CONG — dựng lại từ tem + GIỮ các số lượng đã gửi lần trước (tem gia
+  //   công báo ĐẠT/HỦY riêng, không suy lại được từ tem). Ngày chứng từ giữ ngày cũ nếu có.
   const prodRepo = require('../production/production.repository');
   const cu = g.gui || g.payload || {};
   const ngayCt = cu.Ngayct ? String(cu.Ngayct).slice(0, 10).replace(/\//g, '-') : null;
-  const [r] = await prodRepo.duLieuGhiInTem([{ temId: id, dotVaiId: null }], ngayCt);
+  // Tem gia công nhận theo code phần có `tem.dot_vai_ve_id` (mig 095) — dùng đúng đợt đó; thiếu cột thì đợt đại diện.
+  let dotVaiId = null;
+  try {
+    const { rows: dv } = await query('SELECT dot_vai_ve_id FROM tem WHERE id = $1', [id]);
+    dotVaiId = (dv[0] && dv[0].dot_vai_ve_id) || null;
+  } catch { dotVaiId = null; }
+  const [r] = await prodRepo.duLieuGhiInTem([{ temId: id, dotVaiId }], ngayCt);
   if (!r) throw new AppError('Không đọc được dữ liệu tem — không gửi lại được', { status: 409, errorCode: 'THIEU_DU_LIEU' });
-  const idMes = idMesCu(g) ?? await capIdMes('ghi-in-tem');
+  const ten = ma === 'ERP_GUI_TEM_GIA_CONG' ? 'Gửi dữ liệu tem gia công' : 'Báo ERP mỗi lần in tem';
+  const idMes = idMesCu(g) ?? await capIdMes(ma === 'ERP_GUI_TEM_GIA_CONG' ? 'gui-tem-gia-cong' : 'ghi-in-tem');
   const payload = taoPayload(r, {
     idMes,
     soLuong: soHoacNull(cu.Soluong),
     soLuongHuy: soHoacNull(cu.Soluongloi) || 0,
     soLuongThieu: soHoacNull(cu.SOLUONGTHIEU) || 0,
   });
-  const kq = await ghiInTem(payload);
-  if (kq.bo_qua) loiNeu({ bo_qua: true, ly_do: 'API_DANG_TAT' }, 'Báo ERP mỗi lần in tem');
-  await prodRepo.logGhiInTem(id, kq.ok, kq.body, kq.error, actorId, kq.data);
-  loiNeu(kq, 'Báo ERP mỗi lần in tem');
+  const kq = await ghiInTem(payload, { maApi: ma });
+  if (kq.bo_qua) loiNeu({ bo_qua: true, ly_do: 'API_DANG_TAT' }, ten);
+  await prodRepo.logGhiInTem(id, kq.ok, kq.body, kq.error, actorId, kq.data, ma);
+  loiNeu(kq, ten);
   return { ok: true };
 }
 

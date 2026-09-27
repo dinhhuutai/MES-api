@@ -1454,7 +1454,9 @@ async function confirmGiaCongToOqc(lenhId, { soLuong, items } = {}, actorId) {
   //   chung cho cả lệnh (không tách theo đợt) ⇒ để `duLieuGhiInTem` lấy đợt đại diện, y như `printTem`.
   if (temIdMoi) {
     const { guiGhiInTem } = require('../production/production.service');
-    guiGhiInTem([{ temId: temIdMoi, dotVaiId: null, soLuongHuy: 0, soLuongThieu: 0 }], actorId);
+    // ⚠⚠ Kênh `/gui-du-lieu-tem-gia-cong` (proc JQ6, 27/09/2026) — KHÔNG còn qua `ghi-in-tem` (SF0).
+    guiGhiInTem([{ temId: temIdMoi, dotVaiId: null, soLuongHuy: 0, soLuongThieu: 0 }], actorId, null,
+      { maApi: 'ERP_GUI_TEM_GIA_CONG' });
   }
   // Chỉ đẩy dòng chảy sang OQC khi đã nhận đủ; tem của các lần trước vẫn vào màn OQC bình thường
   // (danh sách OQC lọc theo SỔ CÁI tem `con_oqc > 0`, không phụ thuộc trạng thái lệnh).
@@ -1576,10 +1578,12 @@ async function nhanGiaCongTheoPhanIn(lenh, items, actorId) {
   // ⚠ Truyền `dotVaiId` THẬT: mỗi tem nay đích danh 1 đợt vải, không phải "đợt đại diện" như trước.
   const { guiGhiInTem } = require('../production/production.service');
   // ⚠ `soLuong` = SL ĐẠT, `soLuongHuy` = SL HỦY nhập ở modal (tem lưu so_luong = đạt + hủy).
+  // ⚠⚠ Kênh `/gui-du-lieu-tem-gia-cong` (proc JQ6, 27/09/2026). In 2 tem ⇒ 2 phần tử ⇒ `guiGhiInTem`
+  //   gọi ERP 2 LẦN, mỗi tem 1 IDMES riêng (proc khóa phiếu theo Soctcu = IDMES).
   guiGhiInTem(ketQua.map((t, i) => ({
     temId: t.tem_id, dotVaiId: canhan[i].pin.dot_vai_ve_id,
     soLuong: canhan[i].qty, soLuongHuy: canhan[i].huy, soLuongThieu: 0,
-  })), actorId);
+  })), actorId, null, { maApi: 'ERP_GUI_TEM_GIA_CONG' });
 
   if (xong) {
     await tracking.moveByLenh(lenhId, 'OQC', actorId);

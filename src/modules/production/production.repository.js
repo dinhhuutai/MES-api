@@ -1000,14 +1000,16 @@ async function duLieuGhiInTem(capTem = [], ngayCt = null) {
 // ⚠ `returnValue` là mã RETURN của stored procedure. Router ERP luôn trả `success: true` khi
 //   `execute()` không ném ⇒ proc trả mã khác 0 (lỗi nghiệp vụ) vẫn được coi là thành công. Lưu tách
 //   ra thì mới rà được về sau.
-async function logGhiInTem(temId, thanhCong, payload, loi, actorId, phanHoi = null) {
+// `maApi` (27/09/2026): tem 13 gia công ghi dưới mã `ERP_GUI_TEM_GIA_CONG` (proc JQ6) — mặc định giữ
+// `ERP_GHI_IN_TEM` nên mọi call-site cũ không đổi.
+async function logGhiInTem(temId, thanhCong, payload, loi, actorId, phanHoi = null, maApi = 'ERP_GHI_IN_TEM') {
   const p = phanHoi && typeof phanHoi === 'object' ? phanHoi : null;
-  await ghiLog('ERP_GHI_IN_TEM', {
+  await ghiLog(maApi, {
     thanhCong,
     idBanGhi: temId,
     idMes: payload?.IDMES ?? null,
     maTem: payload?.BarcodeIn ?? null,
-    url: env.erp.ghiInTemUrl,
+    url: maApi === 'ERP_GUI_TEM_GIA_CONG' ? env.erp.guiTemGiaCongUrl : env.erp.ghiInTemUrl,
     gui: payload || null,
     nhan: phanHoi,
     // Thông điệp ERP trả về — nhánh lỗi thì router ERP để câu SQL Server ở khóa `error`.

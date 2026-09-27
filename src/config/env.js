@@ -110,12 +110,24 @@ const env = {
     guiSuaDatTimeoutMs: parseInt(process.env.ERP_GUI_SUA_DAT_TIMEOUT_MS || '10000', 10),
     guiSuaDatRetry: parseInt(process.env.ERP_GUI_SUA_DAT_RETRY || '3', 10),
     guiSuaDatEnabled: String(process.env.ERP_GUI_SUA_DAT_ENABLED || 'true').toLowerCase() === 'true',
-    // Đẩy KẾT QUẢ KIỂM KCS (kiểm phẩm) sang ERP lúc xác nhận KCS (24/09/2026). Chưa có hợp đồng tham số
-    // riêng ⇒ dùng cùng 20 tham số với `ghi-in-tem` (khuôn sửa đạt) — xem `quality/kiemPhamErp.js`.
+    // Đẩy KẾT QUẢ KIỂM KCS (kiểm phẩm) sang ERP lúc xác nhận KCS — proc `MES_spr_MES2Sh6` (chốt 27/09/2026),
+    // cùng 20 tham số `@pBarcodeIn` với `ghi-in-tem`. Xem `quality/kiemPhamErp.js`.
     guiKiemPhamUrl: process.env.ERP_GUI_KIEM_PHAM_URL || `${ERP_GOC}/gui-erp-kiem-pham`,
     guiKiemPhamTimeoutMs: parseInt(process.env.ERP_GUI_KIEM_PHAM_TIMEOUT_MS || '10000', 10),
     guiKiemPhamRetry: parseInt(process.env.ERP_GUI_KIEM_PHAM_RETRY || '3', 10),
     guiKiemPhamEnabled: String(process.env.ERP_GUI_KIEM_PHAM_ENABLED || 'true').toLowerCase() === 'true',
+    // Đẩy dữ liệu TEM 13 GIA CÔNG lúc Kế hoạch nhận hàng/in tem — proc `MES_spr_MES2JQ6` (27/09/2026),
+    // cùng 20 tham số. 1 tem = 1 lượt gọi, IDMES riêng.
+    guiTemGiaCongUrl: process.env.ERP_GUI_TEM_GIA_CONG_URL || `${ERP_GOC}/gui-du-lieu-tem-gia-cong`,
+    guiTemGiaCongTimeoutMs: parseInt(process.env.ERP_GUI_TEM_GIA_CONG_TIMEOUT_MS || '10000', 10),
+    guiTemGiaCongRetry: parseInt(process.env.ERP_GUI_TEM_GIA_CONG_RETRY || '3', 10),
+    guiTemGiaCongEnabled: String(process.env.ERP_GUI_TEM_GIA_CONG_ENABLED || 'true').toLowerCase() === 'true',
+    // Báo ERP danh sách code phần GN HỦY VẢI (không in) ở trang "Phần in chờ sửa thông tin" — proc
+    // `SX_spr_DSPhieuNhanvaiReadyHuy` (27/09/2026). ⚠ Đường dẫn viết KHÔNG DẤU (`huy-vai`).
+    guiDsHuyVaiUrl: process.env.ERP_GUI_DS_HUY_VAI_URL || `${ERP_GOC}/gui-ds-huy-vai`,
+    guiDsHuyVaiTimeoutMs: parseInt(process.env.ERP_GUI_DS_HUY_VAI_TIMEOUT_MS || '10000', 10),
+    guiDsHuyVaiRetry: parseInt(process.env.ERP_GUI_DS_HUY_VAI_RETRY || '3', 10),
+    guiDsHuyVaiEnabled: String(process.env.ERP_GUI_DS_HUY_VAI_ENABLED || 'true').toLowerCase() === 'true',
     // KÉO danh sách phần in GN đã sửa thông tin bên ERP (25/09/2026) — job 5 phút/lần, chỉ cập nhật phần in
     // đang nằm ở *Đơn hàng › Phần in chờ sửa thông tin*. Xem `modules/suathongtin/erpCapNhat.js`.
     dsSuaThongTinUrl: process.env.ERP_DS_PHAN_IN_SUA_THONG_TIN_URL || `${ERP_GOC}/ds-phan-in-sua-thong-tin`,

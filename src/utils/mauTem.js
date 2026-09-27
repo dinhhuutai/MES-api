@@ -106,6 +106,13 @@ const TRUONG_TEM = Object.freeze([
   { ma: 'nguoi_nhan', ten: 'Người nhận hàng về — tem Gia công', kieu: 'chu', nhom: 'Gia công' },
   // ⚠ `so_luong` của tem 13 = SL **ĐẠT** (phần đi tiếp OQC); phần hỏng nhà gia công trả về nằm ở đây.
   { ma: 'so_luong_huy', ten: 'SL hủy của lượt nhận — tem Gia công', kieu: 'so', nhom: 'Gia công' },
+  // ─ Số NHẬP ở modal "In tem = nhận hàng" + số theo CODE PHẦN của tem (27/09/2026) ─
+  // Mã tem 13 (xin từ /barcode-tem-13) dùng trường `ma_tem` ở nhóm "Tem".
+  { ma: 'sl_dat', ten: 'SL ĐẠT của lượt nhận (nhập lúc in) — tem Gia công', kieu: 'so', nhom: 'Gia công' },
+  { ma: 'sl_nhan_lan_nay', ten: 'SL nhận lượt này = đạt + hủy — tem Gia công', kieu: 'so', nhom: 'Gia công' },
+  { ma: 'sl_release_phan', ten: 'SL release của code phần — tem Gia công', kieu: 'so', nhom: 'Gia công' },
+  { ma: 'da_chuyen_phan', ten: 'SL code phần đã nhận (sau lượt này) — tem Gia công', kieu: 'so', nhom: 'Gia công' },
+  { ma: 'con_lai_phan', ten: 'SL code phần còn phải nhận (sau lượt này) — tem Gia công', kieu: 'so', nhom: 'Gia công' },
 
   { ma: 'created_date', ten: 'Ngày giờ in tem', kieu: 'ngay', nhom: 'Thời gian' },
   { ma: 'tg_bd_in', ten: 'Giờ bắt đầu in (phiếu)', kieu: 'ngay', nhom: 'Thời gian' },

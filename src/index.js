@@ -70,6 +70,12 @@ async function start() {
     console.log(`[erp] Gửi kiểm KCS : ${env.erp.guiKiemPhamUrl}`
       + (env.erp.guiKiemPhamEnabled ? '' : '   (ĐANG TẮT qua ERP_GUI_KIEM_PHAM_ENABLED=false)')
       + (process.env.ERP_GUI_KIEM_PHAM_URL ? '' : '   ⚠ CHƯA đặt ERP_GUI_KIEM_PHAM_URL — đang suy theo gốc URL nhận vải'));
+    console.log(`[erp] Gửi tem g.công: ${env.erp.guiTemGiaCongUrl}`
+      + (env.erp.guiTemGiaCongEnabled ? '' : '   (ĐANG TẮT qua ERP_GUI_TEM_GIA_CONG_ENABLED=false)')
+      + (process.env.ERP_GUI_TEM_GIA_CONG_URL ? '' : '   ⚠ CHƯA đặt ERP_GUI_TEM_GIA_CONG_URL — đang suy theo gốc URL nhận vải'));
+    console.log(`[erp] Gửi hủy vải  : ${env.erp.guiDsHuyVaiUrl}`
+      + (env.erp.guiDsHuyVaiEnabled ? '' : '   (ĐANG TẮT qua ERP_GUI_DS_HUY_VAI_ENABLED=false)')
+      + (process.env.ERP_GUI_DS_HUY_VAI_URL ? '' : '   ⚠ CHƯA đặt ERP_GUI_DS_HUY_VAI_URL — đang suy theo gốc URL nhận vải'));
     // ⚠ Web Push (mig 085): thiếu VAPID key / chưa cài `web-push` thì TỰ TẮT — chuông và popup khi
     //   app đang mở vẫn chạy, chỉ mất phần "báo cả khi đóng app". In ra để khỏi phải đi dò vì sao.
     const tt = webPush.trangThai();

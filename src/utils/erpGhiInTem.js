@@ -142,10 +142,19 @@ const KENH = {
     url: () => env.erp.guiKiemPhamUrl,
     timeoutMs: () => env.erp.guiKiemPhamTimeoutMs,
     retry: () => env.erp.guiKiemPhamRetry,
-    // ⚠⚠ Proc `MES_spr_MES2SK6` (26/09/2026, người dùng gửi SP thật) nhận mã tem ở tham số `@pBarcodeSua`,
-    //   KHÔNG phải `@pBarcodeIn` ⇒ gửi thêm khóa `BarcodeSua` (= mã tem 15 được kiểm; proc tự đổi
-    //   2 số đầu thành 16 cho `MaboSua`). Giữ cả `BarcodeIn` để log/lịch sử đọc như mọi kênh khác.
-    them: (b) => ({ BarcodeSua: b.BarcodeIn }),
+    // ⚠⚠ ĐỔI 27/09/2026: kiểm phẩm gọi proc **`MES_spr_MES2Sh6`** (loaict SH6), KHÔNG phải SK6.
+    //   SH6 nhận mã tem ở `@pBarcodeIn` (y hệt ghi-in-tem) ⇒ KHÔNG gửi khóa `BarcodeSua` nữa.
+    //   Proc tự đổi 2 số đầu thành 16 cho `MaboSua`, và XÓA phiếu cùng Soctcu(=IDMES)+SH6 trước khi
+    //   tạo lại ⇒ gửi lại với cùng IDMES không đẻ phiếu trùng.
+  },
+  // ⚠⚠ TEM 13 GIA CÔNG (27/09/2026) — proc `MES_spr_MES2JQ6` (loaict JQ6), CÙNG 20 tham số `@pBarcodeIn`.
+  //   Mỗi TEM tạo ra = 1 lượt gọi với IDMES RIÊNG (proc khóa phiếu theo Soctcu = IDMES).
+  //   Thay cho `ghi-in-tem` (SF0): tem gia công KHÔNG in ở chuyền, gửi SF0 là cộng vào sản lượng in.
+  ERP_GUI_TEM_GIA_CONG: {
+    nhan: 'gui-tem-gia-cong',
+    url: () => env.erp.guiTemGiaCongUrl,
+    timeoutMs: () => env.erp.guiTemGiaCongTimeoutMs,
+    retry: () => env.erp.guiTemGiaCongRetry,
   },
 };
 

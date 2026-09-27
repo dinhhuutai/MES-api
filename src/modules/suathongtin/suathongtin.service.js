@@ -8,6 +8,7 @@ const phanInAdmin = require('../phaninadmin/phaninadmin.service');
 const { THONG_TIN_GN, TEN_THEO_MA } = require('../../utils/traVeGn');
 const AppError = require('../../utils/AppError');
 const sockets = require('../../sockets');
+const erp = require('../../utils/erpApiChung');
 
 const NGUON_HOP_LE = { KT: 'READY Kỹ thuật', QC: 'QC chuẩn bị kỹ thuật' };
 const ngayHopLe = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? v : null);
@@ -18,16 +19,18 @@ function danhMuc() {
 
 async function danhSach(q) {
   const trangThai = ['CHO', 'DA', ''].includes(q.trangThai) ? q.trangThai : 'CHO';
-  return repo.danhSach({
+  const rows = await repo.danhSach({
     search: q.search || '', trangThai, tuNgay: ngayHopLe(q.tuNgay), denNgay: ngayHopLe(q.denNgay),
   });
+  // Cờ cho FE khóa ô chọn / nút "Hủy vải" ở dòng KHÔNG có lý do hủy — CÙNG luật với guard `huyDotVai`.
+  return rows.map((r) => ({ ...r, co_ly_do_huy: coLyDoHuy([r]) }));
 }
 
 async function chiTiet(phanInId) {
   const [ct, dangCho, lichSu] = await Promise.all([
     phanInAdmin.chiTiet(phanInId), repo.dangCho(phanInId), repo.lichSu(phanInId),
   ]);
-  return { ...ct, tra_ve_dang_cho: dangCho, lich_su: lichSu };
+  return { ...ct, tra_ve_dang_cho: dangCho, lich_su: lichSu, co_ly_do_huy: coLyDoHuy(dangCho) };
 }
 
 // READY (Kỹ thuật / QC) trả phần in về GN.
@@ -120,10 +123,28 @@ async function xacNhanLai(phanInId, { ghiChu } = {}, actorId) {
 // Rồi đóng lượt trả về GN (audit `GN_HUY_DOT_VAI`) ⇒ phần in rời trang chờ sửa.
 // ⚠ ĐỢT MỚI TỪ ERP VỀ ⇒ phần in TỰ HIỆN LẠI (`erpsync.repository.moLaiPhanInCoDotMoi`).
 // ⚠ Đợt ĐÃ RELEASE không hủy được (phải hủy lệnh trước) — giữ nguyên, báo lại trong `loi`.
-async function huyDotVai(phanInId, { lyDo } = {}, actorId) {
+// ⚠⚠ CHỈ HỦY ĐƯỢC PHẦN IN CÓ LÝ DO HỦY (người dùng chốt 27/09/2026): lượt trả về GN đang chờ phải có
+//   mục "Hủy vải không in" (`HUY_VAI`, chọn lúc READY bấm Trả về GN). Phần in chỉ sai thông tin thì GN
+//   phải SỬA rồi xác nhận lại, không được hủy. Nhận diện bằng TÊN mục trong `checklist_list` (chuỗi tên
+//   ngăn ", " — `traVe` ghi) hoặc câu lý do "Đề nghị HỦY VẢI" (cùng `traVe` sinh ra).
+const TEN_HUY_VAI = TEN_THEO_MA.HUY_VAI;
+function coLyDoHuy(dsTraVe = []) {
+  return dsTraVe.some((q) => String(q.checklist_list || '').split(',').map((s) => s.trim()).includes(TEN_HUY_VAI)
+    || /Đề nghị HỦY VẢI/i.test(String(q.ly_do || '')));
+}
+
+// `guiErp` = false khi gọi từ `huyDotVaiNhieu` (gửi GỘP 1 lượt cho cả lô ở ngoài).
+async function huyDotVai(phanInId, { lyDo } = {}, actorId, { guiErp = true } = {}) {
   const pin = await repo.getPhanInCoBan(phanInId);
   if (!pin) throw new AppError('Phần in không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
-  await kiemDangO(phanInId);
+  const choGn = await repo.dangCho(phanInId);
+  if (!choGn.length) {
+    throw new AppError('Phần in không còn chờ Giao nhận sửa (đã xác nhận lại)', { status: 409, errorCode: 'KHONG_O_GN' });
+  }
+  if (!coLyDoHuy(choGn)) {
+    throw new AppError(`${pin.ma_phan}: lượt trả về KHÔNG có lý do "${TEN_HUY_VAI}" — chỉ được sửa thông tin rồi xác nhận lại, không được hủy`,
+      { status: 409, errorCode: 'KHONG_CO_LY_DO_HUY' });
+  }
   const lyDoSach = String(lyDo || '').trim().slice(0, 500);
   if (!lyDoSach) throw new AppError('Nhập lý do hủy đợt vải', { status: 422, errorCode: 'NO_LY_DO' });
   const dots = await repo.dotVaiSong(phanInId);
@@ -149,11 +170,26 @@ async function huyDotVai(phanInId, { lyDo } = {}, actorId) {
   });
   sockets.emit('gn:updated', { phanInId });
   sockets.emit('ready:confirmed', { phanInId });
-  return {
+  const ra = {
     phan_in_id: phanInId, ma_phan: pin.ma_phan, so_dot_huy: kq.count, so_luot: ids.length,
     so_dot_da_release: dots.length - huyDuoc.length, loi: kq.loi,
     phan_in_an: kq.items.some((x) => x.phan_in_da_huy),
   };
+  if (guiErp) ra.erp = await baoErpHuyVai([pin.ma_phan], actorId);
+  return ra;
+}
+
+// Báo ERP (`/gui-ds-huy-vai` → `SX_spr_DSPhieuNhanvaiReadyHuy`) SAU khi MES đã hủy xong.
+// ⚠ Có `await` để trả kết quả cho người bấm, nhưng KHÔNG ném: hủy trong MES đã xong, ERP lỗi thì lượt
+//   đó nằm ở *Cài đặt API › Lịch sử* kèm nút "Gửi lại".
+async function baoErpHuyVai(dsMa, actorId) {
+  try {
+    const kq = await erp.guiDsHuyVai(dsMa, { actorId });
+    return { ok: !!kq.ok, bo_qua: !!kq.bo_qua, error: kq.error || null, id_ket_noi: kq.id_ket_noi || null };
+  } catch (e) {
+    console.error(`[gui-ds-huy-vai] ✗ ${e.message}`);
+    return { ok: false, error: e.message };
+  }
 }
 
 // Hủy vải NHIỀU phần in cùng lúc (tích checkbox đầu bảng — 26/09/2026). Mỗi phần in chạy riêng ⇒ 1
@@ -165,11 +201,14 @@ async function huyDotVaiNhieu({ phanInIds, lyDo } = {}, actorId) {
   if (!String(lyDo || '').trim()) throw new AppError('Nhập lý do hủy đợt vải', { status: 422, errorCode: 'NO_LY_DO' });
   const ok = []; const loi = [];
   for (const id of ids) {
-    try { ok.push(await huyDotVai(id, { lyDo }, actorId)); } catch (e) { loi.push({ phan_in_id: id, loi: e.message }); }
+    try { ok.push(await huyDotVai(id, { lyDo }, actorId, { guiErp: false })); } catch (e) { loi.push({ phan_in_id: id, loi: e.message }); }
   }
+  // 1 LƯỢT gửi ERP cho CẢ LÔ đã hủy thành công (proc nhận danh sách code phần).
+  const daHuy = ok.filter((x) => x.so_dot_huy > 0).map((x) => x.ma_phan);
+  const erpKq = daHuy.length ? await baoErpHuyVai(daHuy, actorId) : null;
   return {
     so_ok: ok.length, so_dot_huy: ok.reduce((s, x) => s + (x.so_dot_huy || 0), 0),
-    so_an: ok.filter((x) => x.phan_in_an).length, items: ok, loi,
+    so_an: ok.filter((x) => x.phan_in_an).length, items: ok, loi, erp: erpKq,
   };
 }
 

@@ -308,7 +308,9 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
   const from = fromDate || defaultFrom();
   const logId = await repo.createSyncLog({ nguon, fromDate: from, tuDong }, actorId);
   try {
-    const { data: rows, rawText } = duLieu || await fetchErp(baseUrl, from);
+    // ID KẾT NỐI (27/09/2026) = mã lượt `erp_sync_log.id`, gửi kèm query `IDKetNoi` để log truy cập
+    //   bên ERP cũng có; hiện ở cột "ID kết nối" của màn Đồng bộ ERP.
+    const { data: rows, rawText } = duLieu || await fetchErp(baseUrl, from, { IDKetNoi: logId });
 
     try { await repo.saveSyncRaw(logId, rawText); }
     catch (e) { console.error(`[erp-sync] ✗ Lưu chuỗi thô lỗi: ${e.message}`); }
@@ -556,7 +558,9 @@ async function xemTruocCodePhan({ codeParts, ngay } = {}, actorId) {
   }
   // ERP trả dữ liệu TỪ ngày đó TỚI HIỆN TẠI (cùng tham số `fromDate` job dùng).
   const fromDate = `${d}T00:00:00`;
-  const duLieu = await fetchErp(env.erp.phieuNhanVaiUrl, fromDate);
+  // Lượt Xem trước cũng mang ID kết nối riêng (chưa có dòng erp_sync_log ở bước này).
+  const duLieu = await fetchErp(env.erp.phieuNhanVaiUrl, fromDate,
+    { IDKetNoi: require('../../utils/idKetNoi').taoIdKetNoi('XT') });
 
   const tapCode = new Set(codes);
   const seen = new Map();

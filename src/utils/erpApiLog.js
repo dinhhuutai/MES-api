@@ -40,6 +40,12 @@ const TEN_BANG = {
   ERP_GUI_SUA_DAT: 'sua',
   // Gắn theo LƯỢT KIỂM (`kcs.id`) — 1 tem có thể kiểm nhiều lượt; khóa chống gửi trùng mỗi lượt.
   ERP_GUI_KIEM_PHAM: 'kcs',
+  // Tem 13 gia công (27/09/2026) — gắn `tem`+id tem: mỗi tem 1 lượt gửi, khóa chống gửi trùng theo tem.
+  ERP_GUI_TEM_GIA_CONG: 'tem',
+  // Lượt KÉO phần in đã sửa thông tin (GN) — không gắn bản ghi nào; ID kết nối sinh mỗi lượt.
+  ERP_DS_SUA_THONG_TIN: 'erp_api',
+  // GN hủy vải — 1 lượt có thể nhiều phần in nên không gắn 1 bản ghi; ID kết nối sinh mỗi lượt (`HV-…`).
+  ERP_GUI_DS_HUY_VAI: 'erp_api',
 };
 
 // Cắt bớt phản hồi ERP trước khi lưu — tránh 1 lần lỗi bất thường nhồi cả trang HTML vào audit_log.

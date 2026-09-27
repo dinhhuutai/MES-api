@@ -388,7 +388,9 @@ const temMeta = (b = {}) => {
 //   ô chọn lúc in tem + phân quyền theo tổ). Mẫu ERP cho thấy proc nhận null bình thường.
 // ─────────────────────────────────────────────────────────────────────────────
 // `ngayCt` = NGÀY CHỨNG TỪ người in tự đặt ở khối "Ngày ca / giờ SX" (mặc định hôm nay, sửa được).
-async function guiGhiInTem(items, actorId, ngayCt = null) {
+// `maApi` (27/09/2026): tem 13 gia công gửi kênh `ERP_GUI_TEM_GIA_CONG` (`/gui-du-lieu-tem-gia-cong`
+// → proc JQ6). Cùng 20 trường, cùng vòng lặp ⇒ MỖI TEM 1 LƯỢT GỌI + 1 IDMES RIÊNG (in 2 tem = gọi 2 lần).
+async function guiGhiInTem(items, actorId, ngayCt = null, { maApi = 'ERP_GHI_IN_TEM' } = {}) {
   try {
     const list = (items || []).filter((x) => x && x.temId);
     if (!list.length) return;
@@ -410,7 +412,8 @@ async function guiGhiInTem(items, actorId, ngayCt = null) {
       //   số** của ERP một cách vô ích (mỗi lần `capIdMes` là tiêu 1 số trong ngày).
       // ⚠ Bỏ qua IM LẶNG (chốt với người dùng): không gọi ERP, KHÔNG ghi audit_log — giống hệt lúc
       //   tắt hẳn API. In nhiều mà ghi log "đã bỏ qua" thì `audit_log` phình rất nhanh.
-      if (!(await apiChoPhepPhanIn('ERP_GHI_IN_TEM', r.ma_phan))) continue;
+      // (Bộ lọc code phần chỉ khai cho ERP_GHI_IN_TEM — kênh khác không lọc.)
+      if (maApi === 'ERP_GHI_IN_TEM' && !(await apiChoPhepPhanIn('ERP_GHI_IN_TEM', r.ma_phan))) continue;
 
       const idMes = await repo.capIdMes();
       if (idMes == null) return; // hỏng khâu cấp số thì các tem sau cũng vậy — dừng luôn cho khỏi spam log
@@ -421,10 +424,10 @@ async function guiGhiInTem(items, actorId, ngayCt = null) {
       const payload = taoPayload(r, {
         idMes, soLuong: it.soLuong, soLuongHuy: it.soLuongHuy, soLuongThieu: it.soLuongThieu,
       });
-      const kq = await ghiInTem(payload);
-      if (kq.bo_qua) continue; // tắt qua ERP_GHI_IN_TEM_ENABLED — không ghi audit lỗi
+      const kq = await ghiInTem(payload, { maApi });
+      if (kq.bo_qua) continue; // tắt ở Cài đặt API — không ghi audit lỗi
       // ⚠ Truyền cả `kq.data` (phản hồi ERP) để lịch sử hiện được "gửi gì → nhận gì" trong 1 màn.
-      await repo.logGhiInTem(it.temId, kq.ok, kq.body, kq.error, actorId, kq.data);
+      await repo.logGhiInTem(it.temId, kq.ok, kq.body, kq.error, actorId, kq.data, maApi);
     }
   } catch (e) {
     console.error(`[ghi-in-tem] ✗ Lỗi ngoài dự kiến khi báo ERP: ${e.message}`);

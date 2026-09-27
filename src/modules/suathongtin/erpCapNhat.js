@@ -45,6 +45,8 @@ const erpRepo = require('../erpsync/erpsync.repository');
 const phanInAdmin = require('../phaninadmin/phaninadmin.service');
 const repo = require('./suathongtin.repository');
 const sockets = require('../../sockets');
+const { ghiLog } = require('../../utils/erpApiLog');
+const { taoIdKetNoi } = require('../../utils/idKetNoi');
 
 const E = erpSvc._erp;
 const MA_API = 'ERP_DS_SUA_THONG_TIN';
@@ -206,6 +208,7 @@ async function dongBo({ tuDong = false, actorId = null } = {}) {
   }
   dangChay = true;
   const t0 = Date.now();
+  let idKn = null;
   try {
     const tatCa = await phanInDangCho();
     if (!tatCa.length) {
@@ -218,7 +221,26 @@ async function dongBo({ tuDong = false, actorId = null } = {}) {
     const pins = chonLuot(tatCa);
     const fromDate = homNayVN();
     const dsPhan = pins.map((p) => p.ma_phan).join(',');
-    const { data } = await E.fetchErp(env.erp.dsSuaThongTinUrl, fromDate, { dsPhan });
+    // ⚠⚠ ID KẾT NỐI (27/09/2026): mỗi lượt kéo 1 ID, gửi kèm query `IDKetNoi` (router ERP bỏ qua khóa
+    //   lạ, nhưng log truy cập bên ERP có) + ghi lịch sử ở *Cài đặt API* — trước đây lượt kéo này
+    //   KHÔNG để lại vết nào ngoài console.
+    idKn = taoIdKetNoi('GN');
+    let data;
+    try {
+      ({ data } = await E.fetchErp(env.erp.dsSuaThongTinUrl, fromDate, { dsPhan, IDKetNoi: idKn }));
+    } catch (e) {
+      await ghiLog(MA_API, {
+        thanhCong: false, idMes: idKn, url: env.erp.dsSuaThongTinUrl, thoiGianMs: Date.now() - t0,
+        gui: { fromDate, dsPhan, IDKetNoi: idKn }, loi: e.message, actorId,
+      });
+      throw e;
+    }
+    await ghiLog(MA_API, {
+      thanhCong: true, idMes: idKn, url: env.erp.dsSuaThongTinUrl, thoiGianMs: Date.now() - t0,
+      gui: { fromDate, dsPhan, IDKetNoi: idKn },
+      nhan: { so_dong: data.length, code_phan: [...new Set(data.map((r) => r.code_part).filter(Boolean))] },
+      actorId,
+    });
     const moc = Date.now();
     for (const p of pins) lanHoi.set(hoa(p.ma_phan), moc);
 
@@ -244,7 +266,7 @@ async function dongBo({ tuDong = false, actorId = null } = {}) {
       sockets.emit('dashboard:refresh', {});
     }
     lanCuoi = {
-      tg: new Date().toISOString(), tu_dong: tuDong, so_cho: tatCa.length, so_hoi: pins.length,
+      tg: new Date().toISOString(), tu_dong: tuDong, id_ket_noi: idKn, so_cho: tatCa.length, so_hoi: pins.length,
       con_lai_luot_sau: Math.max(0, tatCa.length - pins.length), from_date: fromDate, tong_erp: data.length,
       co_tren_erp: pins.filter((p) => theoMa.has(hoa(p.ma_phan))).length,
       so_cap_nhat: soDoi, chi_tiet: ketQua.slice(0, 50), loi: loi.slice(0, 20),
@@ -253,7 +275,7 @@ async function dongBo({ tuDong = false, actorId = null } = {}) {
     if (soDoi || loi.length) console.log(`[gn-erp] cập nhật ${soDoi} phần in · ${loi.length} lỗi`);
     return lanCuoi;
   } catch (e) {
-    lanCuoi = { tg: new Date().toISOString(), tu_dong: tuDong, loi_chung: e.message };
+    lanCuoi = { tg: new Date().toISOString(), tu_dong: tuDong, id_ket_noi: idKn, loi_chung: e.message };
     console.error('[gn-erp] Lỗi:', e.message);
     if (!tuDong) throw e;
     return lanCuoi;

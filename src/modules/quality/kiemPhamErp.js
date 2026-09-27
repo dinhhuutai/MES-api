@@ -49,7 +49,7 @@ async function mocNhapKcs(kcsId) {
  * @param {{dat:number, hu:number, thieu:number}} sl
  */
 // `opts.guiLai` (nút "Gửi lại ERP" ở Cài đặt API › Lịch sử, 26/09/2026): bỏ qua chặn "đã gửi thành công"
-//   và DÙNG LẠI `opts.idMes` cũ ⇒ proc `MES2SK6` xóa phiếu SK6 cùng `Soctcu` rồi tạo lại (không đẻ phiếu trùng).
+//   và DÙNG LẠI `opts.idMes` cũ ⇒ proc `MES_spr_MES2Sh6` xóa phiếu SH6 cùng `Soctcu` rồi tạo lại (không đẻ phiếu trùng).
 async function guiKiemPham(kcsId, temId, { dat = 0, hu = 0, thieu = 0 } = {}, actorId = null, opts = {}) {
   if (!kcsId || !temId) return { ok: false, bo_qua: true, ly_do: 'THIEU_DU_LIEU' };
   if (!opts.guiLai && await daGuiThanhCong(kcsId)) return { ok: true, bo_qua: true, ly_do: 'DA_GUI' };
@@ -65,7 +65,7 @@ async function guiKiemPham(kcsId, temId, { dat = 0, hu = 0, thieu = 0 } = {}, ac
   // Cùng bài học `@pNgayca` của sửa đạt (23/09/2026): tem thiếu mã ngày ca ⇒ lấy NGÀY HÔM NAY.
   if (!payload.Ngayca) payload.Ngayca = await maNgayCaHomNay();
   // Trường NGÀY GIỜ thiếu ⇒ lấy MỐC NHẬP KCS (người dùng chốt 26/09/2026: "ngày thì để hôm nay, có dữ
-  //   liệu lúc nhập"). Proc dùng `@pDengio` làm Ngày/Giờ của phiếu chuyển giao SK6 ⇒ NULL là phiếu mất ngày.
+  //   liệu lúc nhập"). Proc dùng `@pDengio` làm Ngày/Giờ của phiếu chuyển giao SH6 ⇒ NULL là phiếu mất ngày.
   //   Tem có nhập giờ SX (Từ giờ/Đến giờ) thì GIỮ nguyên; `Ngayct` vốn đã là ngày gửi = hôm nay.
   const moc = await mocNhapKcs(kcsId);
   if (!payload.Tugio) payload.Tugio = moc;

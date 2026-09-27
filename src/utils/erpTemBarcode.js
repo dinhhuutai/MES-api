@@ -28,6 +28,7 @@
 const axios = require('axios');
 const env = require('../config/env');
 const AppError = require('./AppError');
+const { taoIdKetNoi } = require('./idKetNoi');
 const { apiBat } = require('./caiDatApi');
 const { ghiLog } = require('./erpApiLog');
 
@@ -101,7 +102,8 @@ async function layBarcodeTemTienTo(tienTo, actorId = null) {
       // ⚠ Ghi vết NGAY cả khi thành công — mã vừa lấy là một số ĐÃ TIÊU của ERP, phải tra lại được
       //   (kể cả khi transaction sau đó rollback làm thủng dãy). KHÔNG `await`: đây là bước phụ.
       ghiLog(cfg.ma, {
-        thanhCong: true, idBanGhi: bc, maTem: bc, url,
+        // ID kết nối = chính mã tem ERP vừa cấp (27/09/2026).
+        thanhCong: true, idBanGhi: bc, idMes: bc, maTem: bc, url,
         soLanThu: i, thoiGianMs: Date.now() - batDau, nhan: { barcode: bc }, actorId,
       });
       return bc;
@@ -116,7 +118,8 @@ async function layBarcodeTemTienTo(tienTo, actorId = null) {
   }
   console.error(`[tem-barcode] ✗ Không lấy được mã ${cfg.ten} sau ${soLan} lần (${url}): ${loiCuoi && loiCuoi.message}`);
   ghiLog(cfg.ma, {
-    thanhCong: false, idBanGhi: '-', url,
+    // Lượt lỗi không có mã ⇒ sinh ID kết nối riêng để vẫn tra được lượt này.
+    thanhCong: false, idBanGhi: '-', idMes: taoIdKetNoi('TEM'), url,
     soLanThu: soLan, thoiGianMs: Date.now() - batDau, loi: loiCuoi && loiCuoi.message, actorId,
   });
   throw new AppError(
