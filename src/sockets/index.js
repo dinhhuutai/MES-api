@@ -7,11 +7,8 @@ let ioRef = null;
 function init(io) {
   ioRef = io;
   io.on('connection', (socket) => {
-    console.log(`[socket] client kết nối: ${socket.id}`);
+    // Không log kết nối/ngắt: transport polling kết nối lại liên tục ⇒ chỉ làm nhiễu log PM2.
     presence.register(io, socket); // theo dõi online + lịch sử điều hướng
-    socket.on('disconnect', () => {
-      console.log(`[socket] client ngắt: ${socket.id}`);
-    });
   });
 }
 

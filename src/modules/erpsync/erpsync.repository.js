@@ -734,7 +734,8 @@ const PAIN_BAN = 1;
 //   sang Bàn** ngay khi deploy). Phương án "mọi đợt đều bổ sung" chỉ đổi 4 hồ sơ — đã cân nhắc và BỎ.
 // ⚠ So theo MÃ `loai_dot_vai.ma_loai`, KHÔNG so tên hiển thị (cùng luật với `LOAI_BO_TEST_RUN`
 //   của `planning.service` — đổi tên hiển thị không được làm hỏng luật).
-// ⚠ VẪN TÔN TRỌNG `pa_in_sua_tay`: kỹ thuật đã sửa tay thì không ai ghi đè, y hệt luật sản lượng.
+// ⚠ Chỉ là MẶC ĐỊNH — VẪN TÔN TRỌNG `pa_in_sua_tay` (chốt lại 28/09/2026, gỡ "khóa chặt" 26/09):
+//   kỹ thuật đã sửa tay thì không ai ghi đè, y hệt luật sản lượng.
 //   Đó là lối thoát DUY NHẤT của cả hệ cho phương án in — bỏ nó đi thì người dùng đổi xong thấy job
 //   ERP kéo về sau 5 phút mà không hiểu vì sao (đúng sự cố vòng lặp Pain 04-05/08/2026).
 const LOAI_LUON_IN_BAN = ['BO_SUNG'];
@@ -796,10 +797,8 @@ async function applyPainTheoSanLuong(hsktId, actorId = null) {
     // ⚠⚠ ĐỢT BỔ SUNG THẮNG NGƯỠNG SẢN LƯỢNG — xem `LOAI_LUON_IN_BAN` ở đầu khối.
     const coLuonBan = Number(sl.n_luon_ban) > 0;
     const pain = coLuonBan ? PAIN_BAN : (tong >= NGUONG_VAI_IN_MAY ? PAIN_MAY : PAIN_BAN);
-    // ⚠⚠ KHÓA CHẶT (26/09/2026): có đợt BỔ SUNG thì LUÔN Bàn, THẮNG CẢ `pa_in_sua_tay` — người dùng
-    //   báo vẫn thấy hồ sơ bổ sung in Máy (đo prod: 26 hồ sơ bị sửa tay sang Máy/Robot). Đường sửa tay
-    //   cũng bị chặn ở `hskt.service.changePhuongAnIn` + `duyet.guiYeuCauDoiPain` nên không đá nhau.
-    if (h.pa_in_sua_tay === true && !coLuonBan) return { doi: false, tong, pain, bo_qua: 'sua_tay' };
+    // ⚠ Bổ sung ⇒ Bàn chỉ là MẶC ĐỊNH (28/09/2026, gỡ khóa chặt 26/09): người đã sửa tay thì giữ.
+    if (h.pa_in_sua_tay === true) return { doi: false, tong, pain, bo_qua: 'sua_tay' };
     if (Number(h.phuong_an_in) === pain) return { doi: false, tong, pain };
     const { rows: [pin0] } = await client.query(
       'SELECT phan_in_id FROM hskt_phan_in WHERE hskt_id=$1 AND dang_hoat_dong LIMIT 1', [hsktId]);
@@ -845,7 +844,7 @@ async function hsktCoBoSung(hsktId) {
 // cũ (luật bổ sung ra đời sau, hồ sơ không được sync lại thì không bao giờ được tính lại).
 async function hsktBoSungSaiPain() {
   const { rows } = await query(
-    `SELECT DISTINCT h.id FROM ho_so_ky_thuat h JOIN hskt_phan_in hp ON hp.hskt_id = h.id AND hp.dang_hoat_dong JOIN phan_in pin ON pin.id = hp.phan_in_id AND pin.dang_hoat_dong JOIN dot_vai_ve dv ON dv.phan_in_id = pin.id AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY') JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id AND ldv.ma_loai IN (${LUON_IN_BAN_SQL}) WHERE h.dang_hoat_dong AND COALESCE(h.phuong_an_in,0) <> ${PAIN_BAN}`);
+    `SELECT DISTINCT h.id FROM ho_so_ky_thuat h JOIN hskt_phan_in hp ON hp.hskt_id = h.id AND hp.dang_hoat_dong JOIN phan_in pin ON pin.id = hp.phan_in_id AND pin.dang_hoat_dong JOIN dot_vai_ve dv ON dv.phan_in_id = pin.id AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY') JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id AND ldv.ma_loai IN (${LUON_IN_BAN_SQL}) WHERE h.dang_hoat_dong AND NOT COALESCE(h.pa_in_sua_tay,false) AND COALESCE(h.phuong_an_in,0) <> ${PAIN_BAN}`);
   return rows.map((r) => r.id);
 }
 
