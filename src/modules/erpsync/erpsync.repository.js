@@ -819,11 +819,15 @@ async function applyPainTheoSanLuong(hsktId, actorId = null) {
 
 // ─── ĐỢT VẢI MỚI VỀ ⇒ PHẦN IN ĐANG ẨN VÌ HẾT ĐỢT VẢI HIỆN LẠI (26/09/2026) ─────────────────
 // Phần in bị ẩn khi đợt vải cuối bị hủy (tab Hủy đợt vải · GN "Hủy đợt vải — không in" · script ẩn
-// phần in hết đợt). ERP đẩy ĐỢT MỚI về ⇒ có vải để in ⇒ bật lại phần in.
-// ⚠ KHÔNG bật lại phần in bị hủy CỐ Ý ở tab "Hủy phần in" (thao tác HUY/MO_PHAN_IN mới nhất là HUY_PHAN_IN).
+// phần in hết đợt) **VÀ cả phần in bị "Hủy phần in"** (người dùng chốt 29/09/2026: phần in hiện
+// ⟺ có ≥1 đợt vải sống). ERP đẩy ĐỢT MỚI về ⇒ có vải để in ⇒ bật lại phần in.
+// ⚠ An toàn vì chỉ gọi khi `laDotMoi` (đợt `ma_dot_vai` MỚI): ERP gửi lại đợt cũ thì `upsertDotVai`
+//   không đụng `trang_thai` ⇒ đợt đã hủy không sống lại, phần in đã hủy không tự bật.
+// ⚠ Chỉ bật phần in — lệnh/tem/đợt cũ bị "Hủy phần in" GIỮ `HUY` (muốn khôi phục cả chúng thì dùng tab
+//   "Mở phần in" TRƯỚC khi đợt mới về).
 async function moLaiPhanInCoDotMoi(pinId, dotVaiIds, actorId = null) {
   const { rows } = await query(
-    `UPDATE phan_in pin SET dang_hoat_dong = true, updated_by = $2, updated_date = CURRENT_TIMESTAMP WHERE pin.id = $1 AND pin.dang_hoat_dong = false AND COALESCE((SELECT a.hanh_dong FROM audit_log a WHERE a.ten_bang = 'phan_in' AND a.id_ban_ghi = pin.id::text AND a.hanh_dong IN ('HUY_PHAN_IN','MO_PHAN_IN') ORDER BY a.thoi_gian DESC LIMIT 1), '') <> 'HUY_PHAN_IN' RETURNING pin.id, pin.ma_phan`,
+    'UPDATE phan_in pin SET dang_hoat_dong = true, updated_by = $2, updated_date = CURRENT_TIMESTAMP WHERE pin.id = $1 AND pin.dang_hoat_dong = false RETURNING pin.id, pin.ma_phan',
     [pinId, actorId]);
   if (!rows.length) return false;
   await query(
