@@ -1153,8 +1153,10 @@ async function assertKhongChoKyThuat(lenhId) {
 }
 
 // ----- LẬP KẾ HOẠCH LẠI -----
-async function listReplanCandidates({ search, page, limit, offset }) {
-  const { rows, total } = await repo.listReplanCandidates({ search, offset, limit });
+// `loc` = bộ lọc từng trường (khóa như FILTER_FIELDS của ReplanPage) · `tuNgay`/`denNgay` = ngày SX KH.
+// Lọc + phân trang Ở SERVER (30/09/2026) — xem ghi chú `planning.repository.replanWhere`.
+async function listReplanCandidates({ search, page, limit, offset, loc, tuNgay, denNgay }) {
+  const { rows, total } = await repo.listReplanCandidates({ search, offset, limit, loc, tuNgay, denNgay });
   // Nhãn tiếng Việt của giai đoạn ĐANG Ở (dùng chung `STAGE_LABEL` với dashboard/Đơn hàng/Danh sách
   // release). Trước 04/09/2026 FE tự suy từ `trang_thai` nên `RELEASE_1` luôn hiện "Test Run" — kể cả
   // lệnh đã test xong (thực tế đang chờ duyệt Release 2) hay lệnh bị QA trả về Kỹ thuật (đang ở READY).
@@ -1939,6 +1941,8 @@ module.exports = {
   returnTestRunToReady,
   listRelease2Candidates, approveRelease2, approveRelease2Batch, skipTestRun, testRunHistory,
   listReplanCandidates, replan, replanBatch, planHistory,
+  listReplanIds: (o) => repo.listReplanIds(o),
+  listReplanMaQuet: (o) => repo.listReplanMaQuet(o),
   listGiaCong, confirmGiaCongToOqc, giaCongHistory, listGiaCongTemCancelable, cancelGiaCongTem, traLaiNhaGiaCong,
   listKeHoachTam, keHoachTamSet, confirmKeHoachTam, updateKeHoachTam, deleteKeHoachTam, keHoachTamHistory, keHoachTamDone, keHoachTamTheoDoi,
   listCancelableLenh, rollbackLenh, testRunsChoHuy,

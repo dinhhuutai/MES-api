@@ -19,6 +19,10 @@ router.post('/versions', WM, c.createVersion);
 router.patch('/versions/:id', WM, c.updateVersion);
 router.post('/versions/:id/hien-hanh', WM, c.setHienHanh);
 
+// Luật SLA THEO GIỜ (mig 109) — khối ghi chú + sửa ở trang Checkpoint & Checklist
+router.get('/sla-theo-gio', WV, c.listSlaGio);
+router.put('/sla-theo-gio/:ma', WM, c.saveSlaGio);
+
 // Tram
 router.get('/trams', WV, c.listTrams);
 router.get('/tram-options', WV, c.tramOptions);

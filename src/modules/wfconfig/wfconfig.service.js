@@ -5,6 +5,8 @@ const repo = require('./wfconfig.repository');
 const AppError = require('../../utils/AppError');
 const sockets = require('../../sockets');
 const wfCache = require('../../utils/wfCache');
+const flowCache = require('../../utils/flowCache');
+const sla = require('../../utils/slaTheoGio');
 
 function validateJson(str) {
   if (str === undefined || str === null || str === '') return null;
@@ -24,7 +26,50 @@ const emit = () => {
   sockets.emit('workflow:config-updated', {});
 };
 
+// ─── SLA THEO GIỜ (mig 109) — khối ghi chú + sửa ở trang Checkpoint & Checklist ───
+// Trả 4 luật: cấu hình ĐANG CHẠY (RAM, = DB hoặc mặc định) + mặc định + người/giờ sửa + SLA dự phòng.
+async function listSlaGio() {
+  await sla.napCauHinh();
+  const [luu, duPhong] = await Promise.all([
+    repo.listSlaGio().catch(() => null), // null = chưa chạy mig 109
+    repo.slaDuPhong().catch(() => []),
+  ]);
+  const cfg = sla.layCauHinh();
+  const theoMa = new Map((luu || []).map((r) => [r.ma, r]));
+  return {
+    co_bang: luu !== null,
+    du_phong: duPhong,
+    items: sla.MA_SLA.map((ma) => {
+      const r = theoMa.get(ma) || {};
+      return { ma, bat: cfg[ma].bat, gia_tri: cfg[ma].gia_tri, mac_dinh: sla.MAC_DINH[ma].gia_tri,
+        ghi_chu: r.ghi_chu || null, nguoi_sua: r.nguoi_sua || null, tg_sua: r.updated_date || null };
+    }),
+  };
+}
+
+async function saveSlaGio(ma, b, actor) {
+  if (!sla.MA_SLA.includes(ma)) throw new AppError('Luật SLA không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  let giaTri;
+  try { giaTri = sla.chuanHoa(ma, b.giaTri); } catch (e) {
+    throw new AppError(e.message, { status: 422, errorCode: 'SLA_KHONG_HOP_LE' });
+  }
+  try {
+    await repo.saveSlaGio({ ma, bat: b.bat !== false, giaTri, ghiChu: b.ghiChu }, actor);
+  } catch (e) {
+    if (/cai_dat_sla_gio/.test(e.message || '')) {
+      throw new AppError('Chưa chạy migration 109 (bảng cai_dat_sla_gio) — chưa lưu được', { status: 409, errorCode: 'CHUA_MIGRATION' });
+    }
+    throw e;
+  }
+  await sla.napCauHinh(); // có hiệu lực NGAY ở tiến trình này
+  flowCache.xoaCache();
+  emit();
+  sockets.emit('dashboard:refresh', {});
+  return listSlaGio();
+}
+
 module.exports = {
+  listSlaGio, saveSlaGio,
   // Version
   listVersions: () => repo.listVersions(),
   createVersion: (b, a) => repo.createVersion(b, a).then((id) => { emit(); return { id }; }),

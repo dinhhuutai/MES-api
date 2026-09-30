@@ -6,7 +6,7 @@
 //   đổi tab không gọi lại API và không bao giờ ra 2 con số đá nhau.
 
 const repo = require('./thoigiantram.repository');
-const { slaReadyHan, slaQcReady, TEST_RUN_TRUOC_SX_PHUT } = require('../../utils/slaTheoGio');
+const { slaReadyHan, slaQcReady, testRunTruocSxPhut } = require('../../utils/slaTheoGio');
 
 const LOC_KEYS = ['timKiem', 'khach', 'don', 'maHang', 'codePhan', 'mauVai', 'chuyen',
   'loaiMoc', 'tuNgay', 'denNgay', 'trangThai'];
@@ -44,8 +44,9 @@ async function ganSlaDong(maTram, ds, slaMacDinh) {
     const bd = await repo.gioSxKeHoach([...new Set(ds.map((r) => r.ma_lenh_san_xuat).filter(Boolean))]);
     return ds.map((r) => {
       const h = bd.get(r.ma_lenh_san_xuat);
-      if (!h || !r.tg_vao) return { ...r, sla_phut: slaMacDinh };
-      const han = new Date(h).getTime() - TEST_RUN_TRUOC_SX_PHUT * 60000;
+      const truoc = testRunTruocSxPhut(); // null = luật tắt (mig 109)
+      if (!h || !r.tg_vao || truoc == null) return { ...r, sla_phut: slaMacDinh };
+      const han = new Date(h).getTime() - truoc * 60000;
       return { ...r, sla_phut: Math.max(1, Math.floor((han - new Date(r.tg_vao).getTime()) / 60000)) };
     });
   }

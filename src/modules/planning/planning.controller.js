@@ -108,10 +108,21 @@ const testRunHistory = asyncHandler(async (req, res) => {
   return ok(res, await service.testRunHistory(date));
 });
 
+// Bộ lọc màn Lập kế hoạch lại: `f_<khóa>` (khóa = FILTER_FIELDS FE) + `tuNgay`/`denNgay` (YYYY-MM-DD).
+const REPLAN_LOC = ['maLenh', 'codePhan', 'khach', 'don', 'maHang', 'mauVai', 'kichVai', 'kichPhim', 'chuyen', 'nhaGiaCong'];
+const replanOpts = (q) => ({
+  search: q.search || '',
+  loc: Object.fromEntries(REPLAN_LOC.map((k) => [k, q[`f_${k}`] || ''])),
+  tuNgay: q.tuNgay || null,
+  denNgay: q.denNgay || null,
+});
 const replanCandidates = asyncHandler(async (req, res) => {
   const { page, limit, offset } = getPaging(req.query, { tranToiDa: TRAN_TAI_HET });
-  return ok(res, await service.listReplanCandidates({ search: req.query.search || '', page, limit, offset }));
+  return ok(res, await service.listReplanCandidates({ ...replanOpts(req.query), page, limit, offset }));
 });
+const replanIds = asyncHandler(async (req, res) => ok(res, await service.listReplanIds(replanOpts(req.query))));
+const replanMaQuet = asyncHandler(async (req, res) =>
+  ok(res, await service.listReplanMaQuet({ tuNgay: req.query.tuNgay || null, denNgay: req.query.denNgay || null })));
 
 const approveRelease2Batch = asyncHandler(async (req, res) =>
   ok(res, await service.approveRelease2Batch(req.body.lenhIds, req.user.id), 'Duyệt Release 2 hàng loạt'));
@@ -249,7 +260,7 @@ module.exports = {
   testRunCandidates, lenhDetail, recordTestRun,
   confirmCNSP, confirmQA, ownerChoIn, cancelCNSP, cancelQA, confirmCNSPBatch, confirmQABatch,
   release2Candidates, approveRelease2, approveRelease2Batch, skipTestRun, testRunHistory,
-  replanCandidates, replan, replanDetail, replanBatch, planHistory,
+  replanCandidates, replanIds, replanMaQuet, replan, replanDetail, replanBatch, planHistory,
   giaCongList, giaCongToOqc, giaCongHistory, giaCongTemCancelable, giaCongTemHuy, giaCongTraLai,
   keHoachTamList, keHoachTamSet, keHoachTamConfirm, keHoachTamUpdate, keHoachTamDelete, keHoachTamHistory, keHoachTamDone, keHoachTamTheoDoi,
   cancelableLenh, cancelLenh, lanTestChoHuy, returnTestRunToReady,

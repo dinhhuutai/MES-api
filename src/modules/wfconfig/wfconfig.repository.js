@@ -239,7 +239,38 @@ async function setStatusActive(id, active, actor) {
   await query('UPDATE trang_thai SET dang_hoat_dong=$2, updated_by=$3, updated_date=CURRENT_TIMESTAMP WHERE id=$1', [id, active, actor]);
 }
 
+// ============ SLA THEO GIỜ (mig 109) ============
+// Dòng đã lưu + người/giờ sửa. Thiếu bảng (chưa chạy mig 109) ⇒ ném lỗi, service tự lùi về mặc định.
+async function listSlaGio() {
+  const { rows } = await query(
+    `SELECT c.ma, c.bat, c.gia_tri, c.ghi_chu, c.updated_date, nd.ho_ten AS nguoi_sua
+       FROM cai_dat_sla_gio c LEFT JOIN nguoi_dung nd ON nd.id = c.updated_by`.replace(/\s+/g, ' ')
+  );
+  return rows;
+}
+async function saveSlaGio({ ma, bat, giaTri, ghiChu }, actor) {
+  await query(
+    `INSERT INTO cai_dat_sla_gio (ma, bat, gia_tri, ghi_chu, updated_by, updated_date)
+     VALUES ($1, $2, $3::jsonb, $4, $5, CURRENT_TIMESTAMP)
+     ON CONFLICT (ma) DO UPDATE SET bat = EXCLUDED.bat, gia_tri = EXCLUDED.gia_tri, ghi_chu = EXCLUDED.ghi_chu,
+       updated_by = EXCLUDED.updated_by, updated_date = CURRENT_TIMESTAMP`.replace(/\s+/g, ' '),
+    [ma, !!bat, JSON.stringify(giaTri), ghiChu || null, actor || null]
+  );
+}
+// SLA "dự phòng" (dùng khi ngoài khung / luật tắt) của workflow HIỆN HÀNH — để trang ghi chú nói đúng số.
+async function slaDuPhong() {
+  const { rows } = await query(
+    `SELECT t.ma_tram, t.thoi_gian_quy_dinh_phut AS tram_sla, t.canh_bao_truoc_phut AS tram_cb,
+            c.thoi_gian_quy_dinh_phut AS qc_sla, c.canh_bao_truoc_phut AS qc_cb
+       FROM tram t JOIN workflow_version wv ON wv.id = t.workflow_version_id AND wv.la_hien_hanh
+       LEFT JOIN checkpoint c ON c.tram_id = t.id AND c.ma_checkpoint = 'QC_XAC_NHAN' AND c.dang_hoat_dong
+      WHERE t.ma_tram IN ('READY', 'TEST_RUN')`.replace(/\s+/g, ' ')
+  );
+  return rows;
+}
+
 module.exports = {
+  listSlaGio, saveSlaGio, slaDuPhong,
   listVersions, createVersion, updateVersion, clearHienHanh, setHienHanh,
   listTrams, createTram, updateTram, setTramActive, allTrams,
   listCheckpoints, createCheckpoint, updateCheckpoint, setCheckpointActive,

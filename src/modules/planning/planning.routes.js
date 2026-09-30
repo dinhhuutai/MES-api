@@ -69,6 +69,9 @@ router.get('/plan-history', rbac('RELEASE1', 'RELEASE2'), c.planHistory);
 router.get('/release2/done', rbac('RELEASE2'), c.release2Done);
 router.get('/replan/done', rbac('RELEASE1', 'RELEASE2'), c.replanDone);
 router.get('/replan/candidates', rbac('RELEASE1', 'RELEASE2'), c.replanCandidates);
+// Mọi ID khớp bộ lọc ("Chọn tất cả N lệnh") + danh sách gọn cho modal quét QR (30/09/2026).
+router.get('/replan/ids', rbac('RELEASE1', 'RELEASE2'), c.replanIds);
+router.get('/replan/ma-quet', rbac('RELEASE1', 'RELEASE2'), c.replanMaQuet);
 router.post('/replan/batch', rbac('RELEASE1', 'RELEASE2'), c.replanBatch);
 // ⚠ Route TĨNH (`/done`, `/candidates`, `/batch`) đã đặt TRƯỚC — 2 route `:lenhId` phải ở CUỐI.
 router.get('/replan/:lenhId', rbac('RELEASE1', 'RELEASE2'), c.replanDetail);

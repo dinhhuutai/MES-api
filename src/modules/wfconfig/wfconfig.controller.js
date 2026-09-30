@@ -7,6 +7,10 @@ const { ok, created } = require('../../utils/response');
 const uid = (req) => req.user.id;
 
 module.exports = {
+  // SLA theo giờ (mig 109)
+  listSlaGio: h(async (req, res) => ok(res, await s.listSlaGio())),
+  saveSlaGio: h(async (req, res) => ok(res, await s.saveSlaGio(req.params.ma, req.body, uid(req)), 'Đã lưu luật SLA')),
+
   // Version
   listVersions: h(async (req, res) => ok(res, await s.listVersions())),
   createVersion: h(async (req, res) => created(res, await s.createVersion(req.body, uid(req)))),

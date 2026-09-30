@@ -690,17 +690,78 @@ async function getLenhBasic(lenhId) {
 //   `replan` CHỈ cho dời ngày/giờ và đổi sang chuyền gia công khác — xem guard ở `planning.service`.
 // ⚠ `so_phan_in` LỌC `pin.dang_hoat_dong` để khớp `phanInRowsByLenh` (`phan_in_list`): lệch nhau thì
 //   badge ghi "N phần in" mà bảng chỉ vẽ N−1 dòng con (đo prod: 2 lệnh đang lệch).
-async function listReplanCandidates({ search = '', offset = 0, limit = 50 }) {
+// ─── LẬP KẾ HOẠCH LẠI: LỌC + PHÂN TRANG Ở SERVER (30/09/2026) ───
+// ⚠⚠ Vì sao: prod có ~6.000 lệnh ở màn này (xưởng chưa bấm Xác nhận chạy nên lệnh RELEASE_2 dồn lại) —
+//   bản cũ tải HẾT về trình duyệt (3 lượt × 2.000 dòng, ~2 MB/lượt) và câu SQL tính `PHAN_INFO_LATERAL`
+//   + `lenhStageCase` cho MỌI lệnh TRƯỚC khi sắp xếp/cắt trang (đo: 1,2 s kể cả khi chỉ lấy 20 dòng).
+// ⇒ Tách 2 tầng: (1) `REPLAN_BASE` lọc + sắp + LIMIT/OFFSET trên bảng gốc (rẻ, ~20 ms cho 6.000 lệnh);
+//   (2) chỉ tính phần in / giai đoạn / đếm cho đúng các lệnh của TRANG đó.
+// ⚠ Bộ lọc từng trường GIỐNG `filterRows` FE cũ: trường mức phần in khớp khi BẤT KỲ phần in nào của
+//   lệnh khớp (mỗi trường 1 EXISTS độc lập). Cột `col` ở đây phải khớp `FILTER_FIELDS` của ReplanPage.
+const REPLAN_LOC_PHAN_IN = {
+  codePhan: 'pin_f.ma_phan', mauVai: 'pin_f.mau_vai', kichVai: 'pin_f.kich_vai', kichPhim: 'pin_f.kich_phim',
+  maHang: 'mh_f.ma_hang', don: 'dh_f.ma_don_hang', khach: 'kh_f.ten_khach_hang',
+};
+const RE_NGAY = /^\d{4}-\d{2}-\d{2}$/;
+
+// WHERE chung cho danh sách + đếm + lấy-hết-id. `params` được đẩy thêm tham số; trả chuỗi điều kiện.
+async function replanWhere({ search = '', loc = {}, tuNgay = null, denNgay = null }, params) {
   const dkPain = await dkTrang('KH_REPLAN', 'lenh', 'ls.id');
+  const p = (v) => { params.push(v); return `$${params.length}`; };
+  const dk = [
+    "ls.trang_thai IN ('RELEASE_1','RELEASE_2','GIA_CONG')",
+    dkPain,
+    "(ls.trang_thai = 'GIA_CONG' OR NOT EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = ls.id))",
+  ];
+  const s = mauTim(search);
+  if (s) { const k = p(s); dk.push(`(ls.ma_lenh_san_xuat ~* ${k} OR ${lenhPhanInMatch('ls.id', k)})`); }
+  // Ngày SX kế hoạch — lệnh CHƯA có ngày luôn hiện (cần được lập kế hoạch, không để lọc ngày giấu mất).
+  if (tuNgay && RE_NGAY.test(tuNgay)) dk.push(`(ls.ngay_ke_hoach IS NULL OR ls.ngay_ke_hoach >= ${p(tuNgay)}::date)`);
+  if (denNgay && RE_NGAY.test(denNgay)) dk.push(`(ls.ngay_ke_hoach IS NULL OR ls.ngay_ke_hoach <= ${p(denNgay)}::date)`);
+  const v = (k) => mauTim(loc[k]);
+  if (v('maLenh')) dk.push(`ls.ma_lenh_san_xuat ~* ${p(v('maLenh'))}`);
+  if (v('chuyen')) { const k = p(v('chuyen')); dk.push(`EXISTS (SELECT 1 FROM chuyen_san_xuat cs_f WHERE cs_f.id = ls.chuyen_id AND (cs_f.ten_chuyen ~* ${k} OR cs_f.ma_chuyen ~* ${k}))`); }
+  if (v('nhaGiaCong')) dk.push(`EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd_g JOIN dot_vai_ve dv_g ON dv_g.id = lsd_g.dot_vai_ve_id WHERE lsd_g.lenh_san_xuat_id = ls.id AND dv_g.nha_gia_cong ~* ${p(v('nhaGiaCong'))})`);
+  for (const [key, col] of Object.entries(REPLAN_LOC_PHAN_IN)) {
+    if (!v(key)) continue;
+    dk.push(`EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd_f JOIN dot_vai_ve dv_f ON dv_f.id = lsd_f.dot_vai_ve_id JOIN phan_in pin_f ON pin_f.id = dv_f.phan_in_id AND pin_f.dang_hoat_dong JOIN ma_hang mh_f ON mh_f.id = pin_f.ma_hang_id JOIN don_hang dh_f ON dh_f.id = mh_f.don_hang_id JOIN khach_hang kh_f ON kh_f.id = dh_f.khach_hang_id WHERE lsd_f.lenh_san_xuat_id = ls.id AND ${col} ~* ${p(v(key))})`);
+  }
+  return dk.join(' AND ');
+}
+
+// Mọi ID lệnh khớp bộ lọc (không phân trang) — cho nút "Chọn tất cả N lệnh" khi đã phân trang ở server.
+async function listReplanIds(opts) {
+  const params = [];
+  const where = await replanWhere(opts, params);
+  const { rows } = await query(`SELECT ls.id FROM lenh_san_xuat ls WHERE ${where} ORDER BY ls.ngay_ke_hoach NULLS LAST, ls.created_date, ls.id LIMIT 5000`, params);
+  return rows.map((r) => r.id);
+}
+
+// Danh sách GỌN các lệnh trong KHOẢNG NGÀY đang lọc (bỏ qua ô tìm + bộ lọc trường) — chỉ đủ trường cho
+// modal QUÉT QR khớp mã. ⚠ Quét phải tìm được cả lệnh ở TRANG khác, nên không dùng `rows` của bảng.
+// ⚠ Theo khoảng ngày: không lọc ngày thì 6.000 lệnh = 1,9 MB / 1,9 s (đo prod 30/09) — bỏ lọc ngày ở
+//   màn hình thì quét cũng tìm được mọi lệnh.
+async function listReplanMaQuet({ tuNgay = null, denNgay = null } = {}) {
+  const params = [];
+  const where = await replanWhere({ tuNgay, denNgay }, params);
+  // `ma_phan_ds` = MỌI code phần của lệnh (gom set) · `barcode_phan_in` = mọi mã TDTHĐH nối dấu phẩy
+  // (FE `tachDsMa` tách) · `barcode_hskt`/`hskt_inset` của 1 phần in đại diện (y như bảng cũ).
+  const sql = `SELECT ls.id, ls.ma_lenh_san_xuat, x.ma_phan_ds, x.ma_phan, x.ten_khach_hang, x.mau_vai, x.barcode_phan_in, x.barcode, x.so_phan_in, ${HSKT_SUB('x.pin_id', 'h.barcode_hskt')} AS barcode_hskt, ${HSKT_SUB('x.pin_id', 'h.inset')} AS hskt_inset FROM lenh_san_xuat ls LEFT JOIN LATERAL (SELECT array_agg(DISTINCT pin.ma_phan) AS ma_phan_ds, min(pin.ma_phan) AS ma_phan, min(kh.ten_khach_hang) AS ten_khach_hang, min(pin.mau_vai) AS mau_vai, string_agg(DISTINCT pin.barcode, ',') AS barcode_phan_in, min(dv.barcode) AS barcode, count(DISTINCT pin.id)::int AS so_phan_in, (array_agg(pin.id ORDER BY pin.ma_phan))[1] AS pin_id FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id JOIN phan_in pin ON pin.id = dv.phan_in_id AND pin.dang_hoat_dong JOIN ma_hang mh ON mh.id = pin.ma_hang_id JOIN don_hang dh ON dh.id = mh.don_hang_id JOIN khach_hang kh ON kh.id = dh.khach_hang_id WHERE lsd.lenh_san_xuat_id = ls.id) x ON true WHERE ${where} ORDER BY ls.ngay_ke_hoach NULLS LAST, ls.created_date, ls.id`;
+  const { rows } = await query(sql, params);
+  return rows;
+}
+
+async function listReplanCandidates({ search = '', offset = 0, limit = 50, loc = {}, tuNgay = null, denNgay = null }) {
+  const params = [];
+  const where = await replanWhere({ search, loc, tuNgay, denNgay }, params);
+  const nLimit = params.push(limit);
+  const nOffset = params.push(offset);
   const FROM = `
-    FROM lenh_san_xuat ls
+    FROM (SELECT ls.id FROM lenh_san_xuat ls WHERE ${where}
+          ORDER BY ls.ngay_ke_hoach NULLS LAST, ls.created_date, ls.id LIMIT $${nLimit} OFFSET $${nOffset}) trang
+    JOIN lenh_san_xuat ls ON ls.id = trang.id
     LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
-    ${PHAN_INFO_LATERAL}
-    WHERE ls.trang_thai IN ('RELEASE_1','RELEASE_2','GIA_CONG')
-      AND ${dkPain}
-      AND (ls.trang_thai = 'GIA_CONG'
-           OR NOT EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = ls.id))
-      AND ($1 = '' OR ls.ma_lenh_san_xuat ~* $1 OR ${lenhPhanInMatch('ls.id', '$1')})`;
+    ${PHAN_INFO_LATERAL}`;
   const dataSql = `
     SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.ngay_ke_hoach, ls.chuyen_id, ls.trang_thai,
            ls.tg_bd_kh, ls.tg_kt_kh,
@@ -715,15 +776,15 @@ async function listReplanCandidates({ search = '', offset = 0, limit = 50 }) {
            (SELECT count(*) FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id)::int AS so_dot_vai,
            (SELECT count(DISTINCT dv2.phan_in_id) FROM lenh_sx_dot_vai lsd2 JOIN dot_vai_ve dv2 ON dv2.id = lsd2.dot_vai_ve_id JOIN phan_in pin2 ON pin2.id = dv2.phan_in_id AND pin2.dang_hoat_dong WHERE lsd2.lenh_san_xuat_id = ls.id)::int AS so_phan_in
     ${FROM}
-    ORDER BY ls.ngay_ke_hoach NULLS LAST, ls.created_date
-    LIMIT $2 OFFSET $3`;
-  const countSql = `SELECT count(*)::int AS total ${FROM}`;
+    ORDER BY ls.ngay_ke_hoach NULLS LAST, ls.created_date, ls.id`;
+  // Đếm trên bảng GỐC (không LATERAL) — cùng `where`, bỏ 2 tham số LIMIT/OFFSET ở cuối.
+  const countSql = `SELECT count(*)::int AS total FROM lenh_san_xuat ls WHERE ${where}`;
   // ⚠⚠ GỬI SQL GỘP 1 DÒNG (§9 CLAUDE.md): query này vốn đã dài, thêm subquery `so_phan_in` là bị
   //   thiết bị mạng RESET (`Connection terminated unexpectedly`) — đã gặp THẬT 14/08/2026.
   //   ⚠ Kèm theo: TUYỆT ĐỐI không đặt comment `--` bên trong 2 chuỗi SQL trên.
   const [data, count] = await Promise.all([
-    query(dataSql.replace(/\s+/g, ' '), [mauTim(search), limit, offset]),
-    query(countSql.replace(/\s+/g, ' '), [mauTim(search)]),
+    query(dataSql.replace(/\s+/g, ' '), params),
+    query(countSql.replace(/\s+/g, ' '), params.slice(0, nLimit - 1)),
   ]);
   return { rows: data.rows, total: count.rows[0].total };
 }
@@ -2054,7 +2115,7 @@ module.exports = {
   getLenhTestStatus, insertTestRun, insertTestRunTx, upsertLenhResult, insertStatusLog, setLenhTrangThai,
   testRunHistoryByDate, testRunsByLenh,
   KET_QUA_IN_KHONG_DAT, usersByUsernames, logInKhongDatTx,
-  listReplanCandidates, getLenhForReplan, getReplanDotVai, updateReleaseTx, updateLenhPlan, setLenhTrangThaiTx, logPlanChange, planHistoryByDate,
+  listReplanCandidates, listReplanIds, listReplanMaQuet, getLenhForReplan, getReplanDotVai, updateReleaseTx, updateLenhPlan, setLenhTrangThaiTx, logPlanChange, planHistoryByDate,
   phanInRowsByLenh,
   listGiaCongLenh, getGiaCongLenh, listGiaCongHistory, giaCongPhanInRows,
   listGiaCongTemCancelable, getGiaCongTem, cancelGiaCongTemTx, logGiaCongTraLai,

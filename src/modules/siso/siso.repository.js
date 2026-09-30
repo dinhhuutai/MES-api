@@ -7,7 +7,7 @@ const { query } = require('../../config/db');
 const { mauTim } = require('../../utils/timKiem');
 const { MAN, LOAI_NGAY, O_SI_SO, VN } = require('../../utils/siSoTram');
 const { DO_SL } = require('../../utils/bangTheoDoi');
-const { slaReadySql, slaQcReadySql, mocDoReadySql, TEST_RUN_TRUOC_SX_PHUT, gioSxKhSql } = require('../../utils/slaTheoGio');
+const { slaReadySql, slaQcReadySql, mocDoReadySql, testRunTruocSxPhut, hanBat, gioSxKhSql } = require('../../utils/slaTheoGio');
 
 // ⚠⚠ MỐC KỲ ĐẶT TRONG CTE `ky`, KHÔNG nội suy `$1`/`$2` thẳng vào từng điều kiện.
 //   Lý do (lỗi thật đã bắt): ô `ton_dau` chỉ dùng $1, ô `ton_cuoi` chỉ dùng $2 ⇒ tham số còn lại
@@ -235,6 +235,7 @@ function batDauNghenSql(dong, slaPhut) {
   const cong = (phutSql) => `(q.tg_vao + (${phutSql}) * interval '1 minute')`;
   // READY KT theo HẠN GIAO (25/09/2026): 00:00 ngày (hạn − 1); thiếu hạn ⇒ theo giờ lên MES.
   if (dong.slaKieu === 'READY_THEO_GIO') {
+    if (!hanBat()) return cong(slaReadySql('q.tg_vao', s)); // luật hạn giao tắt (mig 109)
     return `(CASE WHEN q.han_giao_hang IS NULL THEN ${cong(slaReadySql('q.tg_vao', s))}
       ELSE ${mocDoReadySql('q.han_giao_hang')} END)`;
   }
@@ -242,10 +243,12 @@ function batDauNghenSql(dong, slaPhut) {
   if (dong.slaKieu === 'QC_THEO_GIO') return cong(slaQcReadySql('q.tg_vao', s));
   // Test Run theo giờ SX kế hoạch SỚM NHẤT của các lệnh RELEASE_1 của phần in (thiếu ⇒ SLA trạm).
   if (dong.slaKieu === 'TEST_RUN_KE_HOACH') {
+    const truoc = testRunTruocSxPhut(); // null = luật tắt (mig 109)
+    if (truoc == null) return cong(s);
     const bdKh = `(SELECT min(${gioSxKhSql('lsb.tg_bd_kh', 'lsb.ngay_ke_hoach')}) FROM lenh_sx_dot_vai ldb JOIN dot_vai_ve dvb ON dvb.id = ldb.dot_vai_ve_id
       JOIN lenh_san_xuat lsb ON lsb.id = ldb.lenh_san_xuat_id WHERE dvb.phan_in_id = q.id AND lsb.trang_thai = 'RELEASE_1')`;
     return `(CASE WHEN ${bdKh} IS NULL THEN ${cong(s)}
-      ELSE ${bdKh} - interval '${TEST_RUN_TRUOC_SX_PHUT} minutes' END)`;
+      ELSE ${bdKh} - interval '${Number(truoc)} minutes' END)`;
   }
   return cong(s);
 }

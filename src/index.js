@@ -86,6 +86,8 @@ async function start() {
     require('./modules/suathongtin/erpCapNhat').startJob();
     startCleanupJob();
     startDryingJob();
+    // Luật SLA theo giờ (mig 109) — nạp từ `cai_dat_sla_gio` + nạp lại mỗi 60s; thiếu bảng ⇒ mặc định.
+    require('./utils/slaTheoGio').batDauNapDinhKy();
   });
 }
 
