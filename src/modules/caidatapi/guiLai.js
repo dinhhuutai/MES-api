@@ -5,7 +5,7 @@
 //
 // Chỉ 5 API ĐẨY dữ liệu mới có nút (API XIN SỐ — mã tem 15/17/13, ID phiếu giao — gọi lại là TIÊU thêm
 // một số của ERP, vô nghĩa). Mỗi API gửi lại bằng CHÍNH hàm nghiệp vụ của nó (dựng lại dữ liệu mới
-// nhất), KHÔNG tự chép payload cũ ⇒ các bản vá payload (vd `BarcodeSua`, `DsMaloi` tổng hư) tự áp dụng.
+// nhất), KHÔNG tự chép payload cũ ⇒ các bản vá payload (vd `BarcodeSua`, `DsMaloi` = mã,SL sửa,SL hủy) tự áp dụng.
 //
 // ⚠⚠ DÙNG LẠI IDMES CŨ của dòng lịch sử: 3 proc `MES2SK6` · `MES2SU6` · `MES2SQ0` đều XÓA phiếu cùng
 //   `Soctcu` rồi tạo lại ⇒ gửi lại không đẻ phiếu trùng bên ERP. Dòng cũ không có IDMES ⇒ cấp số mới.

@@ -48,7 +48,7 @@
 //   không viết comment `-- …` bên trong chuỗi SQL; chú thích để ngoài như file này.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const { khongReadyTuDongSql, conDotChuaReadySql, conDotChoQcSql } = require('./tech');
+const { khongReadyTuDongSql, conDotChuaReadySql, conDotChoQcSql, qcMoLaiSql } = require('./tech');
 
 const VN = "AT TIME ZONE 'Asia/Ho_Chi_Minh'";
 
@@ -232,7 +232,7 @@ const DV = {
   //   người dùng báo). Nay gương `technical.repository` OUTER_WHERE màn QC: đang ở hàng đợi QC ⇔ còn
   //   đợt đang chờ mà KT đã xong + QC chưa xác nhận (`conDotChoQcSql`).
   READY_QC: `SELECT pin.id AS phan_in_id,
-      CASE WHEN ${conDotChoQcSql('pin.id', 'kh.ten_khach_hang')} THEN GREATEST(${MOC_KT_XONG}, rdy.moc_dot_kt)
+      CASE WHEN ${conDotChoQcSql('pin.id', 'kh.ten_khach_hang')} THEN GREATEST(${MOC_KT_XONG}, rdy.moc_dot_kt, ${qcMoLaiSql('pin.id')})
            ELSE ${MOC_KT_XONG} END AS tg_vao,
       CASE WHEN ${conDotChoQcSql('pin.id', 'kh.ten_khach_hang')} THEN NULL
            ELSE COALESCE(GREATEST(rdy.moc_qc, rdy.moc_dot_qc), roi.moc_roi) END AS tg_ra, ${NHAN_TRONG}

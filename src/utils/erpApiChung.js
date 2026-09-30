@@ -165,11 +165,13 @@ async function goiErp(maApi, {
 // Proc `MES2SU6` / `MES2SQ0` chỉ nhận MỘT chuỗi cho toàn bộ chi tiết (không có tham số số lượng),
 // nên định dạng 2 chuỗi này LÀ hợp đồng dữ liệu — đặt ở đây để chỉ có 1 nguồn, sửa 1 chỗ.
 
-// `DsMaloi` = các BỘ BA `mã lỗi, SL HƯ (tổng), SL hủy` nối tiếp, ngăn bằng dấu phẩy:
-//   `L1,2,0,L3,6,1` = lỗi L1 hư 2 (sửa 2, hủy 0); lỗi L3 hư 6 (sửa 5, hủy 1).
-// ⚠⚠ ĐỔI 26/09/2026 theo SP THẬT `MES_spr_MES2SU6`: proc đọc `F_ConvStrToTable3column` rồi tính
-//   `SoluongSuaNhe = Soluong − SoluongHuy` ⇒ số GIỮA là TỔNG HƯ của mã lỗi (= sửa + hủy), KHÔNG phải
-//   riêng SL sửa như chốt 16/09 (gửi SL sửa thì ERP ra SL sửa = sửa − hủy, sai; có thể âm).
+// `DsMaloi` = các BỘ BA `mã lỗi, SL SỬA, SL HỦY` nối tiếp, ngăn bằng dấu phẩy:
+//   `L1,2,0,L3,5,1` = lỗi L1 sửa 2 hủy 0; lỗi L3 sửa 5 hủy 1. Ví dụ thật: KCS hư 24 → phân loại
+//   20 sửa + 4 hủy ⇒ `HA1,20,4` (KHÔNG phải `HA1,24,4`).
+// ⚠⚠ ĐỔI LẠI 30/09/2026 (người dùng chốt: số giữa = SL SỬA). Lịch sử: 16/09 gửi SL sửa → 26/09 đổi sang
+//   TỔNG HƯ vì SP `MES_spr_MES2SU6` lúc đó tính `SoluongSuaNhe = Soluong − SoluongHuy` → 30/09 về lại SL sửa.
+//   ⚠ Nếu proc ERP VẪN còn phép trừ đó thì ERP sẽ ghi SL sửa = sửa − hủy (vd 16 thay vì 20) — phải để
+//   bên ERP bỏ phép trừ, ĐỪNG sửa lại ở đây mà không hỏi người dùng.
 // ⚠ Bỏ dòng KHÔNG có mã lỗi: gửi ô rỗng làm LỆCH VỊ TRÍ mọi bộ ba phía sau (ERP đọc sai toàn bộ).
 // ⚠ Mã lỗi chứa dấu phẩy sẽ phá cấu trúc ⇒ thay bằng khoảng trắng (đo prod: không mã nào có dấu phẩy).
 function dsMaLoi(dong = []) {
@@ -178,7 +180,7 @@ function dsMaLoi(dong = []) {
     .map((d) => {
       const sua = Number(d.so_luong_sua) || 0;
       const huy = Number(d.so_luong_huy) || 0;
-      return [String(d.ma_loi).replace(/,/g, ' ').trim(), sua + huy, huy].join(',');
+      return [String(d.ma_loi).replace(/,/g, ' ').trim(), sua, huy].join(',');
     })
     .join(',');
 }

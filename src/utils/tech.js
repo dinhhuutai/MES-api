@@ -210,7 +210,24 @@ const conDotChoQcSql = (pinCol, khachExpr) => `EXISTS (SELECT 1 FROM dot_vai_ve 
 const conDotChuaKtSql = (pinCol, khachExpr) => `EXISTS (SELECT 1 FROM dot_vai_ve zdk
   WHERE ${dotChoReadySql('zdk', pinCol)} AND NOT ${qcDotSql('zdk', pinCol)} AND NOT ${ktDotXongSql('zdk', pinCol, khachExpr)})`;
 
+// ⚠⚠ MỐC PHẦN IN VÀO LẠI HÀNG ĐỢI QC (30/09/2026, người dùng chốt: "phần in trả về READY mà nằm ở QC
+//   luôn thì cho lại thời gian SLA"). Trả về READY (Release 1 · Test Run · Xác nhận chạy → Trả về KT) chỉ
+//   HỦY QC và GIỮ xác nhận Khuôn/Film/Mực cũ (§5.2) ⇒ nếu đếm SLA QC từ lúc KT xong (có khi từ nhiều ngày
+//   trước) thì vừa trả về đã ĐỎ. Mốc bắt đầu đếm SLA QC = GREATEST(KT xong, mốc này), gồm:
+//     · lần QC bị hủy gần nhất (dòng QC_XAC_NHAN tổng hoặc theo đợt chuyển khỏi DAT — mọi đường trả về
+//       READY đều đi qua đây: `chiHuyQcReady`, `reopenReadyForPhanIn`, hủy xác nhận READY…);
+//     · lúc Giao nhận "Xác nhận lại" (`qc_tra_ve` TRA_VE_GN đã xử lý) — phần in rời READY trong lúc chờ GN.
+//   NULL ⇒ chưa từng bị trả về (GREATEST bỏ qua NULL ⇒ giữ đúng mốc KT xong như cũ).
+// ⚠ Dùng CHUNG: `technical.repository.listCandidates` (màn QC) + `siSoTram DV.READY_QC` (dải Theo dõi).
+const qcMoLaiSql = (pinCol) => `GREATEST(
+  (SELECT max(zm.updated_date) FROM ket_qua_checkpoint zm JOIN checkpoint zmc ON zmc.id = zm.checkpoint_id AND zmc.ma_checkpoint = 'QC_XAC_NHAN'
+    WHERE zm.phan_in_id = ${pinCol} AND zm.trang_thai <> 'DAT'),
+  (SELECT max(zn.updated_date) FROM ready_xac_nhan_dot zn JOIN checkpoint znc ON znc.id = zn.checkpoint_id AND znc.ma_checkpoint = 'QC_XAC_NHAN'
+    WHERE zn.phan_in_id = ${pinCol} AND zn.trang_thai <> 'DAT'),
+  (SELECT max(zg.updated_date) FROM qc_tra_ve zg WHERE zg.phan_in_id = ${pinCol} AND zg.loai = 'TRA_VE_GN' AND zg.da_xu_ly))`;
+
 module.exports = {
+  qcMoLaiSql,
   KHUON_OPTIONAL_KH, KHUON_OPT_SQL_LIST, isKhuonOptional, laHangGiaCong,
   requiredTechItems, hienFilm, techDoneSql, techDoneSqlByPin,
   NHAN_HE_THONG, nguoiXacNhanSql,

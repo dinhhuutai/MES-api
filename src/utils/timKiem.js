@@ -54,7 +54,11 @@ function mauTim(s) {
   if (!tu) return '';
   let out = '';
   for (const ch of tu) {
-    if (NHOM[ch]) out += `[${NHOM[ch]}]`;
+    // ⚠ Khoảng trắng trong từ khóa khớp 1-NHIỀU khoảng trắng của DỮ LIỆU (30/09/2026): ERP gửi dữ liệu có
+    //   2 dấu cách liền (vd mã hàng `ARGALI␣␣HIGH COUNTRY PACK`) — từ khóa đã gộp còn 1 dấu cách nên
+    //   trước đây KHÔNG ra. Gương FE `utils/timKiem.chuanTim` (FE chuẩn hóa cả 2 phía).
+    if (ch === ' ') out += '[[:space:]]+';
+    else if (NHOM[ch]) out += `[${NHOM[ch]}]`;
     else if (DAC_BIET.has(ch)) out += `\\${ch}`;
     else out += ch;
   }

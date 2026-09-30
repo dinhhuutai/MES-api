@@ -528,6 +528,11 @@ async function recordOqc(temId, body, actorId) {
   if (bocMau > pending) throw new AppError(`SL bốc mẫu (${bocMau}) vượt SL chờ OQC của nguồn ${nhan} (${pending})`, { status: 422, errorCode: 'OVER' });
   const loi = bocMau - dat;
   const ketQua = body.ketQua === 'KHONG_DAT' ? 'KHONG_DAT' : 'DAT';
+  // ⚠ ĐẠT = ĐẠT HẾT MẪU (người dùng chốt 30/09/2026): bốc 50 mà đạt 20 là KHÔNG ĐẠT — FE tự nhảy toggle,
+  //   đây là chốt chặn phía server (gửi thẳng API cũng không lọt được "Đạt" với mẫu có lỗi).
+  if (ketQua === 'DAT' && dat < bocMau) {
+    throw new AppError(`Mẫu có ${loi} pcs lỗi (đạt ${dat}/${bocMau}) — phải chọn Không đạt`, { status: 422, errorCode: 'DAT_THIEU' });
+  }
   const lanKiem = await repo.nextOqcRound(temId);
 
   const ownerChoGiaoId = body.ownerChoGiaoId || null;

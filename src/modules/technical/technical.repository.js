@@ -8,7 +8,7 @@ const { dkTrang } = require('../../utils/phuongAnIn');
 //   `listConfirmHistory` / `doneByDate`. Luật loại-khỏi-số-liệu vẫn còn hiệu lực ở sĩ số + báo cáo.
 // ⚠ `conDotChoQcSql` KHÔNG import ở đây nữa (23/09/2026): màn QC dùng chung vị từ với màn Kỹ thuật —
 //   xem ghi chú ở `OUTER_WHERE`. Helper đó nay chỉ còn phục vụ dải "Theo dõi" (`utils/siSoTram.js`).
-const { techDoneSql, KHUON_OPT_SQL_LIST, nguoiXacNhanSql, conDotChuaReadySql, qcDotSql } = require('../../utils/tech');
+const { techDoneSql, KHUON_OPT_SQL_LIST, nguoiXacNhanSql, conDotChuaReadySql, qcDotSql, qcMoLaiSql } = require('../../utils/tech');
 const { slaReadySql, slaQcReadySql, slaReadyHanSql, canhBaoReadyHanSql } = require('../../utils/slaTheoGio');
 // Phần in đang được trả về GIAO NHẬN sửa thông tin ⇒ rời màn READY cho tới khi GN xác nhận lại.
 const { CHO_GN_SQL } = require('../../utils/traVeGn');
@@ -112,7 +112,7 @@ async function listCandidates({
            ${doneExpr('$8')} AS muc_done,
            ${techDoneSql('kh.ten_khach_hang', doneExpr('$6'), doneExpr('$7'), doneExpr('$8'))} AS tech_done` : ''},
            hs.phuong_an_in, hs.barcode_hskt, hs.hskt_id, hs.hskt_inset,
-           sla.ready_tg_vao, sla.kt_done_tg, sla.xn_sort_tg
+           sla.ready_tg_vao, sla.kt_done_tg, sla.qc_mo_lai_tg, sla.xn_sort_tg
     FROM phan_in pin
     JOIN ma_hang mh ON mh.id = pin.ma_hang_id
     JOIN don_hang dh ON dh.id = mh.don_hang_id
@@ -137,6 +137,7 @@ async function listCandidates({
              ) AS ready_tg_vao,
              (SELECT max(COALESCE(k.tg_xac_nhan, k.created_date)) FROM ket_qua_checkpoint k
                 WHERE k.phan_in_id = pin.id AND k.checkpoint_id = ANY($2::uuid[]) AND k.trang_thai = 'DAT') AS kt_done_tg,
+             ${qcMoLaiSql('pin.id')} AS qc_mo_lai_tg,
              -- xn_sort_tg = mốc "vừa được xác nhận" dùng ĐỂ SẮP XẾP màn Kỹ thuật — CHỈ tính KHUON ($6)
              -- và MUC ($8), CỐ Ý BỎ FILM ($7): xác nhận Film không được đẩy phần in lên đầu danh sách.
              -- ⚠ Phải là cột RIÊNG, KHÔNG sửa kt_done_tg ở trên: kt_done_tg là mốc bắt đầu đếm SLA của
@@ -207,8 +208,8 @@ async function listCandidates({
   // Gộp data + total vào 1 query bằng COUNT(*) OVER() (1 round-trip thay vì 2).
   const dataSql = `
     SELECT q.*,
-           CASE WHEN $11 THEN (CASE WHEN q.tech_done THEN q.kt_done_tg ELSE NULL END) ELSE q.ready_tg_vao END AS tg_vao,
-           CASE WHEN $11 THEN (CASE WHEN q.tech_done THEN ${slaQcReadySql('q.kt_done_tg', '$12::int')} ELSE NULL END) WHEN q.tech_done THEN NULL ELSE ${slaReadyHanSql('q.ready_tg_vao', 'q.han_giao_hang', 'q.ready_tg_vao', '$9::int')} END AS sla_phut,
+           CASE WHEN $11 THEN (CASE WHEN q.tech_done THEN GREATEST(q.kt_done_tg, q.qc_mo_lai_tg) ELSE NULL END) ELSE q.ready_tg_vao END AS tg_vao,
+           CASE WHEN $11 THEN (CASE WHEN q.tech_done THEN ${slaQcReadySql('GREATEST(q.kt_done_tg, q.qc_mo_lai_tg)', '$12::int')} ELSE NULL END) WHEN q.tech_done THEN NULL ELSE ${slaReadyHanSql('q.ready_tg_vao', 'q.han_giao_hang', 'q.ready_tg_vao', '$9::int')} END AS sla_phut,
            CASE WHEN $11 THEN $13::int ELSE ${canhBaoReadyHanSql('q.han_giao_hang', '$10::int')} END AS canh_bao_truoc_phut,
            count(*) OVER()::int AS total_count
     FROM (${selectBase(true)}) q

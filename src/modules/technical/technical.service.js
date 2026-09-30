@@ -404,7 +404,9 @@ async function listCandidates({ search, page, limit, offset, onlyQcReady = false
         const xongDot = techDoneNhom(g, r.ten_khach_hang);
         const nDone = ['KHUON', 'FILM', 'MUC'].filter((ma) => it[ma]?.done).length;
         // Mốc KT xong CỦA ĐỢT = lần xác nhận muộn nhất (Khuôn/Mực) — bắt đầu đếm SLA của QC.
-        const ktTg = [it.KHUON?.tg, it.MUC?.tg].map(tMs).filter(Boolean);
+        // ⚠ Cộng thêm `qc_mo_lai_tg` (30/09/2026): phần in bị TRẢ VỀ READY giữ xác nhận KT cũ ⇒ QC được
+        //   tính lại SLA từ lúc vào lại hàng đợi, không đỏ ngay (utils/tech.js qcMoLaiSql).
+        const ktTg = [it.KHUON?.tg, it.MUC?.tg, r.qc_mo_lai_tg].map(tMs).filter(Boolean);
         items.push({
           ...r,
           _key: nhieu ? `${r.id}|${g.key}` : r.id,
