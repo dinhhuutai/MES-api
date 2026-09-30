@@ -39,16 +39,17 @@ router.post('/oqc/:temId', rbac('OQC'), c.recordOqc);
 // với id='tem-sua' → lỗi 'invalid input syntax for type uuid'.
 router.get('/sua/tem-sua/cancelable', rbac('SUA'), c.temSuaList);
 router.get('/sua/tem-sua/deleted', rbac('SUA'), c.temSuaDeletedList);
-router.post('/sua/tem-sua/huy', rbac('SUA'), c.temSuaHuy);
-router.post('/sua/tem-sua/mo', rbac('SUA'), c.temSuaMo);
+// ⚠ Lệnh hủy/mở ở trang Hủy lệnh xác nhận đòi thêm `HUY_XAC_NHAN` (mig 108) — xem middlewares/rbac.js.
+router.post('/sua/tem-sua/huy', rbac('SUA'), rbac.huyXacNhan(), c.temSuaHuy);
+router.post('/sua/tem-sua/mo', rbac('SUA'), rbac.huyXacNhan(), c.temSuaMo);
 
 // Hủy xác nhận KCS / Sửa / OQC (lỡ xác nhận lộn / nhập sai số) — trang Hủy lệnh xác nhận
 router.get('/kcs/cancelable', rbac('KCS'), c.cancelKcsList);
-router.post('/kcs/:id/huy', rbac('KCS'), c.cancelKcs);
+router.post('/kcs/:id/huy', rbac('KCS'), rbac.huyXacNhan(), c.cancelKcs);
 router.get('/sua/cancelable', rbac('SUA'), c.cancelSuaList);
-router.post('/sua/:id/huy', rbac('SUA'), c.cancelSua);
+router.post('/sua/:id/huy', rbac('SUA'), rbac.huyXacNhan(), c.cancelSua);
 router.get('/oqc/cancelable', rbac('OQC'), c.cancelOqcList);
-router.post('/oqc/:id/huy', rbac('OQC'), c.cancelOqc);
+router.post('/oqc/:id/huy', rbac('OQC'), rbac.huyXacNhan(), c.cancelOqc);
 
 // Lịch sử QC trả về (toggle READY/TEST_RUN/OQC)
 router.get('/qc-tra-ve', rbac('QC_TRAVE_VIEW'), c.qcTraVeHistory);

@@ -27,3 +27,11 @@ module.exports = function rbac(...required) {
 };
 
 module.exports.QUYEN_XEM_HE_THONG = QUYEN_XEM_HE_THONG;
+
+// Quyền THỰC HIỆN HỦY ở trang *Hệ thống › Hủy lệnh xác nhận* (mig 108, 30/09/2026) — gương FE
+// `constants/modules.QUYEN_HUY_XAC_NHAN`. Các lệnh hủy/mở theo CÔNG ĐOẠN (hủy lệnh SX, tem gia công, tem in,
+// đóng/mở lệnh, hủy chạy, hủy KCS/Sửa/OQC, hủy/mở tem sửa) đòi quyền công đoạn **VÀ** quyền này ⇒ KH/QA/SX có
+// quyền công đoạn vẫn vào XEM được trang nhưng không hủy được. Đặt SAU `rbac(<quyền công đoạn>)` trên route.
+const QUYEN_HUY_XAC_NHAN = 'HUY_XAC_NHAN';
+module.exports.QUYEN_HUY_XAC_NHAN = QUYEN_HUY_XAC_NHAN;
+module.exports.huyXacNhan = (...them) => module.exports(QUYEN_HUY_XAC_NHAN, ...them);

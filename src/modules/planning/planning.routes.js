@@ -85,7 +85,8 @@ router.get('/gia-cong/history', rbac('RELEASE1', 'RELEASE2'), c.giaCongHistory);
 //   không xem được tem gia công và ngược lại.
 router.get('/gia-cong/tem/danh-sach', rbac('RELEASE1', 'RELEASE2'), prodController.temDaInGiaCong);
 router.get('/gia-cong/tem/cancelable', rbac('RELEASE1', 'RELEASE2'), c.giaCongTemCancelable);
-router.post('/gia-cong/tem/:temId/huy', rbac('RELEASE1', 'RELEASE2'), c.giaCongTemHuy);
+// ⚠ Lệnh ghi của trang Hủy lệnh xác nhận đòi thêm `HUY_XAC_NHAN` (mig 108) — KH chỉ xem.
+router.post('/gia-cong/tem/:temId/huy', rbac('RELEASE1', 'RELEASE2'), rbac.huyXacNhan(), c.giaCongTemHuy);
 router.post('/gia-cong/:lenhId/chuyen-oqc', rbac('RELEASE1', 'RELEASE2'), c.giaCongToOqc);
 // Hàng bị OQC trả về → Kế hoạch mang trả lại nhà gia công (tắt cờ, ghi người + giờ).
 router.post('/gia-cong/:lenhId/tra-lai', rbac('RELEASE1', 'RELEASE2'), c.giaCongTraLai);
@@ -108,6 +109,7 @@ router.delete('/ke-hoach-tam/:id', rbac('RELEASE1', 'RELEASE2'), c.keHoachTamDel
 // chế độ mở rộng vẫn được kiểm lại trong controller (`coQuyenHuyTuyChon`).
 router.get('/huy-lenh/candidates', rbac('RELEASE1', 'RELEASE2', 'LENH_CANCEL_ANY'), c.cancelableLenh);
 router.get('/huy-lenh/:lenhId/lan-test', rbac('RELEASE1', 'RELEASE2', 'LENH_CANCEL_ANY'), c.lanTestChoHuy);
-router.post('/huy-lenh/:lenhId', rbac('RELEASE1', 'RELEASE2', 'LENH_CANCEL_ANY'), c.cancelLenh);
+// Ghi: thêm `HUY_XAC_NHAN` (mig 108) — `LENH_CANCEL_ANY` tự nó đã là quyền hủy nên cũng cho qua.
+router.post('/huy-lenh/:lenhId', rbac('RELEASE1', 'RELEASE2', 'LENH_CANCEL_ANY'), rbac.huyXacNhan('LENH_CANCEL_ANY'), c.cancelLenh);
 
 module.exports = router;

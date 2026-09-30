@@ -57,15 +57,16 @@ router.post('/dot-vai/:dotVaiId/ly-do-bo-sung', rbac('PROD_RUN'), c.luuLyDoBoSun
 
 // Hủy lệnh in tem (xóa/HỦY tem chưa kiểm + gỡ xe phơi, trả SL về) — dùng ở trang Hủy lệnh xác nhận
 router.get('/huy-tem/candidates', rbac('PROD_RUN'), c.cancelableTem);
-router.post('/huy-tem/:temId', rbac('PROD_RUN'), c.cancelPrintTem);
+// ⚠ 4 lệnh ghi của trang Hủy lệnh xác nhận ở file này đòi thêm `HUY_XAC_NHAN` (mig 108).
+router.post('/huy-tem/:temId', rbac('PROD_RUN'), rbac.huyXacNhan(), c.cancelPrintTem);
 
 // Đóng lệnh sản xuất (= Chạy hoàn tất, khi lệch SL không bấm được ở màn SX) — trang Hủy lệnh xác nhận
 router.get('/dong-lenh/candidates', rbac('PROD_RUN'), c.closeCandidates);
-router.post('/dong-lenh/:phieuId', rbac('PROD_RUN'), c.closeProduction);
+router.post('/dong-lenh/:phieuId', rbac('PROD_RUN'), rbac.huyXacNhan(), c.closeProduction);
 
 // Mở lại lệnh sản xuất (đã đóng/hoàn tất trong 2 ngày, cần in tiếp) — trang Đóng lệnh sản xuất
 router.get('/mo-lai/candidates', rbac('PROD_RUN'), c.reopenCandidates);
-router.post('/mo-lai/:phieuId', rbac('PROD_RUN'), c.reopenProduction);
+router.post('/mo-lai/:phieuId', rbac('PROD_RUN'), rbac.huyXacNhan(), c.reopenProduction);
 
 // Ngừng lệnh chạy (ngừng phần in đang chạy để in hàng gấp hơn) → lệnh về chờ chạy — màn Xác nhận chạy
 router.post('/phieu/:phieuId/ngung-lenh', rbac('PROD_RUN'), c.pauseLenhChay);
@@ -84,7 +85,7 @@ router.post('/phieu/:phieuId/vuot-san-xuat', rbac('PROD_RUN'), c.vuotSanXuat);
 
 // Hủy lệnh đang chạy (bấm nhầm Xác nhận chạy) → đưa về danh sách chờ chạy — trang Hủy lệnh xác nhận
 router.get('/huy-chay/candidates', rbac('PROD_RUN'), c.undoStartCandidates);
-router.post('/huy-chay/:phieuId', rbac('PROD_RUN'), c.undoStartProduction);
+router.post('/huy-chay/:phieuId', rbac('PROD_RUN'), rbac.huyXacNhan(), c.undoStartProduction);
 
 // Theo dõi chuyền
 router.get('/monitor', rbac('PROD_MONITOR'), c.monitor);
