@@ -10,6 +10,8 @@ const tracking = require('../workflow/tracking.service');
 const erp = require('../../utils/erpApiChung');
 const env = require('../../config/env');
 const { ghiLog } = require('../../utils/erpApiLog');
+const { capIdMes } = require('../../utils/idMes');
+const { taoIdKetNoi } = require('../../utils/idKetNoi');
 
 // Dùng chung 2 màn (xem `repo.listTemGiao`): `SAN_SANG` = Giao hàng · `CHO_TICH` = Tích tem giao hàng.
 async function dsTemGiao(q = {}, cheDo) {
@@ -263,13 +265,14 @@ const laIdErp = (ma) => !!ma && !/^PG\d+$/i.test(String(ma).trim());
 //   nút "Gửi lại ERP" (nếu im lặng bỏ qua thì phiếu biến mất khỏi mọi chỗ tra cứu).
 async function ghiChuaGui(giaoHangId, gh, loi, actorId) {
   await ghiLog('ERP_GUI_PHIEU_GIAO', {
-    // ID kết nối = mã phiếu (dù đang là mã MES `PG…`) để tra được cả lượt chưa gửi này.
-    thanhCong: false, idBanGhi: giaoHangId, idMes: gh.ma_phieu_giao || null, url: env.erp.guiPhieuGiaoUrl,
+    // Lượt KHÔNG gọi ERP ⇒ ID kết nối MES sinh riêng (không tiêu dãy IDMES); mã phiếu vẫn nằm trong `gui`.
+    thanhCong: false, idBanGhi: giaoHangId, idMes: taoIdKetNoi('PG'), url: env.erp.guiPhieuGiaoUrl,
     gui: { IDPhieuGiao: gh.ma_phieu_giao }, loi, actorId,
   });
 }
 
-async function guiErpPhieuGiao(giaoHangId, gh, tems, actorId) {
+// `idMesCu` = IDMES của lượt gửi trước (nút "Gửi lại ERP") — dùng lại để 2 bên vẫn khớp 1 ID kết nối.
+async function guiErpPhieuGiao(giaoHangId, gh, tems, actorId, idMesCu = null) {
   try {
     // ⚠⚠ CHỈ GỬI KHI ĐÃ CÓ ID PHIẾU GIAO CỦA ERP + CÓ DỮ LIỆU (người dùng chốt 26/09/2026): phiếu đang mang
     //   mã MES tự sinh (ERP không cấp được số lúc lập) mà gửi đi thì `@pID` là mã ERP không hề biết. Ghi 1 dòng
@@ -285,7 +288,11 @@ async function guiErpPhieuGiao(giaoHangId, gh, tems, actorId) {
       await ghiChuaGui(giaoHangId, gh, loi, actorId);
       return { ok: false, error: loi, thieu_du_lieu: true };
     }
+    // ⚠ Cấp IDMES SAU mọi guard — mỗi lần cấp là tiêu 1 số của dãy dùng chung.
+    const idMes = idMesCu != null ? idMesCu : await capIdMes('gui-erp-phieu-giao');
+    if (idMes == null) return { ok: false, error: 'Không cấp được IDMES (ID kết nối)' };
     return await erp.guiPhieuGiao({
+      IDMES: idMes,
       IDPhieuGiao: gh.ma_phieu_giao,
       // Ngày chứng từ = NGÀY GIAO của phiếu (lùi về hôm nay nếu thiếu).
       Ngayct: ngayErp(gh.ngay_giao),
@@ -310,7 +317,8 @@ async function guiErpPhieuGiao(giaoHangId, gh, tems, actorId) {
 // ⚠ Khác 2 đường gọi kia: hàm này **CÓ `await`** và TRẢ KẾT QUẢ cho người bấm (họ đang đứng chờ để
 //   biết ERP đã nhận chưa) — đừng chạy ngầm ở đây.
 // ⚠ CHỈ cho phiếu ĐÃ XÁC NHẬN GIAO: phiếu `TAO` chưa cộng sổ cái, phiếu `HUY` thì ERP không nên nhận.
-async function guiLaiErp(giaoHangId, actorId) {
+// `idMesCu` = IDMES của dòng lịch sử được bấm "Gửi lại" (Cài đặt API) — gửi lại với CÙNG ID kết nối.
+async function guiLaiErp(giaoHangId, actorId, idMesCu = null) {
   const gh = await repo.getGiaoHang(giaoHangId);
   if (!gh) throw new AppError('Phiếu giao không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   if (gh.trang_thai !== 'DA_GIAO') {
@@ -336,7 +344,7 @@ async function guiLaiErp(giaoHangId, actorId) {
     await repo.doiMaPhieuGiao(giaoHangId, gh.ma_phieu_giao, moi, actorId);
     gh.ma_phieu_giao = moi;
   }
-  const kq = await guiErpPhieuGiao(giaoHangId, gh, tems, actorId);
+  const kq = await guiErpPhieuGiao(giaoHangId, gh, tems, actorId, idMesCu);
   // `guiErpPhieuGiao` nuốt mọi lỗi (trả undefined khi ném) ⇒ chuẩn hóa về 1 hình dạng cho FE.
   if (kq && kq.ok) return { ok: true, ma_phieu_giao: gh.ma_phieu_giao, so_tem: tems.length, doi_ma: !laIdErp(ma0) };
   if (kq && kq.bo_qua) {

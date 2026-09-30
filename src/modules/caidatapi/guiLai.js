@@ -73,7 +73,8 @@ async function guiLai(ma, auditId, actorId) {
   if (ma === 'ERP_GUI_PHIEU_GIAO') {
     // Lazy require: delivery.service nạp nhiều module, tránh vòng require khi app khởi động.
     const delivery = require('../delivery/delivery.service');
-    return delivery.guiLaiErp(id, actorId);
+    // ⚠ CHỈ lấy `gui.IDMES` — dòng cũ (trước 30/09/2026) ghi `id_mes` = MÃ PHIẾU giao, đem dùng làm IDMES là sai.
+    return delivery.guiLaiErp(id, actorId, soHoacNull((g.gui || {}).IDMES));
   }
 
   if (ma === 'ERP_GUI_SUA_DAT') {

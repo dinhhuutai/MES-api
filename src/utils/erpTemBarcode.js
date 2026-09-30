@@ -53,11 +53,13 @@ function erpProxy() {
   } catch { return undefined; }
 }
 
-async function goiMotLan(url, tienTo) {
+async function goiMotLan(url, tienTo, idKn) {
   // ⚠ LOG CẢ URL: lỗi production 2026-08-11 (gọi nhầm host LAN) mất rất lâu mới tìm ra vì thông điệp
   //   lỗi chỉ ghi "timeout" mà không nói đang gọi ĐI ĐÂU.
-  console.log(`[tem-barcode] → GET ${url} (tiền tố ${tienTo}, timeout ${Math.round(env.erp.barcodeTemTimeoutMs / 1000)}s)`);
+  console.log(`[tem-barcode] → GET ${url} (tiền tố ${tienTo}, ID kết nối ${idKn}, timeout ${Math.round(env.erp.barcodeTemTimeoutMs / 1000)}s)`);
   const res = await axios.get(url, {
+    // ID kết nối MES sinh, gửi kèm query để log truy cập bên ERP cũng có (router bỏ qua khóa lạ).
+    params: { IDKetNoi: idKn },
     timeout: env.erp.barcodeTemTimeoutMs,
     headers: { Accept: 'application/json', ...(env.erp.apiHeaders || {}) },
     proxy: erpProxy(),
@@ -95,15 +97,17 @@ async function layBarcodeTemTienTo(tienTo, actorId = null) {
   }
   const soLan = Math.max(1, env.erp.barcodeTemRetry);
   const batDau = Date.now();
+  // ⚠⚠ ID KẾT NỐI = mã DUY NHẤT DO MES SINH cho lượt xin số (30/09/2026 — không lấy mã tem ERP cấp làm
+  //   ID kết nối nữa). 1 ID cho cả lượt (kể cả các lần thử lại). Mã tem ERP cấp vẫn lưu ở `maTem`.
+  const idKn = taoIdKetNoi(`T${tienTo}`);
   let loiCuoi;
   for (let i = 1; i <= soLan; i += 1) {
     try {
-      const bc = await goiMotLan(url, tienTo);
+      const bc = await goiMotLan(url, tienTo, idKn);
       // ⚠ Ghi vết NGAY cả khi thành công — mã vừa lấy là một số ĐÃ TIÊU của ERP, phải tra lại được
       //   (kể cả khi transaction sau đó rollback làm thủng dãy). KHÔNG `await`: đây là bước phụ.
       ghiLog(cfg.ma, {
-        // ID kết nối = chính mã tem ERP vừa cấp (27/09/2026).
-        thanhCong: true, idBanGhi: bc, idMes: bc, maTem: bc, url,
+        thanhCong: true, idBanGhi: bc, idMes: idKn, maTem: bc, url,
         soLanThu: i, thoiGianMs: Date.now() - batDau, nhan: { barcode: bc }, actorId,
       });
       return bc;
@@ -118,8 +122,7 @@ async function layBarcodeTemTienTo(tienTo, actorId = null) {
   }
   console.error(`[tem-barcode] ✗ Không lấy được mã ${cfg.ten} sau ${soLan} lần (${url}): ${loiCuoi && loiCuoi.message}`);
   ghiLog(cfg.ma, {
-    // Lượt lỗi không có mã ⇒ sinh ID kết nối riêng để vẫn tra được lượt này.
-    thanhCong: false, idBanGhi: '-', idMes: taoIdKetNoi('TEM'), url,
+    thanhCong: false, idBanGhi: '-', idMes: idKn, url,
     soLanThu: soLan, thoiGianMs: Date.now() - batDau, loi: loiCuoi && loiCuoi.message, actorId,
   });
   throw new AppError(

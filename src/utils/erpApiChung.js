@@ -115,8 +115,8 @@ async function goiMotLan({ nhan, url, method, body, timeoutMs }) {
 // Gọi có retry + ghi vết. KHÔNG NÉM LỖI — luôn trả { ok, data?, error?, bo_qua?, id_ket_noi }.
 // ⚠⚠ ID KẾT NỐI (27/09/2026): mọi dòng lịch sử PHẢI có — trước đây 3 API qua hàm này không ghi `id_mes`
 //   nên cột ID của *Cài đặt API › Lịch sử* trống (phiếu giao, phân loại lỗi, lấy ID phiếu giao).
-//   Thứ tự: `idKetNoi` truyền vào → ID trong body (IDMES/IDMes/IDPhieuGiao) → `layIdTuPhanHoi(data)`
-//   (chiều XIN SỐ: chính số ERP cấp) → ID sinh mới (lượt lỗi của chiều xin số).
+//   Thứ tự: `idKetNoi` truyền vào → ID trong body (IDMES/IDMes/IDKetNoi) → `layIdTuPhanHoi(data)` → ID sinh mới.
+//   ⚠ Từ 30/09/2026 ID kết nối LUÔN do MES tạo — không lấy mã ERP cấp (số phiếu / mã tem) làm ID kết nối.
 async function goiErp(maApi, {
   nhan, url, method = 'POST', body = null, timeoutMs, retry, idBanGhi, moTa, actorId,
   idKetNoi = null, layIdTuPhanHoi = null,
@@ -206,15 +206,19 @@ function idPhieuTuPhanHoi(d) {
 }
 
 async function layIdPhieuGiao(actorId = null) {
+  // ⚠⚠ ID KẾT NỐI = mã MES SINH (30/09/2026), KHÔNG lấy số phiếu ERP cấp; gửi kèm query `IDKetNoi`.
+  //   Số phiếu ERP cấp vẫn nằm trong `nhan` của dòng lịch sử.
+  const idKn = taoIdKetNoi('IDPG');
+  const goc = env.erp.layIdPhieuGiaoUrl;
+  const url = goc ? `${goc}${goc.includes('?') ? '&' : '?'}IDKetNoi=${encodeURIComponent(idKn)}` : goc;
   const kq = await goiErp('ERP_LAY_ID_PHIEU_GIAO', {
     nhan: 'lay-id-phieu-giao',
-    url: env.erp.layIdPhieuGiaoUrl,
+    url,
     method: 'GET',
     timeoutMs: env.erp.layIdPhieuGiaoTimeoutMs,
     retry: env.erp.layIdPhieuGiaoRetry,
     actorId,
-    // ID kết nối = CHÍNH số phiếu ERP cấp ⇒ tra 1 mã là ra cả lượt xin số lẫn lượt gửi phiếu.
-    layIdTuPhanHoi: idPhieuTuPhanHoi,
+    idKetNoi: idKn,
   });
   if (!kq.ok) return null;
   const s = idPhieuTuPhanHoi(kq.data) || '';
@@ -232,19 +236,22 @@ async function layIdPhieuGiao(actorId = null) {
 //   4 tham số đều `undefined` → tedious gửi NULL → proc chạy xong, trả `success:true`, NHƯNG KHÔNG
 //   GHI GÌ. Hỏng hoàn toàn im lặng, không lỗi nào hiện ra. Sửa tên trường phải đối chiếu router ERP.
 // `idBanGhi` = giao_hang.id để dòng lịch sử liên kết được với phiếu.
+// ⚠⚠ ID KẾT NỐI = `IDMES` do MES CẤP (30/09/2026, người dùng chốt: ID kết nối là mã DUY NHẤT MES tạo ra,
+//   KHÔNG lấy mã phiếu giao do ERP cấp). Tham số ID kết nối của proc này là `@pID` (xem ngay dưới) —
+//   gửi thêm khóa `IDMES` để `goiErp` rút ID kết nối cho lịch sử.
 async function guiPhieuGiao(payload, { giaoHangId = null, actorId = null } = {}) {
   const body = {
+    IDMES: payload.IDMES != null ? payload.IDMES : null,
     IDPhieuGiao: catChuoi(payload.IDPhieuGiao, 20),
     Ngayct: ngayGio(payload.Ngayct),
     user: catChuoi(payload.user, 20),
     DsTemGiao: catChuoi(payload.DsTemGiao, 4000),
   };
-  // ⚠⚠ TÊN DỰ PHÒNG CHO MÃ PHIẾU (21/09/2026): lỗi "@pID was not supplied" là do router ERP khai
-  //   `request.input('pIDPhieuGiao', …)` trong khi proc khai `@pID` (đã chứng minh bằng log 17–18/09:
-  //   MES gửi đủ `IDPhieuGiao`). Gửi kèm `ID` + `pID` cùng giá trị để bên ERP sửa router theo cách nào
-  //   (đọc `ID` hay `pID`) cũng nhận được ngay, MES không phải deploy lại. Khóa thừa router bỏ qua, vô hại.
-  body.ID = body.IDPhieuGiao;
-  body.pID = body.IDPhieuGiao;
+  // ⚠⚠ `@pID` CỦA PROC `MES2SQ0` CHÍNH LÀ ID KẾT NỐI (người dùng xác nhận 30/09/2026) ⇒ = `IDMES` do MES
+  //   cấp, KHÔNG phải mã phiếu giao (bản 21/09 gửi nhầm `IDPhieuGiao` vào đây). Gửi cả `ID` + `pID` để router
+  //   ERP đọc tên nào cũng nhận được. Proc xóa phiếu cùng Soctcu(=pID) rồi tạo lại ⇒ "Gửi lại" dùng CÙNG IDMES.
+  body.ID = body.IDMES != null ? String(body.IDMES) : null;
+  body.pID = body.ID;
   return goiErp('ERP_GUI_PHIEU_GIAO', {
     nhan: 'gui-erp-phieu-giao',
     url: env.erp.guiPhieuGiaoUrl,

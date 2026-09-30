@@ -42,7 +42,9 @@ async function thongTinSua() {
 //   · mọi dòng  (mới): { id_mes, ma_tem, url, gui, nhan, loi, so_lan_thu, thoi_gian_ms }
 //   ⇒ `id_mes`/`ma_tem` phải COALESCE qua cả 3 đường, nếu không dòng lỗi cũ sẽ trống IDMES —
 //     đúng cái cột quan trọng nhất để đối soát với ERP.
-const MA_TEM = `COALESCE(a.gia_tri_moi->>'ma_tem', a.gia_tri_moi->'gui'->>'BarcodeIn', a.gia_tri_moi->'payload'->>'BarcodeIn')`;
+// ⚠ + `IDPhieuGiao` (30/09/2026): ID kết nối của phiếu giao nay là IDMES ⇒ mã phiếu hiện ở cột này để
+//   vẫn tìm được theo mã phiếu ERP.
+const MA_TEM = `COALESCE(a.gia_tri_moi->>'ma_tem', a.gia_tri_moi->'gui'->>'BarcodeIn', a.gia_tri_moi->'payload'->>'BarcodeIn', a.gia_tri_moi->'gui'->>'IDPhieuGiao')`;
 // ⚠⚠ "ID KẾT NỐI" (27/09/2026) — dòng MỚI luôn có `id_mes`. Dòng CŨ của 3 API qua `goiErp` (phiếu giao ·
 //   phân loại lỗi · lấy ID phiếu giao) và 3 API mã tem KHÔNG ghi `id_mes` ⇒ moi lại từ payload/phản hồi:
 //   `IDMes` (phân loại lỗi, viết thường) · `IDPhieuGiao` (phiếu giao) · `ma_tem` (mã tem ERP cấp — chỉ
