@@ -791,6 +791,7 @@ async function confirmTest(lenhId, which, actorId, extra = {}) {
     if (!nguoiTest) throw new AppError('Bắt buộc nhập người test khi QA xác nhận đạt', { status: 422, errorCode: 'NGUOI_TEST_REQUIRED' });
     const loaiTest = extra.loaiTest === 'DAP_PHAN' ? 'DAP_PHAN' : 'TEST_RUN';
     let ghiChu = (extra.ghiChu || '').toString().trim() || null;
+    const ghiChuGoc = ghiChu;
     // "XÁC NHẬN IN KHÔNG ĐẠT": đi y như xác nhận đạt, chỉ khác lần test ghi KHONG_DAT_CHO_IN + owner cho in.
     const ikd = extra.inKhongDat ? await chuanHoaInKhongDat(extra.inKhongDat) : null;
     if (ikd && st.qa_done) throw new AppError('QA đã xác nhận lệnh này', { status: 409, errorCode: 'ALREADY' });
@@ -809,7 +810,10 @@ async function confirmTest(lenhId, which, actorId, extra = {}) {
       await repo.insertStatusLog(client, { ketQuaId: kqQa, trangThaiMoiId: datId, nguoiId: actorId, lyDo: `QA xác nhận test (${loaiTest})` });
       if (ikd) {
         const tr = await repo.insertTestRunTx(client, lenhId,
-          { soLuong: extra.soLuong ?? null, ketQua: repo.KET_QUA_IN_KHONG_DAT, ghiChu: ikd.lyDo }, actorId);
+          // ⚠ LỖI của lần test = lý do + ghi chú QA (30/09/2026): QA hay gõ lỗi vào ô ghi chú chung
+          //   (vd "Mặt in nhăn, sần") mà trước đây chỉ vào kết quả QA ⇒ cột "Lần test" không biết lỗi gì.
+          { soLuong: extra.soLuong ?? null, ketQua: repo.KET_QUA_IN_KHONG_DAT,
+            ghiChu: [ikd.lyDo, ghiChuGoc].filter(Boolean).join(' · ') || null }, actorId);
         await repo.logInKhongDatTx(client, tr.id, {
           lenh_san_xuat_id: lenhId, lan_test: tr.lan_test, ly_do: ikd.lyDo,
           owner_ids: ikd.owners.map((o) => o.id),

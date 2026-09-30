@@ -13,6 +13,8 @@ const router = express.Router();
 router.use(auth);
 
 router.get('/', asyncHandler(async (req, res) => ok(res, await s.danhSach(req.query || {}))));
+// Lịch sử nghẽn ĐÃ XÁC NHẬN theo ngày bắt đầu nghẽn (modal nghẽn · chế độ "Đã xác nhận").
+router.get('/lich-su', asyncHandler(async (req, res) => ok(res, await s.lichSu(req.query || {}))));
 router.post('/', asyncHandler(async (req, res) => {
   const kq = await s.ghi(req.body || {}, req.user.id);
   ok(res, kq, kq.thieu_migration ? 'Chưa chạy migration 106 — lý do chưa được lưu' : 'Đã lưu lý do nghẽn');

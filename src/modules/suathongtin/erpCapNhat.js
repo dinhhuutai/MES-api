@@ -4,12 +4,14 @@
 // KÉO THÔNG TIN ĐÃ SỬA TỪ ERP cho trang *Đơn hàng › Phần in chờ sửa thông tin* (25/09/2026).
 //
 // Luồng: READY (KT/QC) trả phần in về GN → GN sửa BÊN ERP → job 5 phút/lần gọi
-//   GET {ERP_DS_PHAN_IN_SUA_THONG_TIN_URL}?fromDate=<hôm nay>T00:00:00&dsPhan=<code1,code2,…>
+//   GET {ERP_DS_PHAN_IN_SUA_THONG_TIN_URL}?fromDate=<ngày vải về sớm nhất − 3>T00:00:00&dsPhan=<code1,code2,…>
 //   (router ERP → proc `SX_spr_DSPhieuNhanvaiReady(@pTuNgay, @pDsPhan NVARCHAR(4000))`)
 // → CẬP NHẬT lại phần in + đợt vải đang chờ → GN tích chọn rồi "Xác nhận lại" ⇒ phần in về READY.
 //
-// ⚠⚠ LUẬT LẤY (người dùng chốt 26/09/2026):
-//   · CHỈ phần in bị trả về GN TRONG NGÀY HÔM NAY (giờ VN) — `fromDate` = 00:00 hôm nay.
+// ⚠⚠ LUẬT LẤY (chốt 26/09, đổi 30/09/2026):
+//   · THEO CODE PHẦN — MỌI phần in đang chờ GN, KHÔNG còn giới hạn "trả về trong ngày" (hôm nay trả, mai
+//     GN mới sửa bên ERP vẫn tự cập nhật). `fromDate` chỉ để proc không cắt mất đợt cũ (`tuNgay`).
+//   · ĐỢT VẢI ghép theo MÃ ĐỢT ERP (`IDDotReady` ↔ `dot_vai_ve.barcode`), dư đúng 1–1 thì ghép nốt.
 //   · MỖI LƯỢT TỐI ĐA 100 code phần (`TOI_DA_MOI_LUOT`); còn dư thì lượt sau (5 phút sau) lấy tiếp —
 //     xoay vòng theo "lần hỏi ERP gần nhất" (RAM, `lanHoi`): phần in CHƯA hỏi lần nào đi trước, rồi tới
 //     phần in hỏi lâu nhất. 100 mã × ~26 ký tự ≈ 2.600 < 4.000 (`@pDsPhan NVARCHAR(4000)`).
@@ -28,10 +30,10 @@
 //   · PHẦN IN — khách/đơn/mã hàng + màu/kích vải/kích phim/SLĐH/tính chất in/subID ⇒ `ganLaiTheoDong`
 //     (đúng hàm của "Cập nhật theo code phần", có audit `ERP_CAP_NHAT_CODE_PHAN`); mã vạch phần in +
 //     thời gian chờ khô ⇒ `phaninadmin.suaPhanIn` (whitelist + audit).
-//   · ĐỢT VẢI — hạn giao · ngày vải về · SL vải về · loại · nhà gia công · barcode đợt ⇒
-//     `phaninadmin.suaDotVai` (guard hạ SL dưới SL đã in + tính lại phương án in). CHỈ khi khớp được
-//     KHÔNG mập mờ: phần in còn ĐÚNG 1 đợt chưa release và ERP trả ĐÚNG 1 dòng cho code phần đó.
-//     Nhiều đợt / nhiều dòng ⇒ bỏ qua phần đợt vải (ghi vào kết quả), GN sửa tay trên trang.
+//   · ĐỢT VẢI (chưa release) — hạn giao · ngày vải về · SL vải về · loại · nhà gia công · barcode đợt ·
+//     dự án · inset ⇒ `phaninadmin.suaDotVai` (guard hạ SL dưới SL đã in + tính lại phương án in).
+//     Đợt không ghép được dòng ERP ⇒ ghi vào kết quả, GN sửa tay trên trang.
+//   · Mức phần in lấy dòng ERP có mã đợt THUỘC phần in (ERP có thể trả dòng đơn khác trùng code phần).
 //   · CHỈ GHI KHI KHÁC giá trị hiện tại ⇒ job chạy 5 phút/lần không đẻ audit rác.
 //   · KHÔNG tự "Xác nhận lại" — GN vẫn phải bấm (người dùng chốt).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -73,13 +75,16 @@ const ngayStr = (v) => {
 // Dòng ERP mới nhất (theo mốc ERP tạo) — dùng cho thông tin mức PHẦN IN khi ERP trả nhiều dòng.
 const mocDong = (r) => String(r.erp_datetime || r.created_date || r.ngaynhanvai || '');
 
-// Phần in đang chờ GN mà lượt trả về còn chờ được tạo TRONG NGÀY HÔM NAY (giờ VN).
+// MỌI phần in đang chờ GN (lượt trả về chưa xử lý) — KHÔNG còn lọc "trả về trong ngày" (30/09/2026:
+// hôm nay trả mà mai GN mới sửa bên ERP thì vẫn phải tự cập nhật). `ngay_som` = ngày vải về sớm nhất
+// của các đợt sống ⇒ dùng tính `fromDate` (proc ERP lọc `Dotnhanvai > @pTuNgay`).
 async function phanInDangCho() {
   const { rows } = await query(
-    `SELECT pin.id, pin.ma_phan, pin.barcode, pin.thoi_gian_cho_kho_phut, min(q.created_date) AS tg_tra_ve
+    `SELECT pin.id, pin.ma_phan, pin.barcode, pin.thoi_gian_cho_kho_phut, min(q.created_date) AS tg_tra_ve,
+            (SELECT min(COALESCE(dv.ngay_vai_ve, (dv.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date))
+               FROM dot_vai_ve dv WHERE dv.phan_in_id = pin.id AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY')) AS ngay_som
        FROM qc_tra_ve q JOIN phan_in pin ON pin.id = q.phan_in_id AND pin.dang_hoat_dong
       WHERE q.loai = $1 AND q.da_xu_ly = false
-        AND (q.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = (now() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date
       GROUP BY pin.id`.replace(/\s+/g, ' '),
     [LOAI_GN]
   );
@@ -94,19 +99,24 @@ function chonLuot(pins) {
     .slice(0, TOI_DA_MOI_LUOT);
 }
 
-// 00:00 hôm nay theo giờ VN, dạng 'YYYY-MM-DDT00:00:00' (không hậu tố Z) — đúng định dạng router ERP nhận.
-function homNayVN() {
-  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Ho_Chi_Minh', year: 'numeric', month: '2-digit', day: '2-digit' })
-    .formatToParts(new Date());
-  const g = (t) => parts.find((x) => x.type === t).value;
-  return `${g('year')}-${g('month')}-${g('day')}T00:00:00`;
+// `fromDate` gửi ERP, dạng 'YYYY-MM-DDT00:00:00' (không hậu tố Z) — đúng định dạng router ERP nhận.
+// ⚠ Proc lọc `Dotnhanvai > @pTuNgay` (lớn hơn HẲN) ⇒ lấy ngày vải về sớm nhất của các phần in trong lượt
+//   rồi LÙI THÊM `LUI_NGAY` ngày (lệch múi giờ + ngày vải về MES ≠ mốc ERP). Thiếu ngày ⇒ lùi từ hôm nay.
+//   Không dùng một mốc thật xa: router ERP đang ghim `@pDsPhan = NULL` thì proc trả MỌI dòng từ mốc đó.
+const LUI_NGAY = 3;
+const LUI_MAC_DINH = 60;
+function tuNgay(pins) {
+  const ngay = pins.map((p) => ngayStr(p.ngay_som)).filter(Boolean).sort()[0];
+  const d = ngay ? new Date(`${ngay}T00:00:00`) : new Date();
+  d.setDate(d.getDate() - (ngay ? LUI_NGAY : LUI_MAC_DINH));
+  return `${ngayStr(d)}T00:00:00`;
 }
 
 // Đợt vải CHƯA release (đang chờ READY) của 1 phần in.
 async function dotChoCuaPhanIn(pinId) {
   const { rows } = await query(
     `SELECT dv.id, dv.ma_dot_vai, dv.han_giao_hang, dv.ngay_vai_ve, dv.so_luong_vai_ve, dv.nha_gia_cong,
-            dv.barcode, dv.loai_dot_vai_id
+            dv.barcode, dv.loai_dot_vai_id, dv.du_an, dv.inset
        FROM dot_vai_ve dv
       WHERE dv.phan_in_id = $1 AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY')
         AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai l JOIN lenh_san_xuat ls ON ls.id = l.lenh_san_xuat_id
@@ -114,6 +124,50 @@ async function dotChoCuaPhanIn(pinId) {
     [pinId]
   );
   return rows;
+}
+
+// Mã đợt ERP (`IDDotReady` ↔ `dot_vai_ve.barcode`) của MỌI đợt sống — để chọn dòng ERP THUỘC phần in này
+// khi ERP trả dòng của đơn khác trùng code phần (ca DK-2609-008-A01-F03-C01, 29/09/2026).
+async function maDotSongCuaPhanIn(pinId) {
+  const { rows } = await query(
+    "SELECT upper(btrim(barcode)) AS bc FROM dot_vai_ve WHERE phan_in_id = $1 AND trang_thai NOT IN ('DA_GOP','DA_HUY') AND COALESCE(btrim(barcode),'') <> ''",
+    [pinId]
+  );
+  return new Set(rows.map((r) => r.bc));
+}
+
+// Ghép dòng ERP ↔ đợt vải chờ: (1) theo mã đợt ERP; (2) phần còn lại đúng 1–1 thì ghép (đợt cũ thiếu mã).
+function ghepDot(dots, dong) {
+  const cap = []; const conDot = [...dots]; const conDong = [];
+  for (const r of dong) {
+    const bc = hoa(E.erpBarcode(r));
+    const i = bc ? conDot.findIndex((d) => hoa(d.barcode) === bc) : -1;
+    if (i >= 0) cap.push([conDot.splice(i, 1)[0], r]); else conDong.push(r);
+  }
+  if (conDot.length === 1 && conDong.length === 1) { cap.push([conDot[0], conDong[0]]); conDot.length = 0; conDong.length = 0; }
+  return { cap, conDot, conDong };
+}
+
+// So 1 đợt vải với 1 dòng ERP ⇒ patch các trường KHÁC (rỗng từ ERP thì giữ nguyên).
+async function patchDot(d, r) {
+  const patch = {};
+  const han = E.toDate(r.due_date);
+  if (han && khacNhau(han, ngayStr(d.han_giao_hang))) patch.han_giao_hang = han;
+  const nv = E.erpNgayVaiVe(r);
+  if (nv && khacNhau(nv, ngayStr(d.ngay_vai_ve))) patch.ngay_vai_ve = nv;
+  const sl = soHoacNull(r.received_qty);
+  if (sl != null && sl >= 0 && sl !== Number(d.so_luong_vai_ve)) patch.so_luong_vai_ve = sl;
+  const ngc = E.erpNhaGiaCong(r);
+  if (ngc && khacNhau(ngc, d.nha_gia_cong)) patch.nha_gia_cong = ngc;
+  const bcd = E.erpBarcode(r);
+  if (bcd && khacNhau(bcd, d.barcode)) patch.barcode = bcd;
+  const duAn = E.erpDuAn(r);
+  if (duAn && khacNhau(duAn, d.du_an)) patch.du_an = duAn;
+  const inset = E.erpInset(r);
+  if (inset != null && inset !== Number(d.inset)) patch.inset = inset;
+  const loaiId = await loaiIdTheoLoaikd(r.loaikd);
+  if (loaiId && loaiId !== d.loai_dot_vai_id) patch.loai_dot_vai_id = loaiId;
+  return patch;
 }
 
 async function loaiIdTheoLoaikd(loaikd) {
@@ -126,7 +180,11 @@ async function loaiIdTheoLoaikd(loaikd) {
 // So 1 phần in với các dòng ERP của nó rồi ghi phần KHÁC. Trả tóm tắt để hiện trên trang.
 async function capNhatMotPhanIn(pin, dong, actorId) {
   const out = { ma_phan: pin.ma_phan, phan_in: [], dot_vai: [], ghi_chu: null };
-  const moiNhat = [...dong].sort((a, b) => mocDong(b).localeCompare(mocDong(a)))[0];
+  // Thông tin mức phần in: ưu tiên dòng ERP mà mã đợt (`IDDotReady`) là đợt CỦA phần in này — ERP có thể
+  // trả thêm dòng đơn khác trùng code phần; không có dòng nào khớp mã đợt thì lùi về dòng mới nhất.
+  const maDot = await maDotSongCuaPhanIn(pin.id);
+  const cuaMinh = dong.filter((r) => maDot.has(hoa(E.erpBarcode(r))));
+  const moiNhat = [...(cuaMinh.length ? cuaMinh : dong)].sort((a, b) => mocDong(b).localeCompare(mocDong(a)))[0];
 
   // 1) Mức phần in qua `ganLaiTheoDong` — chỉ gọi khi có trường thật sự khác.
   const [cu] = await erpRepo.anhChupPhanInTheoMa([pin.ma_phan]);
@@ -161,32 +219,21 @@ async function capNhatMotPhanIn(pin, dong, actorId) {
     out.phan_in.push(...Object.keys(patchPin));
   }
 
-  // 2) Mức đợt vải — chỉ khi khớp 1–1 không mập mờ.
+  // 2) Mức đợt vải — ghép từng đợt chờ với dòng ERP theo MÃ ĐỢT ERP (`IDDotReady`), còn dư đúng 1–1 thì
+  //    ghép nốt. Đợt không ghép được ⇒ báo trong kết quả, GN sửa tay.
   const dots = await dotChoCuaPhanIn(pin.id);
-  if (dots.length === 1 && dong.length === 1) {
-    const d = dots[0]; const r = dong[0];
-    const patch = {};
-    const han = E.toDate(r.due_date);
-    if (han && khacNhau(han, ngayStr(d.han_giao_hang))) patch.han_giao_hang = han;
-    const nv = E.erpNgayVaiVe(r);
-    if (nv && khacNhau(nv, ngayStr(d.ngay_vai_ve))) patch.ngay_vai_ve = nv;
-    const sl = soHoacNull(r.received_qty);
-    if (sl != null && sl >= 0 && sl !== Number(d.so_luong_vai_ve)) patch.so_luong_vai_ve = sl;
-    const ngc = E.erpNhaGiaCong(r);
-    if (ngc && khacNhau(ngc, d.nha_gia_cong)) patch.nha_gia_cong = ngc;
-    const bcd = E.erpBarcode(r);
-    if (bcd && khacNhau(bcd, d.barcode)) patch.barcode = bcd;
-    const loaiId = await loaiIdTheoLoaikd(r.loaikd);
-    if (loaiId && loaiId !== d.loai_dot_vai_id) patch.loai_dot_vai_id = loaiId;
-    if (Object.keys(patch).length) {
-      try {
-        await phanInAdmin.suaDotVai(d.id, patch, actorId);
-        out.dot_vai.push(...Object.keys(patch));
-      } catch (e) { out.ghi_chu = `Đợt vải: ${e.message}`; }
-    }
-  } else if (dots.length || dong.length) {
-    out.ghi_chu = out.ghi_chu || `Không khớp 1–1 đợt vải (MES ${dots.length} đợt chờ · ERP ${dong.length} dòng) — thông tin đợt vải GN sửa tay`;
+  const { cap, conDot } = ghepDot(dots, dong);
+  const loiDot = [];
+  for (const [d, r] of cap) {
+    const patch = await patchDot(d, r);
+    if (!Object.keys(patch).length) continue;
+    try {
+      await phanInAdmin.suaDotVai(d.id, patch, actorId);
+      out.dot_vai.push(...Object.keys(patch).map((k) => `${d.barcode || d.ma_dot_vai}: ${k}`));
+    } catch (e) { loiDot.push(`${d.barcode || d.ma_dot_vai}: ${e.message}`); }
   }
+  if (conDot.length) loiDot.push(`${conDot.length} đợt chờ không tìm thấy dòng ERP cùng mã đợt — GN sửa tay`);
+  if (loiDot.length) out.ghi_chu = [out.ghi_chu, `Đợt vải: ${loiDot.join(' · ')}`].filter(Boolean).join(' | ');
 
   // Vết trên chính lượt trả về ⇒ hiện ở lịch sử của phần in (SidePanel).
   if (out.phan_in.length || out.dot_vai.length) {
@@ -212,14 +259,14 @@ async function dongBo({ tuDong = false, actorId = null } = {}) {
   try {
     const tatCa = await phanInDangCho();
     if (!tatCa.length) {
-      lanCuoi = { tg: new Date().toISOString(), tu_dong: tuDong, so_cho: 0, bo_qua: 'Không có phần in trả về hôm nay đang chờ sửa — không gọi ERP' };
+      lanCuoi = { tg: new Date().toISOString(), tu_dong: tuDong, so_cho: 0, bo_qua: 'Không có phần in nào đang chờ sửa thông tin — không gọi ERP' };
       return lanCuoi;
     }
-    // Dọn mốc của phần in không còn chờ (đã xác nhận lại / sang ngày) cho Map khỏi phình.
+    // Dọn mốc của phần in không còn chờ (đã xác nhận lại) cho Map khỏi phình.
     const conCho = new Set(tatCa.map((p) => hoa(p.ma_phan)));
     for (const k of [...lanHoi.keys()]) if (!conCho.has(k)) lanHoi.delete(k);
     const pins = chonLuot(tatCa);
-    const fromDate = homNayVN();
+    const fromDate = tuNgay(pins);
     const dsPhan = pins.map((p) => p.ma_phan).join(',');
     // ⚠⚠ ID KẾT NỐI (27/09/2026): mỗi lượt kéo 1 ID, gửi kèm query `IDKetNoi` (router ERP bỏ qua khóa
     //   lạ, nhưng log truy cập bên ERP có) + ghi lịch sử ở *Cài đặt API* — trước đây lượt kéo này

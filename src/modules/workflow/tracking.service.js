@@ -38,6 +38,18 @@ async function dotVaiFromPhanIn(phanInId) {
   return rows.map((r) => r.id);
 }
 
+// Đợt SỐNG CHƯA RELEASE của phần in (không thuộc lệnh ≠ HUY). Dùng cho `moveByPhanIn`.
+// ⚠⚠ LỖI THẬT 23–25/09/2026: `moveByPhanIn(…,'READY')` (xác nhận READY · Release 1 trả về KT) lấy MỌI đợt
+//   của phần in ⇒ đợt ĐÃ RELEASE (lệnh RELEASE_2) mà không còn dòng `ton_tram` (bị dọn khi hủy phần in,
+//   "Mở phần in" không dựng lại) lọt qua chặn "chỉ đi tới" ⇒ bị ghi LÙI về READY (đo prod 30/09: 7 đợt).
+async function dotVaiChuaReleaseCuaPhanIn(phanInId) {
+  const { rows } = await query(
+    "SELECT dv.id FROM dot_vai_ve dv WHERE dv.phan_in_id = $1 AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY') AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai l JOIN lenh_san_xuat ls ON ls.id = l.lenh_san_xuat_id WHERE l.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY')",
+    [phanInId]
+  );
+  return rows.map((r) => r.id);
+}
+
 async function dotVaiFromDonHang(donHangId) {
   const { rows } = await query(
     `SELECT dv.id
@@ -161,8 +173,9 @@ const moveByLenh = async (lenhId, tramCode, actorId, opts) =>
   moveDotVaiTo(await dotVaiFromLenh(lenhId), tramCode, actorId, opts);
 const moveByTem = async (temId, tramCode, actorId, opts) =>
   moveDotVaiTo(await dotVaiFromTem(temId), tramCode, actorId, opts);
+// ⚠ Chỉ đợt CHƯA RELEASE — mọi nơi gọi đều đưa phần in về READY; đợt đã có lệnh đi theo lệnh của nó.
 const moveByPhanIn = async (phanInId, tramCode, actorId, opts) =>
-  moveDotVaiTo(await dotVaiFromPhanIn(phanInId), tramCode, actorId, opts);
+  moveDotVaiTo(await dotVaiChuaReleaseCuaPhanIn(phanInId), tramCode, actorId, opts);
 const moveByDonHang = async (donHangId, tramCode, actorId, opts) =>
   moveDotVaiTo(await dotVaiFromDonHang(donHangId), tramCode, actorId, opts);
 

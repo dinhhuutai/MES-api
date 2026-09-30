@@ -680,6 +680,6 @@ module.exports = {
   // ĐÚNG hàm đọc trường ERP + gán lại đơn/mã hàng mà đồng bộ chính đang dùng, đừng chép luật ra chỗ mới.
   _erp: {
     fetchErp, ganLaiTheoDong, clean, toDate, LOAIKD_MAP,
-    erpTinhChatIn, erpBarcode, erpBarcodePhanIn, erpNhaGiaCong, erpNgayVaiVe, erpDdhSubId,
+    erpTinhChatIn, erpBarcode, erpBarcodePhanIn, erpNhaGiaCong, erpNgayVaiVe, erpDdhSubId, erpDuAn, erpInset,
   },
 };

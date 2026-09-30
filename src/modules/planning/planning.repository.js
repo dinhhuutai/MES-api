@@ -1895,7 +1895,16 @@ async function testDoneByDate(date, maCheckpoint) {
 async function testRunsByLenh(lenhIds = []) {
   if (!lenhIds.length) return [];
   const { rows } = await query(
-    `SELECT tr.lenh_san_xuat_id, tr.lan_test, tr.ket_qua, tr.ghi_chu, ${OWNER_CHO_IN_SQL('tr')}
+    // `ghi_chu` của lần "In không đạt" cũ (trước 30/09/2026) chỉ có lý do (thường trống) — lỗi thật nằm
+    // trong ghi chú QA của lệnh dạng "In không đạt — <owner> cho IN[: lý do] · <ghi chú>" ⇒ bóc tiền tố.
+    `SELECT tr.lenh_san_xuat_id, tr.lan_test, tr.ket_qua,
+            CASE WHEN tr.ket_qua = '${KET_QUA_IN_KHONG_DAT}' AND COALESCE(btrim(tr.ghi_chu),'') = '' THEN
+              NULLIF(btrim(regexp_replace(regexp_replace(
+                (SELECT k.ghi_chu FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id = k.checkpoint_id
+                  WHERE k.lenh_san_xuat_id = tr.lenh_san_xuat_id AND c.ma_checkpoint = 'TEST_QA' LIMIT 1),
+                '^In không đạt — .*? cho IN', ''), '^\\s*[:·]\\s*', '')), '')
+            ELSE tr.ghi_chu END AS ghi_chu,
+            ${OWNER_CHO_IN_SQL('tr')}
      FROM test_run tr WHERE tr.lenh_san_xuat_id = ANY($1::uuid[]) AND tr.ket_qua IS DISTINCT FROM 'HUY'
      ORDER BY tr.lenh_san_xuat_id, tr.lan_test, tr.created_date`.replace(/\s+/g, ' '),
     [lenhIds]

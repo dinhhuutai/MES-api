@@ -58,4 +58,29 @@ async function danhSach({ maTrang = '', soNgay = 60 } = {}) {
   return { items: rows, co_bang: true };
 }
 
-module.exports = { ghi, danhSach, coBang };
+// LỊCH SỬ NGHẼN ĐÃ XÁC NHẬN của 1 màn, lọc theo NGÀY BẮT ĐẦU NGHẼN (giờ VN) — modal "Danh sách nghẽn"
+// chế độ "Đã xác nhận" (30/09/2026). Chỉ dòng `XAC_NHAN` (mục đã được xác nhận qua trạm lúc đang nghẽn);
+// `GHI_TAY` là ghi lý do khi mục CÒN nghẽn nên không tính. Kèm thông tin phần in để hiện đủ cột.
+// ⚠ Câu SQL giữ ngắn (IPS ~1400 ký tự, §9): chuyền chỉ suy từ lệnh; màn theo tem để trống.
+const ngayOk = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : null);
+async function lichSu({ maTrang = '', tuNgay, denNgay } = {}) {
+  const ma = String(maTrang || '').trim();
+  if (!ma) throw new AppError('Thiếu mã màn', { status: 422, errorCode: 'NO_MA_TRANG' });
+  if (!(await coBang())) return { items: [], co_bang: false };
+  const tu = ngayOk(tuNgay); const den = ngayOk(denNgay) || tu;
+  if (!tu) throw new AppError('Chọn ngày bắt đầu nghẽn', { status: 422, errorCode: 'NO_NGAY' });
+  const { rows } = await query(
+    "SELECT l.id, l.phan_in_id, l.dot_vai_ve_id, l.lenh_san_xuat_id, l.tem_id, l.ma_doi_tuong, l.ly_do, l.tg_bat_dau_nghen, l.so_phut_nghen, l.sla_phut, l.created_date, u.ho_ten AS nguoi, p.ma_phan, p.mau_vai, p.kich_vai, p.kich_phim, m.ma_hang, d.ma_don_hang, k.ten_khach_hang, v.han_giao_hang, c.ten_chuyen FROM ly_do_nghen l LEFT JOIN nguoi_dung u ON u.id = l.created_by LEFT JOIN phan_in p ON p.id = l.phan_in_id LEFT JOIN ma_hang m ON m.id = p.ma_hang_id LEFT JOIN don_hang d ON d.id = m.don_hang_id LEFT JOIN khach_hang k ON k.id = d.khach_hang_id LEFT JOIN dot_vai_ve v ON v.id = l.dot_vai_ve_id LEFT JOIN lenh_san_xuat s ON s.id = l.lenh_san_xuat_id LEFT JOIN chuyen_san_xuat c ON c.id = s.chuyen_id WHERE l.dang_hoat_dong AND l.hanh_dong = 'XAC_NHAN' AND l.ma_trang = $1 AND (l.tg_bat_dau_nghen AT TIME ZONE 'Asia/Ho_Chi_Minh')::date BETWEEN $2::date AND $3::date ORDER BY l.tg_bat_dau_nghen DESC, l.created_date DESC LIMIT 2000",
+    [ma, tu, den]);
+  // Cùng 1 đối tượng + cùng mốc bắt đầu nghẽn bị ghi 2 lần (bấm lại / xác nhận theo đợt) ⇒ giữ lần MỚI NHẤT.
+  const seen = new Set();
+  const items = [...rows].sort((a, b) => new Date(b.created_date) - new Date(a.created_date)).filter((r) => {
+    const k = [r.phan_in_id, r.dot_vai_ve_id, r.lenh_san_xuat_id, r.tem_id, new Date(r.tg_bat_dau_nghen).getTime()].join('|');
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  }).sort((a, b) => new Date(b.tg_bat_dau_nghen) - new Date(a.tg_bat_dau_nghen));
+  return { items, co_bang: true };
+}
+
+module.exports = { ghi, danhSach, lichSu, coBang };

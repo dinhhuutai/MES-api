@@ -462,6 +462,9 @@ async function isPhanInReleased(phanInId) {
 // Lệnh ĐANG CHỜ KỸ THUẬT của 1 phần in = lệnh RELEASE_1 CHƯA có phiếu SX (Test Run trả về nhưng lệnh
 // được GIỮ NGUYÊN). Dùng ở `confirmQC`: QC xác nhận xong thì đẩy đợt vải của lệnh này THẲNG về TEST_RUN
 // (không qua Release 1).
+// ⚠ Loại lệnh ĐÃ TEST ĐẠT (`TEST_QA` DAT — đang chờ duyệt Release 2): Test Run trả về luôn hủy kết quả
+//   test, nên lệnh còn TEST_QA DAT là lệnh của ĐỢT CŨ đi bình thường — QC xác nhận đợt MỚI không được
+//   kéo nó ngược về Test Run (30/09/2026).
 async function lenhChoKyThuatByPhanIn(phanInId) {
   const { rows } = await query(
     `SELECT ls.id AS lenh_id, array_agg(DISTINCT lsd.dot_vai_ve_id::text) AS dot_vai_ids
@@ -469,6 +472,8 @@ async function lenhChoKyThuatByPhanIn(phanInId) {
        JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
       WHERE ls.trang_thai = 'RELEASE_1' AND dv.phan_in_id = $1
         AND NOT EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = ls.id)
+        AND NOT EXISTS (SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id = k.checkpoint_id
+                         WHERE k.lenh_san_xuat_id = ls.id AND c.ma_checkpoint = 'TEST_QA' AND k.trang_thai = 'DAT')
       GROUP BY ls.id ORDER BY max(ls.created_date) DESC LIMIT 1`.replace(/\s+/g, ' '),
     [phanInId]
   );
