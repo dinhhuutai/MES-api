@@ -19,6 +19,7 @@ const AppError = require('../../utils/AppError');
 const { maTemUngVien, temCode } = require('../../utils/temPrefix');
 const { guiPhanLoaiLoi, tenDangNhap, dsMaLoi } = require('../../utils/erpApiChung');
 const { capIdMes } = require('../../utils/idMes');
+const { laMaTemErp, ghiChuaCoMaErp } = require('../../utils/erpGhiInTem');
 const repo = require('./phanloailoi.repository');
 const qualityRepo = require('./quality.repository');
 
@@ -116,6 +117,11 @@ async function guiErpPhanLoaiLoi(temId, { rows }, actorId) {
     const dsLoi = dsMaLoi(ct.dong);
     if (!dsLoi) {
       console.warn(`[gui-erp-phan-loai-loi] ⏭ Tem ${ct.ma_tem}: không dòng nào có MÃ LỖI — bỏ qua lời gọi ERP`);
+      return;
+    }
+    // Chờ có mã tem ERP cấp mới gửi (30/09/2026) — `Maquet` = mã tem đổi tiền tố 16, tem mã MES thì ERP không biết.
+    if (!laMaTemErp(ct.ma_tem)) {
+      await ghiChuaCoMaErp('ERP_GUI_PHAN_LOAI_LOI', { idBanGhi: temId, maTem: ct.ma_tem, actorId });
       return;
     }
     const idMes = await capIdMes('gui-erp-phan-loai-loi');

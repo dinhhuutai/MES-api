@@ -15,7 +15,7 @@
 
 const { query } = require('../../config/db');
 const env = require('../../config/env');
-const { ghiInTem, taoPayload } = require('../../utils/erpGhiInTem');
+const { ghiInTem, taoPayload, laMaTemErp, ghiChuaCoMaErp } = require('../../utils/erpGhiInTem');
 const { ghiLog } = require('../../utils/erpApiLog');
 const { capIdMes } = require('../../utils/idMes');
 const prodRepo = require('../production/production.repository');
@@ -56,6 +56,8 @@ async function guiKiemPham(kcsId, temId, { dat = 0, hu = 0, thieu = 0 } = {}, ac
 
   const [r] = await prodRepo.duLieuGhiInTem([{ temId, dotVaiId: null }]);
   if (!r) return { ok: false, bo_qua: true, ly_do: 'KHONG_DU_LIEU' };
+  // Chờ có mã tem ERP cấp mới gửi (30/09/2026 — ca thật 26/09 gửi `TEM00001`).
+  if (!laMaTemErp(r.ma_tem)) return ghiChuaCoMaErp(MA_API, { idBanGhi: kcsId, maTem: r.ma_tem, actorId });
 
   // ⚠ Cấp IDMES SAU mọi guard — mỗi lần cấp là tiêu 1 số của dãy dùng chung.
   const idMes = opts.idMes != null ? opts.idMes : await capIdMes('gui-erp-kiem-pham');

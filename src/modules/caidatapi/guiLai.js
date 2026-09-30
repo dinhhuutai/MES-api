@@ -17,7 +17,14 @@ const { query } = require('../../config/db');
 const AppError = require('../../utils/AppError');
 const { temCode } = require('../../utils/temPrefix');
 const { capIdMes } = require('../../utils/idMes');
-const { ghiInTem, taoPayload } = require('../../utils/erpGhiInTem');
+const { ghiInTem, taoPayload, laMaTemErp } = require('../../utils/erpGhiInTem');
+
+// "Gửi lại" cũng phải chờ có mã tem ERP cấp (30/09/2026) — tem còn mang mã MES thì báo rõ, không gửi.
+const chanChuaCoMa = (maTem) => {
+  if (laMaTemErp(maTem)) return;
+  throw new AppError(`Tem chưa có mã do ERP cấp (đang là "${maTem || 'trống'}") — không gửi sang ERP được`,
+    { status: 409, errorCode: 'CHUA_CO_MA_ERP' });
+};
 const erp = require('../../utils/erpApiChung');
 
 // Mã API có nút gửi lại (FE gương ở `LichSuApiPanel` hằng `CO_GUI_LAI`).
@@ -106,6 +113,7 @@ async function guiLai(ma, auditId, actorId) {
     const { rows: t } = await query(
       `SELECT ma_tem, to_char(now() AT TIME ZONE 'Asia/Ho_Chi_Minh', 'YYYY/MM/DD HH24:MI:SS') AS bay_gio FROM tem WHERE id = $1`, [id]);
     if (!t[0]) throw new AppError('Tem không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+    chanChuaCoMa(t[0].ma_tem);
     const idMes = idMesCu(g) ?? await capIdMes('gui-erp-phan-loai-loi');
     const kq = await erp.guiPhanLoaiLoi({
       IDMes: String(idMes), Ngayct: t[0].bay_gio, nhanvien: await erp.tenDangNhap(actorId),
@@ -128,7 +136,8 @@ async function guiLai(ma, auditId, actorId) {
   } catch { dotVaiId = null; }
   const [r] = await prodRepo.duLieuGhiInTem([{ temId: id, dotVaiId }], ngayCt);
   if (!r) throw new AppError('Không đọc được dữ liệu tem — không gửi lại được', { status: 409, errorCode: 'THIEU_DU_LIEU' });
-  const ten = ma === 'ERP_GUI_TEM_GIA_CONG' ? 'Gửi dữ liệu tem gia công' : 'Báo ERP mỗi lần in tem';
+  chanChuaCoMa(r.ma_tem);
+  const ten = ma ==='ERP_GUI_TEM_GIA_CONG' ? 'Gửi dữ liệu tem gia công' : 'Báo ERP mỗi lần in tem';
   const idMes = idMesCu(g) ?? await capIdMes(ma === 'ERP_GUI_TEM_GIA_CONG' ? 'gui-tem-gia-cong' : 'ghi-in-tem');
   const payload = taoPayload(r, {
     idMes,

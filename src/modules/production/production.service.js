@@ -14,7 +14,7 @@ const qaRepo = require('../quality/quality.repository');          // qc_tra_ve (
 const thongBao = require('../thongbao/thongbao.service');         // chuông Kỹ thuật (mig 085)
 const { caFromParts, maNgayCa, ngayTuMaNgayCa } = require('../../utils/ca');
 const { layBarcodeTem, layNhieuBarcodeTem } = require('../../utils/erpTemBarcode');
-const { ghiInTem, taoPayload } = require('../../utils/erpGhiInTem');
+const { ghiInTem, taoPayload, laMaTemErp, ghiChuaCoMaErp } = require('../../utils/erpGhiInTem');
 const { apiChoPhepPhanIn } = require('../../utils/caiDatApi');
 
 // Gắn `phan_in_list` (1 dòng / phần in) cho các lệnh GOM SET — màn Xác nhận chạy tách dòng theo phần in,
@@ -414,6 +414,12 @@ async function guiGhiInTem(items, actorId, ngayCt = null, { maApi = 'ERP_GHI_IN_
       //   tắt hẳn API. In nhiều mà ghi log "đã bỏ qua" thì `audit_log` phình rất nhanh.
       // (Bộ lọc code phần chỉ khai cho ERP_GHI_IN_TEM — kênh khác không lọc.)
       if (maApi === 'ERP_GHI_IN_TEM' && !(await apiChoPhepPhanIn('ERP_GHI_IN_TEM', r.ma_phan))) continue;
+      // ⚠ CHỜ CÓ MÃ TEM ERP CẤP mới gửi (30/09/2026) — tem mang mã MES tự sinh (`TEM…`, API xin số tắt)
+      //   thì KHÔNG gửi, chỉ ghi 1 dòng lỗi ở Lịch sử API. Kiểm TRƯỚC khi cấp IDMES.
+      if (!laMaTemErp(r.ma_tem)) {
+        await ghiChuaCoMaErp(maApi, { idBanGhi: it.temId, maTem: r.ma_tem, actorId });
+        continue;
+      }
 
       const idMes = await repo.capIdMes();
       if (idMes == null) return; // hỏng khâu cấp số thì các tem sau cũng vậy — dừng luôn cho khỏi spam log

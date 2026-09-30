@@ -237,8 +237,8 @@ async function layIdPhieuGiao(actorId = null) {
 //   GHI GÌ. Hỏng hoàn toàn im lặng, không lỗi nào hiện ra. Sửa tên trường phải đối chiếu router ERP.
 // `idBanGhi` = giao_hang.id để dòng lịch sử liên kết được với phiếu.
 // ⚠⚠ ID KẾT NỐI = `IDMES` do MES CẤP (30/09/2026, người dùng chốt: ID kết nối là mã DUY NHẤT MES tạo ra,
-//   KHÔNG lấy mã phiếu giao do ERP cấp). Tham số ID kết nối của proc này là `@pID` (xem ngay dưới) —
-//   gửi thêm khóa `IDMES` để `goiErp` rút ID kết nối cho lịch sử.
+//   KHÔNG lấy mã phiếu giao do ERP cấp). Gửi ở khóa `IDMES` ⇒ router ERP truyền vào `@pIDMES` (ERP đang
+//   bổ sung); `goiErp` cũng rút khóa này làm ID kết nối cho lịch sử.
 async function guiPhieuGiao(payload, { giaoHangId = null, actorId = null } = {}) {
   const body = {
     IDMES: payload.IDMES != null ? payload.IDMES : null,
@@ -247,11 +247,12 @@ async function guiPhieuGiao(payload, { giaoHangId = null, actorId = null } = {})
     user: catChuoi(payload.user, 20),
     DsTemGiao: catChuoi(payload.DsTemGiao, 4000),
   };
-  // ⚠⚠ `@pID` CỦA PROC `MES2SQ0` CHÍNH LÀ ID KẾT NỐI (người dùng xác nhận 30/09/2026) ⇒ = `IDMES` do MES
-  //   cấp, KHÔNG phải mã phiếu giao (bản 21/09 gửi nhầm `IDPhieuGiao` vào đây). Gửi cả `ID` + `pID` để router
-  //   ERP đọc tên nào cũng nhận được. Proc xóa phiếu cùng Soctcu(=pID) rồi tạo lại ⇒ "Gửi lại" dùng CÙNG IDMES.
-  body.ID = body.IDMES != null ? String(body.IDMES) : null;
-  body.pID = body.ID;
+  // ⚠⚠ `@pID` CỦA PROC `MES2SQ0` = MÃ PHIẾU GIAO (người dùng chốt lại 30/09/2026). Gửi kèm `ID` + `pID` cùng
+  //   giá trị `IDPhieuGiao` để router ERP đọc tên nào cũng nhận được (lỗi cũ "@pID was not supplied" là do
+  //   router khai `pIDPhieuGiao`). ID KẾT NỐI đi ở khóa RIÊNG `IDMES` — router ERP bổ sung
+  //   `request.input('pIDMES', …)` đọc `req.body.IDMES`. Khóa thừa router bỏ qua, vô hại.
+  body.ID = body.IDPhieuGiao;
+  body.pID = body.IDPhieuGiao;
   return goiErp('ERP_GUI_PHIEU_GIAO', {
     nhan: 'gui-erp-phieu-giao',
     url: env.erp.guiPhieuGiaoUrl,

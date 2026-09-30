@@ -9,8 +9,8 @@
 // Nguồn của ID theo từng loại lượt gọi (lưu ở `audit_log.gia_tri_moi.id_mes`, cột "ID kết nối"
 // ở *Hệ thống › Cài đặt API › Lịch sử*):
 //   · Chiều ĐẨY (API có tham số `pIDMES`) → `IDMES` cấp từ dãy `utils/idMes.js`: ghi-in-tem · kiểm phẩm ·
-//                  sửa đạt · tem gia công (`IDMES`) · phân loại lỗi (`IDMes`) · **phiếu giao (`@pID` = IDMES,
-//                  30/09 — trước đây gửi nhầm mã phiếu `IDPhieuGiao` vào `pID`)**.
+//                  sửa đạt · tem gia công (`IDMES`) · phân loại lỗi (`IDMes`) · **phiếu giao (`IDMES` → router ERP
+//                  bổ sung `@pIDMES`, 30/09; `@pID` vẫn là mã phiếu giao — không phải ID kết nối)**.
 //   · Chiều XIN SỐ (mã tem 15/17/13 · ID phiếu giao) → ID sinh ở đây, gửi kèm query `IDKetNoi`.
 //   · Chiều KÉO danh sách (đồng bộ đợt vải · phần in đã sửa thông tin) · hủy vải → ID sinh ở đây, GỬI
 //     KÈM lên ERP (`IDKetNoi`) để log truy cập bên ERP cũng có (router bỏ qua khóa lạ, vô hại).

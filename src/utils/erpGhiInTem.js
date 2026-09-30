@@ -21,8 +21,31 @@
 const axios = require('axios');
 const env = require('../config/env');
 const { apiBat } = require('./caiDatApi');
+const { ghiLog } = require('./erpApiLog');
+const { taoIdKetNoi } = require('./idKetNoi');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ─── CHỜ CÓ MÃ ERP CẤP MỚI ĐƯỢC GỬI (người dùng chốt 30/09/2026) ─────────────────────────────────
+// Dữ liệu gửi sang ERP mang mã DO ERP CẤP (mã tem 15/17/13 xin từ `/barcode-tem-*`, ID phiếu giao xin từ
+// `/lay-id-phieu-giao`). Chưa có mã đó — API xin số đang tắt ⇒ MES tự sinh `TEM00123` / tem con cộng dồn /
+// phiếu `PG0001` — thì KHÔNG GỬI: ERP không biết mã đó (ca thật 26/09: kiểm phẩm gửi `TEM00001`).
+// Thay vào đó ghi 1 dòng LỖI ở *Cài đặt API › Lịch sử* để thấy được lượt này chưa gửi.
+// ⚠ Gọi TRƯỚC khi cấp IDMES (mỗi lần cấp tiêu 1 số của dãy dùng chung). `ghiInTem` kiểm lại lần nữa
+//   (lưới an toàn cho đường "Gửi lại").
+// Mã tem ERP cấp = ĐÚNG 12 chữ số (xem `utils/erpTemBarcode.js BARCODE_RE`).
+const laMaTemErp = (ma) => /^\d{12}$/.test(String(ma == null ? '' : ma).trim());
+
+async function ghiChuaCoMaErp(maApi, { idBanGhi = '-', maTem = null, actorId = null, loai = 'mã tem' } = {}) {
+  if (!(await apiBat(maApi))) return { ok: false, bo_qua: true, ly_do: 'API_DANG_TAT' };
+  const loi = `Chưa có ${loai} do ERP cấp (đang là "${maTem || 'trống'}") — CHƯA GỬI ERP`;
+  console.warn(`[${maApi}] ⏸ ${loi}`);
+  await ghiLog(maApi, {
+    thanhCong: false, idBanGhi, idMes: taoIdKetNoi('CHO'), maTem, url: null,
+    gui: { BarcodeIn: maTem }, loi, actorId,
+  });
+  return { ok: false, chua_co_ma: true, error: loi };
+}
 
 // Độ dài tối đa của từng trường chuỗi, theo đúng khai báo tham số của proc `MES_spr_MES2SF0`.
 const DAI_TOI_DA = {
@@ -263,6 +286,13 @@ async function ghiInTem(row, { maApi = 'ERP_GHI_IN_TEM' } = {}) {
     console.log(`[${k.nhan}] ⏸ ĐANG TẮT (Hệ thống > Cài đặt API) — bỏ qua tem ${body.BarcodeIn}`);
     return { ok: false, bo_qua: true, body };
   }
+  // Lưới an toàn: mã tem chưa phải mã ERP cấp ⇒ KHÔNG gọi ERP (xem `laMaTemErp`). Bên gọi tự ghi lịch sử lỗi.
+  const maChuaErp = [body.BarcodeIn, ...('BarcodeSua' in body ? [body.BarcodeSua] : [])].find((m) => !laMaTemErp(m));
+  if (maChuaErp !== undefined) {
+    const error = `Chưa có mã tem do ERP cấp (đang là "${maChuaErp || 'trống'}") — CHƯA GỬI ERP`;
+    console.warn(`[${k.nhan}] ⏸ ${error}`);
+    return { ok: false, chua_co_ma: true, body, error };
+  }
   const soLan = Math.max(1, k.retry());
   let loiCuoi;
   for (let i = 1; i <= soLan; i += 1) {
@@ -286,4 +316,6 @@ async function ghiInTem(row, { maApi = 'ERP_GHI_IN_TEM' } = {}) {
   return { ok: false, body, error, data: (loiCuoi && loiCuoi.phanHoi) || null };
 }
 
-module.exports = { ghiInTem, chuanHoa, taoPayload, THU_TU_TRUONG, DAI_TOI_DA, KENH };
+module.exports = {
+  ghiInTem, chuanHoa, taoPayload, THU_TU_TRUONG, DAI_TOI_DA, KENH, laMaTemErp, ghiChuaCoMaErp,
+};
