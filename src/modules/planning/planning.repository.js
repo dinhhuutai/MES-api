@@ -503,7 +503,7 @@ const ngcLenh = (lenhCol) => `(SELECT string_agg(DISTINCT dvg.nha_gia_cong, ', '
 // Thông tin phần in đại diện của 1 lệnh (mỗi đợt vải = 1 LSX nên ánh xạ 1-1). Dùng chung cho Test Run / Release 2 / Lập kế hoạch lại.
 const PHAN_INFO_LATERAL = `
   LEFT JOIN LATERAL (
-    SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang,
+    SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, dh.bo_phan_bh,
            pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.ma_phan, dv.barcode, pin.barcode AS barcode_phan_in,
            pin.so_luong_don_hang, pin.tinh_chat_in,
            dv.so_luong_vai_ve, dv.ngay_vai_ve, dv.han_giao_hang, ldv.ten_loai AS loai_dot_vai,
@@ -820,7 +820,7 @@ async function listGiaCongLenh({ search = '', offset = 0, limit = 50, loc = {}, 
            info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan, info.tinh_chat_in,
            info.phuong_an_in, info.barcode_hskt, info.hskt_id, info.hskt_inset,
            info.so_luong_don_hang, info.so_luong_vai_ve, info.ngay_vai_ve, info.han_giao_hang, info.loai_dot_vai,
-           info.nha_gia_cong,
+           info.nha_gia_cong, info.bo_phan_bh,
            ${GIA_CONG_DA_CHUYEN} AS da_chuyen,
            (ls.so_luong_release - ${GIA_CONG_DA_CHUYEN})::int AS con_lai,
            (SELECT count(*) FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id)::int AS so_dot_vai,
@@ -868,7 +868,8 @@ async function listGiaCongHistory(date) {
            COALESCE(pn.so_luong_don_hang, info.so_luong_don_hang) AS so_luong_don_hang,
            COALESCE(pn.so_luong_vai_ve, info.so_luong_vai_ve) AS so_luong_vai_ve,
            info.han_giao_hang, info.loai_dot_vai,
-           COALESCE(pn.nha_gia_cong, info.nha_gia_cong) AS nha_gia_cong
+           COALESCE(pn.nha_gia_cong, info.nha_gia_cong) AS nha_gia_cong,
+           COALESCE(pn.bo_phan_bh, info.bo_phan_bh) AS bo_phan_bh
     FROM audit_log a
     JOIN lenh_san_xuat ls ON ls.id = a.id_ban_ghi::uuid
     LEFT JOIN nguoi_dung nd ON nd.id = a.nguoi_thuc_hien_id
@@ -877,7 +878,7 @@ async function listGiaCongHistory(date) {
     LEFT JOIN LATERAL (
       SELECT pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
              pin.so_luong_don_hang, dv.so_luong_vai_ve, dv.nha_gia_cong,
-             mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang
+             mh.ma_hang, dh.ma_don_hang, dh.bo_phan_bh, kh.ten_khach_hang
         FROM dot_vai_ve dv
         JOIN phan_in pin ON pin.id = dv.phan_in_id
         LEFT JOIN ma_hang mh ON mh.id = pin.ma_hang_id
@@ -944,7 +945,7 @@ async function giaCongPhanInRows(lenhIds) {
       SELECT lsd.lenh_san_xuat_id AS lenh_id, dv.phan_in_id, pin.ma_phan,
              (array_agg(dv.id ORDER BY dv.created_date, dv.id))[1] AS dot_vai_ve_id,
              COALESCE(SUM(lsd.so_luong), 0)::int AS sl_release_phan,
-             kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang,
+             kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, dh.bo_phan_bh,
              pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in, pin.so_luong_don_hang,
              COALESCE(SUM(dv.so_luong_vai_ve), 0)::int AS so_luong_vai_ve,
              min(dv.han_giao_hang) AS han_giao_hang,
@@ -959,7 +960,7 @@ async function giaCongPhanInRows(lenhIds) {
         LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id
        WHERE lsd.lenh_san_xuat_id = ANY($1::uuid[])
        GROUP BY lsd.lenh_san_xuat_id, dv.phan_in_id, pin.ma_phan, kh.ten_khach_hang, dh.ma_don_hang,
-                mh.ma_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in, pin.so_luong_don_hang
+                mh.ma_hang, dh.bo_phan_bh, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in, pin.so_luong_don_hang
     ), dai_dien AS (
       SELECT lenh_id, (array_agg(phan_in_id ORDER BY ma_phan))[1] AS phan_in_id FROM pin GROUP BY lenh_id
     ), da_pin AS (

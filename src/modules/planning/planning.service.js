@@ -1330,7 +1330,7 @@ async function ganPhanInGiaCong(items) {
       mau_vai: r.mau_vai, kich_vai: r.kich_vai, kich_phim: r.kich_phim,
       tinh_chat_in: r.tinh_chat_in, so_luong_don_hang: r.so_luong_don_hang,
       so_luong_vai_ve: r.so_luong_vai_ve, han_giao_hang: r.han_giao_hang,
-      loai_dot_vai: r.loai_dot_vai, nha_gia_cong: r.nha_gia_cong,
+      loai_dot_vai: r.loai_dot_vai, nha_gia_cong: r.nha_gia_cong, bo_phan_bh: r.bo_phan_bh,
       // ⚠ Trùng TÊN với khóa mức lệnh để `{...row, ...sub}` của DataTable ĐÈ đúng chỗ ⇒ mỗi dòng con
       //   hiện số của chính code phần đó, không phải số của cả lệnh.
       so_luong_release: r.sl_release_phan, da_chuyen: r.da_chuyen_phan, con_lai: r.con_lai_phan,

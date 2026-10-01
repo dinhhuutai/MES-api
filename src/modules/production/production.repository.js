@@ -39,7 +39,7 @@ const NGC_LENH = (lenhCol) => `(SELECT string_agg(DISTINCT dvg.nha_gia_cong, ', 
 // Thông tin phần in đại diện của 1 lệnh (mỗi đợt vải = 1 LSX → ánh xạ 1-1).
 const PHAN_INFO_LATERAL = `
   LEFT JOIN LATERAL (
-    SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang,
+    SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, dh.bo_phan_bh,
            pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.ma_phan, pin.so_luong_don_hang,
            pin.tinh_chat_in,
            dv.han_giao_hang, dv.so_luong_vai_ve, dv.nha_gia_cong
@@ -718,7 +718,7 @@ async function getTemLabelData(temId, dotVaiId = null) {
   const INFO = dotVaiId
     ? `
   LEFT JOIN LATERAL (
-    SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang,
+    SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, dh.bo_phan_bh,
            pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.ma_phan, pin.so_luong_don_hang,
            dv.nha_gia_cong, dv.so_luong_vai_ve
     FROM lenh_sx_dot_vai lsd
@@ -737,7 +737,7 @@ async function getTemLabelData(temId, dotVaiId = null) {
             ls.ma_lenh_san_xuat, cs.ma_chuyen, cs.ten_chuyen, ps.tg_bd AS tg_bd_in,
             info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan,
             info.mau_vai, info.kich_vai, info.kich_phim, info.so_luong_don_hang,
-            info.nha_gia_cong, info.so_luong_vai_ve,
+            info.nha_gia_cong, info.so_luong_vai_ve, info.bo_phan_bh,
             t.gc_mau_vai, t.ma_ngay_ca, t.ngay_ca,
             to_char(t.gio_sx_bd, 'HH24:MI') AS gio_sx_bd,
             to_char(t.gio_sx_kt, 'HH24:MI') AS gio_sx_kt,

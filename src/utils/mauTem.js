@@ -59,6 +59,9 @@ const TRUONG_TEM = Object.freeze([
   { ma: 'ma_hang', ten: 'Mã hàng', kieu: 'chu', nhom: 'Đơn hàng' },
   { ma: 'ma_phan', ten: 'Code phần', kieu: 'chu', nhom: 'Đơn hàng' },
   { ma: 'so_luong_don_hang', ten: 'SL đơn hàng (pcs)', kieu: 'so', nhom: 'Đơn hàng' },
+  // ERP `bophanbh` (mig 090, `don_hang.bo_phan_bh` — vd THLA / DAMY), tự đồng bộ cùng đơn hàng (01/10/2026).
+  // Có ở MỌI vị trí in: tem SX/KCS/Sửa qua `production.getTemLabelData`, tem Gia công qua `buildVeLabel`.
+  { ma: 'bo_phan_bh', ten: 'Bộ phận bán hàng (ERP bophanbh)', kieu: 'chu', nhom: 'Đơn hàng' },
 
   { ma: 'mau_vai', ten: 'Màu vải', kieu: 'chu', nhom: 'Phần in' },
   { ma: 'kich_vai', ten: 'Kích vải', kieu: 'chu', nhom: 'Phần in' },
