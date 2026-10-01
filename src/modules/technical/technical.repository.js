@@ -8,7 +8,7 @@ const { dkTrang } = require('../../utils/phuongAnIn');
 //   `listConfirmHistory` / `doneByDate`. Luật loại-khỏi-số-liệu vẫn còn hiệu lực ở sĩ số + báo cáo.
 // ⚠ `conDotChoQcSql` KHÔNG import ở đây nữa (23/09/2026): màn QC dùng chung vị từ với màn Kỹ thuật —
 //   xem ghi chú ở `OUTER_WHERE`. Helper đó nay chỉ còn phục vụ dải "Theo dõi" (`utils/siSoTram.js`).
-const { techDoneSql, KHUON_OPT_SQL_LIST, nguoiXacNhanSql, conDotChuaReadySql, qcDotSql, qcMoLaiSql } = require('../../utils/tech');
+const { techDoneSql, KHUON_OPT_SQL_LIST, nguoiXacNhanSql, conDotChuaReadySql, qcDotSql, qcMoLaiSql, hanGiaoReadySql } = require('../../utils/tech');
 const { slaReadySql, slaQcReadySql, slaReadyHanSql, canhBaoReadyHanSql } = require('../../utils/slaTheoGio');
 // Phần in đang được trả về GIAO NHẬN sửa thông tin ⇒ rời màn READY cho tới khi GN xác nhận lại.
 const { CHO_GN_SQL } = require('../../utils/traVeGn');
@@ -76,14 +76,8 @@ async function listCandidates({
               WHERE dv3.phan_in_id = pin.id AND dv3.trang_thai NOT IN ('DA_GOP','DA_HUY')) AS loai_dot_vai,
            -- Hạn giao = của đợt ĐANG CHỜ (chưa release), lùi về mọi đợt còn hiệu lực — 25/09/2026: đợt bổ sung
            -- từng hiện hạn của đợt số lượng đã release từ lâu (min mọi đợt) nên SLA theo hạn tính sai.
-           COALESCE(
-             (SELECT min(dv4.han_giao_hang) FROM dot_vai_ve dv4
-               WHERE dv4.phan_in_id = pin.id AND dv4.trang_thai NOT IN ('DA_GOP','DA_HUY')
-                 AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsh JOIN lenh_san_xuat lh ON lh.id = lsh.lenh_san_xuat_id
-                                 WHERE lsh.dot_vai_ve_id = dv4.id AND lh.trang_thai <> 'HUY')),
-             (SELECT min(dv7.han_giao_hang) FROM dot_vai_ve dv7
-               WHERE dv7.phan_in_id = pin.id AND dv7.trang_thai NOT IN ('DA_GOP','DA_HUY'))
-           ) AS han_giao_hang,
+           -- Luật ở utils/tech.js hanGiaoReadySql (dùng chung với bảng theo dõi Dashboard — 01/10/2026).
+           ${hanGiaoReadySql('pin.id')} AS han_giao_hang,
            -- "Thời gian ERP lên MES" = lúc đợt vải MỚI NHẤT lên (chốt 2026-08-07). Trước đây lấy MIN của
            -- MỌI đợt ⇒ phần in mở lại READY vì đợt vải mới vẫn hiện giờ của đợt CŨ (ca thật
            -- KN-2607-004-A02-F01-C02: đợt mới lên 07/08 11:09 nhưng cột hiện 06/08 13:05).

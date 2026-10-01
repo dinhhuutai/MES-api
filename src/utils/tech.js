@@ -206,9 +206,27 @@ const dotChoReadySql = (alias, pinCol) => `${alias}.phan_in_id = ${pinCol} AND $
                      WHERE zl2.dot_vai_ve_id = ${alias}.id AND zls2.trang_thai <> 'HUY')`;
 const conDotChoQcSql = (pinCol, khachExpr) => `EXISTS (SELECT 1 FROM dot_vai_ve zdq
   WHERE ${dotChoReadySql('zdq', pinCol)} AND NOT ${qcDotSql('zdq', pinCol)} AND ${ktDotXongSql('zdq', pinCol, khachExpr)})`;
+// HẠN GIAO MỨC PHẦN IN của màn READY (25/09/2026): hạn của đợt ĐANG CHỜ (chưa release) trước, lùi về
+// mọi đợt còn hiệu lực. Lấy min MỌI đợt thì đợt mới về mang hạn của đợt cũ đã release từ lâu ⇒ SLA theo
+// hạn báo nghẽn oan. Dùng chung: `technical.repository.listCandidates` (màn READY/QC) + dòng READY KT
+// của bảng theo dõi Dashboard (`siso.repository`) — tách hàm 01/10/2026 để 2 nơi không lệch luật.
+// ⚠ Alias `dv4`/`dv7`/`lsh`/`lh` giữ y như bản gốc trong `listCandidates`.
+const hanGiaoReadySql = (pinCol) => `COALESCE(
+  (SELECT min(dv4.han_giao_hang) FROM dot_vai_ve dv4
+    WHERE dv4.phan_in_id = ${pinCol} AND dv4.trang_thai NOT IN ('DA_GOP','DA_HUY')
+      AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsh JOIN lenh_san_xuat lh ON lh.id = lsh.lenh_san_xuat_id
+                      WHERE lsh.dot_vai_ve_id = dv4.id AND lh.trang_thai <> 'HUY')),
+  (SELECT min(dv7.han_giao_hang) FROM dot_vai_ve dv7
+    WHERE dv7.phan_in_id = ${pinCol} AND dv7.trang_thai NOT IN ('DA_GOP','DA_HUY')))`;
+
+// Điều kiện WHERE "đợt `alias` đang chờ ở READY mà KỸ THUẬT CHƯA xong" (việc của màn KT) — tách riêng
+// (01/10/2026) để bảng theo dõi Dashboard lấy được HẠN GIAO / MỐC LÊN READY của đúng các đợt này mà
+// không chép lại luật (`siso.repository` dòng READY KT).
+const dotChuaKtDk = (alias, pinCol, khachExpr) => `${dotChoReadySql(alias, pinCol)} AND NOT ${qcDotSql(alias, pinCol)}
+  AND NOT ${ktDotXongSql(alias, pinCol, khachExpr)}`;
 // Còn đợt vải đang chờ mà KỸ THUẬT CHƯA xong (việc của màn KT).
 const conDotChuaKtSql = (pinCol, khachExpr) => `EXISTS (SELECT 1 FROM dot_vai_ve zdk
-  WHERE ${dotChoReadySql('zdk', pinCol)} AND NOT ${qcDotSql('zdk', pinCol)} AND NOT ${ktDotXongSql('zdk', pinCol, khachExpr)})`;
+  WHERE ${dotChuaKtDk('zdk', pinCol, khachExpr)})`;
 
 // ⚠⚠ MỐC PHẦN IN VÀO LẠI HÀNG ĐỢI QC (30/09/2026, người dùng chốt: "phần in trả về READY mà nằm ở QC
 //   luôn thì cho lại thời gian SLA"). Trả về READY (Release 1 · Test Run · Xác nhận chạy → Trả về KT) chỉ
@@ -233,4 +251,5 @@ module.exports = {
   NHAN_HE_THONG, nguoiXacNhanSql,
   readyTuDongSql, khongReadyTuDongSql,
   dotMucDatSql, mocDotMucSql, qcDotSql, ktDotXongSql, conDotChuaReadySql, conDotChoQcSql, conDotChuaKtSql,
+  dotChuaKtDk, hanGiaoReadySql,
 };
