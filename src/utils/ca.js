@@ -57,4 +57,15 @@ function ngayTuMaNgayCa(ma) {
   return `20${yy}-${mm}-${dd}`;
 }
 
-module.exports = { caFromHour, caFromParts, maCa, maNgayCa, ngayTuMaNgayCa };
+// GIỜ BẮT ĐẦU của ca chứa (gio, phut) — 'HH:MM'. Dùng làm gợi ý "Từ giờ" khi hôm nay chưa có mốc nào
+// (30/09/2026). Ca 3 / Ca Dài 2 bắt đầu TỐI HÔM TRƯỚC khi giờ hiện tại đã qua nửa đêm — vẫn trả giờ
+// bắt đầu (22:00 / 18:00); luật cộng ngày cho ca đêm ở `production.repository.duLieuGhiInTem`.
+const BAT_DAU = { NGAN: { 'Ca 1': '06:00', 'Ca 2': '14:00', 'Ca 3': '22:00' }, DAI: { 'Ca 1': '06:00', 'Ca 2': '18:00' } };
+function gioBatDauCa(gio, phut, loaiCa) {
+  const label = caFromHour(gio, phut, loaiCa);
+  if (label === 'Hành chính (TC)') return '16:30';
+  if (label === 'Hành chính') return '07:30';
+  return (BAT_DAU[loaiCa === 'DAI' ? 'DAI' : 'NGAN'] || {})[label] || '';
+}
+
+module.exports = { caFromHour, caFromParts, maCa, maNgayCa, ngayTuMaNgayCa, gioBatDauCa };

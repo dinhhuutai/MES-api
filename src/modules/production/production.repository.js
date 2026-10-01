@@ -877,10 +877,14 @@ async function createTem(client, { phieuId, maTem, soLuong, ngayCa, maNgayCa, gi
 async function goiYTemMeta(lenhId, phieuId) {
   const VN = "AT TIME ZONE 'Asia/Ho_Chi_Minh'";
   const gioKtTem = (await temCoCotNgayCa()) ? "to_char(t.gio_sx_kt,'HH24:MI')" : 'NULL';
-  const sql = `WITH p AS (SELECT tg_bd FROM phieu_san_xuat WHERE id=$2::uuid),
+  // ⚠ 30/09/2026: CHỈ lấy mốc của HÔM NAY (giờ VN) — tem trước / giờ chạy phiếu từ hôm khác làm "Từ giờ"
+  //   thành giờ của ngày cũ (ca thật: tem in 14:19 ngày 18/09 mang từ 15:47 của tem ngày 17/09). Không có
+  //   mốc hôm nay ⇒ `gio_bd` NULL, service lùi về GIỜ BẮT ĐẦU CA hiện tại (`utils/ca.js gioBatDauCa`).
+  const sql = `WITH p AS (SELECT tg_bd FROM phieu_san_xuat WHERE id=$2::uuid AND (tg_bd ${VN})::date = (now() ${VN})::date),
       t AS (SELECT ${gioKtTem} AS gio_kt_nhap, to_char(t.created_date ${VN},'HH24:MI') AS gio_in
               FROM tem t JOIN phieu_san_xuat ps ON ps.id=t.phieu_san_xuat_id
              WHERE ps.lenh_san_xuat_id=$1 AND t.trang_thai<>'HUY'
+               AND (t.created_date ${VN})::date = (now() ${VN})::date
              ORDER BY t.created_date DESC LIMIT 1),
       b AS (SELECT (now() ${VN})::date AS ngay, (now() ${VN}) AS tg)
     SELECT to_char(b.ngay,'YYMMDD') AS ymd,
@@ -888,8 +892,7 @@ async function goiYTemMeta(lenhId, phieuId) {
            EXTRACT(MINUTE  FROM b.tg)::int    AS phut,
            EXTRACT(ISOYEAR FROM b.ngay)::int  AS nam,
            EXTRACT(WEEK    FROM b.ngay)::int  AS tuan,
-           COALESCE(t.gio_kt_nhap, t.gio_in, to_char(p.tg_bd ${VN},'HH24:MI'),
-                    to_char(now() ${VN},'HH24:MI')) AS gio_bd,
+           COALESCE(t.gio_kt_nhap, t.gio_in, to_char(p.tg_bd ${VN},'HH24:MI')) AS gio_bd,
            to_char(now() ${VN},'HH24:MI') AS gio_kt
       FROM b LEFT JOIN t ON true LEFT JOIN p ON true`;
   const { rows } = await query(sql.replace(/\s+/g, ' '), [lenhId, phieuId || null]);
@@ -913,7 +916,10 @@ const capIdMes = () => capIdMesChung('ghi-in-tem');
 //     Vẫn trả `so_dot_cua_lenh` để service cảnh báo nếu về sau xuất hiện ca đó.
 // Ngày giờ ghép NGAY TRONG SQL theo giờ VN (server có thể chạy múi giờ khác — đừng new Date() ở JS):
 //   · Ngayct = ngày in tem  · Tugio/Dengio = ngày của `ma_ngay_ca` (cột `ngay_ca` đã tách sẵn) + giờ SX
-//   · `gio_kt < gio_bd` ⇒ ca ĐÊM ⇒ Dengio +1 ngày
+//   · `gio_kt < gio_bd` VÀ mã ca là ca ĐÊM thật (`C3` 22–06 · `D2` 18–06) ⇒ Dengio +1 ngày.
+//     ⚠ 30/09/2026: bản cũ cộng ngày cho MỌI ca ⇒ tem ca ngày có giờ gợi ý lệch (vd từ 15:47 tem hôm
+//     trước → đến 14:18) bị gửi ERP thành khoảng ~23 giờ sang hôm sau. Ca ngày giờ ngược ⇒ GỬI ĐÚNG SỐ
+//     ĐÃ NHẬP, không bịa ngày.
 //   · `ngay_ca` NULL (mã ngày ca sai định dạng) ⇒ lùi về ngày in tem, KHÔNG bịa ngày
 // `ngayCt` (tùy chọn, 'YYYY-MM-DD' — thêm 04/09/2026): NGÀY CHỨNG TỪ do người in tự đặt, dùng khi
 // muốn ghi lượt in vào một ngày khác hôm nay (in bù, chốt sổ cuối ngày…). Bỏ trống ⇒ `now()` như cũ.
@@ -957,6 +963,7 @@ async function duLieuGhiInTem(capTem = [], ngayCt = null) {
            CASE WHEN t.gio_sx_kt IS NULL THEN NULL
                 ELSE to_char(nen.ngay + t.gio_sx_kt
                        + CASE WHEN t.gio_sx_bd IS NOT NULL AND t.gio_sx_kt < t.gio_sx_bd
+                                   AND right(COALESCE(t.ma_ngay_ca, ''), 2) IN ('C3', 'D2')
                               THEN interval '1 day' ELSE interval '0' END,
                      'YYYY/MM/DD HH24:MI:SS') END AS den_gio
       FROM inp

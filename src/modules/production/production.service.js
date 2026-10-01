@@ -12,7 +12,7 @@ const planningService = require('../planning/planning.service'); // rollbackLenh
 const erpsyncRepo = require('../erpsync/erpsync.repository');     // reopenReadyForPhanIn
 const qaRepo = require('../quality/quality.repository');          // qc_tra_ve (badge + lý do ở READY)
 const thongBao = require('../thongbao/thongbao.service');         // chuông Kỹ thuật (mig 085)
-const { caFromParts, maNgayCa, ngayTuMaNgayCa } = require('../../utils/ca');
+const { caFromParts, maNgayCa, ngayTuMaNgayCa, gioBatDauCa } = require('../../utils/ca');
 const { layBarcodeTem, layNhieuBarcodeTem } = require('../../utils/erpTemBarcode');
 const { ghiInTem, taoPayload, laMaTemErp, ghiChuaCoMaErp } = require('../../utils/erpGhiInTem');
 const { apiChoPhepPhanIn } = require('../../utils/caiDatApi');
@@ -73,7 +73,8 @@ async function goiYTemMeta(lenhId, phieuId) {
     const [g, modeMap] = await Promise.all([repo.goiYTemMeta(lenhId, phieuId), planningRepo.caModeMap()]);
     if (!g) return null;
     const mode = modeMap.get(`${g.nam}-${g.tuan}`) || 'NGAN';
-    return { ngay_ca: maNgayCa(g.ymd, g.gio, g.phut, mode), gio_bd: g.gio_bd || '', gio_kt: g.gio_kt || '' };
+    // Hôm nay chưa có mốc nào (tem trước / giờ chạy phiếu) ⇒ "Từ giờ" = giờ bắt đầu CA hiện tại.
+    return { ngay_ca: maNgayCa(g.ymd, g.gio, g.phut, mode), gio_bd: g.gio_bd || gioBatDauCa(g.gio, g.phut, mode), gio_kt: g.gio_kt || '' };
   } catch (e) {
     return null;
   }
