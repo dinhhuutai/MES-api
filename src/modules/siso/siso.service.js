@@ -154,8 +154,8 @@ const slaCua = (dong, slaRows) => {
   return r && r.sla != null ? Number(r.sla) : null;
 };
 
-// %: Xong & Tồn cuối chia (Tồn đầu + Nhận) ⇒ 2 số cộng lại = 100%; Nghẽn chia TỒN CUỐI (nghẽn là
-// tập con của tồn cuối). Người dùng chốt 20/09/2026. Mẫu số 0 ⇒ `null` (FE hiện "—", KHÔNG hiện 0%).
+// %: Xong & Tồn cuối chia (Tồn đầu + Nhận) ⇒ 2 số cộng lại = 100% (chốt 20/09/2026); Nghẽn cũng chia
+// (Tồn đầu + Nhận) từ 01/10/2026 (nghẽn gồm cả phần đã rời trạm). Mẫu số 0 ⇒ `null` (FE hiện "—").
 const pct = (tu, mau) => (mau > 0 ? Math.round((tu / mau) * 1000) / 10 : null);
 
 async function tinhBang(tu, den) {
@@ -180,9 +180,13 @@ async function tinhBang(tu, den) {
         phan: n('ton_cuoi_phan'), sl: n('ton_cuoi_sl'),
         pt: pct(n('ton_cuoi_phan'), vao), pt_sl: pct(n('ton_cuoi_sl'), vaoSl),
       },
+      // Nghẽn (01/10/2026) = mọi phần in QUÁ SLA trong kỳ = đã xác nhận (rời trạm) + chưa xác nhận
+      // (còn tồn) ⇒ % chia (Tồn đầu + Nhận) như Xong/Tồn cuối, KHÔNG còn chia Tồn cuối. `gio` = Σ giờ vượt SLA.
       nghen: {
         phan: n('nghen_phan'), sl: n('nghen_sl'),
-        pt: pct(n('nghen_phan'), n('ton_cuoi_phan')), pt_sl: pct(n('nghen_sl'), n('ton_cuoi_sl')),
+        pt: pct(n('nghen_phan'), vao), pt_sl: pct(n('nghen_sl'), vaoSl),
+        gio: Math.round(n('nghen_gio') * 10) / 10,
+        xong: n('nghen_xong_phan'), chua: n('nghen_chua_phan'),
       },
       // ⚠ Trả cờ cân để FE hiện ⚠ thay vì im lặng cho số sai (khuôn của `siSo()` ở trên).
       can: n('ton_dau_phan') + n('nhan_phan') - n('xong_phan') === n('ton_cuoi_phan'),
@@ -215,8 +219,8 @@ async function bangTheoDoiChiTiet(ma, q = {}) {
       phut_da_o: phut(r.tg_vao, tgRaHayMoc),
       // SLA thực của phần in này (luật theo giờ có thể khác SLA trạm) = mốc bắt đầu nghẽn − mốc vào.
       sla_phut: phut(r.tg_vao, r.tg_bat_dau_nghen),
-      // Nghẽn bao lâu = từ mốc bắt đầu nghẽn tới mốc đo (chỉ khi đang nghẽn).
-      phut_nghen: r.o_nghen ? phut(r.tg_bat_dau_nghen, r.moc_do) : null,
+      // Nghẽn bao lâu = từ mốc bắt đầu nghẽn tới lúc RỜI trạm (đã xác nhận) hoặc tới mốc đo (chưa).
+      phut_nghen: r.o_nghen ? phut(r.tg_bat_dau_nghen, r.o_nghen_xong ? r.tg_ra : r.moc_do) : null,
     };
   });
   return {

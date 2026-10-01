@@ -210,7 +210,11 @@ async function donViTaiTram(tram, loc = {}, maChecklist = null) {
 
   // Hạn giao chỉ có ở 2 nguồn READY theo đợt (luật SLA theo hạn giao — 25/09/2026).
   const coHan = String(tram.nguon).endsWith('_DOT');
-  const sql = `WITH x AS (${NGUON[tram.nguon]}),
+  // ⚠⚠ `x` PHẢI `MATERIALIZED` (01/10/2026 — hiệu năng, KHÔNG đổi kết quả): `u` nhắc `x.tg_vao`/`x.tg_ra`
+  //   mỗi cột 2 lần, mà 2 cột đó là biểu thức có SUBQUERY (vd `mocDotMucSql` của nguồn READY theo đợt).
+  //   Để Postgres nhúng CTE là mỗi lần nhắc tính lại subquery. Đã so trước/sau trên THLA_TEST (13 trạm +
+  //   các dòng checklist): y hệt. Xem DATABASE.md §15.
+  const sql = `WITH x AS MATERIALIZED (${NGUON[tram.nguon]}),
     u AS (SELECT x.phan_in_id, ${khoa} AS don_vi,
         ${coDot ? "string_agg(DISTINCT x.ma_dot_vai, ', ')" : 'NULL::text'} AS ma_dot_vai,
         string_agg(DISTINCT x.ma_lenh_san_xuat, ', ') AS ma_lenh_san_xuat,

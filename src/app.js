@@ -47,6 +47,17 @@ const manualEntryRoutes = require('./modules/manualentry/manualentry.routes');
 
 const app = express();
 
+// NÉN GZIP mọi response (01/10/2026). JSON danh sách nén ~10 lần (đo prod: `/dashboard/bang-2` +
+// `/dieu-phoi` mỗi API ~1 MB thô) ⇒ người dùng ở xưởng/điện thoại tải nhanh hơn hẳn. Response < 1 KB
+// không nén (tốn CPU hơn lợi). Socket.io gắn thẳng vào http server (`index.js`) nên không qua đây.
+// ⚠ FAIL-OPEN: máy chủ quên `npm install` thì THIẾU package ⇒ chỉ cảnh báo, backend vẫn chạy (không
+//   nén) — đừng để 1 tính năng phụ làm sập cả BE (502 → trình duyệt báo CORS, CLAUDE.md §11.5).
+let nenGzip = null;
+try { nenGzip = require('compression'); } catch (e) {
+  console.warn('[nen] Thiếu package "compression" — chạy `npm install` trong thư mục backend. Tạm KHÔNG nén response.');
+}
+if (nenGzip) app.use(nenGzip({ threshold: 1024 }));
+
 app.use(cors({ origin: env.corsOrigin, credentials: true }));
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true }));

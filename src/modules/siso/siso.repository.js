@@ -20,6 +20,13 @@ const dkO = (o) => O_SI_SO[o].dk.replace(/\$1/g, '(SELECT tu FROM ky)').replace(
 // biến Tồn đầu + Nhận − Làm được = Tồn cuối sẽ vỡ).
 const NEN = 'q.tg_vao IS NOT NULL AND (q.tg_ra IS NULL OR q.tg_ra >= q.tg_vao)';
 
+// ⚠⚠ CTE nguồn `q` PHẢI `MATERIALIZED` (01/10/2026, EXPLAIN ANALYZE prod): `tg_vao`/`tg_ra` của nguồn
+//   là biểu thức có SUBQUERY (vd hàng đợi QC `conDotChoQcSql`), mà điều kiện các ô (`dkO` tồn đầu ·
+//   nhận · làm được · tồn cuối · nghẽn) nhắc tới `q.tg_vao`/`q.tg_ra` hàng chục lần. Để Postgres NHÚNG
+//   CTE thì MỖI lần nhắc là tính lại subquery (thấy rõ cùng 1 nút `loops=5048` lặp 5 lần) ⇒ READY QA
+//   3,7 s. Ép vật chất hóa = mỗi dòng tính 1 lần, kết quả Y HỆT (đã so mọi màn × mọi đơn vị trước/sau).
+const cteQ = (sql) => `q AS MATERIALIZED (${sql})`;
+
 // Bộ lọc chữ + lọc ngày phụ.
 // ⚠ `bat` = số thứ tự tham số KẾ TIẾP. Kỳ chiếm $1,$2 ⇒ lọc bắt đầu từ **$3** (đặt nhầm thành 4 là
 //   lệch chỉ số toàn bộ, Postgres báo "could not determine data type of parameter $3" — đã mắc).
@@ -134,7 +141,7 @@ async function demSiSo(maTrang, { tu, den, loc, locTrang, donVi }) {
   const dem = Object.keys(O_SI_SO).map((k) => (dv.do
     ? `COALESCE(sum(${dv.do}) FILTER (WHERE ${dkO(k)}), 0)::int AS ${k}`
     : `count(*) FILTER (WHERE ${dkO(k)})::int AS ${k}`)).join(', ');
-  const sql = `WITH ${CTE_KY}, q AS (${dv.sql}) SELECT ${dem} FROM q WHERE ${NEN}${dk}`;
+  const sql = `WITH ${CTE_KY}, ${cteQ(dv.sql)} SELECT ${dem} FROM q WHERE ${NEN}${dk}`;
   const { rows } = await query(sql.replace(/\s+/g, ' '), [tu, den, ...params]);
   const r = rows[0] || {};
   return {
@@ -160,7 +167,7 @@ async function chiTiet(maTrang, o, { tu, den, loc, locTrang, donVi, page = 1, li
   const { dk, params } = dungLocKep(loc, locTrang);
   const p = [tu, den, ...params];
   const than = `FROM q WHERE ${NEN} AND (${dkO(o)})${dk}`;
-  const dau = `WITH ${CTE_KY}, q AS (${dv.sql})`;
+  const dau = `WITH ${CTE_KY}, ${cteQ(dv.sql)}`;
 
   const dem = await query(`${dau} SELECT count(*)::int AS n ${than}`.replace(/\s+/g, ' '), p);
   const total = dem.rows[0] ? dem.rows[0].n : 0;
@@ -188,7 +195,7 @@ async function tomTatTheoNgayGiao(maTrang, o, { tu, den, loc, locTrang, donVi })
   if (!O_SI_SO[o]) throw Object.assign(new Error(`Ô "${o}" không hợp lệ`), { code: 'O_LA' });
   const dv = chonDonVi(m, donVi);
   const { dk, params } = dungLocKep(loc, locTrang);
-  const sql = `WITH ${CTE_KY}, q AS (${dv.sql})
+  const sql = `WITH ${CTE_KY}, ${cteQ(dv.sql)}
     SELECT (q.han_giao_hang)::date AS han_giao_hang,
            count(*)::int AS so_doi_tuong,
            COALESCE(sum(COALESCE(q.so_luong_vai_ve,0)),0)::int AS sl_vai,
@@ -219,8 +226,8 @@ async function dsSlaHienHanh() {
 }
 
 // Một dòng của bảng: 5 cụm × (Phần + SL) trong MỘT lượt query.
-// ⚠⚠ NGHẼN = đối tượng **đang TỒN CUỐI** và đã ở trạm quá SLA ⇒ nghẽn LUÔN là tập con của Tồn cuối
-//   (nên %nghẽn chia cho Tồn cuối mới có nghĩa). Mốc đo là `LEAST(cuối kỳ, bây giờ)`: xem ngày quá
+// ⚠⚠ NGHẼN (từ 01/10/2026) = đối tượng quá SLA trong kỳ — gồm "chưa xác nhận" (đang TỒN CUỐI) và
+//   "đã xác nhận" (rời trạm trong kỳ sau khi đã quá SLA); xem `NGHEN_*`. Mốc đo là `LEAST(cuối kỳ, bây giờ)`: xem ngày quá
 //   khứ thì tính tới cuối ngày đó, xem hôm nay thì tính tới bây giờ — KHÔNG lấy `now()` trần, nếu
 //   không mọi thứ tồn từ tháng trước đều "nghẽn" khi soi lại một ngày cũ.
 // ⚠ SLA null (trạm chưa cấu hình) ⇒ `false` ⇒ nghẽn = 0, KHÔNG đoán bừa một ngưỡng.
@@ -254,18 +261,39 @@ function batDauNghenSql(dong, slaPhut) {
 }
 const MOC_DO = 'LEAST((SELECT den FROM ky), now())';
 
+// NGHẼN = HIỆN TRẠNG + KẾT QUẢ XỬ LÝ (01/10/2026, người dùng chốt theo tờ giấy xưởng):
+//   · CHƯA xác nhận = đang TỒN CUỐI và mốc đo đã qua mốc bắt đầu nghẽn (= định nghĩa "Nghẽn" cũ).
+//   · ĐÃ xác nhận   = RỜI trạm trong kỳ (`lam_duoc`) và lúc rời ĐÃ quá SLA (`tg_ra > bd_nghen`).
+//   · Phần nghẽn   = ĐÃ + CHƯA (2 tập rời nhau: `lam_duoc` đòi tg_ra < cuối kỳ, `ton_cuoi` đòi ≥).
+//   · Giờ nghẽn    = Σ giờ VƯỢT SLA: đã xác nhận tính tới lúc rời, chưa xác nhận tính tới mốc đo.
+// ⚠ Dựa trên cột `q.bd_nghen` (mốc bắt đầu nghẽn tính SẴN 1 lần/dòng — xem `voiBdNghen`), đừng chèn
+//   lại `batDauNghenSql` ở từng chỗ: nhánh Test Run là subquery, chèn 4 lần là chạy 4 lần.
+const NGHEN_CHUA = () => `(${dkO('ton_cuoi')}) AND q.bd_nghen IS NOT NULL AND ${MOC_DO} > q.bd_nghen`;
+const NGHEN_XONG = () => `(${dkO('lam_duoc')}) AND q.bd_nghen IS NOT NULL AND q.tg_ra > q.bd_nghen`;
+const NGHEN = () => `((${NGHEN_CHUA()}) OR (${NGHEN_XONG()}))`;
+const GIO_NGHEN = () => `EXTRACT(EPOCH FROM ((CASE WHEN ${NGHEN_CHUA()} THEN ${MOC_DO} ELSE q.tg_ra END) - q.bd_nghen)) / 3600.0`;
+
+// CTE `q` có thêm cột `bd_nghen`. ⚠ CTE thường (không RECURSIVE) không nhìn thấy chính tên nó trong thân
+//   ⇒ `FROM q0 q` đặt alias `q` cho nguồn để `batDauNghenSql` (viết theo `q.`) chạy nguyên văn.
+// ⚠ Cả 2 tầng `MATERIALIZED` (xem `cteQ`): `q0` để `tg_vao`/`tg_ra` tính 1 lần/dòng, `q` để mốc
+//   `bd_nghen` (nhánh Test Run là subquery) cũng chỉ tính 1 lần dù `NGHEN_*` nhắc nó nhiều lần.
+const voiBdNghen = (sqlPin, batDau) => `q0 AS MATERIALIZED (${sqlPin}),
+  q AS MATERIALIZED (SELECT q.*, ${batDau == null ? 'NULL::timestamptz' : batDau} AS bd_nghen FROM q0 q)`;
+
 async function motDongBang(dong, slaPhut, { tu, den }) {
   const m = nguon(dong.man);
   const sqlPin = m.donVis.pin.sql;             // cột "Phần" LUÔN đếm theo PHẦN IN ở cả 10 dòng
   const slSql = DO_SL[dong.sl].sql;
   const batDau = batDauNghenSql(dong, slaPhut);
-  const dkNghen = batDau == null ? 'false' : `(${dkO('ton_cuoi')}) AND ${MOC_DO} > ${batDau}`;
   const cum = (ten, dk) => `count(*) FILTER (WHERE ${dk})::int AS ${ten}_phan,
     COALESCE(sum(${slSql}) FILTER (WHERE ${dk}), 0)::int AS ${ten}_sl`;
-  const sql = `WITH ${CTE_KY}, q AS (${sqlPin}) SELECT
+  const sql = `WITH ${CTE_KY}, ${voiBdNghen(sqlPin, batDau)} SELECT
       ${cum('ton_dau', dkO('ton_dau'))}, ${cum('nhan', dkO('nhan'))},
       ${cum('xong', dkO('lam_duoc'))}, ${cum('ton_cuoi', dkO('ton_cuoi'))},
-      ${cum('nghen', dkNghen)}
+      ${cum('nghen', NGHEN())},
+      count(*) FILTER (WHERE ${NGHEN_XONG()})::int AS nghen_xong_phan,
+      count(*) FILTER (WHERE ${NGHEN_CHUA()})::int AS nghen_chua_phan,
+      COALESCE(sum(${GIO_NGHEN()}) FILTER (WHERE ${NGHEN()}), 0)::float8 AS nghen_gio
     FROM q WHERE ${NEN}`;
   const { rows } = await query(sql.replace(/\s+/g, ' '), [tu, den]);
   return rows[0] || {};
@@ -277,11 +305,13 @@ async function motDongBang(dong, slaPhut, { tu, den }) {
 async function dsDongBang(dong, slaPhut, { tu, den }) {
   const m = nguon(dong.man);
   const batDau = batDauNghenSql(dong, slaPhut);
-  const sql = `WITH ${CTE_KY}, q AS (${m.donVis.pin.sql}) SELECT ${COT_DS},
+  const sql = `WITH ${CTE_KY}, ${voiBdNghen(m.donVis.pin.sql, batDau)} SELECT ${COT_DS},
       (${dkO('ton_dau')}) AS o_ton_dau, (${dkO('nhan')}) AS o_nhan,
       (${dkO('lam_duoc')}) AS o_xong, (${dkO('ton_cuoi')}) AS o_ton_cuoi,
-      ${batDau == null ? 'NULL::timestamptz' : batDau} AS tg_bat_dau_nghen,
-      ${batDau == null ? 'false' : `(${dkO('ton_cuoi')}) AND ${MOC_DO} > ${batDau}`} AS o_nghen,
+      q.bd_nghen AS tg_bat_dau_nghen,
+      COALESCE(${NGHEN()}, false) AS o_nghen,
+      COALESCE(${NGHEN_XONG()}, false) AS o_nghen_xong,
+      COALESCE(${NGHEN_CHUA()}, false) AS o_nghen_chua,
       ${DO_SL[dong.sl].sql} AS sl_dong,
       ${MOC_DO} AS moc_do
     FROM q WHERE ${NEN} AND ((${dkO('ton_dau')}) OR (${dkO('nhan')}) OR (${dkO('lam_duoc')}) OR (${dkO('ton_cuoi')}))

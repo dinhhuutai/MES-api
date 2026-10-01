@@ -41,7 +41,9 @@ function nhoNang(ten, chay) {
 
 // stageCounts (đếm phần in theo giai đoạn — nguồn tin cậy như dashboard): nhiều metric
 // "phần in đang ở trạm" dùng chung 1 lần chạy.
-const stageCountsCached = () => nhoNang('stageCounts', () => dashboardRepo.stageCounts());
+// ⚠ Dùng CHUNG cache 30s của Dashboard (`dashboardRepo.stageCountsCached`, 01/10/2026) — báo cáo và
+//   Dashboard mở cùng lúc thì câu dominant (~6 s prod) chỉ chạy 1 lần thay vì 2.
+const stageCountsCached = () => nhoNang('stageCounts', () => dashboardRepo.stageCountsCached());
 // Số PHẦN IN đang ở giai đoạn (gộp nhiều stage key). PHẦN IN rời rạc theo dominant nên CỘNG được.
 const pinAtStage = (keys) => async () => {
   const sc = await stageCountsCached();

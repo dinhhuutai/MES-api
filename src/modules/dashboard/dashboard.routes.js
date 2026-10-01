@@ -17,7 +17,8 @@ router.use(auth);
 
 router.get('/summary', asyncHandler(async (req, res) => ok(res, await repo.summary())));
 router.get('/activity', asyncHandler(async (req, res) => ok(res, await repo.activity())));
-router.get('/stage-counts', asyncHandler(async (req, res) => ok(res, await repo.stageCounts())));
+// ⚠ Bản CACHE 30s (câu dominant ~6 s trên prod) — xem `stageCountsCached`.
+router.get('/stage-counts', asyncHandler(async (req, res) => ok(res, await repo.stageCountsCached())));
 router.get('/chart-detail', asyncHandler(async (req, res) => ok(res, await repo.chartDetail())));
 
 // ---- Dòng chảy + SLA (theo dõi chủ động — migration 029) ----
@@ -67,13 +68,17 @@ router.get('/bang-2', asyncHandler(async (req, res) => {
       }
     }
   });
+  // `?gon=1` (01/10/2026): BỎ mảng `phan_ins` của từng nhóm — trang Dashboard lúc mở chỉ cần SỐ ĐẾM
+  //   (prod: bản đầy đủ ~1 MB vì ~5.000 phần in nghẽn). Danh sách tải khi người dùng mở panel drill.
+  //   `count` tính TRƯỚC khi bỏ mảng ⇒ 2 bản cùng số.
+  const gon = req.query.gon === '1';
   const toArr = (obj) => Object.values(obj).map((g) => {
     const o = owners[g.ma_tram] || {};
     return {
       ma_tram: g.ma_tram, ten_tram: g.ten_tram, sla_phut: g.sla_phut,
       owner_trach_nhiem: (o.chiu_trach_nhiem || []).join(', ') || null,
       owner_xu_ly: (o.xu_ly || []).join(', ') || null,
-      phan_ins: Object.values(g.phan_ins).sort((a, b) => (b.phut_da_o || 0) - (a.phut_da_o || 0)),
+      ...(gon ? {} : { phan_ins: Object.values(g.phan_ins).sort((a, b) => (b.phut_da_o || 0) - (a.phut_da_o || 0)) }),
       count: Object.keys(g.phan_ins).length,
     };
   }).sort((a, b) => b.count - a.count);
@@ -122,13 +127,15 @@ router.get('/dieu-phoi', asyncHandler(async (req, res) => {
     if (kind === 'qua') { if (!seenQua.has(r.phan_in_id)) { seenQua.add(r.phan_in_id); quaHanTong += 1; } }
     else if (!seenSap.has(r.phan_in_id) && !seenQua.has(r.phan_in_id)) { seenSap.add(r.phan_in_id); sapHanTong += 1; }
   });
+  // `?gon=1` (01/10/2026): bỏ danh sách phần in từng trạm (prod ~1 MB) — xem ghi chú ở `/bang-2`.
+  const gon = req.query.gon === '1';
   const by_tram = Object.values(groups).map((g) => {
     const list = Object.values(g.phan_ins);
     return {
       ma_tram: g.ma_tram, ten_tram: g.ten_tram, thu_tu: g.thu_tu,
       qua_han: list.filter((p) => p.kind === 'qua').length,
       sap_han: list.filter((p) => p.kind === 'sap').length,
-      phan_ins: list.sort((a, b) => (b.tre_ngay || 0) - (a.tre_ngay || 0)),
+      ...(gon ? {} : { phan_ins: list.sort((a, b) => (b.tre_ngay || 0) - (a.tre_ngay || 0)) }),
     };
   }).sort((a, b) => (a.thu_tu ?? 99) - (b.thu_tu ?? 99));
   return ok(res, {

@@ -465,6 +465,13 @@ const DV = {
 //   gom) và `so_phan_in` luôn = 1, mà `manTheoPin` KHÔNG dùng cột nào trong hai cột đó. Quan trọng
 //   hơn: nhánh này là đường NÓNG — `CP_PHAN_IN` dùng cho MỌI metric/dataset báo cáo — nên đừng bắt
 //   nó gánh thêm `array_agg(DISTINCT …)` + `count(DISTINCT …)` (2 phép sort/dedup) chỉ để bỏ đi.
+// ⚠⚠ RÀO `OFFSET 0` QUANH NGUỒN CON (01/10/2026 — hiệu năng, KHÔNG đổi kết quả): nguồn `trong` không
+//   GROUP BY nên Postgres "kéo phẳng" nó lên tầng này rồi CHÉP biểu thức `tg_vao`/`tg_ra` vào từng chỗ
+//   nhắc (`x.tg_ra` 4 lần, `x.tg_vao` 2 lần) ⇒ các subquery nặng trong đó (vd hàng đợi QC
+//   `conDotChoQcSql`) bị tính lại 4–6 lần/dòng. Subquery có `OFFSET` thì planner KHÔNG kéo phẳng ⇒ mỗi
+//   cột tính đúng 1 lần. Hàm này là đường chung của dải Theo dõi 12 màn + bảng theo dõi + metric/dataset
+//   báo cáo (`CP_PHAN_IN`) ⇒ sửa 1 chỗ lợi cho tất cả. Đã so trước/sau trên THLA_TEST: 118 mục y hệt.
+//   Đừng gỡ rào để "gọn": không có lỗi nào, chỉ chậm đi âm thầm (DATABASE.md §15).
 const gomTheo = (khoa, alias, trong, canPinIds = true) => `SELECT ${khoa} AS ${alias},
   ${canPinIds ? 'array_agg(DISTINCT x.phan_in_id) AS pin_ids, count(DISTINCT x.phan_in_id)::int AS so_phan_in,' : ''}
   min(x.tg_vao) AS tg_vao,
@@ -478,7 +485,7 @@ const gomTheo = (khoa, alias, trong, canPinIds = true) => `SELECT ${khoa} AS ${a
   COALESCE(string_agg(DISTINCT x.ma_loai_chuyen, ',') FILTER (WHERE x.tg_ra IS NULL),
            string_agg(DISTINCT x.ma_loai_chuyen, ',')) AS ma_loai_chuyen,
   min(x.ngay_ke_hoach) AS ngay_ke_hoach, min(x.ngay_release) AS ngay_release
-  FROM (${trong}) x
+  FROM (SELECT * FROM (${trong}) x0 OFFSET 0) x
   WHERE ${khoa} IS NOT NULL AND x.phan_in_id IS NOT NULL AND x.tg_vao IS NOT NULL
   GROUP BY ${khoa}`;
 

@@ -215,6 +215,10 @@ async function stageCounts() {
   // READY đã có khóa cấu hình riêng ở màn của nó (KT_READY / CL_QC_READY), lọc thêm ở đây sẽ lệch số.
   // ⚠ KHÔNG viết chú thích dạng `-- …` bên trong chuỗi SQL: nhiều query gộp về 1 dòng (IPS-safe)
   //    ⇒ dấu `--` nuốt sạch phần còn lại → `42601 syntax error at end of input` (đã mắc thật).
+  // ⚠⚠ `dvs`/`st` PHẢI `MATERIALIZED` (01/10/2026, EXPLAIN ANALYZE prod): không ép thì Postgres NHÚNG
+  //   CTE vào chỗ dùng ⇒ subquery `lenh_id`/`lenh_tt` bị tính LẠI ở MỖI lần `dotStageCase` nhắc tới
+  //   `dvs.lenh_id` (~15 lần/đợt) + vòng lặp 5.340 × 5.340 quét lại `pin_active` ⇒ 8 s. Ép vật chất hóa
+  //   = mỗi đợt tính đúng 1 lần, kết quả Y HỆT (đã so từng dòng trước/sau).
   const DOM_CTE = `
     WITH pin_active AS (
       SELECT pi.id AS phan_in_id, pi.ma_hang_id
@@ -223,12 +227,12 @@ async function stageCounts() {
       WHERE pi.dang_hoat_dong
         AND EXISTS (SELECT 1 FROM dot_vai_ve dr WHERE dr.phan_in_id=pi.id AND dr.trang_thai NOT IN ('DA_GOP','DA_HUY') AND dr.tg_chuyen_ready IS NOT NULL)
     ),
-    dvs AS (
+    dvs AS MATERIALIZED (
       SELECT d.id, d.phan_in_id, d.tg_chuyen_ready, d.created_date, ${lenh('id')} AS lenh_id, ${lenh('trang_thai')} AS lenh_tt
       FROM dot_vai_ve d JOIN pin_active p ON p.phan_in_id = d.phan_in_id
       WHERE d.trang_thai NOT IN ('DA_GOP','DA_HUY') AND d.tg_chuyen_ready IS NOT NULL
     ),
-    st AS (SELECT phan_in_id, (${dotStageCase('dvs')}) AS stage FROM dvs),
+    st AS MATERIALIZED (SELECT phan_in_id, (${dotStageCase('dvs')}) AS stage FROM dvs),
     rk AS (SELECT phan_in_id, stage, array_position(${ORDER_SQL_ARRAY}, stage) AS rnk FROM st),
     dom0 AS (
       SELECT DISTINCT ON (p.phan_in_id) p.phan_in_id, p.ma_hang_id,
@@ -240,13 +244,16 @@ async function stageCounts() {
       SELECT * FROM dom0
        WHERE stage IN ('READY_KT','READY_QA') OR ${dkPain}
     )`;
+  // ⚠ GỘP 1 CÂU (01/10/2026): trước đây đếm theo giai đoạn + dòng tổng là 2 câu, mỗi câu dựng lại
+  //   NGUYÊN CTE dominant (đo prod: 6–9 s MỖI câu, chạy song song ⇒ DB gánh gấp đôi). `dom` được tham
+  //   chiếu 2 lần trong cùng câu ⇒ Postgres tự MATERIALIZE, chỉ tính 1 lần. Dòng tổng mang stage
+  //   `__TONG__` (không trùng mã giai đoạn nào).
   const stageSql = `${DOM_CTE}
-    SELECT stage, count(*)::int AS n_phan_in, count(DISTINCT ma_hang_id)::int AS n_ma
-    FROM dom GROUP BY stage`;
-  const totalSql = `${DOM_CTE}
-    SELECT (SELECT count(DISTINCT mh.don_hang_id) FROM dom d JOIN ma_hang mh ON mh.id = d.ma_hang_id)::int AS so_don,
-           (SELECT count(DISTINCT ma_hang_id) FROM dom)::int AS so_ma,
-           (SELECT count(*) FROM dom)::int AS so_phan_in`;
+    SELECT stage, count(*)::int AS n_phan_in, count(DISTINCT ma_hang_id)::int AS n_ma, NULL::int AS so_don
+      FROM dom GROUP BY stage
+    UNION ALL
+    SELECT '__TONG__', count(*)::int, count(DISTINCT d.ma_hang_id)::int, count(DISTINCT mh.don_hang_id)::int
+      FROM dom d JOIN ma_hang mh ON mh.id = d.ma_hang_id`;
 
   // Tổng pcs đã in theo giai đoạn — tính ở MỨC LỆNH (tránh nhân đôi khi gom set nhiều đợt vải chung 1 lệnh).
   const temEx2 = (cond) => `EXISTS (SELECT 1 FROM phieu_san_xuat ps JOIN tem t ON t.phieu_san_xuat_id=ps.id WHERE ps.lenh_san_xuat_id=ls.id AND t.trang_thai<>'HUY' AND ${cond})`;
@@ -287,14 +294,16 @@ async function stageCounts() {
     JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id AND ls.trang_thai <> 'HUY'
     WHERE t.trang_thai <> 'HUY'`;
 
-  const [stageRows, totals, pcsRows, temRows] = await Promise.all([
+  const [stageRows, pcsRows, temRows] = await Promise.all([
     query(stageSql.replace(/\s+/g, ' ')),
-    query(totalSql.replace(/\s+/g, ' ')),
     query(pcsSql.replace(/\s+/g, ' ')),
     query(temCountSql.replace(/\s+/g, ' ')),
   ]);
   const stages = {};
-  stageRows.rows.forEach((r) => { stages[r.stage] = { phan_in: r.n_phan_in, ma: r.n_ma, pcs: 0 }; });
+  const dongTong = stageRows.rows.find((r) => r.stage === '__TONG__') || {};
+  const totals = { so_don: dongTong.so_don || 0, so_ma: dongTong.n_ma || 0, so_phan_in: dongTong.n_phan_in || 0 };
+  stageRows.rows.filter((r) => r.stage !== '__TONG__')
+    .forEach((r) => { stages[r.stage] = { phan_in: r.n_phan_in, ma: r.n_ma, pcs: 0 }; });
   pcsRows.rows.forEach((r) => {
     stages[r.stage] = stages[r.stage] || { phan_in: 0, ma: 0, pcs: 0 };
     stages[r.stage].pcs = r.pcs;
@@ -315,7 +324,20 @@ async function stageCounts() {
   stages.DA_GIAO = stages.DA_GIAO || { phan_in: 0, ma: 0, pcs: 0 };
   stages.DANG_GIAO.so_tem = tc.dg_tem || 0; stages.DANG_GIAO.pcs = tc.dg_pcs || 0;
   stages.DA_GIAO.so_tem = tc.gd_tem || 0; stages.DA_GIAO.pcs = tc.gd_pcs || 0;
-  return { totals: totals.rows[0], stages };
+  return { totals, stages };
+}
+
+// CACHE 30s cho `stageCounts` (01/10/2026) — câu dominant mất ~6 s trên prod, Dashboard tải lại theo
+// socket BROADCAST ⇒ không cache thì mỗi thao tác × N người mở Dashboard là N lượt 6 s chồng lên DB.
+// ⚠ Khuôn `siso.service bangCached`: giữ PROMISE (gộp các lượt gọi tới khi query còn chạy) và XÓA
+//   NGAY KHI LỖI (giữ promise reject là 30s sau cùng hỏng theo).
+const TTL_STAGE_MS = 30000;
+let _nhoStage = null;
+function stageCountsCached() {
+  if (_nhoStage && Date.now() - _nhoStage.at < TTL_STAGE_MS) return _nhoStage.p;
+  const p = stageCounts().catch((e) => { _nhoStage = null; throw e; });
+  _nhoStage = { at: Date.now(), p };
+  return p;
 }
 
 // Chi tiết biểu đồ: OQC (pcs sổ cái tem theo nguồn KCS/Sửa) + READY (phần in chưa release, đã xác nhận từng mục).
@@ -1178,7 +1200,7 @@ async function nghenChecklistEpisodes({ from, to }) {
 }
 
 module.exports = {
-  summary, activity, stageCounts, chartDetail, dieuPhoiExtra, flowRows, flowTimeline, tramOwnersActive, checkpointOwnersActive,
+  summary, activity, stageCounts, stageCountsCached, chartDetail, dieuPhoiExtra, flowRows, flowTimeline, tramOwnersActive, checkpointOwnersActive,
   tinhTrangActiveRows, tinhTrangPhanInList, resolveScanCode, tinhTrangDetail, tinhTrangGraph, confirmTodayGroups, confirmTodayDetail,
   nghenTramEpisodes, nghenChecklistEpisodes,
 };
