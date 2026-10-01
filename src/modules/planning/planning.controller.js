@@ -135,9 +135,9 @@ const replanDetail = asyncHandler(async (req, res) =>
 
 const giaCongList = asyncHandler(async (req, res) => {
   const { page, limit, offset } = getPaging(req.query, { tranToiDa: TRAN_TAI_HET });
-  return ok(res, await service.listGiaCong({ search: req.query.search || '', page, limit, offset }));
+  // Cùng bộ tham số lọc với Lập kế hoạch lại (`f_<khóa>` + `tuNgay`/`denNgay`).
+  return ok(res, await service.listGiaCong({ ...replanOpts(req.query), page, limit, offset }));
 });
-
 // Nhận hàng gia công (có thể NHIỀU LẦN). 2 dạng body:
 //  · `items: [{ dot_vai_ve_id, so_luong }]` — nhận theo TỪNG CODE PHẦN (tối đa 2/lượt, đường của nút
 //    "In tem" ở màn Gia công). Đây là đường chính từ 09/09/2026.

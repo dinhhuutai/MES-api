@@ -705,14 +705,13 @@ const REPLAN_LOC_PHAN_IN = {
 const RE_NGAY = /^\d{4}-\d{2}-\d{2}$/;
 
 // WHERE chung cho danh sách + đếm + lấy-hết-id. `params` được đẩy thêm tham số; trả chuỗi điều kiện.
-async function replanWhere({ search = '', loc = {}, tuNgay = null, denNgay = null }, params) {
-  const dkPain = await dkTrang('KH_REPLAN', 'lenh', 'ls.id');
+// ⚠ DÙNG CHUNG 2 màn mức lệnh lọc ở server (30/09–01/10/2026): Lập kế hoạch lại (`replanWhere`) và
+//   Gia công (`giaCongWhere`) — chỉ khác ĐIỀU KIỆN NỀN + mã trang hiển thị PA in. Khóa bộ lọc `loc` giống
+//   nhau (FILTER_FIELDS 2 trang trùng khóa) ⇒ sửa luật lọc 1 chỗ.
+async function lenhLocWhere({ maTrang, dkNen }, { search = '', loc = {}, tuNgay = null, denNgay = null }, params) {
+  const dkPain = await dkTrang(maTrang, 'lenh', 'ls.id');
   const p = (v) => { params.push(v); return `$${params.length}`; };
-  const dk = [
-    "ls.trang_thai IN ('RELEASE_1','RELEASE_2','GIA_CONG')",
-    dkPain,
-    "(ls.trang_thai = 'GIA_CONG' OR NOT EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = ls.id))",
-  ];
+  const dk = [...dkNen, dkPain];
   const s = mauTim(search);
   if (s) { const k = p(s); dk.push(`(ls.ma_lenh_san_xuat ~* ${k} OR ${lenhPhanInMatch('ls.id', k)})`); }
   // Ngày SX kế hoạch — lệnh CHƯA có ngày luôn hiện (cần được lập kế hoạch, không để lọc ngày giấu mất).
@@ -728,6 +727,15 @@ async function replanWhere({ search = '', loc = {}, tuNgay = null, denNgay = nul
   }
   return dk.join(' AND ');
 }
+
+const replanWhere = (opts, params) => lenhLocWhere({
+  maTrang: 'KH_REPLAN',
+  dkNen: [
+    "ls.trang_thai IN ('RELEASE_1','RELEASE_2','GIA_CONG')",
+    "(ls.trang_thai = 'GIA_CONG' OR NOT EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = ls.id))",
+  ],
+}, opts, params);
+const giaCongWhere = (opts, params) => lenhLocWhere({ maTrang: 'KH_GIA_CONG', dkNen: ["ls.trang_thai = 'GIA_CONG'"] }, opts, params);
 
 // Mọi ID lệnh khớp bộ lọc (không phân trang) — cho nút "Chọn tất cả N lệnh" khi đã phân trang ở server.
 async function listReplanIds(opts) {
@@ -790,16 +798,21 @@ async function listReplanCandidates({ search = '', offset = 0, limit = 50, loc =
 }
 
 // ----- GIA CÔNG: lệnh đang đậu chờ Kế hoạch chuyển OQC (trang_thai='GIA_CONG') -----
-async function listGiaCongLenh({ search = '', offset = 0, limit = 50 }) {
-  const dkPain = await dkTrang('KH_GIA_CONG', 'lenh', 'ls.id');
+// ⚠⚠ LỌC + PHÂN TRANG Ở SERVER (01/10/2026 — cùng cách màn Lập kế hoạch lại): prod ~1.300 lệnh gia công,
+//   bản tải-hết ~1,9 MB / 2–4 s. Lọc + sắp + LIMIT trên bảng gốc (`giaCongWhere`) rồi mới tính
+//   `PHAN_INFO_LATERAL` + SL đã chuyển cho lệnh của TRANG đó.
+async function listGiaCongLenh({ search = '', offset = 0, limit = 50, loc = {}, tuNgay = null, denNgay = null }) {
+  const params = [];
+  const where = await giaCongWhere({ search, loc, tuNgay, denNgay }, params);
+  const nLimit = params.push(limit);
+  const nOffset = params.push(offset);
   const FROM = `
-    FROM lenh_san_xuat ls
+    FROM (SELECT ls.id FROM lenh_san_xuat ls WHERE ${where}
+          ORDER BY ls.ngay_ke_hoach NULLS LAST, ls.created_date, ls.id LIMIT $${nLimit} OFFSET $${nOffset}) trang
+    JOIN lenh_san_xuat ls ON ls.id = trang.id
     LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
     LEFT JOIN nguoi_dung nr ON nr.id = ls.created_by
-    ${PHAN_INFO_LATERAL}
-    WHERE ls.trang_thai = 'GIA_CONG'
-      AND ${dkPain}
-      AND ($1 = '' OR ls.ma_lenh_san_xuat ~* $1 OR ${lenhPhanInMatch('ls.id', '$1')})`;
+    ${PHAN_INFO_LATERAL}`;
   const dataSql = `
     SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.ngay_ke_hoach, ls.created_date,
            cs.ma_chuyen, cs.ten_chuyen, nr.ho_ten AS nguoi_release,
@@ -813,18 +826,16 @@ async function listGiaCongLenh({ search = '', offset = 0, limit = 50 }) {
            (SELECT count(*) FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id)::int AS so_dot_vai,
            (SELECT count(DISTINCT dv2.phan_in_id) FROM lenh_sx_dot_vai lsd2 JOIN dot_vai_ve dv2 ON dv2.id = lsd2.dot_vai_ve_id JOIN phan_in pin2 ON pin2.id = dv2.phan_in_id AND pin2.dang_hoat_dong WHERE lsd2.lenh_san_xuat_id = ls.id)::int AS so_phan_in
     ${FROM}
-    ORDER BY ls.ngay_ke_hoach NULLS LAST, ls.created_date
-    LIMIT $2 OFFSET $3`;
-  const countSql = `SELECT count(*)::int AS total ${FROM}`;
+    ORDER BY ls.ngay_ke_hoach NULLS LAST, ls.created_date, ls.id`;
+  const countSql = `SELECT count(*)::int AS total FROM lenh_san_xuat ls WHERE ${where}`;
   // ⚠⚠ GỘP 1 DÒNG — cùng lý do với `listReplanCandidates` (§9 CLAUDE.md): query dài + thêm subquery
   //   `so_phan_in` là bị IPS reset. Không đặt comment `--` bên trong 2 chuỗi SQL trên.
   const [data, count] = await Promise.all([
-    query(dataSql.replace(/\s+/g, ' '), [mauTim(search), limit, offset]),
-    query(countSql.replace(/\s+/g, ' '), [mauTim(search)]),
+    query(dataSql.replace(/\s+/g, ' '), params),
+    query(countSql.replace(/\s+/g, ' '), params.slice(0, nLimit - 1)),
   ]);
   return { rows: data.rows, total: count.rows[0].total };
 }
-
 // Lịch sử "hàng về" gia công đã chuyển OQC trong ngày (từ audit_log GIA_CONG_CHUYEN_OQC).
 // Trả đủ trường để in tem "TH VỀ".
 // `so_luong_lan_nay`/`con_lai` = SL của ĐÚNG lần nhận đó (hàng gia công về nhiều lần) — tem "TH VỀ" phải

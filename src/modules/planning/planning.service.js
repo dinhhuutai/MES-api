@@ -1297,8 +1297,9 @@ async function keHoachTamTheoDoi(q = {}) {
 }
 
 // ----- GIA CÔNG: màn Kế hoạch nhận lại hàng gia công rồi chuyển OQC -----
-async function listGiaCong({ search, page, limit, offset }) {
-  const { rows, total } = await repo.listGiaCongLenh({ search, offset, limit });
+// Lọc + phân trang Ở SERVER (01/10/2026) — `loc`/`tuNgay`/`denNgay` như màn Lập kế hoạch lại.
+async function listGiaCong({ search, page, limit, offset, loc, tuNgay, denNgay }) {
+  const { rows, total } = await repo.listGiaCongLenh({ search, offset, limit, loc, tuNgay, denNgay });
   // Gắn cờ "bị OQC trả về" (mức LỆNH — tem đã hủy khi trả nên cờ phải sống trên lệnh) để FE hiện badge đỏ
   // + biết lệnh đang CHỜ TRẢ LẠI nhà gia công (chưa bấm "Trả lại nhà gia công").
   const rm = await qaRepo.activeReturnsMap('OQC_GIA_CONG', rows.map((r) => r.id));
@@ -1942,8 +1943,7 @@ module.exports = {
   listRelease2Candidates, approveRelease2, approveRelease2Batch, skipTestRun, testRunHistory,
   listReplanCandidates, replan, replanBatch, planHistory,
   listReplanIds: (o) => repo.listReplanIds(o),
-  listReplanMaQuet: (o) => repo.listReplanMaQuet(o),
-  listGiaCong, confirmGiaCongToOqc, giaCongHistory, listGiaCongTemCancelable, cancelGiaCongTem, traLaiNhaGiaCong,
+  listReplanMaQuet: (o) => repo.listReplanMaQuet(o),  listGiaCong, confirmGiaCongToOqc, giaCongHistory, listGiaCongTemCancelable, cancelGiaCongTem, traLaiNhaGiaCong,
   listKeHoachTam, keHoachTamSet, confirmKeHoachTam, updateKeHoachTam, deleteKeHoachTam, keHoachTamHistory, keHoachTamDone, keHoachTamTheoDoi,
   listCancelableLenh, rollbackLenh, testRunsChoHuy,
   release1Done, release2Done, replanDone, testCnspDone, testQaDone,
