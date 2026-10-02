@@ -556,6 +556,93 @@ async function getPhanInTimeline(phanInId) {
   return { ready, journeys, pending };
 }
 
+// ─── DỮ LIỆU HÀNH TRÌNH GIA CÔNG của 1 phần in (01/10/2026) ───────────────────────────────────────
+// Hành trình chung ở trên dựng khuôn Release 1 → Sản xuất → Chờ khô → … cho MỌI lệnh, nên lệnh gia công
+// hiện "Sản xuất"/"Chờ khô" lấy từ phiếu + tem 13 lúc NHẬN HÀNG (không có thật) và số liệu cả lệnh
+// (gom 3 code phần) ⇒ người xem không biết hàng của code phần mình đang ở nhà gia công, OQC hay giao.
+// Hàm này chỉ ĐỌC dữ liệu thô; lắp thành các bước ở `utils/hanhTrinhGiaCong.js` (hàm thuần).
+// Trả null khi phần in không có lệnh gia công nào (1 câu nhẹ, phần lớn phần in dừng ở đây).
+// ⚠ Không viết lại luật: phần còn lại/đại diện tem mồ côi = `planning.giaCongPhanInRows` · sổ cái tem =
+//   `quality.CON_OQC/CON_GIAO` · OQC đã hủy xác nhận = `quality.notCancelledQc` · màn có ẩn hàng không =
+//   chạy CHÍNH `dkTrang` của màn OQC/Giao trên từng tem.
+async function giaCongHanhTrinhData(phanInId) {
+  // eslint-disable-next-line global-require
+  const planningRepo = require('../planning/planning.repository');
+  // eslint-disable-next-line global-require
+  const qaRepo = require('../quality/quality.repository');
+  const lenhSql = `SELECT ls.id, ls.ma_lenh_san_xuat, ls.trang_thai, ls.so_luong_release, ls.ngay_ke_hoach,
+      cs.ma_chuyen, cs.ten_chuyen
+    FROM lenh_san_xuat ls
+    JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+    JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id AND lc.ma_loai = 'GIA_CONG'
+    WHERE ls.trang_thai <> 'HUY' AND EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd
+      JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+      WHERE lsd.lenh_san_xuat_id = ls.id AND dv.phan_in_id = $1)`;
+  const { rows: lenhs } = await query(lenhSql.replace(/\s+/g, ' '), [phanInId]);
+  if (!lenhs.length) return null;
+  const lenhIds = lenhs.map((l) => l.id);
+
+  const [coCot, dkOqc, dkGiao] = await Promise.all([
+    planningRepo.temCoCotDotVai(),
+    dkTrang('CL_OQC', 'phieu', 't.phieu_san_xuat_id'),
+    dkTrang('GH_TEM', 'phieu', 't.phieu_san_xuat_id'),
+  ]);
+  // Thiếu cột `tem.dot_vai_ve_id` (mig 095) ⇒ mọi tem coi là mồ côi (cùng cách `giaCongPhanInRows` lùi).
+  const pinCot = coCot ? 'dv.phan_in_id' : 'NULL::uuid';
+  const joinDv = coCot ? 'LEFT JOIN dot_vai_ve dv ON dv.id = t.dot_vai_ve_id' : '';
+  const temSql = `SELECT t.id, t.ma_tem, t.trang_thai, t.so_luong, t.sl_kcs_dat, t.sl_kcs_huy, t.sl_oqc_dat,
+      t.sl_da_giao, t.da_tich_giao, t.tg_tich_giao, t.created_date AS tg, nd.ho_ten AS nguoi,
+      ndt.ho_ten AS nguoi_tich, ps.lenh_san_xuat_id AS lenh_id, ${pinCot} AS phan_in_id,
+      GREATEST(${qaRepo.CON_OQC}, 0)::int AS con_oqc, GREATEST(${qaRepo.CON_GIAO}, 0)::int AS con_giao,
+      (${dkOqc}) AS hien_oqc, (${dkGiao}) AS hien_giao
+    FROM phieu_san_xuat ps
+    JOIN tem t ON t.phieu_san_xuat_id = ps.id
+    ${joinDv}
+    LEFT JOIN nguoi_dung nd ON nd.id = t.created_by
+    LEFT JOIN nguoi_dung ndt ON ndt.id = t.nguoi_tich_giao_id
+    WHERE ps.lenh_san_xuat_id = ANY($1::uuid[])
+    ORDER BY t.created_date`;
+  const oqcSql = `SELECT o.id, o.tem_id, o.created_date AS tg, nd.ho_ten AS nguoi, o.so_luong_kiem, o.so_luong_dat,
+      o.ket_qua, o.cho_giao, o.sl_qua_giao, o.ly_do_cho_giao
+    FROM oqc o
+    JOIN tem t ON t.id = o.tem_id
+    JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+    LEFT JOIN nguoi_dung nd ON nd.id = o.created_by
+    WHERE ps.lenh_san_xuat_id = ANY($1::uuid[]) AND ${qaRepo.notCancelledQc('o', 'oqc')}
+    ORDER BY o.created_date`;
+  const giaoSql = `SELECT ght.tem_id, ght.so_luong_giao, gh.ma_phieu_giao, gh.trang_thai, gh.created_date AS tg,
+      nd.ho_ten AS nguoi
+    FROM giao_hang_tem ght
+    JOIN giao_hang gh ON gh.id = ght.giao_hang_id AND gh.trang_thai <> 'HUY'
+    JOIN tem t ON t.id = ght.tem_id
+    JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+    LEFT JOIN nguoi_dung nd ON nd.id = gh.created_by
+    WHERE ps.lenh_san_xuat_id = ANY($1::uuid[])
+    ORDER BY gh.created_date`;
+  // Sự kiện mức lệnh (OQC trả về · trả lại nhà gia công) + hủy tem gia công (mức tem).
+  const auditSql = `SELECT a.ten_bang, a.id_ban_ghi, a.hanh_dong, a.thoi_gian AS tg, a.gia_tri_moi, nd.ho_ten AS nguoi
+    FROM audit_log a
+    LEFT JOIN nguoi_dung nd ON nd.id = a.nguoi_thuc_hien_id
+    WHERE (a.ten_bang = 'lenh_san_xuat' AND a.id_ban_ghi = ANY($1::text[])
+           AND a.hanh_dong IN ('OQC_TRA_VE_GIA_CONG', 'GIA_CONG_TRA_LAI'))
+       OR (a.ten_bang = 'tem' AND a.hanh_dong = 'HUY_TEM_GIA_CONG' AND a.id_ban_ghi IN (
+           SELECT t.id::text FROM tem t JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+            WHERE ps.lenh_san_xuat_id = ANY($2::uuid[])))
+    ORDER BY a.thoi_gian`;
+
+  const [pinRows, temR, oqcR, giaoR, auditR, traVe] = await Promise.all([
+    planningRepo.giaCongPhanInRows(lenhIds),
+    query(temSql.replace(/\s+/g, ' '), [lenhIds]),
+    query(oqcSql.replace(/\s+/g, ' '), [lenhIds]),
+    query(giaoSql.replace(/\s+/g, ' '), [lenhIds]),
+    query(auditSql.replace(/\s+/g, ' '), [lenhIds.map(String), lenhIds]),
+    qaRepo.activeReturnsMap('OQC_GIA_CONG', lenhIds),
+  ]);
+  return {
+    lenhs, pinRows, tems: temR.rows, oqcs: oqcR.rows, giaos: giaoR.rows, audits: auditR.rows, traVe,
+  };
+}
+
 // Tổng hợp SỐ LƯỢNG theo tem của 1 phần in (hợp nhất mọi tem của phần in) — từ chờ khô trở đi.
 //  pcs_in    = tổng pcs đã in (tem không HUY)
 //  sl_dat    = tổng đạt (KCS)
@@ -1110,7 +1197,7 @@ async function logRestoreDotVai(dotVaiId, info, actorId) {
   [String(dotVaiId), JSON.stringify(info), actorId]);
 }
 
-module.exports = { list, listVaiVe, dotSanXuatLedger, findById, listDotVai, getPhanInTimeline, getPhanInTemSummary, getPhanInKcsByDot, getPhanInStagePcs, getDryMin, setDryMin, setLoiNhuan, logProfitChange, profitHistoryByDate,
+module.exports = { list, listVaiVe, dotSanXuatLedger, findById, listDotVai, getPhanInTimeline, giaCongHanhTrinhData, getPhanInTemSummary, getPhanInKcsByDot, getPhanInStagePcs, getDryMin, setDryMin, setLoiNhuan, logProfitChange, profitHistoryByDate,
   searchPhanInForCancel, softDeletePhanInTx, logSoftDeletePhanIn,
   listDeletedPhanIn, getDeleteSnapshot, restorePhanInTx, logRestorePhanIn,
   searchDotVaiForCancel, softDeleteDotVaiTx, logSoftDeleteDotVai,

@@ -30,7 +30,7 @@ const erp = require('../../utils/erpApiChung');
 // Mã API có nút gửi lại (FE gương ở `LichSuApiPanel` hằng `CO_GUI_LAI`).
 const MA_GUI_LAI = new Set([
   'ERP_GHI_IN_TEM', 'ERP_GUI_PHIEU_GIAO', 'ERP_GUI_PHAN_LOAI_LOI', 'ERP_GUI_SUA_DAT', 'ERP_GUI_KIEM_PHAM',
-  'ERP_GUI_TEM_GIA_CONG', 'ERP_GUI_DS_HUY_VAI',
+  'ERP_GUI_TEM_GIA_CONG', 'ERP_GUI_DS_HUY_VAI', 'ERP_GUI_OQC',
 ]);
 
 const soHoacNull = (v) => { const n = Number(v); return v == null || v === '' || !Number.isFinite(n) ? null : n; };
@@ -102,6 +102,17 @@ async function guiLai(ma, auditId, actorId) {
     const kq = await kiemPhamErp.guiKiemPham(id, k.tem_id,
       { dat: k.so_luong_dat, hu: k.so_luong_loi, thieu }, actorId, { guiLai: true, idMes: idMesCu(g) });
     loiNeu(kq, 'Gửi kiểm KCS');
+    return { ok: true };
+  }
+
+  // OQC bốc mẫu (02/10/2026) — dựng lại từ lượt `oqc` (lượt đã hủy xác nhận / không qua giao ⇒ 409).
+  if (ma === 'ERP_GUI_OQC') {
+    const oqcErp = require('../quality/oqcErp');
+    const kq = await oqcErp.guiOqc(id, actorId, { guiLai: true, idMes: idMesCu(g) });
+    if (kq && kq.bo_qua && kq.ly_do === 'DA_HUY') {
+      throw new AppError('Lượt OQC này đã bị hủy xác nhận — không gửi lại', { status: 409, errorCode: 'DA_HUY' });
+    }
+    loiNeu(kq, 'Gửi kết quả OQC');
     return { ok: true };
   }
 

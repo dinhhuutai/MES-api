@@ -119,6 +119,18 @@ const DANH_MUC_API = [
     macDinh: () => env.erp.guiKiemPhamEnabled,
     url: () => env.erp.guiKiemPhamUrl,
   },
+  // KẾT QUẢ OQC BỐC MẪU (02/10/2026) — /gui-erp-oqc → proc MES_spr_MES2QO6.
+  {
+    ma: 'ERP_GUI_OQC',
+    ten: 'Gửi kết quả OQC bốc mẫu sang ERP',
+    mo_ta: 'Gửi ĐÚNG 1 LẦN mỗi lượt xác nhận OQC có hàng qua giao (đạt, hoặc không đạt nhưng cho giao ngoại lệ) — '
+      + 'proc MES_spr_MES2QO6, cùng 20 tham số với "Báo ERP mỗi lần in tem", mã tem đúng như nhãn (15/17/13) ở BarcodeSua: '
+      + 'Soluong = SL qua giao, Soluongloi = SL lỗi trong mẫu. Lượt không đạt nằm lại OQC KHÔNG gửi. '
+      + 'Chạy ngầm — TẮT hay lỗi đều KHÔNG chặn việc xác nhận OQC.',
+    canh_bao: null,
+    macDinh: () => env.erp.guiOqcEnabled,
+    url: () => env.erp.guiOqcUrl,
+  },
   // TEM 13 GIA CÔNG (27/09/2026) — /gui-du-lieu-tem-gia-cong → proc MES_spr_MES2JQ6.
   {
     ma: 'ERP_GUI_TEM_GIA_CONG',

@@ -573,16 +573,18 @@ async function nextOqcRound(temId) {
   return rows[0].lan;
 }
 
+// Trả `id` lượt OQC — khóa chống gửi trùng của chiều đẩy ERP (`oqcErp.js`, 02/10/2026).
 async function insertOqc(client, temId, d, actorId) {
-  await client.query(
+  const { rows } = await client.query(
     `INSERT INTO oqc (tem_id, lan_kiem_cua_phan, so_luong_kiem, so_luong_dat, so_luong_loi, ket_qua,
                       cho_giao, ly_do_cho_giao, owner_cho_giao_id, truong_hop_giao_id, ghi_chu,
                       nguon, sl_qua_giao, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,
     [temId, d.lanKiem, d.soLuongKiem, d.soLuongDat, d.soLuongLoi, d.ketQua,
      d.choGiao === true, d.lyDoChoGiao || null, d.ownerChoGiaoId || null, d.truongHopGiaoId || null,
      d.ghiChu || null, d.nguon || 'KCS', d.slQuaGiao || 0, actorId]
   );
+  return rows[0] ? rows[0].id : null;
 }
 
 // ----- DANH MỤC TRƯỜNG HỢP GIAO ĐẶC BIỆT (truong_hop_giao_dac_biet) -----
@@ -1185,6 +1187,9 @@ module.exports = {
   // ⚠ Export để `phanloailoi.repository` dùng CHUNG một luật con_kcs (kẹp 0 cho tem con mig 091) —
   //   viết lại biểu thức ở file khác là sớm muộn 2 màn ra 2 con số.
   conKcsSql,
+  // Hành trình gia công (`orders.repository.giaCongHanhTrinhData`) đọc sổ cái tem bằng CHÍNH 2 biểu thức
+  // này (alias `t.`) + luật bỏ lượt OQC đã hủy xác nhận — không viết lại công thức ở module khác.
+  CON_OQC, CON_GIAO, notCancelledQc,
   insertQcTraVe, activeReturnsMap, resolveReturns, resolveReturnsMany, listQcTraVe, listTraVeChiTiet,
   listTemSua, listTemSuaDaHuy, getTemSuaRow, getTemSuaRows, applyTemSuaLedgerMany, logTemSuaMany,
   getTemsForMerge, addTemSoLuong, logGopTem,

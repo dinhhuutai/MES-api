@@ -908,7 +908,8 @@ const GIA_CONG_DA_CHUYEN = `(SELECT COALESCE(SUM(t.so_luong),0)::int FROM phieu_
 // ⚠⚠ TEM MỒ CÔI (`dot_vai_ve_id` NULL — tem gia công tạo TRƯỚC mig 095, hoặc lệnh nhiều đợt vải nên
 //   backfill cố ý không đoán) được QUY VỀ PHẦN IN ĐẠI DIỆN (`ma_phan` nhỏ nhất). Nhờ vậy
 //   **Σ đã-nhận của các phần in LUÔN bằng đã-nhận của cả lệnh** — không thủng số, không có SL biến mất
-//   khỏi màn mà chẳng ai thấy. Đừng bỏ nhánh này đi.
+//   khỏi màn mà chẳng ai thấy. Đừng bỏ nhánh này đi. Cột `la_dai_dien` = phần in đang gánh tem mồ côi
+//   (hành trình gia công `utils/hanhTrinhGiaCong.js` đọc cột này, không tự suy lại luật đại diện).
 // ⚠ SL release của phần in = Σ `lenh_sx_dot_vai.so_luong` các đợt vải của nó ⇒ Σ theo phần in = đúng
 //   `lenh_san_xuat.so_luong_release`.
 // ⚠ KHÔNG đặt comment `--` trong chuỗi SQL (bị gộp 1 dòng cho IPS — §9).
@@ -973,7 +974,7 @@ async function giaCongPhanInRows(lenhIds) {
        WHERE ps.lenh_san_xuat_id = ANY($1::uuid[])
        GROUP BY ps.lenh_san_xuat_id
     )
-    SELECT p.*,
+    SELECT p.*, (p.phan_in_id = dd.phan_in_id) AS la_dai_dien,
            (COALESCE(dp.sl, 0)
           + CASE WHEN p.phan_in_id = dd.phan_in_id THEN COALESCE(mc.sl, 0) ELSE 0 END)::int AS da_chuyen_phan,
            (COALESCE(dp.sl_huy, 0)
@@ -2129,7 +2130,7 @@ module.exports = {
   KET_QUA_IN_KHONG_DAT, usersByUsernames, logInKhongDatTx,
   listReplanCandidates, listReplanIds, listReplanMaQuet, getLenhForReplan, getReplanDotVai, updateReleaseTx, updateLenhPlan, setLenhTrangThaiTx, logPlanChange, planHistoryByDate,
   phanInRowsByLenh,
-  listGiaCongLenh, getGiaCongLenh, listGiaCongHistory, giaCongPhanInRows,
+  listGiaCongLenh, getGiaCongLenh, listGiaCongHistory, giaCongPhanInRows, temCoCotDotVai,
   listGiaCongTemCancelable, getGiaCongTem, cancelGiaCongTemTx, logGiaCongTraLai,
   upsertKeHoachTam, listKeHoachTamRows, keHoachTamTheoDoi, getKeHoachTam, getOpenSetOfDotVai, updateKeHoachTam, deleteKeHoachTam, deleteKeHoachTamByDotVai,
   lenhMoiNhatCuaDotVai,

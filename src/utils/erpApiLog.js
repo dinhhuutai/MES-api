@@ -40,6 +40,8 @@ const TEN_BANG = {
   ERP_GUI_SUA_DAT: 'sua',
   // Gắn theo LƯỢT KIỂM (`kcs.id`) — 1 tem có thể kiểm nhiều lượt; khóa chống gửi trùng mỗi lượt.
   ERP_GUI_KIEM_PHAM: 'kcs',
+  // Gắn theo LƯỢT OQC (`oqc.id`, 02/10/2026) — 1 tem có thể OQC nhiều lượt/nhiều nguồn; khóa chống gửi trùng.
+  ERP_GUI_OQC: 'oqc',
   // Tem 13 gia công (27/09/2026) — gắn `tem`+id tem: mỗi tem 1 lượt gửi, khóa chống gửi trùng theo tem.
   ERP_GUI_TEM_GIA_CONG: 'tem',
   // Lượt KÉO phần in đã sửa thông tin (GN) — không gắn bản ghi nào; ID kết nối sinh mỗi lượt.

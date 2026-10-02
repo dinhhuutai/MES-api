@@ -5,6 +5,7 @@ const AppError = require('../../utils/AppError');
 const { buildMeta } = require('../../utils/pagination');
 const { withTransaction } = require('../../config/db');
 const sockets = require('../../sockets');
+const { dungHanhTrinhGiaCong } = require('../../utils/hanhTrinhGiaCong');
 
 async function listPhanIn({ search, missingProfit, page, limit, offset }) {
   const { rows, total } = await repo.list({ search, missingProfit, offset, limit });
@@ -28,14 +29,38 @@ async function getPhanIn(id) {
   if (!phanIn) throw new AppError('Phần in không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   // eslint-disable-next-line global-require
   const gnRepo = require('../suathongtin/suathongtin.repository');
-  const [dotVai, timeline, temSummary, kcsByDot, stagePcs, dryMin, traVeGn] = await Promise.all([
+  const [dotVai, timeline, temSummary, kcsByDot, stagePcs, dryMin, traVeGn, giaCong] = await Promise.all([
     repo.listDotVai(id), repo.getPhanInTimeline(id), repo.getPhanInTemSummary(id),
     repo.getPhanInKcsByDot(id), repo.getPhanInStagePcs(id), repo.getDryMin(id),
     // Hành trình ghi "Đã trả về GN" (26/09/2026). Lỗi (vd thiếu mig 105) KHÔNG được chặn hành trình.
     gnRepo.lichSu(id).catch(() => []),
+    // Hành trình GIA CÔNG (01/10/2026) — lỗi thì giữ hành trình chung, không chặn panel.
+    repo.giaCongHanhTrinhData(id).catch((e) => { console.warn(`[hanh-trinh-gia-cong] ${e.message}`); return null; }),
   ]);
   if (timeline) timeline.tra_ve_gn = traVeGn;
+  if (timeline && giaCong) ganHanhTrinhGiaCong(id, timeline, giaCong);
   return { ...phanIn, dot_vai: dotVai, timeline, tem_summary: temSummary, kcs_by_dot: kcsByDot, stage_pcs: stagePcs, thoi_gian_cho_kho_phut: dryMin };
+}
+
+// Thay các bước của LỆNH GIA CÔNG trong hành trình bằng khuôn riêng (Gửi gia công → Ở nhà gia công →
+// Nhận hàng về → OQC → Giao), giữ nguyên bước READY đầu. `journey.gia_cong` = tóm tắt "đang ở đâu".
+function ganHanhTrinhGiaCong(phanInId, timeline, data) {
+  const lenhMap = new Map(data.lenhs.map((l) => [String(l.id), l]));
+  timeline.journeys = (timeline.journeys || []).map((j) => {
+    const lenh = lenhMap.get(String(j.lenh_id));
+    if (!lenh) return j;
+    try {
+      const trams = j.trams || [];
+      const ready = trams.find((t) => t.ma_tram === 'READY');
+      const r1 = trams.find((t) => t.ma_tram === 'RELEASE_1');
+      const gc = dungHanhTrinhGiaCong({ phanInId, lenh, data, mocGui: r1?.moc || null });
+      if (!gc) return j;
+      return { ...j, gia_cong: gc.gia_cong, trams: ready ? [ready, ...gc.trams] : gc.trams };
+    } catch (e) {
+      console.warn(`[hanh-trinh-gia-cong] ${lenh.ma_lenh_san_xuat}: ${e.message}`);
+      return j;
+    }
+  });
 }
 
 async function setChoKho(id, phut, actorId) {

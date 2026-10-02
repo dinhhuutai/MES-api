@@ -170,6 +170,16 @@ const KENH = {
     //   Proc tự đổi 2 số đầu thành 16 cho `MaboSua`, và XÓA phiếu cùng Soctcu(=IDMES)+SH6 trước khi
     //   tạo lại ⇒ gửi lại với cùng IDMES không đẻ phiếu trùng.
   },
+  // ⚠⚠ OQC BỐC MẪU (02/10/2026) — proc `MES_spr_MES2QO6`, CÙNG 20 tham số nhưng mã tem ở `@pBarcodeSua`
+  //   (như SK6) ⇒ gửi kèm khóa `BarcodeSua`. Mã ở đây đã là mã ĐÚNG NHƯ NHÃN của nguồn OQC (15/17/13) —
+  //   `quality/oqcErp.js` đặt `BarcodeIn` trước khi gọi.
+  ERP_GUI_OQC: {
+    nhan: 'gui-oqc',
+    url: () => env.erp.guiOqcUrl,
+    timeoutMs: () => env.erp.guiOqcTimeoutMs,
+    retry: () => env.erp.guiOqcRetry,
+    them: (b) => ({ BarcodeSua: b.BarcodeIn }),
+  },
   // ⚠⚠ TEM 13 GIA CÔNG (27/09/2026) — proc `MES_spr_MES2JQ6` (loaict JQ6), CÙNG 20 tham số `@pBarcodeIn`.
   //   Mỗi TEM tạo ra = 1 lượt gọi với IDMES RIÊNG (proc khóa phiếu theo Soctcu = IDMES).
   //   Thay cho `ghi-in-tem` (SF0): tem gia công KHÔNG in ở chuyền, gửi SF0 là cộng vào sản lượng in.

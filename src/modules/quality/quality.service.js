@@ -13,6 +13,7 @@ const { temCode } = require('../../utils/temPrefix');
 const { layBarcodeTem17 } = require('../../utils/erpTemBarcode');
 const suaDatErp = require('./suaDatErp');
 const kiemPhamErp = require('./kiemPhamErp');
+const oqcErp = require('./oqcErp');
 
 const num = (x) => Math.max(0, Number(x) || 0);
 
@@ -555,8 +556,9 @@ async function recordOqc(temId, body, actorId) {
 
   // ĐẠT / cho giao ngoại lệ → TOÀN BỘ phần chờ OQC của nguồn qua "chờ giao".
   const quaGiao = (ketQua === 'DAT' || choGiao) ? pending : 0;
+  let oqcId = null;
   await withTransaction(async (client) => {
-    await repo.insertOqc(client, temId, {
+    oqcId = await repo.insertOqc(client, temId, {
       lanKiem, soLuongKiem: bocMau, soLuongDat: dat, soLuongLoi: loi,
       ketQua, choGiao, lyDoChoGiao, ownerChoGiaoId, truongHopGiaoId, ghiChu: body.ghiChu,
       nguon, slQuaGiao: quaGiao,
@@ -566,6 +568,8 @@ async function recordOqc(temId, body, actorId) {
   });
   await tracking.moveByTem(temId, 'OQC', actorId);
   if (quaGiao > 0) await tracking.moveByTem(temId, 'FINISH', actorId);
+  // Báo ERP kết quả OQC (proc MES2QO6) — NGẦM, chỉ lượt có hàng qua giao; xem `oqcErp.js`.
+  if (oqcId && quaGiao > 0) oqcErp.guiNgam(oqcId, actorId);
   sockets.emit('quality:updated', { temId, stage: 'OQC', next });
   sockets.emit('dashboard:refresh', {});
   return { tem_id: temId, next, nguon, qua_giao: quaGiao };

@@ -116,6 +116,12 @@ const env = {
     guiKiemPhamTimeoutMs: parseInt(process.env.ERP_GUI_KIEM_PHAM_TIMEOUT_MS || '10000', 10),
     guiKiemPhamRetry: parseInt(process.env.ERP_GUI_KIEM_PHAM_RETRY || '3', 10),
     guiKiemPhamEnabled: String(process.env.ERP_GUI_KIEM_PHAM_ENABLED || 'true').toLowerCase() === 'true',
+    // Đẩy KẾT QUẢ OQC BỐC MẪU sang ERP lúc xác nhận OQC — proc `MES_spr_MES2QO6` (02/10/2026), cùng 20 tham
+    // số với `ghi-in-tem` nhưng mã tem ở `@pBarcodeSua`. Xem `quality/oqcErp.js`.
+    guiOqcUrl: process.env.ERP_GUI_OQC_URL || `${ERP_GOC}/gui-erp-oqc`,
+    guiOqcTimeoutMs: parseInt(process.env.ERP_GUI_OQC_TIMEOUT_MS || '10000', 10),
+    guiOqcRetry: parseInt(process.env.ERP_GUI_OQC_RETRY || '3', 10),
+    guiOqcEnabled: String(process.env.ERP_GUI_OQC_ENABLED || 'true').toLowerCase() === 'true',
     // Đẩy dữ liệu TEM 13 GIA CÔNG lúc Kế hoạch nhận hàng/in tem — proc `MES_spr_MES2JQ6` (27/09/2026),
     // cùng 20 tham số. 1 tem = 1 lượt gọi, IDMES riêng.
     guiTemGiaCongUrl: process.env.ERP_GUI_TEM_GIA_CONG_URL || `${ERP_GOC}/gui-du-lieu-tem-gia-cong`,
