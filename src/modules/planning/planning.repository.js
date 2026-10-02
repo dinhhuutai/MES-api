@@ -1365,7 +1365,22 @@ async function listCancelableLenh({ search = '', offset = 0, limit = 50, moRong 
     ${PHAN_INFO_LATERAL}
     WHERE ${dieuKien}
       AND ($1 = '' OR ls.ma_lenh_san_xuat ~* $1 OR ${lenhPhanInMatch('ls.id', '$1')})`;
+  // NGÀY XÁC NHẬN (02/10/2026) = lúc lệnh được xác nhận vào ĐÚNG trạng thái đang đứng — thứ sẽ bị hoàn
+  // tác khi hủy: HOAN_TAT → Chạy hoàn tất · SAN_XUAT → Xác nhận chạy · RELEASE_2 → duyệt Release 2 (audit
+  // `RELEASE_2`; lệnh bỏ Test Run vào thẳng RELEASE_2 thì không có audit ⇒ lùi về lúc tạo lệnh) ·
+  // RELEASE_1 đã có test QA đạt → Test Run · còn lại (RELEASE_1 / GIA_CONG / CHO_IN_XONG) → Release 1 (tạo lệnh).
+  // ⚠ Tính ở lớp NGOÀI, sau `LIMIT` ⇒ 4 câu con chỉ chạy cho đúng các dòng của trang (chế độ tùy chọn liệt
+  //   kê hàng nghìn lệnh); cả 3 bảng đều có index theo lệnh (`idx_kqcp_lenh_sx`, `idx_audit_log_bang`).
   const dataSql = `
+    SELECT p.*,
+           CASE WHEN p.trang_thai = 'HOAN_TAT' THEN 'CHAY_HOAN_TAT' WHEN p.trang_thai = 'SAN_XUAT' THEN 'XAC_NHAN_CHAY'
+                WHEN p.trang_thai = 'RELEASE_2' THEN 'RELEASE_2' WHEN xn.tg_test IS NOT NULL THEN 'TEST_RUN'
+                ELSE 'RELEASE_1' END AS xn_buoc,
+           CASE WHEN p.trang_thai = 'HOAN_TAT' THEN COALESCE(xn.tg_ht, xn.tg_chay, p.created_date)
+                WHEN p.trang_thai = 'SAN_XUAT' THEN COALESCE(xn.tg_chay, p.created_date)
+                WHEN p.trang_thai = 'RELEASE_2' THEN COALESCE(xn.tg_r2, xn.tg_test, p.created_date)
+                ELSE COALESCE(xn.tg_test, p.created_date) END AS tg_xac_nhan
+    FROM (
     SELECT ls.id, ls.ma_lenh_san_xuat, ls.trang_thai, ls.so_luong_release, ls.ngay_ke_hoach, ls.created_date,
            cs.ma_chuyen, cs.ten_chuyen,
            EXISTS (SELECT 1 FROM phieu_san_xuat ps3 WHERE ps3.lenh_san_xuat_id = ls.id) AS co_phieu,
@@ -1383,7 +1398,17 @@ async function listCancelableLenh({ search = '', offset = 0, limit = 50, moRong 
               WHERE lsd2.lenh_san_xuat_id = ls.id)::int AS so_phan_in
     ${FROM}
     ORDER BY ls.created_date DESC
-    LIMIT $2 OFFSET $3`;
+    LIMIT $2 OFFSET $3
+    ) p
+    LEFT JOIN LATERAL (SELECT
+      (SELECT max(k.tg_xac_nhan) FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id = k.checkpoint_id
+        WHERE k.lenh_san_xuat_id = p.id AND c.ma_checkpoint = 'TEST_QA' AND k.trang_thai = 'DAT') AS tg_test,
+      (SELECT max(a.thoi_gian) FROM audit_log a
+        WHERE a.ten_bang = 'lenh_san_xuat' AND a.id_ban_ghi = p.id::text AND a.hanh_dong = 'RELEASE_2') AS tg_r2,
+      (SELECT max(ps5.tg_bd) FROM phieu_san_xuat ps5 WHERE ps5.lenh_san_xuat_id = p.id AND ps5.trang_thai <> 'HUY') AS tg_chay,
+      (SELECT max(ps6.tg_kt) FROM phieu_san_xuat ps6 WHERE ps6.lenh_san_xuat_id = p.id AND ps6.trang_thai <> 'HUY') AS tg_ht
+    ) xn ON true
+    ORDER BY p.created_date DESC`;
   const countSql = `SELECT count(*)::int AS total ${FROM}`;
   const [data, count] = await Promise.all([
     query(dataSql, [mauTim(search), limit, offset]),
@@ -1548,18 +1573,68 @@ async function testRunsChoHuy(lenhId) {
 }
 
 // Gỡ các lượt test (chỉ lượt THUỘC lệnh này và chưa gỡ). Trả về danh sách đã gỡ kèm kết quả CŨ.
-async function huyTestRunsTx(client, lenhId, ids, actorId) {
+// `ghiChu` = câu nêu LÝ DO gỡ (mặc định: hoàn tác về Test Run; tab "Hủy test run" truyền lý do người dùng).
+async function huyTestRunsTx(client, lenhId, ids, actorId, ghiChu = 'Gỡ khi hoàn tác về Test Run') {
   if (!ids || !ids.length) return [];
   const { rows } = await client.query(
     `WITH cu AS (SELECT tr.id, tr.lan_test, tr.ket_qua FROM test_run tr
                   WHERE tr.lenh_san_xuat_id = $1 AND tr.id = ANY($2::uuid[]) AND ${TEST_RUN_SONG} FOR UPDATE)
      UPDATE test_run t SET ket_qua = 'HUY',
-            ghi_chu = concat_ws(' · ', NULLIF(t.ghi_chu, ''), 'Gỡ khi hoàn tác về Test Run (kết quả cũ: ' || COALESCE(cu.ket_qua, '—') || ')'),
+            ghi_chu = concat_ws(' · ', NULLIF(t.ghi_chu, ''), $4::text || ' (kết quả cũ: ' || COALESCE(cu.ket_qua, '—') || ')'),
             updated_by = $3, updated_date = CURRENT_TIMESTAMP
        FROM cu WHERE t.id = cu.id
      RETURNING t.id, cu.lan_test, cu.ket_qua AS ket_qua_cu`.replace(/\s+/g, ' '),
-    [lenhId, ids, actorId]);
+    [lenhId, ids, actorId, ghiChu]);
   return rows;
+}
+
+// ─── TAB "HỦY TEST RUN" (02/10/2026) ─────────────────────────────────────────────────────────────
+// Lượt test QA xác nhận NHẦM phần in ⇒ gỡ đúng lượt đó. Chỉ lệnh CHƯA vào sản xuất (RELEASE_1/RELEASE_2,
+// chưa phiếu) — cùng biên của "hoàn tác chuyển trạm chỉ trước sản xuất".
+// `dang_hieu_luc` = lượt ĐẠT (hoặc In không đạt cho IN) đang đứng sau kết quả TEST_QA DAT của lệnh — gỡ lượt
+//   này thì lệnh phải QUAY LẠI màn Test Run (service gọi `rollbackLenh` đích TEST_RUN). Lượt khác (test lỗi,
+//   lượt đạt cũ đã bị thay) chỉ đánh dấu HUY, lệnh đứng yên.
+const LAN_TEST_DIEU_KIEN = `${TEST_RUN_SONG} AND ls.trang_thai IN ('RELEASE_1','RELEASE_2')
+  AND NOT EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = ls.id)`;
+const LAN_TEST_HIEU_LUC = `(tr.ket_qua IN ('DAT','KHONG_DAT_CHO_IN')
+  AND EXISTS (SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id = k.checkpoint_id
+               WHERE k.lenh_san_xuat_id = ls.id AND c.ma_checkpoint = 'TEST_QA' AND k.trang_thai = 'DAT')
+  AND NOT EXISTS (SELECT 1 FROM test_run t2 WHERE t2.lenh_san_xuat_id = ls.id
+               AND t2.ket_qua IN ('DAT','KHONG_DAT_CHO_IN') AND t2.id <> tr.id
+               AND (t2.lan_test, t2.created_date) > (tr.lan_test, tr.created_date)))`;
+
+async function listLanTestChoHuy({ search = '', offset = 0, limit = 50 }) {
+  const FROM = `FROM test_run tr JOIN lenh_san_xuat ls ON ls.id = tr.lenh_san_xuat_id
+    LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+    LEFT JOIN nguoi_dung nd ON nd.id = tr.created_by
+    ${PHAN_INFO_LATERAL}
+    WHERE ${LAN_TEST_DIEU_KIEN}
+      AND ($1 = '' OR ls.ma_lenh_san_xuat ~* $1 OR ${lenhPhanInMatch('ls.id', '$1')})`;
+  const dataSql = `SELECT tr.id, tr.lan_test, tr.so_luong, tr.ket_qua, tr.ghi_chu, tr.created_date AS tg_test,
+           nd.ho_ten AS nguoi_xac_nhan, ${OWNER_CHO_IN_SQL('tr')},
+           ls.id AS lenh_id, ls.ma_lenh_san_xuat, ls.trang_thai, ls.so_luong_release, cs.ma_chuyen, cs.ten_chuyen,
+           info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan,
+           (SELECT count(DISTINCT dv2.phan_in_id) FROM lenh_sx_dot_vai lsd2 JOIN dot_vai_ve dv2 ON dv2.id = lsd2.dot_vai_ve_id
+             WHERE lsd2.lenh_san_xuat_id = ls.id)::int AS so_phan_in,
+           ${LAN_TEST_HIEU_LUC} AS dang_hieu_luc
+    ${FROM}
+    ORDER BY tr.created_date DESC LIMIT $2 OFFSET $3`;
+  const [data, count] = await Promise.all([
+    query(dataSql.replace(/\s+/g, ' '), [mauTim(search), limit, offset]),
+    query(`SELECT count(*)::int AS total ${FROM}`.replace(/\s+/g, ' '), [mauTim(search)]),
+  ]);
+  return { rows: data.rows, total: count.rows[0].total };
+}
+
+async function getLanTestForHuy(testRunId) {
+  const { rows } = await query(
+    `SELECT tr.id, tr.lenh_san_xuat_id, tr.lan_test, tr.ket_qua, ls.ma_lenh_san_xuat, ls.trang_thai,
+            EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = ls.id) AS co_phieu,
+            ${LAN_TEST_HIEU_LUC} AS dang_hieu_luc
+       FROM test_run tr JOIN lenh_san_xuat ls ON ls.id = tr.lenh_san_xuat_id
+      WHERE tr.id = $1`.replace(/\s+/g, ' '),
+    [testRunId]);
+  return rows[0] || null;
 }
 
 // Lệnh đã có kết quả Test Run nào chưa (TEST_CNSP hoặc TEST_QA còn DAT)?
@@ -2138,6 +2213,9 @@ module.exports = {
   listCancelableLenh, getLenhForCancel, cancelLenhOrder, cancelReadyQcForDotVai, logLenhCancel,
   cancelPhieuTemByLenhTx,
   cancelReadyItemsByPhanIn, cancelTestResults, coKetQuaTest, testRunsChoHuy, huyTestRunsTx, phanInIdsByLenh, lenhChoKyThuat,
+  listLanTestChoHuy, getLanTestForHuy,
+  // Luật "lệnh đang chờ kỹ thuật làm lại" — bảng theo dõi Dashboard (siso) dùng để loại lệnh này khỏi nghẽn Test Run.
+  CHO_KY_THUAT_SQL,
   listReleasableSets, getOpenSetMembers, getSetForRelease, getSetMembersForRelease, markSetReleased, logGomSetReleased,
   dongSetDaReleaseHet,
 };

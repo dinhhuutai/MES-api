@@ -217,10 +217,11 @@ async function bangTheoDoiChiTiet(ma, q = {}) {
       ...r,
       // Đã ở trạm (phút): tới lúc rời, hoặc tới mốc đo (cuối kỳ / bây giờ) nếu còn ở.
       phut_da_o: phut(r.tg_vao, tgRaHayMoc),
-      // SLA thực của phần in này (luật theo giờ có thể khác SLA trạm) = mốc bắt đầu nghẽn − mốc vào.
-      sla_phut: phut(r.tg_vao, r.tg_bat_dau_nghen),
-      // Nghẽn bao lâu = từ mốc bắt đầu nghẽn tới lúc RỜI trạm (đã xác nhận) hoặc tới mốc đo (chưa).
-      phut_nghen: r.o_nghen ? phut(r.tg_bat_dau_nghen, r.o_nghen_xong ? r.tg_ra : r.moc_do) : null,
+      // SLA thực (luật theo giờ có thể khác SLA trạm) = mốc bắt đầu nghẽn − mốc vào CỦA ĐƠN VỊ CON nghẽn
+      // (đợt/lệnh/tem — 02/10/2026; mốc vào của dòng phần in là `min` mọi chu kỳ nên không dùng được).
+      sla_phut: phut(r.vao_nghen, r.tg_bat_dau_nghen),
+      // Nghẽn bao lâu = từ mốc bắt đầu nghẽn tới lúc đơn vị đó RỜI trạm (đã xác nhận) hoặc tới mốc đo (chưa).
+      phut_nghen: r.o_nghen ? phut(r.tg_bat_dau_nghen, r.o_nghen_xong ? r.ra_nghen : r.moc_do) : null,
     };
   });
   return {

@@ -3,7 +3,7 @@
 const { query } = require('../../config/db');
 const ordersRepo = require('../orders/orders.repository');
 const { dotStageCase, readyFallback, ORDER_SQL_ARRAY } = require('../../utils/stage');
-const { techDoneSql } = require('../../utils/tech');
+const { techDoneSql, mocDotMucSql, qcDotSql } = require('../../utils/tech');
 const { slaReadyHanSql, canhBaoReadyHanSql, slaQcReadySql, slaTestRunSql, canhBaoTestRunSql, gioSxKhSql } = require('../../utils/slaTheoGio');
 // Hiển thị theo PHƯƠNG ÁN IN — cấu hình động từng trang (mig 067), mặc định BẬT HẾT = không lọc.
 const { dkTrang } = require('../../utils/phuongAnIn');
@@ -645,6 +645,12 @@ async function tinhTrangDetail(phanInId) {
 // tramMa='' → tất cả; luôn loại CLOSED_FINANCE (đã ra khỏi dòng chảy).
 // Trạm HIỆN TẠI của mỗi đợt vải suy TRỰC TIẾP từ trạng thái runtime (KHÔNG dùng ton_tram — hay bị kẹt).
 // tg_vao = mốc vào trạm hiện tại (xấp xỉ theo nguồn tin cậy nhất của từng giai đoạn) để tính SLA.
+// ⚠ 02/10/2026 (khớp bảng theo dõi Dashboard `siso.repository NGHEN_CON`): RELEASE_1 đếm từ lúc QC xác nhận
+//   CHÍNH đợt đó (`tech.mocDotMucSql`; bản cũ lấy QC muộn nhất của CẢ phần in) · SAN_XUAT chờ chạy đếm từ lúc
+//   duyệt Release 2 (audit `RELEASE_2`; bản cũ lấy lúc QA test đạt ⇒ thời gian chờ duyệt R2 bị tính 2 lần).
+//   2 subquery nằm trong nhánh CASE ⇒ chỉ chạy cho đợt đang ở đúng trạm đó.
+//   Đợt CHƯA có lệnh chỉ ở RELEASE_1 khi CHÍNH ĐỢT đã được QC phủ (`tech.qcDotSql` — gương `dotStageCase`); bản cũ
+//   hỏi "phần in có QC chưa" ⇒ đợt mới về sau lần QC cũ (đang Chờ Ready) bị đo như hàng chờ release.
 async function flowRows(tramMa = '') {
   const dkPain = await dkTrang('DB_NGHEN', 'pin', 'b.phan_in_id');
   const sql = `
@@ -760,7 +766,8 @@ async function flowRows(tramMa = '') {
     LEFT JOIN qa ON qa.lenh_id = lk.lenh_id
     CROSS JOIN qcp
     CROSS JOIN LATERAL (SELECT (CASE
-        WHEN lk.lenh_id IS NULL THEN (CASE WHEN qc.phan_in_id IS NOT NULL THEN 'RELEASE_1' ELSE 'READY' END)
+        WHEN lk.lenh_id IS NULL THEN (CASE WHEN EXISTS (SELECT 1 FROM dot_vai_ve zqd
+               WHERE zqd.id = b.dot_vai_ve_id AND ${qcDotSql('zqd', 'zqd.phan_in_id')}) THEN 'RELEASE_1' ELSE 'READY' END)
         WHEN lk.lenh_tt='RELEASE_1' AND ph.dot_vai_ve_id IS NULL AND qc.phan_in_id IS NULL THEN 'READY'
         WHEN lk.lenh_tt='GIA_CONG' THEN 'GIA_CONG'
         WHEN ph.co_chay THEN 'SAN_XUAT'
@@ -777,10 +784,13 @@ async function flowRows(tramMa = '') {
       END) AS ma_tram) cur
     CROSS JOIN LATERAL (SELECT (CASE cur.ma_tram
         WHEN 'READY' THEN (CASE WHEN ${KT_DONE_FLOW} THEN kt.kt_tg ELSE b.dv_tg END)
-        WHEN 'RELEASE_1' THEN COALESCE(qc.qc_tg, b.dv_tg)
+        WHEN 'RELEASE_1' THEN COALESCE((SELECT ${mocDotMucSql('zrd', 'zrd.phan_in_id', 'QC_XAC_NHAN')}
+                                          FROM dot_vai_ve zrd WHERE zrd.id = b.dot_vai_ve_id), qc.qc_tg, b.dv_tg)
         WHEN 'TEST_RUN' THEN lk.lenh_tg
         WHEN 'RELEASE_2' THEN COALESCE(qa.qa_tg, lk.lenh_tg)
-        WHEN 'SAN_XUAT' THEN COALESCE(ph.phieu_tg, qa.qa_tg, lk.lenh_tg)
+        WHEN 'SAN_XUAT' THEN COALESCE(ph.phieu_tg, (SELECT max(za.thoi_gian) FROM audit_log za
+                                          WHERE za.ten_bang = 'lenh_san_xuat' AND za.id_ban_ghi = lk.lenh_id::text
+                                            AND za.hanh_dong = 'RELEASE_2'), qa.qa_tg, lk.lenh_tg)
         WHEN 'CHO_KHO' THEN ta.tem_tg
         WHEN 'KIEM' THEN COALESCE(ev.dry_tg, ta.tem_tg)
         WHEN 'SUA' THEN COALESCE(ev.kcs_tg, ta.tem_tg)

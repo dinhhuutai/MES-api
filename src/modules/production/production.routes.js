@@ -89,6 +89,10 @@ router.post('/huy-chay/:phieuId', rbac('PROD_RUN'), rbac.huyXacNhan(), c.undoSta
 
 // Theo dõi chuyền
 router.get('/monitor', rbac('PROD_MONITOR'), c.monitor);
+// Báo cáo sản xuất ngày (theo tổ × nhóm chuyền + chi tiết phần in) — trang Sản xuất › Báo cáo sản xuất.
+router.get('/bao-cao-ngay', rbac('PROD_RUN', 'PROD_MONITOR'), c.baoCaoSanXuat);
+// Báo cáo bất thường dừng chuyền (theo khoảng ngày SX) — trang Sản xuất › Báo cáo dừng chuyền.
+router.get('/bao-cao-dung-chuyen', rbac('PROD_RUN', 'PROD_MONITOR'), c.baoCaoDungChuyen);
 
 // Xe phơi
 router.get('/xe-phoi', rbac('XEPHOI'), c.xePhoi);

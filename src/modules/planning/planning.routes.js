@@ -115,4 +115,9 @@ router.get('/huy-lenh/:lenhId/lan-test', rbac('RELEASE1', 'RELEASE2', 'LENH_CANC
 // Ghi: thêm `HUY_XAC_NHAN` (mig 108) — `LENH_CANCEL_ANY` tự nó đã là quyền hủy nên cũng cho qua.
 router.post('/huy-lenh/:lenhId', rbac('RELEASE1', 'RELEASE2', 'LENH_CANCEL_ANY'), rbac.huyXacNhan('LENH_CANCEL_ANY'), c.cancelLenh);
 
+// Tab "Hủy test run" (02/10/2026) — gỡ 1 lượt test QA xác nhận nhầm phần in. Ghi đòi thêm `HUY_XAC_NHAN`.
+const HUY_TEST = ['TESTRUN_QA', 'RELEASE1', 'RELEASE2', 'LENH_CANCEL_ANY'];
+router.get('/huy-lan-test/candidates', rbac(...HUY_TEST), c.lanTestCancelable);
+router.post('/huy-lan-test/:testRunId', rbac(...HUY_TEST), rbac.huyXacNhan('LENH_CANCEL_ANY'), c.huyLanTest);
+
 module.exports = router;

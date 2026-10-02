@@ -1049,6 +1049,44 @@ async function rollbackLenh(lenhId, { target, lyDo, force = false, boTestRunIds 
   };
 }
 
+// ─── TAB "HỦY TEST RUN" (02/10/2026): gỡ 1 LƯỢT TEST xác nhận nhầm phần in ──────────────────────
+// · Lượt đang ĐỨNG SAU kết quả đạt (`dang_hieu_luc`) ⇒ gỡ kết quả TEST_CNSP/TEST_QA + hạ RELEASE_2 → RELEASE_1
+//   ⇒ lệnh QUAY LẠI màn Test Run. Gọi lại `rollbackLenh` đích TEST_RUN (một luật, không chép).
+// · Lượt khác (test lỗi, lượt đạt cũ) ⇒ chỉ đánh dấu `test_run.ket_qua='HUY'` (không còn hiện ở cột "Lần test",
+//   Excel, dataset báo cáo), lệnh đứng yên.
+// Chỉ lệnh chưa vào sản xuất — đã có phiếu thì phải hủy chạy trước (tab "Hủy lệnh đang chạy").
+async function listLanTestChoHuy({ search, page, limit, offset }) {
+  const { rows, total } = await repo.listLanTestChoHuy({ search, offset, limit });
+  return { items: rows, meta: buildMeta(page, limit, total) };
+}
+
+async function huyLanTest(testRunId, { lyDo } = {}, actorId) {
+  const reason = String(lyDo || '').trim();
+  if (!reason) throw new AppError('Nhập lý do hủy lần test', { status: 422, errorCode: 'NO_LY_DO' });
+  const tr = await repo.getLanTestForHuy(testRunId);
+  if (!tr) throw new AppError('Lần test không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  if (tr.ket_qua === 'HUY') throw new AppError('Lần test này đã được hủy', { status: 409, errorCode: 'ALREADY' });
+  if (tr.co_phieu || !['RELEASE_1', 'RELEASE_2'].includes(tr.trang_thai)) {
+    throw new AppError('Lệnh đã vào sản xuất / đã hủy — không hủy lần test được', { status: 409, errorCode: 'WRONG_STAGE' });
+  }
+  const ghiChu = `Hủy lần test (xác nhận nhầm): ${reason}`;
+  if (tr.dang_hieu_luc) {
+    const r = await rollbackLenh(tr.lenh_san_xuat_id,
+      { target: 'TEST_RUN', lyDo: `[Hủy lần test ${tr.lan_test}] ${reason}`, boTestRunIds: [tr.id] }, actorId);
+    return { ...r, lan_test: tr.lan_test, ma_lenh: tr.ma_lenh_san_xuat, ve_test_run: true };
+  }
+  await withTransaction(async (client) => {
+    const daGo = await repo.huyTestRunsTx(client, tr.lenh_san_xuat_id, [tr.id], actorId, ghiChu);
+    if (!daGo.length) throw new AppError('Lần test này đã được hủy', { status: 409, errorCode: 'ALREADY' });
+    await repo.logPlanChange(client, tr.lenh_san_xuat_id, 'HUY_LAN_TEST',
+      { test_run_id: tr.id, lan_test: tr.lan_test, ket_qua: tr.ket_qua },
+      { ket_qua: 'HUY', ly_do: reason, ma_lenh: tr.ma_lenh_san_xuat }, actorId);
+  });
+  sockets.emit('workflow:updated', { lenhId: tr.lenh_san_xuat_id, stage: 'TEST_RUN' });
+  sockets.emit('dashboard:refresh', {});
+  return { id: tr.lenh_san_xuat_id, lan_test: tr.lan_test, ma_lenh: tr.ma_lenh_san_xuat, ve_test_run: false };
+}
+
 // ─── TEST RUN KHÔNG ĐẠT → TRẢ VỀ KỸ THUẬT (READY) ────────────────────────────
 // QA chọn mục rớt (Khuôn/Film/Mực) → đúng mục đó phải xác nhận lại; QC xác nhận xong thì đợt vải
 // nhảy THẲNG về Test Run (technical.confirmQC), Kế hoạch KHÔNG phải Release 1 lại.
@@ -1945,7 +1983,7 @@ module.exports = {
   listReplanIds: (o) => repo.listReplanIds(o),
   listReplanMaQuet: (o) => repo.listReplanMaQuet(o),  listGiaCong, confirmGiaCongToOqc, giaCongHistory, listGiaCongTemCancelable, cancelGiaCongTem, traLaiNhaGiaCong,
   listKeHoachTam, keHoachTamSet, confirmKeHoachTam, updateKeHoachTam, deleteKeHoachTam, keHoachTamHistory, keHoachTamDone, keHoachTamTheoDoi,
-  listCancelableLenh, rollbackLenh, testRunsChoHuy,
+  listCancelableLenh, rollbackLenh, testRunsChoHuy, listLanTestChoHuy, huyLanTest,
   release1Done, release2Done, replanDone, testCnspDone, testQaDone,
   releaseList,
   listCaTuan, upsertCaTuan,

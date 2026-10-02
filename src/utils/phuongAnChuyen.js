@@ -52,7 +52,7 @@ const laLoaiMien = (maLoai) => LOAI_MIEN.includes(chuan(maLoai));
 const laChuyenMien = (maChuyen) => MA_CHUYEN_MIEN.includes(chuan(maChuyen));
 
 const tenLoaiChuyen = (maLoai) => ({
-  BAN: 'Bàn', MAY: 'Máy', ROBOT: 'Robot', EP: 'Ép', LOGO: 'Logo', GIA_CONG: 'Gia công',
+  BAN: 'Bàn', MAY: 'Máy', ROBOT: 'Robot', EP: 'Ép', LOGO: 'Logo', GIA_CONG: 'Gia công', MAY_TRON: 'Máy tròn',
 }[chuan(maLoai)] || maLoai || '—');
 
 const tenPain = (v) => PHUONG_AN_IN[Number(v) || 0] || 'Chưa xác định';

@@ -64,6 +64,15 @@ const DO_SL = {
     nhan: 'SL vào OQC (pcs)',
   },
   tem_giao: { sql: slTem('COALESCE(xt.sl_oqc_dat,0)'), nhan: 'SL qua giao (pcs)' },
+  // Hàng OPEN: Σ SL vải của CHÍNH các đợt lên MES trong kỳ. Phần in chỉ góp mặt vì Nghẽn (không có đợt mới
+  //   trong kỳ) ⇒ lùi về Σ SL vải mọi đợt còn hiệu lực của nó (cột SL Nghẽn mới có số).
+  // ⚠ Đọc CTE `ky` của `siso.repository` (mốc kỳ báo cáo).
+  vai_vao: {
+    sql: `COALESCE(NULLIF((SELECT sum(xd.so_luong_vai_ve)::int FROM dot_vai_ve xd WHERE xd.phan_in_id = q.id
+      AND xd.trang_thai NOT IN ('DA_GOP','DA_HUY') AND xd.tg_chuyen_ready >= (SELECT tu FROM ky)
+      AND xd.tg_chuyen_ready < (SELECT den FROM ky)), 0), q.so_luong_vai_ve, 0)`,
+    nhan: 'SL vải lên MES (pcs)',
+  },
 };
 
 // ─── 10 DÒNG ─────────────────────────────────────────────────────────────────
@@ -72,9 +81,18 @@ const DO_SL = {
 //   "nghẽn" ở 2 trang không bao giờ lệch nhau. `null` ⇒ trạm không đo nghẽn được.
 // `slaKieu` (24/09/2026) = SLA KHÔNG cố định, luật ở `utils/slaTheoGio.js`: READY theo giờ đợt lên MES,
 //   Test Run theo giờ SX kế hoạch − 1h, QC READY theo giờ KT xong (sau 16:30 ⇒ 16h). Không khai ⇒ SLA cố định của trạm như cũ.
+//   (Nhãn mô tả — luật nghẽn THẬT của từng dòng nằm ở `siso.repository NGHEN_CON`, khóa = `ma`, đo theo
+//   ĐƠN VỊ CON đợt/lệnh/tem từ 02/10/2026. Thêm dòng mới ⇒ khai thêm nguồn ở đó, thiếu thì dòng đó nghẽn = 0.)
 // ⚠ CỐ Ý bỏ *Kế hoạch tạm* và *Gia công* khỏi bảng: tờ giấy của xưởng không có 2 dòng đó, và cả hai
 //   là nhánh rẽ chứ không nằm trên dòng chảy chính. Muốn thêm thì khai thêm 1 dòng ở đây là đủ.
+// ⚠ OPEN (02/10/2026, người dùng chốt): KHÔNG có màn/sĩ số riêng ⇒ `man: null`, nguồn phần in là
+//   `siSoTram.OPEN_PIN_SQL` (`nguonPin: 'OPEN'`). Nhận = Xong = phần in có đợt lên MES trong ngày, Tồn = 0.
+//   NGHẼN = phần in READY Kỹ thuật đánh dấu BẤT THƯỜNG · trả về GN mà GN "Xác nhận lại" quá SLA trạm OPEN
+//   (`tram.OPEN` 240 phút) — kèm lý do từng phần in. `nghenMoi: true` ⇒ Nghẽn KHÔNG bị gác trong Tồn cuối
+//   (lỗi OPEN có thể phát sinh nhiều ngày sau khi đợt lên MES).
 const BANG_THEO_DOI = [
+  { ma: 'OPEN', ten: 'OPEN', man: null, nguonPin: 'OPEN', sla: { tram: 'OPEN' }, sl: 'vai_vao', nghenMoi: true,
+    ghiChu: 'Đầu vào = đợt vải ERP đưa lên MES trong ngày · Nghẽn = READY KT đánh dấu Bất thường / trả về GN mà GN xác nhận lại quá SLA' },
   { ma: 'READY_KT', ten: 'READY KT', man: 'KT_READY', sla: { tram: 'READY' }, slaKieu: 'READY_THEO_GIO', sl: 'vai',
     ghiChu: 'Vào = đợt vải lên READY · Xong = kỹ thuật xác nhận đủ mục' },
   { ma: 'READY_QA', ten: 'READY QA', man: 'CL_QC_READY', sla: { checkpoint: 'QC_XAC_NHAN' }, slaKieu: 'QC_THEO_GIO', sl: 'vai',

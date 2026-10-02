@@ -5,6 +5,7 @@ const { query } = require('../../config/db');
 const { dkTrang } = require('../../utils/phuongAnIn');
 const { chipCondition, dominantStageScalar } = require('../../utils/stage');
 const { mauTim } = require('../../utils/timKiem');
+const { qcXacNhanPhanInSql, mocDotMucSql } = require('../../utils/tech');
 
 const BASE_JOINS = `
   FROM phan_in pin
@@ -804,6 +805,7 @@ async function searchPhanInForCancel(q, stage = '') {
            (${dominantStageScalar('pin.id')}) AS giai_doan,
            (SELECT min(d3.han_giao_hang) FROM dot_vai_ve d3 WHERE d3.phan_in_id=pin.id AND d3.trang_thai <> 'DA_HUY') AS han_giao_hang,
            (SELECT min(d4.created_date) FROM dot_vai_ve d4 WHERE d4.phan_in_id=pin.id AND d4.trang_thai <> 'DA_HUY') AS tg_len_mes,
+           ${qcXacNhanPhanInSql('pin.id')} AS tg_xac_nhan,
            (SELECT count(*) FROM dot_vai_ve d WHERE d.phan_in_id=pin.id AND d.trang_thai <> 'DA_HUY')::int AS so_dot_vai,
            EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve d ON d.id=lsd.dot_vai_ve_id
                    JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id
@@ -939,6 +941,7 @@ async function searchDotVaiForCancel(q, stage = '') {
   const sql = `
     SELECT dv.id AS dot_vai_id, dv.ma_dot_vai, dv.so_luong_vai_ve, dv.ngay_vai_ve, dv.han_giao_hang,
            dv.created_date AS tg_len_mes, ldv.ten_loai AS loai_dot_vai,
+           ${mocDotMucSql('dv', 'pin.id', 'QC_XAC_NHAN')} AS tg_xac_nhan,
            pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim,
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
            (${dominantStageScalar('pin.id')}) AS giai_doan,

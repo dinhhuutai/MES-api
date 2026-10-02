@@ -244,8 +244,19 @@ const qcMoLaiSql = (pinCol) => `GREATEST(
     WHERE zn.phan_in_id = ${pinCol} AND zn.trang_thai <> 'DAT'),
   (SELECT max(zg.updated_date) FROM qc_tra_ve zg WHERE zg.phan_in_id = ${pinCol} AND zg.loai = 'TRA_VE_GN' AND zg.da_xu_ly))`;
 
+// MỐC QC READY GẦN NHẤT của PHẦN IN (02/10/2026 — cột "Ngày xác nhận" trang Hủy lệnh xác nhận):
+// muộn nhất của dòng TỔNG `QC_XAC_NHAN` DAT và dòng THEO ĐỢT (`ready_xac_nhan_dot`) DAT. NULL = chưa QC.
+// Chỉ để HIỂN THỊ — quyết định "đã Ready" vẫn là `qcDotSql`/`dotMucDatSql` theo từng đợt.
+const qcXacNhanPhanInSql = (pinCol) => `GREATEST(
+  (SELECT max(COALESCE(zqa.tg_xac_nhan, zqa.updated_date)) FROM ket_qua_checkpoint zqa
+     JOIN checkpoint zqac ON zqac.id = zqa.checkpoint_id AND zqac.ma_checkpoint = 'QC_XAC_NHAN'
+    WHERE zqa.phan_in_id = ${pinCol} AND zqa.trang_thai = 'DAT'),
+  (SELECT max(COALESCE(zqb.tg_xac_nhan, zqb.updated_date)) FROM ready_xac_nhan_dot zqb
+     JOIN checkpoint zqbc ON zqbc.id = zqb.checkpoint_id AND zqbc.ma_checkpoint = 'QC_XAC_NHAN'
+    WHERE zqb.phan_in_id = ${pinCol} AND zqb.trang_thai = 'DAT'))`;
+
 module.exports = {
-  qcMoLaiSql,
+  qcMoLaiSql, qcXacNhanPhanInSql,
   KHUON_OPTIONAL_KH, KHUON_OPT_SQL_LIST, isKhuonOptional, laHangGiaCong,
   requiredTechItems, hienFilm, techDoneSql, techDoneSqlByPin,
   NHAN_HE_THONG, nguoiXacNhanSql,

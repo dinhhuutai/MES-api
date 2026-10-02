@@ -13,6 +13,32 @@ const candidates = asyncHandler(async (req, res) => {
 
 const getRun = asyncHandler(async (req, res) => ok(res, await service.getRun(req.params.lenhId)));
 
+// Báo cáo sản xuất ngày (02/10/2026) — `?ngay=YYYY-MM-DD`, thiếu/sai ⇒ hôm nay theo giờ VN.
+const { baoCaoNgay } = require('./baoCaoSanXuat');
+const ngayHomNayVN = () => new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(0, 10);
+const baoCaoSanXuat = asyncHandler(async (req, res) => {
+  const q = String(req.query.ngay || '').trim();
+  const ngay = /^\d{4}-\d{2}-\d{2}$/.test(q) && !Number.isNaN(Date.parse(q)) ? q : ngayHomNayVN();
+  return ok(res, await baoCaoNgay(ngay));
+});
+
+// Báo cáo bất thường dừng chuyền (02/10/2026) — `?tuNgay=&denNgay=` (YYYY-MM-DD, ngày SX 06:00→06:00).
+// Thiếu/sai ⇒ hôm nay; đảo ngược ⇒ tự đổi chỗ; dài quá `NGAY_TOI_DA` ⇒ cắt bớt đầu (giữ đúng ngày cuối).
+const { baoCaoDungChuyen: docBaoCaoDungChuyen } = require('./baoCaoDungChuyen');
+const NGAY_TOI_DA = 93;
+const laNgay = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(s));
+const congNgay = (iso, n) => new Date(Date.parse(`${iso}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
+const baoCaoDungChuyen = asyncHandler(async (req, res) => {
+  const homNay = ngayHomNayVN();
+  const a = String(req.query.tuNgay || '').trim();
+  const b = String(req.query.denNgay || '').trim();
+  let tu = laNgay(a) ? a : (laNgay(b) ? b : homNay);
+  let den = laNgay(b) ? b : tu;
+  if (tu > den) [tu, den] = [den, tu];
+  if (congNgay(tu, NGAY_TOI_DA - 1) < den) tu = congNgay(den, -(NGAY_TOI_DA - 1));
+  return ok(res, await docBaoCaoDungChuyen(tu, den));
+});
+
 const start = asyncHandler(async (req, res) =>
   ok(res, await service.startProduction(req.params.lenhId, req.user.id, req.body.chuyenId || null), 'Đã xác nhận chạy'));
 
@@ -183,7 +209,7 @@ module.exports = {
   xePhoi, temChoPhoi, themTem, adjustPhoi, drying, confirmDry, redry,
   stopLine, resumeLine, addVaiHuy, savePhanCong, vuotSanXuat,
   lyDoNgungList, lyDoNgungCreate, lyDoNgungUpdate, lyDoNgungToggle,
-  toInList, toInCreate, toInUpdate, toInToggle,
+  toInList, toInCreate, toInUpdate, toInToggle, baoCaoSanXuat, baoCaoDungChuyen,
   lyDoBoSungList, lyDoBoSungCreate, lyDoBoSungUpdate, lyDoBoSungToggle, luuLyDoBoSungDotVai,
   cancelableTem, cancelPrintTem,
   temDaInSX: dsTemDaIn(false), temDaInGiaCong: dsTemDaIn(true),

@@ -8,7 +8,7 @@ const { dkTrang } = require('../../utils/phuongAnIn');
 //   `listConfirmHistory` / `doneByDate`. Luật loại-khỏi-số-liệu vẫn còn hiệu lực ở sĩ số + báo cáo.
 // ⚠ `conDotChoQcSql` KHÔNG import ở đây nữa (23/09/2026): màn QC dùng chung vị từ với màn Kỹ thuật —
 //   xem ghi chú ở `OUTER_WHERE`. Helper đó nay chỉ còn phục vụ dải "Theo dõi" (`utils/siSoTram.js`).
-const { techDoneSql, KHUON_OPT_SQL_LIST, nguoiXacNhanSql, conDotChuaReadySql, qcDotSql, qcMoLaiSql, hanGiaoReadySql } = require('../../utils/tech');
+const { techDoneSql, KHUON_OPT_SQL_LIST, nguoiXacNhanSql, conDotChuaReadySql, qcDotSql, qcMoLaiSql, hanGiaoReadySql, qcXacNhanPhanInSql } = require('../../utils/tech');
 const { slaReadySql, slaQcReadySql, slaReadyHanSql, canhBaoReadyHanSql } = require('../../utils/slaTheoGio');
 // Phần in đang được trả về GIAO NHẬN sửa thông tin ⇒ rời màn READY cho tới khi GN xác nhận lại.
 const { CHO_GN_SQL } = require('../../utils/traVeGn');
@@ -626,7 +626,8 @@ async function listReopenCandidates({ search = '' }) {
                               WHERE l.dot_vai_ve_id = d.id AND ls.trang_thai <> 'HUY')) AS dot_moi,
            (SELECT string_agg(DISTINCT ls.ma_lenh_san_xuat, ', ') FROM dot_vai_ve d
               JOIN lenh_sx_dot_vai l ON l.dot_vai_ve_id = d.id JOIN lenh_san_xuat ls ON ls.id = l.lenh_san_xuat_id
-              WHERE d.phan_in_id = pin.id AND ls.trang_thai <> 'HUY') AS lenh_da_co
+              WHERE d.phan_in_id = pin.id AND ls.trang_thai <> 'HUY') AS lenh_da_co,
+           ${qcXacNhanPhanInSql('pin.id')} AS tg_xac_nhan
     FROM phan_in pin
     JOIN ma_hang mh ON mh.id = pin.ma_hang_id
     JOIN don_hang dh ON dh.id = mh.don_hang_id

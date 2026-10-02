@@ -23,6 +23,7 @@ const env = require('../config/env');
 const { apiBat } = require('./caiDatApi');
 const { ghiLog } = require('./erpApiLog');
 const { taoIdKetNoi } = require('./idKetNoi');
+const { ngayGioErp } = require('./erpNgayGio');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -90,11 +91,8 @@ const soNguyen = (v) => {
 //   router ERP khai `sql.DateTime`, mà chuỗi rỗng KHÔNG phải ngày hợp lệ ⇒ tedious ném lỗi chuyển
 //   kiểu và **cả lượt gọi hỏng** — tệ hơn hẳn so với truyền NULL (proc vẫn nhận bình thường).
 //   `Ngayct` luôn có (`now()` trong SQL); chỉ `Tugio`/`Dengio` mới rỗng khi lượt in chưa nhập giờ SX.
-const ngayGio = (v) => {
-  if (v == null) return null;
-  const s = String(v).trim();
-  return s || null;
-};
+// ⚠⚠ ĐỊNH DẠNG theo kênh (02/10/2026 — ERP lưu lùi 7 tiếng, "hôm nay thành hôm qua"): xem `utils/erpNgayGio.js`.
+const ngayGio = (v, kieu = 'Z') => ngayGioErp(v, kieu);
 
 // ⚠⚠ CHỈ GỬI **TÊN** LÊN ERP, BỎ HỌ + TÊN LÓT (chốt với người dùng 15/08/2026).
 //   `"PHẠM THỊ HỒNG"` → `HỒNG` · `"NGÔ VĂN NHỚ"` → `NHỚ` · `"VŨ THỊ THANH NHÀN"` → `NHÀN`.
@@ -119,7 +117,7 @@ const TRUONG_TEN = new Set(['Chuyentruong', 'Catruong']);
 
 // Chuẩn hóa 1 bản ghi về đúng kiểu + độ dài mà proc nhận. Trường chuỗi thiếu → `''`, số thiếu → `0`,
 // riêng 3 trường ngày giờ thiếu → `null` (xem `ngayGio`).
-function chuanHoa(row = {}) {
+function chuanHoa(row = {}, kieuNgay = 'Z') {
   const out = {};
   for (const k of THU_TU_TRUONG) {
     let v = row[k];
@@ -134,7 +132,7 @@ function chuanHoa(row = {}) {
     // ⚠ Rút gọn tên chạy TRƯỚC `chuoi(v, max)`: cắt cụt trước rồi mới lấy từ cuối sẽ ra tên sai
     // (vd cắt "NGUYỄN THỊ HƯƠNG LAN" ở ký tự 20 rồi lấy từ cuối → "LA").
     if (Object.prototype.hasOwnProperty.call(DAI_TOI_DA, k)) out[k] = chuoi(v, DAI_TOI_DA[k]);
-    else if (k === 'Ngayct' || k === 'Tugio' || k === 'Dengio') out[k] = ngayGio(v);
+    else if (k === 'Ngayct' || k === 'Tugio' || k === 'Dengio') out[k] = ngayGio(v, kieuNgay);
     else out[k] = soNguyen(v);
   }
   return out;
@@ -179,6 +177,8 @@ const KENH = {
     timeoutMs: () => env.erp.guiOqcTimeoutMs,
     retry: () => env.erp.guiOqcRetry,
     them: (b) => ({ BarcodeSua: b.BarcodeIn }),
+    // Router `/gui-erp-oqc` tự dựng ngày bằng `ngayGioVN` (Date.UTC) ⇒ phải gửi dạng VN, KHÔNG đuôi Z.
+    kieuNgay: 'VN',
   },
   // ⚠⚠ TEM 13 GIA CÔNG (27/09/2026) — proc `MES_spr_MES2JQ6` (loaict JQ6), CÙNG 20 tham số `@pBarcodeIn`.
   //   Mỗi TEM tạo ra = 1 lượt gọi với IDMES RIÊNG (proc khóa phiếu theo Soctcu = IDMES).
@@ -188,6 +188,9 @@ const KENH = {
     url: () => env.erp.guiTemGiaCongUrl,
     timeoutMs: () => env.erp.guiTemGiaCongTimeoutMs,
     retry: () => env.erp.guiTemGiaCongRetry,
+    // ⚠ Tem 13 không có giờ SX ⇒ Tugio/Dengio NULL ⇒ proc JQ6 hỏng "Cannot insert NULL into column 'Ngay'
+    //   (SX_nhatkychuyengiao)" (ca thật 01/10/2026, tem 132608023199). Lấy MỐC NHẬN HÀNG = lúc tạo tem.
+    thieuGioLayMocTao: true,
   },
 };
 
@@ -219,6 +222,8 @@ function taoPayload(r, { idMes, soLuong = null, soLuongHuy = 0, soLuongThieu = 0
     Soluongloi: Number(soLuongHuy) || 0,
     SOLUONGTHIEU: Number(soLuongThieu) || 0,
     GCMauvai: r.gc_mau_vai,
+    // Không thuộc 20 trường (`chuanHoa` bỏ đi) — chỉ để kênh `thieuGioLayMocTao` bù Tugio/Dengio.
+    MocTao: r.moc_tao || null,
   };
 }
 
@@ -289,7 +294,10 @@ function erpProxy() {
 // `maApi` = kênh trong `KENH` (mặc định `ERP_GHI_IN_TEM` ⇒ mọi call-site cũ không đổi).
 async function ghiInTem(row, { maApi = 'ERP_GHI_IN_TEM' } = {}) {
   const k = KENH[maApi] || KENH.ERP_GHI_IN_TEM;
-  const body = chuanHoa(row);
+  const vao = k.thieuGioLayMocTao && row.MocTao
+    ? { ...row, Tugio: row.Tugio || row.MocTao, Dengio: row.Dengio || row.MocTao }
+    : row;
+  const body = chuanHoa(vao, k.kieuNgay || 'Z');
   if (k.them) Object.assign(body, k.them(body));
   // Tắt ở Hệ thống > Cài đặt API (mig 083); chưa có dòng cấu hình thì lấy mặc định `.env`.
   if (!(await apiBat(maApi))) {

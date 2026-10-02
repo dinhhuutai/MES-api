@@ -28,6 +28,7 @@ const { apiBat } = require('./caiDatApi');
 const { ghiLog } = require('./erpApiLog');
 const { maTemNhan } = require('./temPrefix');
 const { taoIdKetNoi, idTuBody } = require('./idKetNoi');
+const { ngayGioErp } = require('./erpNgayGio');
 
 // ─── CHUẨN HÓA GIÁ TRỊ GỬI ERP ───────────────────────────────────────────────
 // ⚠ Cắt đúng độ dài tham số của proc (`NVARCHAR(20)` / `NVARCHAR(4000)`): tedious KHÔNG tự cắt,
@@ -41,11 +42,9 @@ const catChuoi = (v, max) => {
   const s = String(v).trim();
   return max && s.length > max ? s.slice(0, max) : s;
 };
-const ngayGio = (v) => {
-  if (v == null) return null;
-  const s = String(v).trim();
-  return s || null;
-};
+// ⚠⚠ Dạng '…T09:30:00.000Z' = GIỜ VN dán nhãn Z (02/10/2026 — router `/gui-erp-phieu-giao` `new Date(v)` và
+//   `/gui-erp-phan-loai-loi` đưa thẳng chuỗi vào `sql.DateTime` ⇒ chuỗi giờ VN bị LÙI 7 tiếng). Xem `utils/erpNgayGio.js`.
+const ngayGio = (v) => ngayGioErp(v, 'Z');
 
 // `nhanvien` / `user` bên ERP là MÃ NHÂN VIÊN — trùng với `ten_dang_nhap` của MES (ERP tạo tài khoản
 // theo mã nhân viên, vd `011600486`). ⚠ KHÔNG gửi `ho_ten`: cột ERP chỉ `NVARCHAR(20)` và họ tên

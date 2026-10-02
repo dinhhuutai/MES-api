@@ -6,6 +6,7 @@ const { dkTrang } = require('../../utils/phuongAnIn');
 const { lenhPhanInMatch } = require('../../utils/search');
 const { timTem } = require('../../utils/temPrefix');
 const { mauTim } = require('../../utils/timKiem');
+const { MOC_VAO_TEM } = require('../../utils/siSoTram');
 
 // SỔ CÁI SỐ LƯỢNG tem (migration 043): SL còn lại từng công đoạn (dùng cho lọc + hiển thị).
 // con_kcs tính theo TỔNG CẦN KIỂM = so_luong + sl_chenh_lech (dư/thiếu — mig 044).
@@ -47,6 +48,15 @@ const notCancelledQc = (alias, table) => `NOT ${cancelledQc(alias, table)}`;
 //   giấu mất nhà thứ hai (cùng luật đã ghi ở `TEM_INFO_LATERAL`).
 // ⚠ Chú thích để NGOÀI chuỗi: `TEM_CTX` được gộp 1 dòng (`replace(/\s+/g,' ')`) nên `--` bên trong
 //   sẽ nuốt sạch phần SQL còn lại (bẫy §9 CLAUDE.md).
+// ⚠⚠ ĐỒNG HỒ SLA (tô đỏ / nút Nghẽn) ĐO THEO CHÍNH TEM (02/10/2026): mốc vào = `siSoTram.MOC_VAO_TEM[trạm]`
+//   (cùng nguồn với dải Theo dõi + bảng theo dõi Dashboard), SLA = SLA của ĐÚNG trạm của màn (workflow hiện
+//   hành). Bản cũ lấy `ton_tram` của CẢ LỆNH (`ORDER BY tg_vao LIMIT 1`) ⇒ tem ở KCS bị đo bằng mốc + SLA của
+//   trạm mà đợt vải đang ghi ở `ton_tram` (có khi là OQC), tem mới in của lệnh cũ bị tính từ nhiều ngày trước.
+const TRAM_THEO_TRANG = { SX_KCS: 'KIEM', SX_SUA: 'SUA', CL_OQC: 'OQC' };
+const temCtx = (maTrang) => {
+  const tram = TRAM_THEO_TRANG[maTrang] || 'KIEM';
+  return TEM_CTX.replace('__TG_VAO__', MOC_VAO_TEM[tram]('t')).replace('__MA_TRAM__', tram);
+};
 const TEM_CTX = `
   SELECT t.id AS tem_id, t.ma_tem, t.so_luong, t.trang_thai, t.da_qua_phoi, t.sl_chenh_lech, t.created_date AS ngay_in_tem,
          t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy, t.sl_sua_dat, t.sl_sua_huy, t.sl_oqc_dat, t.sl_da_giao,
@@ -55,7 +65,7 @@ const TEM_CTX = `
          ${CON_OQC_KCS} AS con_oqc_kcs, ${CON_OQC_SUA} AS con_oqc_sua,
          ls.ma_lenh_san_xuat, cs.ma_chuyen, cs.ten_chuyen,
          info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.mau_vai, info.kich_vai, info.kich_phim,
-         sla.tg_vao,
+         __TG_VAO__ AS tg_vao,
          CASE WHEN lc_gc.ma_loai = 'GIA_CONG' THEN 0 ELSE sla.sla_phut END AS sla_phut,
          sla.canh_bao_truoc_phut,
          (SELECT string_agg(DISTINCT pin.ma_phan, ', ')
@@ -79,10 +89,9 @@ const TEM_CTX = `
     WHERE lsd.lenh_san_xuat_id = ls.id ORDER BY pin.ma_phan, dv.ma_dot_vai LIMIT 1
   ) info ON true
   LEFT JOIN LATERAL (
-    SELECT tt.tg_vao, tr.thoi_gian_quy_dinh_phut AS sla_phut, tr.canh_bao_truoc_phut
-    FROM lenh_sx_dot_vai lsd JOIN ton_tram tt ON tt.dot_vai_ve_id = lsd.dot_vai_ve_id
-    JOIN tram tr ON tr.id = tt.tram_id
-    WHERE lsd.lenh_san_xuat_id = ls.id ORDER BY tt.tg_vao LIMIT 1
+    SELECT tr.thoi_gian_quy_dinh_phut AS sla_phut, tr.canh_bao_truoc_phut
+    FROM tram tr JOIN workflow_version wv ON wv.id = tr.workflow_version_id AND wv.la_hien_hanh
+    WHERE tr.ma_tram = '__MA_TRAM__' LIMIT 1
   ) sla ON true`;
 
 // Danh sách tem cho 1 công đoạn — lọc theo SL CÒN LẠI (con_X > 0), cho phép 1 tem xuất hiện đồng thời
@@ -130,7 +139,7 @@ async function listCandByCon(condExpr, { search = '', filters = {} } = {}, maTra
     conds.push(`(t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date <= $${params.length}::date`);
   }
   // Gửi SQL 1 dòng (IPS-safe). TEM_CTX không có comment '--' nên gộp an toàn.
-  const sql = `${TEM_CTX} WHERE ${conds.join(' AND ')} ORDER BY t.created_date`;
+  const sql = `${temCtx(maTrang)} WHERE ${conds.join(' AND ')} ORDER BY t.created_date`;
   const { rows } = await query(sql.replace(/\s+/g, ' '), params);
   return rows;
 }
@@ -1039,6 +1048,7 @@ async function logCancelQc(table, id, temId, maTem, lyDo, actorId) {
 // con_sua về 0 ⇒ tem tự rời màn Sửa. Mở lại = đảo đúng 2 delta trên (đọc snapshot từ audit_log).
 
 // Tem sửa còn hiệu lực (con_sua > 0) — cho tab "Hủy tem sửa".
+// `tg_xac_nhan` (02/10/2026) = lần KCS GẦN NHẤT ghi hư (chưa bị hủy xác nhận) — lúc tem sửa ra đời.
 async function listTemSua({ search = '' } = {}) {
   const params = [];
   const conds = [`${CON_SUA} > 0`];
@@ -1052,7 +1062,9 @@ async function listTemSua({ search = '' } = {}) {
            t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy, t.sl_sua_dat, t.sl_sua_huy,
            ${CON_SUA} AS con_sua, ${CON_KCS} AS con_kcs, ${CON_OQC} AS con_oqc,
            ls.ma_lenh_san_xuat, cs.ten_chuyen,
-           info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.mau_vai, info.kich_vai, info.kich_phim
+           info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.mau_vai, info.kich_vai, info.kich_phim,
+           (SELECT max(x.created_date) FROM kcs x WHERE x.tem_id = t.id AND x.so_luong_loi > 0
+              AND ${notCancelledQc('x', 'kcs')}) AS tg_xac_nhan
     FROM tem t
     JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
     JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id

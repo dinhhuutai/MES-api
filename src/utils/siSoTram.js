@@ -186,6 +186,29 @@ const NGUON_TEM = ({ tgVao, tgRa, dk, them = '' }) => `SELECT dv.phan_in_id, ${t
   ${them}
   WHERE ${dk}`;
 
+// ⚠⚠ MỐC VÀO TRẠM CỦA 1 TEM (02/10/2026) — NGUỒN DUY NHẤT cho CẢ sĩ số/bảng theo dõi (`DV.KIEM/SUA/OQC/GIAO`
+//   dưới đây) LẪN đồng hồ SLA tô đỏ của 4 màn KCS · Sửa · OQC · Giao (`quality.repository TEM_CTX`,
+//   `delivery.repository listTemGiao`). Trước đó 4 màn đo từ `ton_tram` của CẢ LỆNH (trạm hiện tại của đợt
+//   vải + SLA của trạm đó) ⇒ tem ở KCS mà đợt đã có tem khác sang OQC thì bị đo bằng mốc/SLA của OQC, và
+//   tem mới in của lệnh cũ bị tính từ lúc lệnh vào trạm từ nhiều ngày trước — nghẽn oan, lệch bảng theo dõi.
+//   `t` = alias bảng `tem`. Alias con `zmt*` đặt hiếm để không đụng alias bọc ngoài.
+const MOC_VAO_TEM = {
+  // KCS: tem KHÔ xong (vào hàng đợi kiểm); chưa qua xe phơi ⇒ lúc in tem.
+  KIEM: (t) => `COALESCE((SELECT max(zmt1.tg_kt_phoi) FROM tem_xe_phoi zmt1 WHERE zmt1.tem_id = ${t}.id), ${t}.created_date)`,
+  // Sửa: lần KCS ĐẦU có hàng phải sửa. COALESCE mốc in tem: `sl_kcs_sua` có thể do Phân loại lỗi GHI ĐÈ mà
+  //   dòng `kcs` không có `so_luong_loi`.
+  SUA: (t) => `COALESCE((SELECT min(zmt2.created_date) FROM kcs zmt2 WHERE zmt2.tem_id = ${t}.id
+    AND COALESCE(zmt2.so_luong_loi,0) > 0), ${t}.created_date)`,
+  // OQC: lần ĐẦU có hàng ĐẠT (KCS hoặc Sửa). Hàng GIA CÔNG không có dòng `kcs` (seed sẵn `sl_kcs_dat`) ⇒ mốc in tem.
+  OQC: (t) => `COALESCE(LEAST(
+    (SELECT min(zmt3.created_date) FROM kcs zmt3 WHERE zmt3.tem_id = ${t}.id AND COALESCE(zmt3.so_luong_dat,0) > 0),
+    (SELECT min(zmt4.created_date) FROM sua zmt4 WHERE zmt4.tem_id = ${t}.id AND COALESCE(zmt4.so_luong_sua_dat,0) > 0)),
+    ${t}.created_date)`,
+  // Giao: OQC cho qua giao lần ĐẦU (lùi về lượt OQC đầu).
+  GIAO: (t) => `(SELECT COALESCE(min(zmt5.created_date) FILTER (WHERE COALESCE(zmt5.sl_qua_giao,0) > 0), min(zmt5.created_date))
+    FROM oqc zmt5 WHERE zmt5.tem_id = ${t}.id)`,
+};
+
 const LAT_TEST_QA = `LEFT JOIN LATERAL (
   SELECT max(xkq.tg_xac_nhan) AS moc_qa FROM ket_qua_checkpoint xkq
     JOIN checkpoint xcp ON xcp.id = xkq.checkpoint_id
@@ -209,8 +232,12 @@ const DV = {
   //   19/08/2026. Nhóm này đi thẳng Release 1, kỹ thuật không làm gì; tính vào đây là thổi phồng
   //   khối lượng việc của tổ kỹ thuật. Luật + cách nhận diện ở `utils/tech.js khongReadyTuDongSql`.
   //   Áp cho CẢ 3 nguồn READY (Kỹ thuật · QC · dòng chảy báo cáo) để 3 nơi không ra 3 số.
+  // ⚠ 02/10/2026: mốc RA = GREATEST(KT xong ở dòng TỔNG, KT theo ĐỢT `moc_dot_kt`). Đợt mới xác nhận THEO ĐỢT
+  //   (mig 098) không ghi lại dòng tổng ⇒ chỉ đọc dòng tổng thì mốc ra là của chu kỳ CŨ (< mốc vào của đợt mới)
+  //   ⇒ `NEN` loại hẳn phần in khỏi trạm, mất khỏi cả Nhận lẫn Xong.
   READY_KT: `SELECT pin.id AS phan_in_id, dvs.tg_ready AS tg_vao,
-      CASE WHEN ${conDotChuaReadySql('pin.id')} THEN NULL ELSE COALESCE(${MOC_KT_XONG}, roi.moc_roi) END AS tg_ra, ${NHAN_TRONG}
+      CASE WHEN ${conDotChuaReadySql('pin.id')} THEN NULL
+           ELSE COALESCE(GREATEST(${MOC_KT_XONG}, rdy.moc_dot_kt), roi.moc_roi) END AS tg_ra, ${NHAN_TRONG}
     FROM phan_in pin ${JOIN_PIN}
     ${LAT_DOT_CUA_PIN('pin.id')} ${LAT_READY('pin.id')} ${LAT_ROI_READY('pin.id')}
     WHERE pin.dang_hoat_dong AND ${khongReadyTuDongSql('pin.id')}`,
@@ -231,9 +258,11 @@ const DV = {
   //   Ready ⇒ phần in có đợt vải MỚI mà kỹ thuật CHƯA đụng tới vẫn bị đếm vào ô TỒN CUỐI của QC (lỗi
   //   người dùng báo). Nay gương `technical.repository` OUTER_WHERE màn QC: đang ở hàng đợi QC ⇔ còn
   //   đợt đang chờ mà KT đã xong + QC chưa xác nhận (`conDotChoQcSql`).
+  // ⚠ 02/10/2026: nhánh "hết hàng đợi" cũng lấy GREATEST(dòng tổng, KT theo đợt) — chỉ đọc dòng tổng thì đợt
+  //   mới QC xong hôm nay bị tính "vào hàng đợi" từ chu kỳ cũ (tồn đầu từ tháng trước).
   READY_QC: `SELECT pin.id AS phan_in_id,
       CASE WHEN ${conDotChoQcSql('pin.id', 'kh.ten_khach_hang')} THEN GREATEST(${MOC_KT_XONG}, rdy.moc_dot_kt, ${qcMoLaiSql('pin.id')})
-           ELSE ${MOC_KT_XONG} END AS tg_vao,
+           ELSE GREATEST(${MOC_KT_XONG}, rdy.moc_dot_kt) END AS tg_vao,
       CASE WHEN ${conDotChoQcSql('pin.id', 'kh.ten_khach_hang')} THEN NULL
            ELSE COALESCE(GREATEST(rdy.moc_qc, rdy.moc_dot_qc), roi.moc_roi) END AS tg_ra, ${NHAN_TRONG}
     FROM phan_in pin ${JOIN_PIN}
@@ -347,10 +376,16 @@ const DV = {
   }),
 
   // Xác nhận chạy — gộp CẢ "Chờ chạy" LẪN "Đang chạy" (màn có 2 bảng, 1 sĩ số cho cả màn).
+  // ⚠ 02/10/2026: lệnh "Ngừng lệnh chạy" quay về `RELEASE_2` (phiếu cũ `HOAN_TAT`) hoặc còn phiếu `DANG_CHAY`
+  //   (chạy lại / đổi chuyền) thì CHƯA rời trạm — màn Xác nhận chạy vẫn hiện nó. Bản cũ lấy mốc phiếu hoàn tất
+  //   ⇒ lệnh biến khỏi sĩ số + bảng theo dõi trong khi vẫn nằm trên màn. (Lệnh chạy xong trên prod GIỮ
+  //   `SAN_XUAT` — đo 02/10: 7 lệnh — nên KHÔNG được đòi `trang_thai = 'HOAN_TAT'` mới cho rời.)
   SAN_XUAT: NGUON_LENH({
-    tgVao: `COALESCE(${MOC_AUDIT('ls.id', 'RELEASE_2')}, ls.created_date)`, tgRa: 'ph.moc_xong',
-    them: `LEFT JOIN LATERAL (SELECT max(xps.tg_kt) AS moc_xong FROM phieu_san_xuat xps
-             WHERE xps.lenh_san_xuat_id = ls.id AND xps.trang_thai = 'HOAN_TAT') ph ON true`,
+    tgVao: `COALESCE(${MOC_AUDIT('ls.id', 'RELEASE_2')}, ls.created_date)`,
+    tgRa: "CASE WHEN ls.trang_thai = 'RELEASE_2' OR ph.co_chay THEN NULL ELSE ph.moc_xong END",
+    them: `LEFT JOIN LATERAL (SELECT max(xps.tg_kt) FILTER (WHERE xps.trang_thai = 'HOAN_TAT') AS moc_xong,
+               bool_or(xps.trang_thai = 'DANG_CHAY') AS co_chay FROM phieu_san_xuat xps
+             WHERE xps.lenh_san_xuat_id = ls.id) ph ON true`,
     dk: "ls.trang_thai IN ('RELEASE_2','SAN_XUAT','HOAN_TAT')",
   }),
 
@@ -375,14 +410,12 @@ const DV = {
 
   // KCS: vào = tem KHÔ xong (vào hàng đợi kiểm), ra = kiểm hết phần còn lại.
   KIEM: NGUON_TEM({
-    tgVao: 'COALESCE(xp.moc_kho, t.created_date)',
+    tgVao: MOC_VAO_TEM.KIEM('t'),
     tgRa: `CASE WHEN (COALESCE(t.so_luong,0) + COALESCE(t.sl_chenh_lech,0))
                      - (COALESCE(t.sl_kcs_dat,0)+COALESCE(t.sl_kcs_sua,0)+COALESCE(t.sl_kcs_huy,0)) <= 0
                 THEN kc.moc_kcs END`,
     dk: "t.trang_thai <> 'HUY'",
-    them: `LEFT JOIN LATERAL (SELECT max(xtxp.tg_kt_phoi) AS moc_kho FROM tem_xe_phoi xtxp
-             WHERE xtxp.tem_id = t.id) xp ON true
-           LEFT JOIN LATERAL (SELECT max(xk.created_date) AS moc_kcs FROM kcs xk
+    them: `LEFT JOIN LATERAL (SELECT max(xk.created_date) AS moc_kcs FROM kcs xk
              WHERE xk.tem_id = t.id) kc ON true`,
   }),
 
@@ -390,14 +423,12 @@ const DV = {
   // ⚠ COALESCE về mốc tạo tem: `sl_kcs_sua` có thể do màn "Phân loại lỗi" GHI ĐÈ mà dòng `kcs`
   //   tương ứng không có `so_luong_loi` — thiếu mốc vào thì cả tem bị loại khỏi sĩ số, im lặng.
   SUA: NGUON_TEM({
-    tgVao: 'COALESCE(kc.moc_loi, t.created_date)',
+    tgVao: MOC_VAO_TEM.SUA('t'),
     tgRa: `CASE WHEN COALESCE(t.sl_kcs_sua,0)
                      - (COALESCE(t.sl_sua_dat,0)+COALESCE(t.sl_sua_huy,0)) <= 0
                 THEN sa.moc_sua END`,
     dk: "t.trang_thai <> 'HUY' AND COALESCE(t.sl_kcs_sua,0) > 0",
-    them: `LEFT JOIN LATERAL (SELECT min(xk.created_date) FILTER (WHERE COALESCE(xk.so_luong_loi,0) > 0)
-               AS moc_loi FROM kcs xk WHERE xk.tem_id = t.id) kc ON true
-           LEFT JOIN LATERAL (SELECT max(xs.created_date) AS moc_sua FROM sua xs
+    them: `LEFT JOIN LATERAL (SELECT max(xs.created_date) AS moc_sua FROM sua xs
              WHERE xs.tem_id = t.id) sa ON true`,
   }),
 
@@ -405,7 +436,7 @@ const DV = {
   // ⚠ COALESCE về mốc tạo tem cho **hàng GIA CÔNG**: tem gia công được seed sẵn `sl_kcs_dat` mà
   //   KHÔNG có dòng `kcs` nào (§5) ⇒ không có mốc vào, thiếu COALESCE là biến mất khỏi sĩ số OQC.
   OQC: NGUON_TEM({
-    tgVao: 'COALESCE(LEAST(kc.moc_dat, sa.moc_dat), t.created_date)',
+    tgVao: MOC_VAO_TEM.OQC('t'),
     // ⚠⚠ TRỪ `sl_sua_tach` (mig 091) ở CẢ `dk` LẪN `tgRa` — phần sửa đạt đã tách sang TEM CON.
     //   Thiếu ở `dk`: tem gốc chỉ có hàng sửa (đã tách hết) vẫn lọt phạm vi OQC, mà mọi dòng `oqc`
     //   lại nằm trên tem CON ⇒ `moc_oqc` NULL ⇒ **kẹt "đang ở OQC" VĨNH VIỄN**, ô Tồn phình mãi.
@@ -413,23 +444,16 @@ const DV = {
     tgRa: `CASE WHEN (COALESCE(t.sl_kcs_dat,0)+COALESCE(t.sl_sua_dat,0)-COALESCE(t.sl_sua_tach,0)) - COALESCE(t.sl_oqc_dat,0) <= 0
                 THEN oq.moc_oqc END`,
     dk: "t.trang_thai <> 'HUY' AND (COALESCE(t.sl_kcs_dat,0)+COALESCE(t.sl_sua_dat,0)-COALESCE(t.sl_sua_tach,0)) > 0",
-    them: `LEFT JOIN LATERAL (SELECT min(xk.created_date) FILTER (WHERE COALESCE(xk.so_luong_dat,0) > 0)
-               AS moc_dat FROM kcs xk WHERE xk.tem_id = t.id) kc ON true
-           LEFT JOIN LATERAL (SELECT min(xs.created_date) FILTER (WHERE COALESCE(xs.so_luong_sua_dat,0) > 0)
-               AS moc_dat FROM sua xs WHERE xs.tem_id = t.id) sa ON true
-           LEFT JOIN LATERAL (SELECT max(xo.created_date) AS moc_oqc FROM oqc xo
+    them: `LEFT JOIN LATERAL (SELECT max(xo.created_date) AS moc_oqc FROM oqc xo
              WHERE xo.tem_id = t.id) oq ON true`,
   }),
 
   // Giao hàng: vào = OQC cho qua giao lần đầu, ra = giao hết phần còn lại.
   GIAO: NGUON_TEM({
-    tgVao: 'COALESCE(oq.moc_qua_giao, oq.moc_oqc)',
+    tgVao: MOC_VAO_TEM.GIAO('t'),
     tgRa: 'CASE WHEN COALESCE(t.sl_oqc_dat,0) - COALESCE(t.sl_da_giao,0) <= 0 THEN gh.moc_giao END',
     dk: "t.trang_thai <> 'HUY' AND COALESCE(t.sl_oqc_dat,0) > 0",
-    them: `LEFT JOIN LATERAL (SELECT min(xo.created_date) FILTER (WHERE COALESCE(xo.sl_qua_giao,0) > 0)
-               AS moc_qua_giao, min(xo.created_date) AS moc_oqc
-             FROM oqc xo WHERE xo.tem_id = t.id) oq ON true
-           LEFT JOIN LATERAL (SELECT max(xgh.created_date) AS moc_giao FROM giao_hang_tem xght
+    them: `LEFT JOIN LATERAL (SELECT max(xgh.created_date) AS moc_giao FROM giao_hang_tem xght
                JOIN giao_hang xgh ON xgh.id = xght.giao_hang_id
               WHERE xght.tem_id = t.id) gh ON true`,
   }),
@@ -563,6 +587,27 @@ const manTheoPin = (trong, { traVe = TV.KHONG } = {}) => `SELECT pin.id, ${COT_P
   FROM (${gomTheoPin(trong)}) g
   JOIN phan_in pin ON pin.id = g.phan_in_id
   ${JOIN_PIN} ${LAT_DOT_CUA_PIN('pin.id')} ${LAT_HSKT('pin.id')} ${LAT_QC_DONE} ${LAT_MA_SET}`;
+
+// ─── HÀNG "OPEN" CỦA BẢNG THEO DÕI DASHBOARD (02/10/2026) ─────────────────────────────────────
+// Đầu vào mỗi ngày = đợt vải ERP đưa lên MES (`tg_chuyen_ready`). Đợt vào THẲNG READY nên mỗi đợt là một
+// khoảng RỖNG `[lên MES, lên MES]` ⇒ Nhận = Xong, Tồn đầu = Tồn cuối = 0 (người dùng chốt).
+// ⚠ CHỈ lấy đợt lên MES TRONG KỲ — gộp cả đợt cũ thì `gomTheo` ra khoảng [đợt cũ, đợt mới] ⇒ thành "tồn đầu".
+// ⚠ Phần in KHÔNG có đợt mới trong kỳ nhưng có lỗi OPEN (đánh dấu Bất thường / trả về GN — xem
+//   `siso.repository NGHEN_CON.OPEN`) vẫn phải CÓ dòng để đếm Nghẽn ⇒ lấy các đợt cũ của nó (khoảng nằm hẳn
+//   trước kỳ ⇒ không rơi vào ô nào trong 4 ô).
+// ⚠⚠ Chỉ chạy được trong câu có CTE `ky` (siso.repository `CTE_KY`) — vì vậy KHÔNG đặt vào `DV`.
+// ⚠ Nhánh "chỉ góp mặt vì Nghẽn" lùi mốc về `created_date` khi đợt thiếu `tg_chuyen_ready` (dữ liệu cũ) — không
+//   có dòng thì lỗi OPEN của phần in đó mất khỏi bảng.
+const OPEN_TRONG = `SELECT dv.phan_in_id, COALESCE(dv.tg_chuyen_ready, dv.created_date) AS tg_vao,
+    COALESCE(dv.tg_chuyen_ready, dv.created_date) AS tg_ra, ${NHAN_TRONG}, dv.ma_dot_vai
+  FROM dot_vai_ve dv JOIN phan_in pin ON pin.id = dv.phan_in_id AND pin.dang_hoat_dong
+  WHERE dv.trang_thai NOT IN ('DA_GOP','DA_HUY')
+    AND ((dv.tg_chuyen_ready >= (SELECT tu FROM ky) AND dv.tg_chuyen_ready < (SELECT den FROM ky))
+      OR (COALESCE(dv.tg_chuyen_ready, dv.created_date) < (SELECT tu FROM ky) AND NOT EXISTS (SELECT 1 FROM dot_vai_ve xo WHERE xo.phan_in_id = dv.phan_in_id AND xo.trang_thai NOT IN ('DA_GOP','DA_HUY')
+                        AND xo.tg_chuyen_ready >= (SELECT tu FROM ky) AND xo.tg_chuyen_ready < (SELECT den FROM ky))
+          AND (EXISTS (SELECT 1 FROM phan_in_ghi_chu xg WHERE xg.phan_in_id = dv.phan_in_id AND xg.loai = 'BAT_THUONG')
+               OR EXISTS (SELECT 1 FROM qc_tra_ve xq WHERE xq.phan_in_id = dv.phan_in_id AND xq.loai = 'TRA_VE_GN'))))`;
+const OPEN_PIN_SQL = manTheoPin(OPEN_TRONG);
 
 // ─── TẦNG NGOÀI CHO ĐƠN VỊ KHÁC PHẦN IN (đợt vải · lệnh SX · tem) — 21/08/2026 ───────────────
 // ⚠⚠ TRẢ ĐÚNG BỘ CỘT NHƯ `manTheoPin` (xem `COT_DS` ở siso.repository) ⇒ repository/service/FE
@@ -755,4 +800,4 @@ const O_SI_SO = {
 // gian ở từng trạm bằng ĐÚNG các nguồn mốc vào/ra này, để 2 tính năng không thể lệch luật.
 // ⚠ `NGUON_LENH`/`NGUON_TEM` nay trả thêm `dv.ma_dot_vai` (trang đó cần hiện đợt vải của từng lệnh/tem);
 //   `gomTheo`/`manTheoDonVi` SELECT cột tường minh nên thêm cột KHÔNG ảnh hưởng sĩ số/báo cáo.
-module.exports = { MAN, LOAI_NGAY, O_SI_SO, VN, CP_PHAN_IN, nguonPhanIn, DV };
+module.exports = { MAN, LOAI_NGAY, O_SI_SO, VN, CP_PHAN_IN, nguonPhanIn, DV, MOC_VAO_TEM, OPEN_PIN_SQL };

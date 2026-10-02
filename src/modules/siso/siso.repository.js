@@ -5,10 +5,14 @@
 
 const { query } = require('../../config/db');
 const { mauTim } = require('../../utils/timKiem');
-const { MAN, LOAI_NGAY, O_SI_SO, VN } = require('../../utils/siSoTram');
+const { MAN, LOAI_NGAY, O_SI_SO, VN, DV, OPEN_PIN_SQL } = require('../../utils/siSoTram');
 const { DO_SL } = require('../../utils/bangTheoDoi');
-const { slaReadySql, slaQcReadySql, mocDoReadySql, testRunTruocSxPhut, hanBat, gioSxKhSql } = require('../../utils/slaTheoGio');
-const { dotChuaKtDk, hanGiaoReadySql } = require('../../utils/tech');
+const { slaReadySql, slaQcReadySql, slaTestRunSql, mocDoReadySql, hanBat, gioSxKhSql } = require('../../utils/slaTheoGio');
+const {
+  hanGiaoReadySql, mocDotMucSql, qcMoLaiSql, khongReadyTuDongSql, KHUON_OPT_SQL_LIST,
+} = require('../../utils/tech');
+const { CHO_GN_SQL } = require('../../utils/traVeGn');
+const { CHO_KY_THUAT_SQL } = require('../planning/planning.repository');
 
 // ⚠⚠ MỐC KỲ ĐẶT TRONG CTE `ky`, KHÔNG nội suy `$1`/`$2` thẳng vào từng điều kiện.
 //   Lý do (lỗi thật đã bắt): ô `ton_dau` chỉ dùng $1, ô `ton_cuoi` chỉ dùng $2 ⇒ tham số còn lại
@@ -227,127 +231,212 @@ async function dsSlaHienHanh() {
 }
 
 // Một dòng của bảng: 5 cụm × (Phần + SL) trong MỘT lượt query.
-// ⚠⚠ NGHẼN (từ 01/10/2026) = đối tượng quá SLA trong kỳ — gồm "chưa xác nhận" (đang TỒN CUỐI) và
-//   "đã xác nhận" (rời trạm trong kỳ sau khi đã quá SLA); xem `NGHEN_*`. Mốc đo là `LEAST(cuối kỳ, bây giờ)`: xem ngày quá
+// ⚠⚠ NGHẼN (từ 01/10/2026) = phần in quá SLA trong kỳ — gồm "chưa xác nhận" (đang TỒN CUỐI) và
+//   "đã xác nhận" (rời trạm trong kỳ sau khi đã quá SLA). Mốc đo là `LEAST(cuối kỳ, bây giờ)`: xem ngày quá
 //   khứ thì tính tới cuối ngày đó, xem hôm nay thì tính tới bây giờ — KHÔNG lấy `now()` trần, nếu
 //   không mọi thứ tồn từ tháng trước đều "nghẽn" khi soi lại một ngày cũ.
-// ⚠ SLA null (trạm chưa cấu hình) ⇒ `false` ⇒ nghẽn = 0, KHÔNG đoán bừa một ngưỡng.
-// MỐC BẮT ĐẦU NGHẼN (timestamptz) của 1 phần in ở trạm = mốc vào + SLA — mỗi `slaKieu` một luật
-// (`utils/slaTheoGio.js`), gương đúng bản đồ nghẽn `dashboard.flowRows`. `null` ⇒ trạm chưa có SLA.
-// Nghẽn ⟺ `LEAST(cuối kỳ, now()) > mốc này` — tương đương từng nhánh công thức "đã ở > SLA" cũ.
-// ⚠ Dùng CHUNG cho bảng đếm (`motDongBang`) và danh sách chi tiết (`dsDongBang`, 26/09/2026) ⇒ modal
-//   liệt kê ĐÚNG những phần in mà ô "Nghẽn" đang đếm.
-function batDauNghenSql(dong, slaPhut) {
-  if (slaPhut == null) return null;
-  const s = Number(slaPhut);
-  const cong = (phutSql) => `(q.tg_vao + (${phutSql}) * interval '1 minute')`;
-  // READY KT theo HẠN GIAO (25/09/2026): 00:00 ngày (hạn − 1); thiếu hạn ⇒ theo giờ lên MES.
-  // ⚠⚠ GƯƠNG ĐÚNG MÀN READY (sửa 01/10/2026 — người dùng: "bảng nghẽn READY 23, màn READY chỉ 1"):
-  //   · Phần in CÒN đợt chờ mà KT chưa xong (`q.kt_cho_vao` — cột phụ `phuNghen`) ⇒ hạn = hạn nhỏ nhất của
-  //     CHÍNH các đợt đó, lùi về `hanGiaoReadySql` (y như service: `han[0] || r.han_giao_hang`); mốc giờ
-  //     lên MES = đợt về sớm nhất trong số đó.
-  //   · Đã hết việc KT (rời trạm) ⇒ hạn của đợt MỚI NHẤT (đợt quyết định `tg_vao`), lùi về hạn cũ.
-  //   Bản cũ dùng `q.han_giao_hang` = min MỌI đợt (kể cả đợt đã release từ lâu) ⇒ đợt mới vừa về đã "nghẽn".
-  if (dong.slaKieu === 'READY_THEO_GIO') {
-    const vao = 'COALESCE(q.kt_cho_vao, q.tg_vao)';
-    const han = `(CASE WHEN q.kt_cho_vao IS NOT NULL THEN COALESCE(q.kt_cho_han, q.han_ready)
-      ELSE COALESCE(q.han_moi_nhat, q.han_giao_hang) END)`;
-    const congV = (phutSql) => `(${vao} + (${phutSql}) * interval '1 minute')`;
-    if (!hanBat()) return congV(slaReadySql(vao, s)); // luật hạn giao tắt (mig 109)
-    return `(CASE WHEN ${han} IS NULL THEN ${congV(slaReadySql(vao, s))}
-      ELSE ${mocDoReadySql(han)} END)`;
-  }
-  // QC READY: q.tg_vao = lúc Kỹ thuật xác nhận xong ⇒ sau 16:30 thì QC có 16 giờ (KHUNG_SLA_QC).
-  if (dong.slaKieu === 'QC_THEO_GIO') return cong(slaQcReadySql('q.tg_vao', s));
-  // Test Run theo giờ SX kế hoạch SỚM NHẤT của các lệnh RELEASE_1 của phần in (thiếu ⇒ SLA trạm).
-  if (dong.slaKieu === 'TEST_RUN_KE_HOACH') {
-    const truoc = testRunTruocSxPhut(); // null = luật tắt (mig 109)
-    if (truoc == null) return cong(s);
-    const bdKh = `(SELECT min(${gioSxKhSql('lsb.tg_bd_kh', 'lsb.ngay_ke_hoach')}) FROM lenh_sx_dot_vai ldb JOIN dot_vai_ve dvb ON dvb.id = ldb.dot_vai_ve_id
-      JOIN lenh_san_xuat lsb ON lsb.id = ldb.lenh_san_xuat_id WHERE dvb.phan_in_id = q.id AND lsb.trang_thai = 'RELEASE_1')`;
-    return `(CASE WHEN ${bdKh} IS NULL THEN ${cong(s)}
-      ELSE ${bdKh} - interval '${Number(truoc)} minutes' END)`;
-  }
-  return cong(s);
-}
+// ⚠ SLA null (trạm chưa cấu hình) ⇒ nghẽn = 0, KHÔNG đoán bừa một ngưỡng.
+//
+// ⚠⚠⚠ NGHẼN ĐO TRÊN TỪNG ĐƠN VỊ CON, KHÔNG trên dòng phần in (02/10/2026 — người dùng: "hệ thống theo ĐỢT VẢI,
+//   đừng lấy đợt vải nghẽn của lần trước cho lần này, mặc dù báo cáo theo phần in"; ca thật: READY QA báo
+//   nghẽn trong khi màn QC không đỏ dòng nào).
+//   Lý do: `gomTheo` gộp MỌI đợt/lệnh/tem của phần in thành MỘT khoảng với `tg_vao = min(...)` ⇒ đơn vị ĐÃ
+//   XONG từ chu kỳ trước kéo mốc vào lùi về quá khứ ⇒ đơn vị MỚI vừa tới đã "nghẽn". 4 ô Tồn đầu/Nhận/Xong/
+//   Tồn cuối GIỮ NGUYÊN engine sĩ số; riêng Nghẽn đo trên đúng đơn vị mà màn của trạm tô đỏ:
+//     READY KT · READY QA · RELEASE 1 → ĐỢT VẢI · TEST RUN · RELEASE 2 · IN → (LỆNH × đợt) · KIỂM · SỬA · OQC · GIAO → (TEM × đợt)
+//   mỗi đơn vị một mốc vào + một MỐC BẮT ĐẦU NGHẼN `bd` (= vào + SLA, luật SLA THEO GIỜ của `utils/slaTheoGio.js`
+//   ưu tiên khi đang BẬT — cấu hình mig 109). Phần in NGHẼN ⟺ có ≥1 đơn vị con nghẽn.
+// Mỗi nguồn con trả `phan_in_id, tg_vao, tg_ra, bd, chan`: `bd` NULL ⇒ không thuộc diện đo nghẽn;
+//   `chan` = đơn vị đang KHÔNG được tính "chưa xác nhận" lúc này (màn của trạm cũng không đỏ/không hiện nó —
+//   vd phần in đang chờ GN sửa thông tin, lệnh đang chờ kỹ thuật làm lại).
+// ⚠ Dùng CHUNG cho bảng đếm (`motDongBang`) và danh sách chi tiết (`dsDongBang`) ⇒ modal liệt kê ĐÚNG
+//   những phần in mà ô "Nghẽn" đang đếm.
 const MOC_DO = 'LEAST((SELECT den FROM ky), now())';
+const phut = (bieuThuc) => `((${bieuThuc}) * interval '1 minute')`;
 
-// NGHẼN = HIỆN TRẠNG + KẾT QUẢ XỬ LÝ (01/10/2026, người dùng chốt theo tờ giấy xưởng):
-//   · CHƯA xác nhận = đang TỒN CUỐI và mốc đo đã qua mốc bắt đầu nghẽn (= định nghĩa "Nghẽn" cũ).
-//   · ĐÃ xác nhận   = RỜI trạm trong kỳ (`lam_duoc`) và lúc rời ĐÃ quá SLA (`tg_ra > bd_nghen`).
-//   · Phần nghẽn   = ĐÃ + CHƯA (2 tập rời nhau: `lam_duoc` đòi tg_ra < cuối kỳ, `ton_cuoi` đòi ≥).
-//   · Giờ nghẽn    = Σ giờ VƯỢT SLA: đã xác nhận tính tới lúc rời, chưa xác nhận tính tới mốc đo.
-// ⚠ Dựa trên cột `q.bd_nghen` (mốc bắt đầu nghẽn tính SẴN 1 lần/dòng — xem `voiBdNghen`), đừng chèn
-//   lại `batDauNghenSql` ở từng chỗ: nhánh Test Run là subquery, chèn 4 lần là chạy 4 lần.
-// `q.nghen_duoc` = phần in còn thuộc DIỆN tính nghẽn ở trạm này (READY KT: còn đợt chờ mà KT chưa xong —
-//   KT đã xong, chỉ chờ QC thì là việc của dòng READY QA, màn READY cũng "đủ mục KT ⇒ ngừng đỏ").
-const NGHEN_CHUA = () => `(${dkO('ton_cuoi')}) AND q.nghen_duoc AND q.bd_nghen IS NOT NULL AND ${MOC_DO} > q.bd_nghen`;
-const NGHEN_XONG = () => `(${dkO('lam_duoc')}) AND q.bd_nghen IS NOT NULL AND q.tg_ra > q.bd_nghen`;
-const NGHEN = () => `((${NGHEN_CHUA()}) OR (${NGHEN_XONG()}))`;
-const GIO_NGHEN = () => `EXTRACT(EPOCH FROM ((CASE WHEN ${NGHEN_CHUA()} THEN ${MOC_DO} ELSE q.tg_ra END) - q.bd_nghen)) / 3600.0`;
+// READY theo ĐỢT VẢI — 1 dòng / đợt đã lên READY: mốc KT xong / QC xong của CHÍNH đợt (`tech.mocDotMucSql`,
+// cùng 2 nhánh "đợt đã xác nhận" của màn READY) + mốc rời READY vì đã release.
+// ⚠ `moc_rel` KHÔNG tính lệnh RELEASE_1 chưa phiếu: đó là ca "Test Run không đạt → trả về KT" (lệnh được GIỮ,
+//   QC bị hủy) — đợt vẫn đang ở READY làm lại (nhánh OR 3 của `technical.listCandidates`).
+// ⚠ Lọc trước đợt ĐÃ RỜI READY TRƯỚC KỲ (release chắc chắn trước `tu`) ⇒ chỉ tính mốc cho số đợt liên quan
+//   (prod phần lớn đợt đã release từ lâu).
+// ⚠ Loại phần in do HỆ THỐNG tự xác nhận READY (ERP `KTCankiemtra=0`) — y như `siSoTram DV.READY_*`.
+const REL_CHAC = (dot) => `(SELECT min(zrl.created_date) FROM lenh_sx_dot_vai zrd JOIN lenh_san_xuat zrl ON zrl.id = zrd.lenh_san_xuat_id
+   WHERE zrd.dot_vai_ve_id = ${dot}.id AND zrl.trang_thai <> 'HUY'
+     AND (zrl.trang_thai <> 'RELEASE_1' OR EXISTS (SELECT 1 FROM phieu_san_xuat zrp WHERE zrp.lenh_san_xuat_id = zrl.id)))`;
+const READY_DOT = `SELECT d.phan_in_id, d.tg_chuyen_ready AS vao_ready, d.han_giao_hang AS han_dot,
+    CASE WHEN kh.ten_khach_hang IN (${KHUON_OPT_SQL_LIST}) THEN m.muc
+         WHEN m.khuon IS NOT NULL AND m.muc IS NOT NULL THEN GREATEST(m.khuon, m.muc) END AS kt_xong,
+    m.qc AS qc_xong, ${REL_CHAC('d')} AS moc_rel, ${CHO_GN_SQL('pin.id')} AS chan
+  FROM dot_vai_ve d
+  JOIN phan_in pin ON pin.id = d.phan_in_id AND pin.dang_hoat_dong
+  JOIN ma_hang mh ON mh.id = pin.ma_hang_id JOIN don_hang dh ON dh.id = mh.don_hang_id
+  JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+  CROSS JOIN LATERAL (SELECT ${mocDotMucSql('d', 'd.phan_in_id', 'KHUON')} AS khuon,
+    ${mocDotMucSql('d', 'd.phan_in_id', 'MUC')} AS muc, ${mocDotMucSql('d', 'd.phan_in_id', 'QC_XAC_NHAN')} AS qc) m
+  WHERE d.trang_thai NOT IN ('DA_GOP','DA_HUY') AND d.tg_chuyen_ready IS NOT NULL
+    AND d.tg_chuyen_ready < (SELECT den FROM ky)
+    AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai zrd0 JOIN lenh_san_xuat zrl0 ON zrl0.id = zrd0.lenh_san_xuat_id
+       WHERE zrd0.dot_vai_ve_id = d.id AND zrl0.trang_thai <> 'HUY' AND zrl0.created_date < (SELECT tu FROM ky)
+         AND (zrl0.trang_thai <> 'RELEASE_1' OR EXISTS (SELECT 1 FROM phieu_san_xuat zrp0 WHERE zrp0.lenh_san_xuat_id = zrl0.id)))
+    AND ${khongReadyTuDongSql('pin.id')}`;
 
-// CTE `q` có thêm cột `bd_nghen`. ⚠ CTE thường (không RECURSIVE) không nhìn thấy chính tên nó trong thân
-//   ⇒ `FROM q0 q` đặt alias `q` cho nguồn để `batDauNghenSql` (viết theo `q.`) chạy nguyên văn.
-// ⚠ Cả 2 tầng `MATERIALIZED` (xem `cteQ`): `q0` để `tg_vao`/`tg_ra` tính 1 lần/dòng, `q` để mốc
-//   `bd_nghen` (nhánh Test Run là subquery) cũng chỉ tính 1 lần dù `NGHEN_*` nhắc nó nhiều lần.
-// Cột PHỤ để tính nghẽn của riêng 1 dòng (01/10/2026) — hiện chỉ READY KT cần (xem `batDauNghenSql`):
-//   `kt_cho_han`/`kt_cho_vao` = hạn nhỏ nhất / mốc lên READY sớm nhất của các đợt ĐANG CHỜ mà KT CHƯA xong
-//   (`tech.dotChuaKtDk` — cùng luật với màn READY); `han_ready` = hạn mức phần in của màn READY
-//   (`tech.hanGiaoReadySql`); `han_moi_nhat` = hạn của đợt lên READY mới nhất (đợt quyết định `tg_vao`).
-// Dòng khác ⇒ null (không thêm tầng, không tốn gì).
-function phuNghen(dong) {
-  if (dong.slaKieu !== 'READY_THEO_GIO') return null;
-  return {
-    cot: 'ktc.kt_cho_han, ktc.kt_cho_vao, hk.han_ready, hk.han_moi_nhat',
-    join: `LEFT JOIN LATERAL (SELECT min(zkc.han_giao_hang) AS kt_cho_han, min(zkc.tg_chuyen_ready) AS kt_cho_vao
-        FROM dot_vai_ve zkc WHERE ${dotChuaKtDk('zkc', 'q.id', 'q.ten_khach_hang')}) ktc ON true
-      LEFT JOIN LATERAL (SELECT ${hanGiaoReadySql('q.id')} AS han_ready,
-        (SELECT min(zmn.han_giao_hang) FROM dot_vai_ve zmn WHERE zmn.phan_in_id = q.id
-           AND zmn.trang_thai NOT IN ('DA_GOP','DA_HUY') AND zmn.tg_chuyen_ready = q.tg_vao) AS han_moi_nhat) hk ON true`,
-    duoc: 'q.kt_cho_vao IS NOT NULL',
-  };
+// READY KT — gương màn READY (Kỹ thuật): vào = đợt lên READY; rời = KT đủ mục / QC / release. SLA theo HẠN GIAO
+// của chính đợt (thiếu ⇒ hạn mức phần in `tech.hanGiaoReadySql`, y như `han[0] || r.han_giao_hang` của service),
+// thiếu hạn / luật hạn tắt ⇒ theo giờ lên MES (`slaReadySql`, fallback SLA trạm READY).
+function nghenReadyKt(s) {
+  const vao = 'r.vao_ready';
+  const theoGio = `(${vao} + ${phut(slaReadySql(vao, s))})`;
+  const bd = hanBat()
+    ? `(CASE WHEN r.han IS NULL THEN ${theoGio} ELSE GREATEST(${vao} + interval '1 minute', ${mocDoReadySql('r.han')}) END)`
+    : theoGio;
+  return `SELECT r.phan_in_id, r.vao_ready AS tg_vao,
+      CASE WHEN r.ra0 IS NULL THEN NULL ELSE GREATEST(r.vao_ready, r.ra0) END AS tg_ra, ${bd} AS bd, r.chan, NULL::text AS ly_do
+    FROM (SELECT x.*, LEAST(x.kt_xong, x.qc_xong, x.moc_rel) AS ra0,
+            COALESCE(x.han_dot, ${hanGiaoReadySql('x.phan_in_id')}) AS han
+          FROM (${READY_DOT}) x OFFSET 0) r`;
 }
 
-const voiBdNghen = (sqlPin, batDau, phu = null) => `q0 AS MATERIALIZED (${sqlPin}),
-  ${phu ? `q1 AS MATERIALIZED (SELECT q.*, ${phu.cot} FROM q0 q ${phu.join}),` : ''}
-  q AS MATERIALIZED (SELECT q.*, ${batDau == null ? 'NULL::timestamptz' : batDau} AS bd_nghen,
-    ${phu ? phu.duoc : 'true'} AS nghen_duoc FROM ${phu ? 'q1' : 'q0'} q)`;
+// READY QA — gương màn QC READY: chỉ đợt KT ĐÃ xong; vào = GREATEST(KT xong của đợt, mốc QC mở lại
+// `tech.qcMoLaiSql` — phần in bị trả về READY được tính lại SLA); rời = QC của đợt / release.
+// SLA `slaQcReadySql` (KT xong 16:30–24:00 ⇒ 16 giờ…), ngoài khung ⇒ SLA checklist QC_XAC_NHAN.
+// ⚠ Mốc mở lại chỉ áp khi nó NẰM TRƯỚC lúc đợt rời hàng đợi (đợt cũ đã QC xong không bị kéo theo).
+function nghenReadyQa(s) {
+  return `SELECT r.phan_in_id, r.vao AS tg_vao,
+      CASE WHEN r.ra0 IS NULL THEN NULL ELSE GREATEST(r.vao, r.ra0) END AS tg_ra,
+      (r.vao + ${phut(slaQcReadySql('r.vao', s))}) AS bd, r.chan, NULL::text AS ly_do
+    FROM (SELECT y.*, GREATEST(y.kt_xong, CASE WHEN y.mo_lai IS NOT NULL AND (y.ra0 IS NULL OR y.mo_lai <= y.ra0)
+                                              THEN y.mo_lai END) AS vao
+          FROM (SELECT x.*, LEAST(x.qc_xong, x.moc_rel) AS ra0, ${qcMoLaiSql('x.phan_in_id')} AS mo_lai
+                FROM (${READY_DOT}) x WHERE x.kt_xong IS NOT NULL OFFSET 0) y
+          WHERE y.ra0 IS NULL OR y.kt_xong <= y.ra0 OFFSET 0) r`;
+}
+
+// Nguồn con lấy THẲNG từ `siSoTram.DV` (đã là 1 dòng / đợt · lệnh×đợt · tem×đợt) ⇒ mốc vào/ra y hệt 4 ô
+// sĩ số. Lọc trước đơn vị đã rời TRƯỚC kỳ / chưa vào tới cuối kỳ (không ảnh hưởng nghẽn của kỳ).
+const tuDv = (dvSql, bd, chan = 'false') => `SELECT x.phan_in_id, x.tg_vao, x.tg_ra, ${bd} AS bd, ${chan} AS chan, NULL::text AS ly_do
+  FROM (SELECT * FROM (${dvSql}) x0 WHERE x0.tg_vao IS NOT NULL AND x0.phan_in_id IS NOT NULL
+          AND x0.tg_vao < (SELECT den FROM ky) AND (x0.tg_ra IS NULL OR x0.tg_ra >= (SELECT tu FROM ky)) OFFSET 0) x`;
+const LENH_X = 'zl.ma_lenh_san_xuat = x.ma_lenh_san_xuat';
+
+// OPEN (02/10/2026, người dùng chốt) — 2 loại lỗi đầu vào, mỗi lượt là 1 đơn vị con:
+//   · READY Kỹ thuật đánh dấu BẤT THƯỜNG (`phan_in_ghi_chu` loai BAT_THUONG): nghẽn NGAY từ lúc đánh dấu (không
+//     có SLA để chờ) tới lúc gỡ dấu (xóa mềm ⇒ `updated_date`).
+//   · TRẢ VỀ GN (`qc_tra_ve` loai TRA_VE_GN): GN phải "Xác nhận lại" trong SLA trạm OPEN (`s`); quá ⇒ nghẽn tới lúc
+//     xác nhận lại (`da_xu_ly` ⇒ `updated_date`, cùng mốc `tech.qcMoLaiSql` dùng).
+const NGHEN_OPEN = (s) => `SELECT g.phan_in_id, g.created_date AS tg_vao,
+    CASE WHEN g.dang_hoat_dong THEN NULL ELSE GREATEST(g.created_date, g.updated_date) END AS tg_ra,
+    g.created_date AS bd, false AS chan, 'Bất thường (READY KT)'::text AS ly_do
+  FROM phan_in_ghi_chu g WHERE g.loai = 'BAT_THUONG' AND g.created_date < (SELECT den FROM ky)
+  UNION ALL
+  SELECT r.phan_in_id, r.created_date, CASE WHEN r.da_xu_ly THEN GREATEST(r.created_date, r.updated_date) END,
+    (r.created_date + ${phut(s)}), false, 'GN xác nhận lại quá hạn'::text
+  FROM qc_tra_ve r WHERE r.loai = 'TRA_VE_GN' AND r.phan_in_id IS NOT NULL AND r.created_date < (SELECT den FROM ky)`;
+
+// `s` = SLA trạm/checklist (phút, số nguyên do server đọc từ workflow). Khóa = `BANG_THEO_DOI[].ma`.
+const NGHEN_CON = {
+  OPEN: NGHEN_OPEN,
+  READY_KT: nghenReadyKt,
+  READY_QA: nghenReadyQa,
+  // Release 1 — gương bản đồ nghẽn (`flowRows` trạm RELEASE_1): đồng hồ chạy từ lúc QC xác nhận CHÍNH đợt đó
+  //   (đợt chưa QC thì chưa vào Release 1 theo nghĩa nghẽn — đang là việc của READY).
+  RELEASE_1: (s) => tuDv(DV.RELEASE_1, `((SELECT ${mocDotMucSql('zr', 'zr.phan_in_id', 'QC_XAC_NHAN')}
+      FROM dot_vai_ve zr WHERE zr.ma_dot_vai = x.ma_dot_vai) + ${phut(s)})`),
+  // Test Run — theo giờ SX kế hoạch của CHÍNH lệnh (`slaTestRunSql`, luật tắt ⇒ SLA trạm); lệnh đang chờ kỹ
+  //   thuật làm lại (`planning.CHO_KY_THUAT_SQL`, QA không test được) không tính "chưa xác nhận".
+  TEST_RUN: (s) => tuDv(DV.TEST_RUN,
+    `(SELECT x.tg_vao + ${phut(slaTestRunSql('x.tg_vao', gioSxKhSql('zl.tg_bd_kh', 'zl.ngay_ke_hoach'), s))}
+      FROM lenh_san_xuat zl WHERE ${LENH_X})`,
+    `COALESCE((SELECT zl.trang_thai = 'RELEASE_1' AND NOT EXISTS (SELECT 1 FROM phieu_san_xuat zp WHERE zp.lenh_san_xuat_id = zl.id)
+      AND ${CHO_KY_THUAT_SQL('zl.id')} FROM lenh_san_xuat zl WHERE ${LENH_X}), false)`),
+  RELEASE_2: (s) => tuDv(DV.RELEASE_2, `(x.tg_vao + ${phut(s)})`),
+  // IN (chờ chạy + đang chạy): đang chạy ⇒ đồng hồ từ lúc bắt đầu chạy phiếu đầu; chờ chạy ⇒ từ lúc duyệt Release 2.
+  IN: (s) => tuDv(DV.SAN_XUAT, `(COALESCE((SELECT min(zp.tg_bd) FROM phieu_san_xuat zp JOIN lenh_san_xuat zl ON zl.id = zp.lenh_san_xuat_id
+      WHERE ${LENH_X} AND zp.trang_thai <> 'HUY'), x.tg_vao) + ${phut(s)})`),
+  KIEM: (s) => tuDv(DV.KIEM, `(x.tg_vao + ${phut(s)})`),
+  SUA: (s) => tuDv(DV.SUA, `(x.tg_vao + ${phut(s)})`),
+  // Hàng GIA CÔNG ở OQC không tính SLA (màn OQC cũng đặt SLA 0 cho chuyền gia công).
+  OQC: (s) => tuDv(DV.OQC, `(CASE WHEN x.ma_loai_chuyen = 'GIA_CONG' THEN NULL ELSE x.tg_vao + ${phut(s)} END)`),
+  GIAO: (s) => tuDv(DV.GIAO, `(x.tg_vao + ${phut(s)})`),
+};
+
+// Điều kiện trên 1 ĐƠN VỊ CON `n`:
+//   · CHƯA xác nhận = còn ở trạm lúc cuối kỳ và mốc đo đã qua `bd` (+ không bị `chan`).
+//   · ĐÃ xác nhận   = rời trạm TRONG kỳ và lúc rời đã quá `bd`.
+const CON_CHUA = `(n.tg_vao < (SELECT den FROM ky) AND (n.tg_ra IS NULL OR n.tg_ra >= (SELECT den FROM ky))
+  AND NOT n.chan AND ${MOC_DO} > n.bd)`;
+const CON_XONG = `(n.tg_ra IS NOT NULL AND n.tg_ra >= (SELECT tu FROM ky) AND n.tg_ra < (SELECT den FROM ky) AND n.tg_ra > n.bd)`;
+
+// CTE: `q0` = dòng phần in của engine sĩ số · `nc` = đơn vị con + `bd` · `ng` = gộp nghẽn về phần in ·
+// `q` = q0 + cột nghẽn. Đơn vị nghẽn ĐẠI DIỆN của phần in (để modal hiện "nghẽn từ / bao lâu") = đơn vị CHƯA
+// xác nhận trước, rồi `bd` sớm nhất. Giờ nghẽn của phần in = đơn vị vượt SLA LÂU NHẤT (không cộng dồn các
+// đơn vị song song — cùng 1 phần in không bị tính 2 lần thời gian).
+// ⚠ Cả 4 tầng `MATERIALIZED` (DATABASE.md §15): `nc`/`ng` nhắc cột nhiều lần, để nhúng là subquery bị tính lại.
+const voiNghen = (sqlPin, conSql) => `q0 AS MATERIALIZED (${sqlPin}),
+  nc AS MATERIALIZED (${conSql}),
+  ng AS MATERIALIZED (SELECT n.phan_in_id,
+      bool_or(${CON_CHUA}) AS chua, bool_or(${CON_XONG}) AS xong_mot,
+      (array_agg(n.bd ORDER BY ${CON_CHUA} DESC, n.bd) FILTER (WHERE ${CON_CHUA} OR ${CON_XONG}))[1] AS bd_nghen,
+      (array_agg(n.tg_vao ORDER BY ${CON_CHUA} DESC, n.bd) FILTER (WHERE ${CON_CHUA} OR ${CON_XONG}))[1] AS vao_nghen,
+      (array_agg(n.tg_ra ORDER BY ${CON_CHUA} DESC, n.bd) FILTER (WHERE ${CON_CHUA} OR ${CON_XONG}))[1] AS ra_nghen,
+      max(EXTRACT(EPOCH FROM ((CASE WHEN ${CON_CHUA} THEN ${MOC_DO} ELSE n.tg_ra END) - n.bd)))
+        FILTER (WHERE ${CON_CHUA} OR ${CON_XONG}) / 3600.0 AS gio,
+      string_agg(DISTINCT n.ly_do, ' · ') FILTER (WHERE ${CON_CHUA} OR ${CON_XONG}) AS ly_do_nghen
+    FROM nc n WHERE n.bd IS NOT NULL GROUP BY n.phan_in_id),
+  q AS MATERIALIZED (SELECT q.*, COALESCE(ng.chua, false) AS ng_chua, COALESCE(ng.xong_mot, false) AS ng_xong,
+      ng.bd_nghen, ng.vao_nghen, ng.ra_nghen, COALESCE(ng.gio, 0) AS ng_gio, ng.ly_do_nghen
+    FROM q0 q LEFT JOIN ng ON ng.phan_in_id = q.id)`;
+
+// NGHẼN mức PHẦN IN = HIỆN TRẠNG + KẾT QUẢ XỬ LÝ (01/10/2026, theo tờ giấy xưởng):
+//   · CHƯA xác nhận = phần in đang TỒN CUỐI và có đơn vị con còn ở trạm đã quá SLA.
+//   · ĐÃ xác nhận   = không thuộc "chưa", và có đơn vị con RỜI trạm trong kỳ lúc đã quá SLA.
+//   · Phần nghẽn   = ĐÃ + CHƯA (rời nhau theo định nghĩa). Giờ nghẽn = Σ giờ vượt SLA (mỗi phần in 1 lần).
+// Dòng `nghenMoi` (OPEN): lỗi phát sinh SAU khi đợt đã qua trạm ⇒ KHÔNG gác "chưa xác nhận" trong Tồn cuối.
+const NGHEN_CHUA = (dong) => (dong && dong.nghenMoi ? 'q.ng_chua' : `((${dkO('ton_cuoi')}) AND q.ng_chua)`);
+const NGHEN_XONG = (dong) => `(NOT (${NGHEN_CHUA(dong)}) AND q.ng_xong)`;
+const NGHEN = (dong) => `((${NGHEN_CHUA(dong)}) OR (${NGHEN_XONG(dong)}))`;
+
+// Nguồn PHẦN IN của 1 dòng: cột "Phần" LUÔN đếm theo PHẦN IN. OPEN không có màn ⇒ nguồn riêng.
+const pinSqlCuaDong = (dong) => (dong.nguonPin === 'OPEN' ? OPEN_PIN_SQL : nguon(dong.man).donVis.pin.sql);
+
+const conCuaDong = (dong, slaPhut) => (slaPhut == null || !NGHEN_CON[dong.ma]
+  ? 'SELECT NULL::uuid AS phan_in_id, NULL::timestamptz AS tg_vao, NULL::timestamptz AS tg_ra, NULL::timestamptz AS bd, false AS chan, NULL::text AS ly_do WHERE false'
+  : NGHEN_CON[dong.ma](Number(slaPhut)));
 
 async function motDongBang(dong, slaPhut, { tu, den }) {
-  const m = nguon(dong.man);
-  const sqlPin = m.donVis.pin.sql;             // cột "Phần" LUÔN đếm theo PHẦN IN ở cả 10 dòng
+  const sqlPin = pinSqlCuaDong(dong);
   const slSql = DO_SL[dong.sl].sql;
-  const batDau = batDauNghenSql(dong, slaPhut);
   const cum = (ten, dk) => `count(*) FILTER (WHERE ${dk})::int AS ${ten}_phan,
     COALESCE(sum(${slSql}) FILTER (WHERE ${dk}), 0)::int AS ${ten}_sl`;
-  const sql = `WITH ${CTE_KY}, ${voiBdNghen(sqlPin, batDau, phuNghen(dong))} SELECT
+  const sql = `WITH ${CTE_KY}, ${voiNghen(sqlPin, conCuaDong(dong, slaPhut))} SELECT
       ${cum('ton_dau', dkO('ton_dau'))}, ${cum('nhan', dkO('nhan'))},
       ${cum('xong', dkO('lam_duoc'))}, ${cum('ton_cuoi', dkO('ton_cuoi'))},
-      ${cum('nghen', NGHEN())},
-      count(*) FILTER (WHERE ${NGHEN_XONG()})::int AS nghen_xong_phan,
-      count(*) FILTER (WHERE ${NGHEN_CHUA()})::int AS nghen_chua_phan,
-      COALESCE(sum(${GIO_NGHEN()}) FILTER (WHERE ${NGHEN()}), 0)::float8 AS nghen_gio
+      ${cum('nghen', NGHEN(dong))},
+      count(*) FILTER (WHERE ${NGHEN_XONG(dong)})::int AS nghen_xong_phan,
+      count(*) FILTER (WHERE ${NGHEN_CHUA(dong)})::int AS nghen_chua_phan,
+      COALESCE(sum(q.ng_gio) FILTER (WHERE ${NGHEN(dong)}), 0)::float8 AS nghen_gio
     FROM q WHERE ${NEN}`;
   const { rows } = await query(sql.replace(/\s+/g, ' '), [tu, den]);
   return rows[0] || {};
 }
 
 // DANH SÁCH PHẦN IN của 1 dòng bảng theo dõi (26/09/2026) — Dashboard bấm vào dòng ⇒ modal.
-// Mọi phần in thuộc ÍT NHẤT 1 trong 4 ô + cờ từng ô + nghẽn + mốc bắt đầu nghẽn + SL theo đơn vị dòng.
-// ⚠ Cùng `q`, cùng `dkO`, cùng `batDauNghenSql` với `motDongBang` ⇒ đếm cờ ở FE ra ĐÚNG số trên bảng.
+// Mọi phần in thuộc ÍT NHẤT 1 trong 4 ô + cờ từng ô + nghẽn + mốc của ĐƠN VỊ CON nghẽn + SL theo đơn vị dòng.
+// ⚠ Cùng `q`, cùng `dkO`, cùng `voiNghen` với `motDongBang` ⇒ đếm cờ ở FE ra ĐÚNG số trên bảng.
+// `vao_nghen`/`ra_nghen` = mốc vào/rời của đơn vị con nghẽn — service tính "SLA thực" + "nghẽn bao lâu" từ đó
+//   (mốc vào của DÒNG phần in là `min` mọi chu kỳ, dùng nó là ra số phút của đợt/lệnh cũ).
 async function dsDongBang(dong, slaPhut, { tu, den }) {
-  const m = nguon(dong.man);
-  const batDau = batDauNghenSql(dong, slaPhut);
-  const sql = `WITH ${CTE_KY}, ${voiBdNghen(m.donVis.pin.sql, batDau, phuNghen(dong))} SELECT ${COT_DS},
+  const sql = `WITH ${CTE_KY}, ${voiNghen(pinSqlCuaDong(dong), conCuaDong(dong, slaPhut))} SELECT ${COT_DS},
       (${dkO('ton_dau')}) AS o_ton_dau, (${dkO('nhan')}) AS o_nhan,
       (${dkO('lam_duoc')}) AS o_xong, (${dkO('ton_cuoi')}) AS o_ton_cuoi,
-      q.bd_nghen AS tg_bat_dau_nghen,
-      COALESCE(${NGHEN()}, false) AS o_nghen,
-      COALESCE(${NGHEN_XONG()}, false) AS o_nghen_xong,
-      COALESCE(${NGHEN_CHUA()}, false) AS o_nghen_chua,
+      q.bd_nghen AS tg_bat_dau_nghen, q.vao_nghen, q.ra_nghen, q.ly_do_nghen,
+      COALESCE(${NGHEN(dong)}, false) AS o_nghen,
+      COALESCE(${NGHEN_XONG(dong)}, false) AS o_nghen_xong,
+      COALESCE(${NGHEN_CHUA(dong)}, false) AS o_nghen_chua,
       ${DO_SL[dong.sl].sql} AS sl_dong,
       ${MOC_DO} AS moc_do
-    FROM q WHERE ${NEN} AND ((${dkO('ton_dau')}) OR (${dkO('nhan')}) OR (${dkO('lam_duoc')}) OR (${dkO('ton_cuoi')}))
+    FROM q WHERE ${NEN} AND ((${dkO('ton_dau')}) OR (${dkO('nhan')}) OR (${dkO('lam_duoc')}) OR (${dkO('ton_cuoi')})
+      OR (${NGHEN(dong)}))
     ORDER BY q.tg_vao DESC NULLS LAST, q.ma_phan LIMIT 5000`;
   const { rows } = await query(sql.replace(/\s+/g, ' '), [tu, den]);
   return rows;

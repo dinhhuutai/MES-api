@@ -6,6 +6,7 @@ const { lenhPhanInMatch } = require('../../utils/search');
 // Hiển thị theo PHƯƠNG ÁN IN — cấu hình động từng trang (mig 067), mặc định BẬT HẾT = không lọc.
 const { dkTrang } = require('../../utils/phuongAnIn');
 const { mauTim } = require('../../utils/timKiem');
+const { maToInTuToCsx } = require('../../utils/toIn');
 // Gõ mã trên nhãn (`16…`/`17…`) phải tra ra tem gốc (`15…`) — xem `utils/temPrefix.js`.
 const { timTem } = require('../../utils/temPrefix');
 // Ghi vết lượt gọi API ERP (nguồn cho nút "Lịch sử" ở trang Cài đặt API).
@@ -969,6 +970,7 @@ async function duLieuGhiInTem(capTem = [], ngayCt = null) {
            (SELECT count(*) FROM lenh_sx_dot_vai l2
              WHERE l2.lenh_san_xuat_id = COALESCE(ls.lenh_lien_ket_id, ls.id))::int AS so_dot_cua_lenh,
            to_char(COALESCE($3::date, (now() ${VN})::date), 'YYYY/MM/DD') AS ngay_ct,
+           to_char(t.created_date ${VN}, 'YYYY/MM/DD HH24:MI:SS') AS moc_tao,
            CASE WHEN t.gio_sx_bd IS NULL THEN NULL
                 ELSE to_char(nen.ngay + t.gio_sx_bd, 'YYYY/MM/DD HH24:MI:SS') END AS tu_gio,
            CASE WHEN t.gio_sx_kt IS NULL THEN NULL
@@ -1420,6 +1422,29 @@ async function setToInActive(id, active, actorId) {
   );
 }
 
+// ĐỒNG BỘ danh mục tổ in từ tổ của phòng CSX (02/10/2026) — luật mã ở `utils/toIn.js`.
+// Thêm tổ mới; tổ đã có thì chỉ cập nhật TÊN (theo tên tổ bên phòng ban). KHÔNG đụng `dang_hoat_dong`
+// của dòng đã có (người dùng tắt ở Danh mục tổ in thì giữ tắt) và KHÔNG xóa tổ nhập tay trước đây.
+// Chỉ ghi khi KHÁC ⇒ chạy lặp lại không sinh UPDATE thừa. Trả số dòng thêm/sửa.
+async function dongBoToInTuCsx() {
+  const { rows } = await query(
+    `SELECT t.ma_to, t.ten_to, t.dang_hoat_dong FROM to_phong_ban t
+       JOIN phong_ban pb ON pb.id = t.phong_ban_id WHERE pb.ma_phong_ban = 'CSX'`.replace(/\s+/g, ' ')
+  );
+  const ds = rows
+    .map((r) => ({ ma: maToInTuToCsx(r.ma_to), ten: String(r.ten_to || r.ma_to).trim(), bat: r.dang_hoat_dong !== false }))
+    .filter((x) => x.ma);
+  if (!ds.length) return 0;
+  const { rowCount } = await query(
+    `INSERT INTO to_in (ma_to, ten_to, mo_ta, dang_hoat_dong)
+     SELECT x.ma, x.ten, 'Tổ phòng CSX', x.bat FROM unnest($1::text[], $2::text[], $3::bool[]) AS x(ma, ten, bat)
+     ON CONFLICT (ma_to) DO UPDATE SET ten_to = EXCLUDED.ten_to, mo_ta = EXCLUDED.mo_ta, updated_date = CURRENT_TIMESTAMP
+      WHERE to_in.ten_to IS DISTINCT FROM EXCLUDED.ten_to OR to_in.mo_ta IS DISTINCT FROM EXCLUDED.mo_ta`.replace(/\s+/g, ' '),
+    [ds.map((x) => x.ma), ds.map((x) => x.ten), ds.map((x) => x.bat)]
+  );
+  return rowCount;
+}
+
 const existsMaToIn = async (ma) => (
   await query('SELECT 1 FROM to_in WHERE ma_to = $1', [ma])
 ).rows.length > 0;
@@ -1676,7 +1701,7 @@ module.exports = {
   promoteFinishedDrying, redryTem, getDryMinForPhieu,
   getActiveNgung, startNgung, resumeNgung, listNgungByPhieu,
   listLyDoNgung, createLyDoNgung, updateLyDoNgung, setLyDoNgungActive, existsMaLyDoNgung, getLyDoNgung,
-  listToIn, createToIn, updateToIn, setToInActive, existsMaToIn, getToIn, phieuCoCotToIn,
+  listToIn, createToIn, updateToIn, setToInActive, existsMaToIn, getToIn, phieuCoCotToIn, dongBoToInTuCsx,
   listLyDoBoSung, createLyDoBoSung, updateLyDoBoSung, setLyDoBoSungActive, existsMaLyDoBoSung,
   getLyDoBoSung, setLyDoBoSungChoDotVai, lyDoBoSungByLenh,
 };

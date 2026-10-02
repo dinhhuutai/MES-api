@@ -215,7 +215,21 @@ async function doiTrangThaiLyDoNgung(id, active, actorId) {
 // ─── DANH MỤC TỔ IN (mig 084) ────────────────────────────────────────────────
 // ⚠ `dsToIn` NUỐT LỖI trả mảng rỗng: chưa chạy mig 084 thì ô chọn Tổ in ở khối Phân công chỉ ẩn đi,
 //   mọi thao tác sản xuất khác chạy như cũ — không để thiếu migration chặn việc xưởng.
+// Trước khi liệt kê: đồng bộ tổ của phòng CSX vào danh mục (`utils/toIn.js`, 02/10/2026) — tối đa
+//   1 lượt / 5 phút, lỗi thì bỏ qua (thiếu mig 104 / DB chớp) ⇒ vẫn trả danh mục đang có.
+const DONG_BO_TO_IN_MS = 5 * 60 * 1000;
+let toInDongBoLuc = 0;
+async function dongBoToInNeuCan() {
+  if (Date.now() - toInDongBoLuc < DONG_BO_TO_IN_MS) return;
+  toInDongBoLuc = Date.now();
+  try {
+    const n = await repo.dongBoToInTuCsx();
+    if (n) console.log(`[to-in] Đồng bộ từ phòng CSX: ${n} tổ thêm/đổi tên`);
+  } catch (e) { console.warn(`[to-in] Không đồng bộ được từ phòng CSX: ${e.message}`); }
+}
+
 async function dsToIn(opts) {
+  await dongBoToInNeuCan();
   try { return await repo.listToIn(opts); } catch { return []; }
 }
 

@@ -6,6 +6,9 @@ const { dkTrang } = require('../../utils/phuongAnIn');
 const { lenhPhanInMatch } = require('../../utils/search');
 const { timTem } = require('../../utils/temPrefix');
 const { mauTim } = require('../../utils/timKiem');
+// Đồng hồ SLA màn Giao đo theo CHÍNH tem (mốc OQC cho qua giao) + SLA trạm FINISH — cùng nguồn dải Theo dõi /
+// bảng theo dõi Dashboard (02/10/2026; bản cũ lấy `ton_tram` của cả lệnh — xem `quality.repository temCtx`).
+const { MOC_VAO_TEM } = require('../../utils/siSoTram');
 // Sổ cái tem là NGUỒN LUẬT DUY NHẤT ở `quality.repository` — không chép biểu thức sang đây.
 const qaRepo = require('../quality/quality.repository');
 
@@ -88,7 +91,7 @@ async function listTemGiao({ cheDo = 'SAN_SANG', search = '', filters = {}, ngay
               WHERE lsg.lenh_san_xuat_id = ls.id AND dvg.nha_gia_cong IS NOT NULL) AS nha_gia_cong,
             ${DON_SUB('dh.ma_don_hang', 'don_list')},
             ${DON_SUB('kh.ten_khach_hang', 'khach_list')},
-            sla.tg_vao, sla.sla_phut, sla.canh_bao_truoc_phut,
+            ${MOC_VAO_TEM.GIAO('t')} AS tg_vao, sla.sla_phut, sla.canh_bao_truoc_phut,
             info.ma_hang, info.mau_vai, info.kich_vai, info.kich_phim
      FROM tem t
      JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
@@ -101,10 +104,9 @@ async function listTemGiao({ cheDo = 'SAN_SANG', search = '', filters = {}, ngay
        WHERE lsd.lenh_san_xuat_id = ls.id ORDER BY pin.ma_phan, dv.ma_dot_vai LIMIT 1
      ) info ON true
      LEFT JOIN LATERAL (
-       SELECT tt.tg_vao, tr.thoi_gian_quy_dinh_phut AS sla_phut, tr.canh_bao_truoc_phut
-       FROM lenh_sx_dot_vai lsd JOIN ton_tram tt ON tt.dot_vai_ve_id = lsd.dot_vai_ve_id
-       JOIN tram tr ON tr.id = tt.tram_id
-       WHERE lsd.lenh_san_xuat_id = ls.id ORDER BY tt.tg_vao LIMIT 1
+       SELECT tr.thoi_gian_quy_dinh_phut AS sla_phut, tr.canh_bao_truoc_phut
+       FROM tram tr JOIN workflow_version wv ON wv.id = tr.workflow_version_id AND wv.la_hien_hanh
+       WHERE tr.ma_tram = 'FINISH' LIMIT 1
      ) sla ON true
      ${joinTich}
      WHERE ${conds.join(' AND ')}

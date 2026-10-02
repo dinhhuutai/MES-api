@@ -228,6 +228,18 @@ const cancelableLenh = asyncHandler(async (req, res) => {
 
 const lanTestChoHuy = asyncHandler(async (req, res) => ok(res, await service.testRunsChoHuy(req.params.lenhId)));
 
+// Tab "Hủy test run" (02/10/2026) — mọi lượt test còn sống của lệnh chưa vào sản xuất.
+const lanTestCancelable = asyncHandler(async (req, res) => {
+  const { page, limit, offset } = getPaging(req.query);
+  return ok(res, await service.listLanTestChoHuy({ search: req.query.search || '', page, limit, offset }));
+});
+const huyLanTest = asyncHandler(async (req, res) => {
+  const r = await service.huyLanTest(req.params.testRunId, req.body || {}, req.user.id);
+  return ok(res, r, r.ve_test_run
+    ? `Đã hủy lần test ${r.lan_test} — lệnh ${r.ma_lenh} quay lại Test Run`
+    : `Đã hủy lần test ${r.lan_test} của lệnh ${r.ma_lenh}`);
+});
+
 const cancelLenh = asyncHandler(async (req, res) => {
   const force = !!req.body?.force && coQuyenHuyTuyChon(req);
   const r = await service.rollbackLenh(req.params.lenhId, { ...req.body, force }, req.user.id);
@@ -263,6 +275,6 @@ module.exports = {
   replanCandidates, replanIds, replanMaQuet, replan, replanDetail, replanBatch, planHistory,
   giaCongList, giaCongToOqc, giaCongHistory, giaCongTemCancelable, giaCongTemHuy, giaCongTraLai,
   keHoachTamList, keHoachTamSet, keHoachTamConfirm, keHoachTamUpdate, keHoachTamDelete, keHoachTamHistory, keHoachTamDone, keHoachTamTheoDoi,
-  cancelableLenh, cancelLenh, lanTestChoHuy, returnTestRunToReady,
+  cancelableLenh, cancelLenh, lanTestChoHuy, lanTestCancelable, huyLanTest, returnTestRunToReady,
   release1Done, release2Done, replanDone, testCnspDone, testQaDone,
 };
