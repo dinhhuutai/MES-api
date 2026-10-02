@@ -148,6 +148,8 @@ const giaCongToOqc = asyncHandler(async (req, res) => {
   const items = Array.isArray(req.body?.items)
     ? req.body.items.map((x) => ({
       dotVaiId: x?.dot_vai_ve_id, soLuong: x?.so_luong, soLuongHuy: x?.so_luong_huy,
+      // 02/10/2026: thiếu · lỗi vải (cùng trừ vào còn lại, không sang OQC) · SL 1 bó (chỉ in trên tem).
+      soLuongThieu: x?.sl_thieu, soLuongLoiVai: x?.sl_loi_vai, slMotBo: x?.sl_mot_bo,
     }))
     : null;
   const r = await service.confirmGiaCongToOqc(req.params.lenhId,

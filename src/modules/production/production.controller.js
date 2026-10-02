@@ -28,7 +28,8 @@ const { baoCaoDungChuyen: docBaoCaoDungChuyen } = require('./baoCaoDungChuyen');
 const NGAY_TOI_DA = 93;
 const laNgay = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(s));
 const congNgay = (iso, n) => new Date(Date.parse(`${iso}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
-const baoCaoDungChuyen = asyncHandler(async (req, res) => {
+// Khoảng ngày SX từ query — dùng chung cho 2 báo cáo theo khoảng ngày.
+function khoangNgay(req) {
   const homNay = ngayHomNayVN();
   const a = String(req.query.tuNgay || '').trim();
   const b = String(req.query.denNgay || '').trim();
@@ -36,7 +37,18 @@ const baoCaoDungChuyen = asyncHandler(async (req, res) => {
   let den = laNgay(b) ? b : tu;
   if (tu > den) [tu, den] = [den, tu];
   if (congNgay(tu, NGAY_TOI_DA - 1) < den) tu = congNgay(den, -(NGAY_TOI_DA - 1));
+  return { tu, den };
+}
+const baoCaoDungChuyen = asyncHandler(async (req, res) => {
+  const { tu, den } = khoangNgay(req);
   return ok(res, await docBaoCaoDungChuyen(tu, den));
+});
+
+// Báo cáo kết quả kiểm hàng (02/10/2026) — cùng quy ước khoảng ngày SX. Luật: `utils/baoCaoKiemHang.js`.
+const { baoCaoKiemHang: docBaoCaoKiemHang } = require('./baoCaoKiemHang');
+const baoCaoKiemHang = asyncHandler(async (req, res) => {
+  const { tu, den } = khoangNgay(req);
+  return ok(res, await docBaoCaoKiemHang(tu, den));
 });
 
 const start = asyncHandler(async (req, res) =>
@@ -209,7 +221,7 @@ module.exports = {
   xePhoi, temChoPhoi, themTem, adjustPhoi, drying, confirmDry, redry,
   stopLine, resumeLine, addVaiHuy, savePhanCong, vuotSanXuat,
   lyDoNgungList, lyDoNgungCreate, lyDoNgungUpdate, lyDoNgungToggle,
-  toInList, toInCreate, toInUpdate, toInToggle, baoCaoSanXuat, baoCaoDungChuyen,
+  toInList, toInCreate, toInUpdate, toInToggle, baoCaoSanXuat, baoCaoDungChuyen, baoCaoKiemHang,
   lyDoBoSungList, lyDoBoSungCreate, lyDoBoSungUpdate, lyDoBoSungToggle, luuLyDoBoSungDotVai,
   cancelableTem, cancelPrintTem,
   temDaInSX: dsTemDaIn(false), temDaInGiaCong: dsTemDaIn(true),

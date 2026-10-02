@@ -112,7 +112,12 @@ const TRUONG_TEM = Object.freeze([
   // ─ Số NHẬP ở modal "In tem = nhận hàng" + số theo CODE PHẦN của tem (27/09/2026) ─
   // Mã tem 13 (xin từ /barcode-tem-13) dùng trường `ma_tem` ở nhóm "Tem".
   { ma: 'sl_dat', ten: 'SL ĐẠT của lượt nhận (nhập lúc in) — tem Gia công', kieu: 'so', nhom: 'Gia công' },
-  { ma: 'sl_nhan_lan_nay', ten: 'SL nhận lượt này = đạt + hủy — tem Gia công', kieu: 'so', nhom: 'Gia công' },
+  { ma: 'sl_nhan_lan_nay', ten: 'SL nhận lượt này = đạt + hủy + lỗi vải — tem Gia công', kieu: 'so', nhom: 'Gia công' },
+  // 02/10/2026 — 3 ô nhập thêm ở modal nhận hàng (+ số bó suy ra). Dữ liệu: `GiaCongPage.buildVeLabel`.
+  { ma: 'sl_loi_vai', ten: 'SL lỗi vải của lượt nhận — tem Gia công', kieu: 'so', nhom: 'Gia công' },
+  { ma: 'sl_thieu', ten: 'SL thiếu của lượt nhận — tem Gia công', kieu: 'so', nhom: 'Gia công' },
+  { ma: 'sl_mot_bo', ten: 'Số lượng 1 bó — tem Gia công', kieu: 'so', nhom: 'Gia công' },
+  { ma: 'so_bo', ten: 'Số bó = SL đạt ÷ SL 1 bó (làm tròn lên) — tem Gia công', kieu: 'so', nhom: 'Gia công' },
   { ma: 'sl_release_phan', ten: 'SL release của code phần — tem Gia công', kieu: 'so', nhom: 'Gia công' },
   { ma: 'da_chuyen_phan', ten: 'SL code phần đã nhận (sau lượt này) — tem Gia công', kieu: 'so', nhom: 'Gia công' },
   { ma: 'con_lai_phan', ten: 'SL code phần còn phải nhận (sau lượt này) — tem Gia công', kieu: 'so', nhom: 'Gia công' },

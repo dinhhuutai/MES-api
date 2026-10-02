@@ -203,20 +203,31 @@ async function temCoCotDotVai(client) {
 //     con_kcs = (đạt+hủy) − (đạt + 0 + hủy) = 0   ⇒ KHÔNG lọt màn KCS (đúng: gia công không qua KCS)
 //     con_oqc = (đạt + 0) − 0 − 0 = đạt           ⇒ CHỈ phần đạt đi OQC
 //   ⇒ đặt `sl_kcs_huy` sai (vd nhét hủy vào `so_luong` mà quên cột hủy) là tem kẹt ở màn KCS.
-async function createTemGiaCongOqc(client, { phieuId, maTem, soLuong, slHuy = 0, dotVaiVeId = null }, actorId) {
+// ⚠⚠ THÊM 02/10/2026 — `slLoiVai` (LỖI VẢI) và `slThieu` (THIẾU), KHÔNG cần migration, đi ĐÚNG quy ước sổ cái tem:
+//   · Lỗi vải = vải nhận về nhưng không dùng được ⇒ cộng vào `so_luong` VÀ `sl_kcs_huy` (như hủy, không sang OQC).
+//   · Thiếu  = nhà gia công trả THIẾU ⇒ cộng vào `so_luong` + `sl_chenh_lech = −thiếu` — y như "thiếu" ở KCS
+//     (số thực có = so_luong + sl_chenh_lech). Nhờ vậy Σ `so_luong` (`GIA_CONG_DA_CHUYEN`, `giaCongPhanInRows`)
+//     trừ cả phần thiếu khỏi "còn phải nhận" — code phần đóng được — mà không phải sửa công thức nào.
+//     con_kcs = (đạt+hủy+lv+thiếu − thiếu) − (đạt + hủy+lv) = 0 · con_oqc = đạt.
+//   Số tách riêng của từng lượt (hủy / lỗi vải / thiếu / SL 1 bó) nằm ở audit `GIA_CONG_CHUYEN_OQC`.
+async function createTemGiaCongOqc(client, {
+  phieuId, maTem, soLuong, slHuy = 0, slLoiVai = 0, slThieu = 0, dotVaiVeId = null,
+}, actorId) {
   const coCot = await temCoCotDotVai(client);
-  const huy = Math.max(0, Math.trunc(Number(slHuy) || 0));
-  const tong = (Number(soLuong) || 0) + huy;
+  const nguyen = (v) => Math.max(0, Math.trunc(Number(v) || 0));
+  const huy = nguyen(slHuy) + nguyen(slLoiVai);
+  const thieu = nguyen(slThieu);
+  const tong = (Number(soLuong) || 0) + huy + thieu;
   const { rows } = coCot
     ? await client.query(
-      `INSERT INTO tem (phieu_san_xuat_id, ma_tem, so_luong, trang_thai, sl_kcs_dat, sl_kcs_huy, dot_vai_ve_id, created_by)
-       VALUES ($1,$2,$3,'CHO_OQC',$4,$5,$6,$7) RETURNING id`,
-      [phieuId, maTem, tong, soLuong, huy, dotVaiVeId, actorId]
+      `INSERT INTO tem (phieu_san_xuat_id, ma_tem, so_luong, trang_thai, sl_kcs_dat, sl_kcs_huy, sl_chenh_lech, dot_vai_ve_id, created_by)
+       VALUES ($1,$2,$3,'CHO_OQC',$4,$5,$6,$7,$8) RETURNING id`,
+      [phieuId, maTem, tong, soLuong, huy, -thieu, dotVaiVeId, actorId]
     )
     : await client.query(
-      `INSERT INTO tem (phieu_san_xuat_id, ma_tem, so_luong, trang_thai, sl_kcs_dat, sl_kcs_huy, created_by)
-       VALUES ($1,$2,$3,'CHO_OQC',$4,$5,$6) RETURNING id`,
-      [phieuId, maTem, tong, soLuong, huy, actorId]
+      `INSERT INTO tem (phieu_san_xuat_id, ma_tem, so_luong, trang_thai, sl_kcs_dat, sl_kcs_huy, sl_chenh_lech, created_by)
+       VALUES ($1,$2,$3,'CHO_OQC',$4,$5,$6,$7) RETURNING id`,
+      [phieuId, maTem, tong, soLuong, huy, -thieu, actorId]
     );
   return rows[0].id;
 }

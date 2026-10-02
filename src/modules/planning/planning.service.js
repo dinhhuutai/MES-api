@@ -1558,30 +1558,36 @@ async function nhanGiaCongTheoPhanIn(lenh, items, actorId) {
     // ⚠⚠ `soLuong` = SL **ĐẠT** · `soLuongHuy` = SL **HỦY** (hàng hỏng nhà gia công trả về).
     //   CẢ HAI đều là vải THỰC SỰ nhận về ⇒ **tổng đạt+hủy** mới là phần trừ vào "còn phải nhận".
     //   Đạt được phép = 0 (cả lô hỏng), miễn tổng > 0.
-    const qty = it.soLuong == null || it.soLuong === '' ? p.con_lai_phan : Math.trunc(Number(it.soLuong));
-    const huy = it.soLuongHuy == null || it.soLuongHuy === '' ? 0 : Math.trunc(Number(it.soLuongHuy));
-    if (!Number.isFinite(qty) || qty < 0) {
-      throw new AppError(`Số lượng đạt của ${p.ma_phan} không hợp lệ`, { status: 422, errorCode: 'INVALID_QTY' });
+    // ⚠ 02/10/2026 thêm `soLuongThieu` (nhà gia công trả THIẾU) · `soLuongLoiVai` (LỖI VẢI) — cùng trừ vào "còn lại",
+    //   KHÔNG sang OQC (xem `production.repository.createTemGiaCongOqc`) · `slMotBo` (SL 1 BÓ) chỉ để in trên tem.
+    const soKhongAm = (v, mac = 0) => (v == null || v === '' ? mac : Math.trunc(Number(v)));
+    const qty = soKhongAm(it.soLuong, p.con_lai_phan);
+    const huy = soKhongAm(it.soLuongHuy);
+    const loiVai = soKhongAm(it.soLuongLoiVai);
+    const thieu = soKhongAm(it.soLuongThieu);
+    const motBo = soKhongAm(it.slMotBo);
+    for (const [ten, v] of [['đạt', qty], ['hủy', huy], ['lỗi vải', loiVai], ['thiếu', thieu], ['1 bó', motBo]]) {
+      if (!Number.isFinite(v) || v < 0) {
+        throw new AppError(`Số lượng ${ten} của ${p.ma_phan} không hợp lệ`, { status: 422, errorCode: 'INVALID_QTY' });
+      }
     }
-    if (!Number.isFinite(huy) || huy < 0) {
-      throw new AppError(`Số lượng hủy của ${p.ma_phan} không hợp lệ`, { status: 422, errorCode: 'INVALID_QTY' });
-    }
-    if (qty + huy <= 0) {
-      throw new AppError(`Nhập số lượng nhận của ${p.ma_phan} (đạt hoặc hủy) lớn hơn 0`,
+    const tongLuot = qty + huy + loiVai + thieu;
+    if (tongLuot <= 0) {
+      throw new AppError(`Nhập số lượng nhận của ${p.ma_phan} (đạt / hủy / lỗi vải / thiếu) lớn hơn 0`,
         { status: 422, errorCode: 'INVALID_QTY' });
     }
-    if (qty + huy > p.con_lai_phan) {
-      throw new AppError(`Số lượng nhận của ${p.ma_phan} (đạt ${qty} + hủy ${huy} = ${qty + huy}) `
+    if (tongLuot > p.con_lai_phan) {
+      throw new AppError(`Số lượng của ${p.ma_phan} (đạt ${qty} + hủy ${huy} + lỗi vải ${loiVai} + thiếu ${thieu} = ${tongLuot}) `
         + `vượt phần còn lại (${p.con_lai_phan})`, { status: 422, errorCode: 'OVER_REMAINING' });
     }
-    canhan.push({ pin: p, qty, huy });
+    canhan.push({ pin: p, qty, huy, loiVai, thieu, motBo, tongLuot });
   }
 
   // Sau lượt này lệnh đã nhận đủ chưa (để đổi trạng thái + đẩy dòng chảy sang OQC).
   const tong = Number(lenh.so_luong_release) || 0;
   const daChuyen = Number(lenh.da_chuyen) || 0;
-  // ⚠ Phần trừ vào "còn phải nhận" là ĐẠT + HỦY (vải đã về, dù một phần là phế).
-  const themLan = canhan.reduce((s, x) => s + x.qty + x.huy, 0);
+  // ⚠ Phần trừ vào "còn phải nhận" là ĐẠT + HỦY + LỖI VẢI + THIẾU (khớp `tem.so_luong` của tem 13).
+  const themLan = canhan.reduce((s, x) => s + x.tongLuot, 0);
   const xong = daChuyen + themLan >= tong;
 
   // Mã tem: mỗi code phần MỘT mã riêng. Lùi 2 nấc khi API tắt (giống nhánh nhận theo lệnh).
@@ -1598,22 +1604,27 @@ async function nhanGiaCongTheoPhanIn(lenh, items, actorId) {
       { lenhId, chuyenId: lenh.chuyen_id, maPhieu, soLuong: themLan }, actorId);
     const ra = [];
     for (let i = 0; i < canhan.length; i += 1) {
-      const { pin, qty, huy } = canhan[i];
+      const { pin, qty, huy, loiVai, thieu, motBo, tongLuot } = canhan[i];
       const temId = await productionRepo.createTemGiaCongOqc(client,
-        { phieuId, maTem: maTems[i], soLuong: qty, slHuy: huy, dotVaiVeId: pin.dot_vai_ve_id }, actorId);
+        { phieuId, maTem: maTems[i], soLuong: qty, slHuy: huy, slLoiVai: loiVai, slThieu: thieu, dotVaiVeId: pin.dot_vai_ve_id }, actorId);
+      const soBo = motBo > 0 ? Math.ceil(qty / motBo) : null;
       await client.query(
         `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
          VALUES ('lenh_san_xuat', $1, 'GIA_CONG_CHUYEN_OQC', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`.replace(/\s+/g, ' '),
         [String(lenhId), JSON.stringify({
           ma_lenh: lenh.ma_lenh_san_xuat, so_luong: qty, so_luong_huy: huy, ma_tem: maTems[i],
+          sl_loi_vai: loiVai, sl_thieu: thieu, sl_mot_bo: motBo || null, so_bo: soBo,
           ma_phan: pin.ma_phan, dot_vai_ve_id: pin.dot_vai_ve_id,
           sl_release_phan: pin.sl_release_phan,
-          da_chuyen_phan: pin.da_chuyen_phan + qty + huy,
-          con_lai_phan: pin.con_lai_phan - qty - huy,
+          da_chuyen_phan: pin.da_chuyen_phan + tongLuot,
+          con_lai_phan: pin.con_lai_phan - tongLuot,
           da_chuyen: daChuyen + themLan, con_lai: tong - (daChuyen + themLan), hoan_tat: xong,
         }), actorId]
       );
-      ra.push({ tem_id: temId, ma_tem: maTems[i], ma_phan: pin.ma_phan, so_luong: qty, so_luong_huy: huy });
+      ra.push({
+        tem_id: temId, ma_tem: maTems[i], ma_phan: pin.ma_phan, so_luong: qty, so_luong_huy: huy,
+        sl_loi_vai: loiVai, sl_thieu: thieu, sl_mot_bo: motBo || null, so_bo: soBo, tong_luot: tongLuot,
+      });
     }
     if (xong) await productionRepo.setLenhTrangThai(client, lenhId, 'HOAN_TAT', actorId);
     return ra;
@@ -1622,12 +1633,13 @@ async function nhanGiaCongTheoPhanIn(lenh, items, actorId) {
   // Báo ngược lên ERP từng tem — CHẠY NGẦM, không `await` (xem ghi chú ở nhánh nhận theo lệnh).
   // ⚠ Truyền `dotVaiId` THẬT: mỗi tem nay đích danh 1 đợt vải, không phải "đợt đại diện" như trước.
   const { guiGhiInTem } = require('../production/production.service');
-  // ⚠ `soLuong` = SL ĐẠT, `soLuongHuy` = SL HỦY nhập ở modal (tem lưu so_luong = đạt + hủy).
+  // ⚠ `soLuong` = SL ĐẠT · `soLuongHuy` = HỦY + LỖI VẢI (ERP `Soluongloi` — hàng không dùng được) ·
+  //   `soLuongThieu` = THIẾU (ERP `SOLUONGTHIEU`). ERP chưa có tham số riêng cho lỗi vải.
   // ⚠⚠ Kênh `/gui-du-lieu-tem-gia-cong` (proc JQ6, 27/09/2026). In 2 tem ⇒ 2 phần tử ⇒ `guiGhiInTem`
   //   gọi ERP 2 LẦN, mỗi tem 1 IDMES riêng (proc khóa phiếu theo Soctcu = IDMES).
   guiGhiInTem(ketQua.map((t, i) => ({
     temId: t.tem_id, dotVaiId: canhan[i].pin.dot_vai_ve_id,
-    soLuong: canhan[i].qty, soLuongHuy: canhan[i].huy, soLuongThieu: 0,
+    soLuong: canhan[i].qty, soLuongHuy: canhan[i].huy + canhan[i].loiVai, soLuongThieu: canhan[i].thieu,
   })), actorId, null, { maApi: 'ERP_GUI_TEM_GIA_CONG' });
 
   if (xong) {

@@ -93,6 +93,8 @@ router.get('/monitor', rbac('PROD_MONITOR'), c.monitor);
 router.get('/bao-cao-ngay', rbac('PROD_RUN', 'PROD_MONITOR'), c.baoCaoSanXuat);
 // Báo cáo bất thường dừng chuyền (theo khoảng ngày SX) — trang Sản xuất › Báo cáo dừng chuyền.
 router.get('/bao-cao-dung-chuyen', rbac('PROD_RUN', 'PROD_MONITOR'), c.baoCaoDungChuyen);
+// Báo cáo kết quả kiểm hàng (theo dây chuyền / chuyền / lượt KCS) — trang Sản xuất › Báo cáo kiểm hàng.
+router.get('/bao-cao-kiem-hang', rbac('PROD_RUN', 'PROD_MONITOR', 'KCS', 'PHAN_LOAI_LOI'), c.baoCaoKiemHang);
 
 // Xe phơi
 router.get('/xe-phoi', rbac('XEPHOI'), c.xePhoi);
