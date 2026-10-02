@@ -18,7 +18,8 @@
 //   stage của ô "Tổng quan giai đoạn" (mỗi phần in đúng 1 trạm — DATABASE.md §11.5).
 //
 // ⚠⚠ CỘT "SL" LẤY THEO ĐƠN VỊ CỦA TỪNG TRẠM (người dùng chốt 20/09/2026):
-//     · 3 trạm đi theo PHẦN IN / ĐỢT VẢI (READY KT · READY QA · RELEASE 1): **SL vải về (pcs)**.
+//     · 3 trạm đi theo PHẦN IN / ĐỢT VẢI (READY KT · READY QA · RELEASE 1): **SL vải về (pcs)** — 2 dòng
+//       READY chỉ cộng các đợt của CHU KỲ READY hiện tại (`slDotReady`, 02/10/2026), Release 1 cộng mọi đợt.
 //     · 3 trạm đi theo LỆNH SX (TEST RUN · RELEASE 2 · IN): **SL release (pcs)** của chính phần in
 //       trong các lệnh đang ở trạm.
 //     · 4 trạm đi theo TEM (KIỂM · SỬA · OQC · GIAO): **số lượng trên chính các tem đang ở trạm đó**,
@@ -36,6 +37,8 @@
 // ⚠ `ma_tem` có UNIQUE index nên subquery này là tra khóa, không phải quét bảng.
 // ⚠ TEM CON (tem 17 — sửa đạt, mig 091) nằm sẵn trong danh sách và mang `so_luong = 0`, `sl_kcs_dat`
 //   = SL sửa đạt ⇒ 4 biểu thức dưới đây cộng nó vào ĐÚNG như sổ cái đang tính, không đếm đôi.
+const { mocDotMucSql, mocKtXongDotSql, relRoiReadyDotSql } = require('./tech');
+
 const slTem = (bieuThuc) => `COALESCE((SELECT sum(${bieuThuc})::int FROM tem xt
   WHERE q.ma_tem IS NOT NULL AND xt.ma_tem = ANY(string_to_array(q.ma_tem, ', '))), 0)`;
 
@@ -51,10 +54,35 @@ const SL_LENH = `COALESCE((SELECT sum(xlsd.so_luong)::int
  WHERE q.ma_lenh_san_xuat IS NOT NULL
    AND xls.ma_lenh_san_xuat = ANY(string_to_array(q.ma_lenh_san_xuat, ', '))), 0)`;
 
+// Σ SL vải CHỈ của các đợt thuộc CHU KỲ READY HIỆN TẠI của phần in (02/10/2026 — người dùng bắt: dòng READY KT
+// cột Nhận SL LỚN HƠN dòng OPEN, trong khi theo định nghĩa READY KT phải = OPEN, trừ hàng hệ thống tự xác nhận).
+// Lỗi cũ: 2 dòng READY dùng `vai` = Σ MỌI đợt còn hiệu lực ⇒ phần in có đợt mới hôm nay cộng luôn SL các đợt CŨ
+// đã release từ lâu (đo prod 02/10: Nhận READY KT 95.856 pcs ↔ OPEN 59.307, chỉ tính đợt của chu kỳ = 57.283).
+// Đợt d thuộc chu kỳ ⟺ d CHƯA rời trạm tại `q.tg_vao` (mốc phần in vào trạm của engine sĩ số):
+//   · READY KT: rời = sớm nhất(KT xong của CHÍNH đợt, QC của đợt, release của đợt).
+//   · READY QA: đợt đã KT xong, rời = sớm nhất(QC của đợt, release của đợt).
+// Mốc từng đợt dùng CHUNG với nguồn nghẽn theo đợt (`siso.repository READY_DOT`): `tech.mocDotMucSql`,
+// `mocKtXongDotSql`, `relRoiReadyDotSql`. Không phụ thuộc kỳ ⇒ mỗi phần in góp CÙNG một số vào cả 4 ô (bất biến giữ).
+// ⚠ Chỉ chạy trong `siso.repository` (đọc `q.id`, `q.tg_vao`, `q.ten_khach_hang` của dòng phần in).
+const slDotReady = (laQa) => {
+  const kt = mocKtXongDotSql('q.ten_khach_hang', 'zm.khuon', 'zm.muc');
+  const conO = laQa
+    ? `${kt} IS NOT NULL AND COALESCE(LEAST(zm.qc, zm.rel), 'infinity'::timestamptz) >= q.tg_vao`
+    : `COALESCE(LEAST(${kt}, zm.qc, zm.rel), 'infinity'::timestamptz) >= q.tg_vao`;
+  return `COALESCE((SELECT sum(zd.so_luong_vai_ve)::int FROM dot_vai_ve zd
+    CROSS JOIN LATERAL (SELECT ${mocDotMucSql('zd', 'zd.phan_in_id', 'KHUON')} AS khuon,
+      ${mocDotMucSql('zd', 'zd.phan_in_id', 'MUC')} AS muc, ${mocDotMucSql('zd', 'zd.phan_in_id', 'QC_XAC_NHAN')} AS qc,
+      ${relRoiReadyDotSql('zd')} AS rel) zm
+    WHERE zd.phan_in_id = q.id AND zd.trang_thai NOT IN ('DA_GOP','DA_HUY') AND zd.tg_chuyen_ready IS NOT NULL
+      AND q.tg_vao IS NOT NULL AND ${conO}), 0)`;
+};
+
 const DO_SL = {
   // Σ SL vải về của MỌI đợt vải còn hiệu lực của phần in (`LAT_DOT_CUA_PIN`) — cùng đại lượng với
   // đơn vị "SL vải (pcs)" mà dải "Theo dõi" ở Release 1/2 đang dùng.
   vai: { sql: 'COALESCE(q.so_luong_vai_ve,0)', nhan: 'SL vải về (pcs)' },
+  vai_ready_kt: { sql: slDotReady(false), nhan: 'SL vải về (pcs)' },
+  vai_ready_qa: { sql: slDotReady(true), nhan: 'SL vải về (pcs)' },
   lenh: { sql: SL_LENH, nhan: 'SL release (pcs)' },
   // Tổng phải kiểm của tem = SL in + chênh lệch (dư/thiếu) — gương `DV.KIEM`.
   tem_kiem: { sql: slTem('COALESCE(xt.so_luong,0) + COALESCE(xt.sl_chenh_lech,0)'), nhan: 'SL phải kiểm (pcs)' },
@@ -93,9 +121,9 @@ const DO_SL = {
 const BANG_THEO_DOI = [
   { ma: 'OPEN', ten: 'OPEN', man: null, nguonPin: 'OPEN', sla: { tram: 'OPEN' }, sl: 'vai_vao', nghenMoi: true,
     ghiChu: 'Đầu vào = đợt vải ERP đưa lên MES trong ngày · Nghẽn = READY KT đánh dấu Bất thường / trả về GN mà GN xác nhận lại quá SLA' },
-  { ma: 'READY_KT', ten: 'READY KT', man: 'KT_READY', sla: { tram: 'READY' }, slaKieu: 'READY_THEO_GIO', sl: 'vai',
+  { ma: 'READY_KT', ten: 'READY KT', man: 'KT_READY', sla: { tram: 'READY' }, slaKieu: 'READY_THEO_GIO', sl: 'vai_ready_kt',
     ghiChu: 'Vào = đợt vải lên READY · Xong = kỹ thuật xác nhận đủ mục' },
-  { ma: 'READY_QA', ten: 'READY QA', man: 'CL_QC_READY', sla: { checkpoint: 'QC_XAC_NHAN' }, slaKieu: 'QC_THEO_GIO', sl: 'vai',
+  { ma: 'READY_QA', ten: 'READY QA', man: 'CL_QC_READY', sla: { checkpoint: 'QC_XAC_NHAN' }, slaKieu: 'QC_THEO_GIO', sl: 'vai_ready_qa',
     ghiChu: 'Vào = kỹ thuật xong hết mục · Xong = QC xác nhận READY' },
   { ma: 'RELEASE_1', ten: 'RELEASE 1', man: 'KH_RELEASE1', sla: { tram: 'RELEASE_1' }, sl: 'vai',
     ghiChu: 'Vào = đợt vải lên READY · Xong = release hết SL (hoặc sang Kế hoạch tạm)' },

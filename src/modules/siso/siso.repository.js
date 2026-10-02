@@ -9,7 +9,7 @@ const { MAN, LOAI_NGAY, O_SI_SO, VN, DV, OPEN_PIN_SQL } = require('../../utils/s
 const { DO_SL } = require('../../utils/bangTheoDoi');
 const { slaReadySql, slaQcReadySql, slaTestRunSql, mocDoReadySql, hanBat, gioSxKhSql } = require('../../utils/slaTheoGio');
 const {
-  hanGiaoReadySql, mocDotMucSql, qcMoLaiSql, khongReadyTuDongSql, KHUON_OPT_SQL_LIST,
+  hanGiaoReadySql, mocDotMucSql, mocKtXongDotSql, relRoiReadyDotSql, qcMoLaiSql, khongReadyTuDongSql,
 } = require('../../utils/tech');
 const { CHO_GN_SQL } = require('../../utils/traVeGn');
 const { CHO_KY_THUAT_SQL } = require('../planning/planning.repository');
@@ -261,13 +261,11 @@ const phut = (bieuThuc) => `((${bieuThuc}) * interval '1 minute')`;
 // ⚠ Lọc trước đợt ĐÃ RỜI READY TRƯỚC KỲ (release chắc chắn trước `tu`) ⇒ chỉ tính mốc cho số đợt liên quan
 //   (prod phần lớn đợt đã release từ lâu).
 // ⚠ Loại phần in do HỆ THỐNG tự xác nhận READY (ERP `KTCankiemtra=0`) — y như `siSoTram DV.READY_*`.
-const REL_CHAC = (dot) => `(SELECT min(zrl.created_date) FROM lenh_sx_dot_vai zrd JOIN lenh_san_xuat zrl ON zrl.id = zrd.lenh_san_xuat_id
-   WHERE zrd.dot_vai_ve_id = ${dot}.id AND zrl.trang_thai <> 'HUY'
-     AND (zrl.trang_thai <> 'RELEASE_1' OR EXISTS (SELECT 1 FROM phieu_san_xuat zrp WHERE zrp.lenh_san_xuat_id = zrl.id)))`;
+// ⚠ Mốc KT xong / rời vì release của đợt dùng CHUNG với cột SL 2 dòng READY (`utils/bangTheoDoi.js`) qua
+//   `tech.mocKtXongDotSql` / `tech.relRoiReadyDotSql` — sửa luật ở đó, đừng chép ra đây.
 const READY_DOT = `SELECT d.phan_in_id, d.tg_chuyen_ready AS vao_ready, d.han_giao_hang AS han_dot,
-    CASE WHEN kh.ten_khach_hang IN (${KHUON_OPT_SQL_LIST}) THEN m.muc
-         WHEN m.khuon IS NOT NULL AND m.muc IS NOT NULL THEN GREATEST(m.khuon, m.muc) END AS kt_xong,
-    m.qc AS qc_xong, ${REL_CHAC('d')} AS moc_rel, ${CHO_GN_SQL('pin.id')} AS chan
+    ${mocKtXongDotSql('kh.ten_khach_hang', 'm.khuon', 'm.muc')} AS kt_xong,
+    m.qc AS qc_xong, ${relRoiReadyDotSql('d')} AS moc_rel, ${CHO_GN_SQL('pin.id')} AS chan
   FROM dot_vai_ve d
   JOIN phan_in pin ON pin.id = d.phan_in_id AND pin.dang_hoat_dong
   JOIN ma_hang mh ON mh.id = pin.ma_hang_id JOIN don_hang dh ON dh.id = mh.don_hang_id

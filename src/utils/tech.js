@@ -180,6 +180,20 @@ const mocDotMucSql = (dvAlias, pinCol, ma) => `LEAST(
                       AND zk.checkpoint_id = zx.checkpoint_id AND zk.trang_thai = 'HUY'
                       AND zk.updated_date > zx.updated_date)))`;
 
+// MỐC đợt xong KỸ THUẬT từ 2 mốc đã tính sẵn (`mocDotMucSql` KHUON / MUC): khách II/AD chỉ cần Mực, còn lại
+// cần đủ Khuôn + Mực (mốc = cái muộn hơn). NULL = chưa xong. Dùng chung nguồn READY theo đợt của bảng theo
+// dõi (`siso.repository READY_DOT`) và cột SL 2 dòng READY (`utils/bangTheoDoi.js`).
+const mocKtXongDotSql = (khachExpr, khuonExpr, mucExpr) => `(CASE WHEN (${khachExpr}) IN (${KHUON_OPT_SQL_LIST}) THEN ${mucExpr}
+  WHEN ${khuonExpr} IS NOT NULL AND ${mucExpr} IS NOT NULL THEN GREATEST(${khuonExpr}, ${mucExpr}) END)`;
+
+// MỐC đợt RỜI READY vì đã release = lệnh sống ĐẦU TIÊN của đợt. ⚠ KHÔNG tính lệnh RELEASE_1 chưa có phiếu:
+// đó là ca "Test Run không đạt → trả về KT" (lệnh được GIỮ, QC bị hủy) — đợt vẫn đang ở READY làm lại
+// (nhánh OR 3 của `technical.listCandidates`).
+const relRoiReadyDotSql = (dvAlias) => `(SELECT min(zrl.created_date) FROM lenh_sx_dot_vai zrd
+  JOIN lenh_san_xuat zrl ON zrl.id = zrd.lenh_san_xuat_id
+  WHERE zrd.dot_vai_ve_id = ${dvAlias}.id AND zrl.trang_thai <> 'HUY'
+    AND (zrl.trang_thai <> 'RELEASE_1' OR EXISTS (SELECT 1 FROM phieu_san_xuat zrp WHERE zrp.lenh_san_xuat_id = zrl.id)))`;
+
 // Đợt đã xong KỸ THUẬT (Mực + Khuôn; khách gia công II/AD chỉ cần Mực) — gương `techDoneNhom` ở service.
 // `khachExpr` = biểu thức tên khách của phần in (vd `kh.ten_khach_hang`).
 const ktDotXongSql = (dvAlias, pinCol, khachExpr) => `(${dotMucDatSql(dvAlias, pinCol, 'MUC')}
@@ -261,6 +275,7 @@ module.exports = {
   requiredTechItems, hienFilm, techDoneSql, techDoneSqlByPin,
   NHAN_HE_THONG, nguoiXacNhanSql,
   readyTuDongSql, khongReadyTuDongSql,
-  dotMucDatSql, mocDotMucSql, qcDotSql, ktDotXongSql, conDotChuaReadySql, conDotChoQcSql, conDotChuaKtSql,
+  dotMucDatSql, mocDotMucSql, mocKtXongDotSql, relRoiReadyDotSql,
+  qcDotSql, ktDotXongSql, conDotChuaReadySql, conDotChoQcSql, conDotChuaKtSql,
   dotChuaKtDk, hanGiaoReadySql,
 };
