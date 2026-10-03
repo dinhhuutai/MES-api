@@ -25,20 +25,10 @@ const baoCaoSanXuat = asyncHandler(async (req, res) => {
 // Báo cáo bất thường dừng chuyền (02/10/2026) — `?tuNgay=&denNgay=` (YYYY-MM-DD, ngày SX 06:00→06:00).
 // Thiếu/sai ⇒ hôm nay; đảo ngược ⇒ tự đổi chỗ; dài quá `NGAY_TOI_DA` ⇒ cắt bớt đầu (giữ đúng ngày cuối).
 const { baoCaoDungChuyen: docBaoCaoDungChuyen } = require('./baoCaoDungChuyen');
+// Khoảng ngày SX từ query — dùng chung cho 2 báo cáo theo khoảng ngày (luật ở `utils/khoangNgay.js`).
+const { khoangNgayTuQuery } = require('../../utils/khoangNgay');
 const NGAY_TOI_DA = 93;
-const laNgay = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(s));
-const congNgay = (iso, n) => new Date(Date.parse(`${iso}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
-// Khoảng ngày SX từ query — dùng chung cho 2 báo cáo theo khoảng ngày.
-function khoangNgay(req) {
-  const homNay = ngayHomNayVN();
-  const a = String(req.query.tuNgay || '').trim();
-  const b = String(req.query.denNgay || '').trim();
-  let tu = laNgay(a) ? a : (laNgay(b) ? b : homNay);
-  let den = laNgay(b) ? b : tu;
-  if (tu > den) [tu, den] = [den, tu];
-  if (congNgay(tu, NGAY_TOI_DA - 1) < den) tu = congNgay(den, -(NGAY_TOI_DA - 1));
-  return { tu, den };
-}
+const khoangNgay = (req) => khoangNgayTuQuery(req.query, NGAY_TOI_DA);
 const baoCaoDungChuyen = asyncHandler(async (req, res) => {
   const { tu, den } = khoangNgay(req);
   return ok(res, await docBaoCaoDungChuyen(tu, den));

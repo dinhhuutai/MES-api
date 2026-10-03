@@ -31,6 +31,7 @@ router.post('/sua/:temId', rbac('SUA'), c.recordSua);
 router.get('/oqc/candidates', rbac('OQC'), c.oqcCandidates);
 router.get('/oqc/history', rbac('OQC'), c.oqcHistory);
 router.get('/oqc/done', rbac('OQC'), c.oqcDone);
+router.get('/oqc/finish-list', rbac('OQC'), c.oqcFinishList);
 router.post('/oqc/:temId/tra-ve', rbac('OQC'), c.oqcReturn);
 router.post('/oqc/:temId', rbac('OQC'), c.recordOqc);
 

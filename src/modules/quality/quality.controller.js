@@ -71,6 +71,15 @@ const luuNguoiSua = asyncHandler(async (req, res) =>
 const guiLaiErpSua = asyncHandler(async (req, res) =>
   ok(res, await service.guiLaiErpSua(req.params.suaId, req.user.id), 'Đã gửi sửa đạt sang ERP'));
 const oqcDone = asyncHandler(async (req, res) => ok(res, await service.oqcDone(req.query.date || today())));
+// Danh sách finish (03/10/2026) — `?tuNgay=&denNgay=` (ngày OQC, giờ VN, tối đa 62 ngày) `&heThong=1` gồm cả hàng
+// script hệ thống tự chạy đến giao. Luật: `utils/danhSachFinish.js`.
+const { khoangNgayTuQuery } = require('../../utils/khoangNgay');
+const { danhSachFinish } = require('./danhSachFinish');
+const oqcFinishList = asyncHandler(async (req, res) => {
+  const { tu, den } = khoangNgayTuQuery(req.query, 62);
+  const heThong = ['1', 'true'].includes(String(req.query.heThong || '').trim());
+  return ok(res, await danhSachFinish(tu, den, heThong));
+});
 const inlineDone = asyncHandler(async (req, res) => ok(res, await service.inlineDone(req.query.date || today())));
 
 // QC in-line
@@ -112,7 +121,7 @@ module.exports = {
   plList, plTraTem, plChiTiet, plLuu, bpList, bpCreate, bpUpdate, bpToggle,
   kcsCandidates, recordKcs, gopTem, suaCandidates, recordSua, oqcCandidates, recordOqc,
   kcsHistory, suaHistory, oqcHistory,
-  kcsDone, suaDone, oqcDone, inlineDone, luuNguoiSua, guiLaiErpSua,
+  kcsDone, suaDone, oqcDone, oqcFinishList, inlineDone, luuNguoiSua, guiLaiErpSua,
   inlineCandidates, inlineLoaiLoi, inlineHistory, recordInline,
   loaiLoiList, loaiLoiCreate, loaiLoiUpdate, loaiLoiToggle,
   giaoDacBietActive, giaoDacBietList, giaoDacBietCreate, giaoDacBietUpdate, giaoDacBietToggle,

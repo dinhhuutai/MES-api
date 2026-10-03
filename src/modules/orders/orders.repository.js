@@ -353,7 +353,17 @@ async function getPhanInTimeline(phanInId) {
     WHERE tg IS NOT NULL
     GROUP BY lenh_id, ma_tram`;
 
-  // SỐ LƯỢNG per LỆNH per trạm (để hiện ở node hành trình: SL release/in, KCS đạt/sửa/hủy, sửa đạt, OQC đạt, giao).
+  // SỐ LƯỢNG per LỆNH per trạm (để hiện ở node hành trình: SL release/in, KCS đạt/sửa/hủy, sửa đạt, OQC, giao).
+  // ⚠⚠ ĐỌC SỔ CÁI TEM, KHÔNG cộng các dòng kcs/sua/oqc (03/10/2026 — người dùng bắt: thẻ OQC hiện "Đạt 95" trong khi
+  //   cả lô đã qua giao 937):
+  //   · OQC là BỐC MẪU: số "đạt" nhập ở OQC chỉ là SỐ MẪU đạt. Xác nhận đạt (hoặc không đạt nhưng cho giao) ⇒ CẢ LÔ
+  //     nguồn qua giao (`oqc.sl_qua_giao`, cộng vào `tem.sl_oqc_dat`). Thẻ OQC hiện "Qua giao" = Σ `sl_oqc_dat`
+  //     (đã trừ lượt hủy xác nhận) + "Chờ OQC" (`CON_OQC`) + số mẫu (bốc / lỗi) để tham khảo.
+  //   · KCS: Sửa / Hủy lấy `sl_kcs_sua`/`sl_kcs_huy` — số CHÍNH THỨC sau Phân loại lỗi (dòng `kcs` chỉ có tổng hư).
+  //     Tem 17 con mang `sl_kcs_dat` = phần sửa đạt đã tách ⇒ KHÔNG cộng vào "Đạt" của KCS (chỉ tem gốc).
+  //   · Giao: chỉ phiếu `DA_GIAO` (phiếu `TAO` chưa xác nhận / `HUY` không tính).
+  const qaRepo = require('../quality/quality.repository');
+  const conOqc = qaRepo.CON_OQC.replace(/\bt\./g, 'tp.');
   const qtySql = `
     WITH l AS (
       SELECT DISTINCT ls.id AS lenh_id, ls.so_luong_release
@@ -362,20 +372,32 @@ async function getPhanInTimeline(phanInId) {
       WHERE dv.phan_in_id = $1 AND ls.trang_thai <> 'HUY'
     ),
     tp AS (
-      SELECT l.lenh_id, tm.id AS tem_id, tm.so_luong, tm.trang_thai
+      SELECT l.lenh_id, tm.id AS tem_id, tm.so_luong, tm.trang_thai, (tm.tem_goc_id IS NOT NULL) AS la_con,
+             tm.sl_kcs_dat, tm.sl_kcs_sua, tm.sl_kcs_huy, tm.sl_sua_dat, tm.sl_sua_huy, tm.sl_oqc_dat, tm.sl_sua_tach
       FROM l JOIN phieu_san_xuat ps ON ps.lenh_san_xuat_id = l.lenh_id
       JOIN tem tm ON tm.phieu_san_xuat_id = ps.id
+    ),
+    s AS (
+      SELECT tp.lenh_id,
+        COALESCE(SUM(tp.so_luong), 0)::int AS pcs_in,
+        COALESCE(SUM(tp.sl_kcs_dat) FILTER (WHERE NOT tp.la_con), 0)::int AS kcs_dat,
+        COALESCE(SUM(tp.sl_kcs_sua) FILTER (WHERE NOT tp.la_con), 0)::int AS kcs_sua,
+        COALESCE(SUM(tp.sl_kcs_huy) FILTER (WHERE NOT tp.la_con), 0)::int AS kcs_huy,
+        COALESCE(SUM(tp.sl_sua_dat) FILTER (WHERE NOT tp.la_con), 0)::int AS sua_dat,
+        COALESCE(SUM(tp.sl_sua_huy) FILTER (WHERE NOT tp.la_con), 0)::int AS sua_huy,
+        COALESCE(SUM(tp.sl_oqc_dat), 0)::int AS oqc_qua_giao,
+        COALESCE(SUM(GREATEST(${conOqc}, 0)), 0)::int AS cho_oqc
+      FROM tp WHERE tp.trang_thai <> 'HUY' GROUP BY tp.lenh_id
     )
-    SELECT l.lenh_id, l.so_luong_release,
-      COALESCE((SELECT SUM(so_luong) FROM tp WHERE tp.lenh_id=l.lenh_id AND tp.trang_thai<>'HUY'),0)::int AS pcs_in,
-      COALESCE((SELECT SUM(k.so_luong_dat) FROM kcs k WHERE k.tem_id IN (SELECT tem_id FROM tp WHERE tp.lenh_id=l.lenh_id)),0)::int AS kcs_dat,
-      COALESCE((SELECT SUM(GREATEST(k.so_luong_loi-COALESCE(k.so_luong_huy,0),0)) FROM kcs k WHERE k.tem_id IN (SELECT tem_id FROM tp WHERE tp.lenh_id=l.lenh_id)),0)::int AS kcs_sua,
-      COALESCE((SELECT SUM(COALESCE(k.so_luong_huy,0)) FROM kcs k WHERE k.tem_id IN (SELECT tem_id FROM tp WHERE tp.lenh_id=l.lenh_id)),0)::int AS kcs_huy,
-      COALESCE((SELECT SUM(s.so_luong_sua_dat) FROM sua s WHERE s.tem_id IN (SELECT tem_id FROM tp WHERE tp.lenh_id=l.lenh_id)),0)::int AS sua_dat,
-      COALESCE((SELECT SUM(s.so_luong_sua_huy) FROM sua s WHERE s.tem_id IN (SELECT tem_id FROM tp WHERE tp.lenh_id=l.lenh_id)),0)::int AS sua_huy,
-      COALESCE((SELECT SUM(o.so_luong_dat) FROM oqc o WHERE o.tem_id IN (SELECT tem_id FROM tp WHERE tp.lenh_id=l.lenh_id)),0)::int AS oqc_dat,
-      COALESCE((SELECT SUM(ght.so_luong_giao) FROM giao_hang_tem ght WHERE ght.tem_id IN (SELECT tem_id FROM tp WHERE tp.lenh_id=l.lenh_id)),0)::int AS giao
-    FROM l`;
+    SELECT l.lenh_id, l.so_luong_release, s.pcs_in, s.kcs_dat, s.kcs_sua, s.kcs_huy, s.sua_dat, s.sua_huy,
+      s.oqc_qua_giao, s.cho_oqc,
+      COALESCE((SELECT SUM(o.so_luong_kiem) FROM oqc o WHERE o.tem_id IN (SELECT tem_id FROM tp WHERE tp.lenh_id=l.lenh_id)
+        AND ${qaRepo.notCancelledQc('o', 'oqc')}),0)::int AS mau_kiem,
+      COALESCE((SELECT SUM(o.so_luong_loi) FROM oqc o WHERE o.tem_id IN (SELECT tem_id FROM tp WHERE tp.lenh_id=l.lenh_id)
+        AND ${qaRepo.notCancelledQc('o', 'oqc')}),0)::int AS mau_loi,
+      COALESCE((SELECT SUM(ght.so_luong_giao) FROM giao_hang_tem ght JOIN giao_hang gh ON gh.id = ght.giao_hang_id AND gh.trang_thai = 'DA_GIAO'
+        WHERE ght.tem_id IN (SELECT tem_id FROM tp WHERE tp.lenh_id=l.lenh_id)),0)::int AS giao
+    FROM l LEFT JOIN s ON s.lenh_id = l.lenh_id`;
 
   // Đợt vải CHƯA release (chưa có lệnh ≠ HUY nào) — để hiện hành trình READY NGAY, không chờ tạo lệnh.
   const pendingSql = `
@@ -429,7 +451,13 @@ async function getPhanInTimeline(phanInId) {
       case 'SAN_XUAT': case 'CHO_KHO': return [{ label: 'SL in', value: q.pcs_in || 0 }];
       case 'KIEM': return [{ label: 'Đạt', value: q.kcs_dat || 0 }, { label: 'Sửa', value: q.kcs_sua || 0 }, { label: 'Hủy', value: q.kcs_huy || 0 }];
       case 'SUA': return [{ label: 'Sửa đạt', value: q.sua_dat || 0 }, { label: 'Sửa hủy', value: q.sua_huy || 0 }];
-      case 'OQC': return [{ label: 'Đạt', value: q.oqc_dat || 0 }];
+      // OQC bốc mẫu: số chính = cả lô qua giao; số mẫu chỉ để tham khảo (ẩn khi 0).
+      case 'OQC': return [
+        { label: 'Qua giao', value: q.oqc_qua_giao || 0 },
+        ...(q.cho_oqc > 0 ? [{ label: 'Chờ OQC', value: q.cho_oqc }] : []),
+        ...(q.mau_kiem > 0 ? [{ label: 'Bốc mẫu', value: q.mau_kiem }] : []),
+        ...(q.mau_loi > 0 ? [{ label: 'Mẫu lỗi', value: q.mau_loi }] : []),
+      ];
       case 'DONE_DELIVERY': return [{ label: 'SL giao', value: q.giao || 0 }];
       default: return [];
     }
@@ -718,8 +746,13 @@ async function getPhanInKcsByDot(phanInId) {
 }
 
 // SL theo TRẠM (hợp nhất theo phần in) để hiện tại node hành trình:
-//  sl_release (Release 1) · sl_in_xong (Sản xuất) · oqc_dat (OQC) + nhánh kcs_dat/sua_dat (qua sửa).
+//  sl_release (Release 1) · sl_in_xong (Sản xuất) · OQC: vào OQC = kcs_dat (đạt thẳng) + sua_dat (qua sửa),
+//  oqc_qua_giao = CẢ LÔ đã qua OQC, cho_oqc = còn chờ OQC, mau_kiem/mau_dat = số BỐC MẪU (tham khảo).
+// ⚠⚠ ĐỌC SỔ CÁI TEM (03/10/2026): bản cũ cộng `oqc.so_luong_dat` = số MẪU đạt (vd 95) và gọi là "OQC đạt" ⇒ người
+//   dùng tưởng cả lô chỉ đạt 95 trong khi đã qua giao 937. OQC bốc mẫu: đạt / không đạt mà cho giao ⇒ CẢ LÔ qua giao.
+//   kcs_dat / sua_dat lấy trên TEM GỐC (tem 17 con mang lại phần sửa đạt đã tách — cộng là đếm đôi).
 async function getPhanInStagePcs(phanInId) {
+  const qaRepo = require('../quality/quality.repository');
   const sql = `
     WITH lp AS (
       SELECT DISTINCT ls.id, ls.so_luong_release, ls.la_in_lai
@@ -729,7 +762,7 @@ async function getPhanInStagePcs(phanInId) {
       WHERE ls.trang_thai <> 'HUY'
     ),
     tp AS (
-      SELECT DISTINCT tm.id, tm.so_luong, tm.trang_thai
+      SELECT DISTINCT tm.id, tm.so_luong, tm.trang_thai, tm.tem_goc_id, tm.sl_kcs_dat, tm.sl_sua_dat, tm.sl_oqc_dat, tm.sl_sua_tach
       FROM tem tm
       JOIN phieu_san_xuat ps ON ps.id = tm.phieu_san_xuat_id
       JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id AND ls.trang_thai <> 'HUY'
@@ -739,11 +772,14 @@ async function getPhanInStagePcs(phanInId) {
     SELECT
       COALESCE((SELECT SUM(so_luong_release) FROM lp WHERE la_in_lai IS NOT TRUE), 0)::int AS sl_release,
       COALESCE((SELECT SUM(so_luong) FROM tp WHERE trang_thai <> 'HUY'), 0)::int AS sl_in_xong,
-      COALESCE((SELECT SUM(so_luong_dat) FROM kcs WHERE tem_id IN (SELECT id FROM tp)), 0)::int AS kcs_dat,
-      COALESCE((SELECT SUM(so_luong_sua_dat) FROM sua WHERE tem_id IN (SELECT id FROM tp)), 0)::int AS sua_dat,
-      COALESCE((SELECT SUM(so_luong_dat) FROM oqc WHERE tem_id IN (SELECT id FROM tp)), 0)::int AS oqc_dat`;
+      COALESCE((SELECT SUM(sl_kcs_dat) FROM tp WHERE trang_thai <> 'HUY' AND tem_goc_id IS NULL), 0)::int AS kcs_dat,
+      COALESCE((SELECT SUM(sl_sua_dat) FROM tp WHERE trang_thai <> 'HUY' AND tem_goc_id IS NULL), 0)::int AS sua_dat,
+      COALESCE((SELECT SUM(sl_oqc_dat) FROM tp WHERE trang_thai <> 'HUY'), 0)::int AS oqc_qua_giao,
+      COALESCE((SELECT SUM(GREATEST(${qaRepo.CON_OQC}, 0)) FROM tp t WHERE t.trang_thai <> 'HUY'), 0)::int AS cho_oqc,
+      COALESCE((SELECT SUM(o.so_luong_kiem) FROM oqc o WHERE o.tem_id IN (SELECT id FROM tp) AND ${qaRepo.notCancelledQc('o', 'oqc')}), 0)::int AS mau_kiem,
+      COALESCE((SELECT SUM(o.so_luong_dat) FROM oqc o WHERE o.tem_id IN (SELECT id FROM tp) AND ${qaRepo.notCancelledQc('o', 'oqc')}), 0)::int AS mau_dat`;
   const { rows } = await query(sql.replace(/\s+/g, ' '), [phanInId]);
-  return rows[0] || { sl_release: 0, sl_in_xong: 0, kcs_dat: 0, sua_dat: 0, oqc_dat: 0 };
+  return rows[0] || { sl_release: 0, sl_in_xong: 0, kcs_dat: 0, sua_dat: 0, oqc_qua_giao: 0, cho_oqc: 0, mau_kiem: 0, mau_dat: 0 };
 }
 
 // Thời gian chờ khô (phút) của phần in — best-effort (cần migration 038).
