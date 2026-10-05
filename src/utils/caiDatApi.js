@@ -131,6 +131,17 @@ const DANH_MUC_API = [
     macDinh: () => env.erp.guiOqcEnabled,
     url: () => env.erp.guiOqcUrl,
   },
+  // DỮ LIỆU RELEASE 1 / KẾ HOẠCH LỆNH (04/10/2026) — /gui-erp-release-1 → proc MES_spr_MES21X0.
+  {
+    ma: 'ERP_GUI_RELEASE_1',
+    ten: 'Gửi dữ liệu Release 1 / kế hoạch lệnh sang ERP',
+    mo_ta: 'Gửi sau mỗi lần Xác nhận Release 1 · Xác nhận kế hoạch tạm · Lập lại kế hoạch (proc MES_spr_MES21X0): '
+      + 'chuyền, ngày/giờ kế hoạch, HSKT + chuỗi DsRelease mỗi lệnh × đợt vải 12 trường. Phần in inset (gom set) '
+      + 'trong cùng thao tác nối chung 1 lượt gọi. Chạy ngầm — TẮT hay lỗi đều KHÔNG chặn thao tác kế hoạch.',
+    canh_bao: null,
+    macDinh: () => env.erp.guiRelease1Enabled,
+    url: () => env.erp.guiRelease1Url,
+  },
   // TEM 13 GIA CÔNG (27/09/2026) — /gui-du-lieu-tem-gia-cong → proc MES_spr_MES2JQ6.
   {
     ma: 'ERP_GUI_TEM_GIA_CONG',

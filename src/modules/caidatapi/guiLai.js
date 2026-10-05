@@ -30,7 +30,7 @@ const erp = require('../../utils/erpApiChung');
 // Mã API có nút gửi lại (FE gương ở `LichSuApiPanel` hằng `CO_GUI_LAI`).
 const MA_GUI_LAI = new Set([
   'ERP_GHI_IN_TEM', 'ERP_GUI_PHIEU_GIAO', 'ERP_GUI_PHAN_LOAI_LOI', 'ERP_GUI_SUA_DAT', 'ERP_GUI_KIEM_PHAM',
-  'ERP_GUI_TEM_GIA_CONG', 'ERP_GUI_DS_HUY_VAI', 'ERP_GUI_OQC',
+  'ERP_GUI_TEM_GIA_CONG', 'ERP_GUI_DS_HUY_VAI', 'ERP_GUI_OQC', 'ERP_GUI_RELEASE_1',
 ]);
 
 const soHoacNull = (v) => { const n = Number(v); return v == null || v === '' || !Number.isFinite(n) ? null : n; };
@@ -72,6 +72,17 @@ async function guiLai(ma, auditId, actorId) {
     if (!ds.length) throw new AppError('Dòng lịch sử không có danh sách code phần', { status: 409, errorCode: 'THIEU_DU_LIEU' });
     const kq = await erp.guiDsHuyVai(ds, { actorId, idKetNoi: gui.IDKetNoi || g.id_mes || null });
     loiNeu(kq, 'Gửi danh sách hủy vải');
+    return { ok: true };
+  }
+  // Release 1 / kế hoạch lệnh (04/10/2026) — gửi lại ĐÚNG thân đã gửi (IDMES + DsRelease cũ), xem
+  //   `planning/release1Erp.guiLai` vì sao không dựng lại từ dữ liệu hiện tại.
+  if (ma === 'ERP_GUI_RELEASE_1') {
+    const release1Erp = require('../planning/release1Erp');
+    const kq = await release1Erp.guiLai(g.gui, { idBanGhi: d.id_ban_ghi, actorId });
+    if (kq && kq.bo_qua && kq.ly_do === 'THIEU_DU_LIEU') {
+      throw new AppError('Dòng lịch sử không có dữ liệu đã gửi (DsRelease) — không gửi lại được', { status: 409, errorCode: 'THIEU_DU_LIEU' });
+    }
+    loiNeu(kq, 'Gửi dữ liệu Release 1');
     return { ok: true };
   }
   const id = d.id_ban_ghi;

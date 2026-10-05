@@ -116,9 +116,11 @@ async function goiMotLan({ nhan, url, method, body, timeoutMs }) {
 //   nên cột ID của *Cài đặt API › Lịch sử* trống (phiếu giao, phân loại lỗi, lấy ID phiếu giao).
 //   Thứ tự: `idKetNoi` truyền vào → ID trong body (IDMES/IDMes/IDKetNoi) → `layIdTuPhanHoi(data)` → ID sinh mới.
 //   ⚠ Từ 30/09/2026 ID kết nối LUÔN do MES tạo — không lấy mã ERP cấp (số phiếu / mã tem) làm ID kết nối.
+// `maTem` (tùy chọn) = mã hiện ở cột "Mã" của Lịch sử và tìm được bằng ô tìm (vd danh sách mã lệnh của
+//   API Release 1). Không truyền ⇒ như cũ (cột lấy từ `gui.BarcodeIn`/`IDPhieuGiao`).
 async function goiErp(maApi, {
   nhan, url, method = 'POST', body = null, timeoutMs, retry, idBanGhi, moTa, actorId,
-  idKetNoi = null, layIdTuPhanHoi = null,
+  idKetNoi = null, layIdTuPhanHoi = null, maTem = null,
 }) {
   const idCoSan = idKetNoi || idTuBody(body);
   if (!(await apiBat(maApi))) {
@@ -133,7 +135,7 @@ async function goiErp(maApi, {
       const data = await goiMotLan({ nhan, url, method, body, timeoutMs });
       const idKn = idCoSan || (layIdTuPhanHoi && layIdTuPhanHoi(data)) || taoIdKetNoi();
       await ghiLog(maApi, {
-        thanhCong: true, idBanGhi: idBanGhi || '-', idMes: idKn, url, soLanThu: i, thoiGianMs: Date.now() - batDau,
+        thanhCong: true, idBanGhi: idBanGhi || '-', idMes: idKn, maTem, url, soLanThu: i, thoiGianMs: Date.now() - batDau,
         gui: method === 'POST' ? body : null, nhan: data,
         erpMessage: data && data.message, erpReturnValue: data && data.returnValue, actorId,
       });
@@ -152,7 +154,7 @@ async function goiErp(maApi, {
   console.error(`[${nhan}] ✗ Thất bại sau ${soLan} lần${moTa ? ` — ${moTa}` : ''}: ${error}`);
   const idKn = idCoSan || taoIdKetNoi();
   await ghiLog(maApi, {
-    thanhCong: false, idBanGhi: idBanGhi || '-', idMes: idKn, url, soLanThu: soLan, thoiGianMs: Date.now() - batDau,
+    thanhCong: false, idBanGhi: idBanGhi || '-', idMes: idKn, maTem, url, soLanThu: soLan, thoiGianMs: Date.now() - batDau,
     gui: method === 'POST' ? body : null, nhan: ph,
     erpMessage: ph && ph.message, erpError: ph && ph.error, erpReturnValue: ph && ph.returnValue,
     loi: error, actorId,

@@ -73,6 +73,9 @@ async function start() {
     console.log(`[erp] Gửi OQC      : ${env.erp.guiOqcUrl}`
       + (env.erp.guiOqcEnabled ? '' : '   (ĐANG TẮT qua ERP_GUI_OQC_ENABLED=false)')
       + (process.env.ERP_GUI_OQC_URL ? '' : '   ⚠ CHƯA đặt ERP_GUI_OQC_URL — đang suy theo gốc URL nhận vải'));
+    console.log(`[erp] Gửi Release 1: ${env.erp.guiRelease1Url}`
+      + (env.erp.guiRelease1Enabled ? '' : '   (ĐANG TẮT qua ERP_GUI_RELEASE_1_ENABLED=false)')
+      + (process.env.ERP_GUI_RELEASE_1_URL ? '' : '   ⚠ CHƯA đặt ERP_GUI_RELEASE_1_URL — đang suy theo gốc URL nhận vải'));
     console.log(`[erp] Gửi tem g.công: ${env.erp.guiTemGiaCongUrl}`
       + (env.erp.guiTemGiaCongEnabled ? '' : '   (ĐANG TẮT qua ERP_GUI_TEM_GIA_CONG_ENABLED=false)')
       + (process.env.ERP_GUI_TEM_GIA_CONG_URL ? '' : '   ⚠ CHƯA đặt ERP_GUI_TEM_GIA_CONG_URL — đang suy theo gốc URL nhận vải'));

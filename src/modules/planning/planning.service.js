@@ -19,6 +19,8 @@ const erpRepo = require('../erpsync/erpsync.repository'); // reopenReadyForPhanI
 // Chuông thông báo cho Kỹ thuật khi phần in bị trả về (mig 085).
 // ⚠ Không tạo vòng require: `thongbao.service` chỉ phụ thuộc repo của chính nó + utils + sockets.
 const thongBao = require('../thongbao/thongbao.service');
+// Gửi dữ liệu lệnh sang ERP sau Release 1 / Xác nhận kế hoạch tạm / Lập lại kế hoạch (04/10/2026) — chạy ngầm.
+const release1Erp = require('./release1Erp');
 
 const TEST_TRAM = 'TEST_RUN';
 const CNSP_CP = 'TEST_CNSP';
@@ -330,7 +332,9 @@ async function kiemPainVsChuyen(dotVaiIds, chuyenId) {
   );
 }
 
-async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach, tgBdKh, tgKtKh }, actorId) {
+// `opts.nguonErp` = nhãn thao tác gửi kèm lượt báo ERP (`release1Erp`): mặc định RELEASE_1; Xác nhận kế
+//   hoạch tạm truyền KE_HOACH_TAM.
+async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach, tgBdKh, tgKtKh }, actorId, opts = {}) {
   if (!Array.isArray(dotVaiIds) || dotVaiIds.length === 0) {
     throw new AppError('Chọn ít nhất một đợt vải', { status: 422, errorCode: 'NO_DOT_VAI' });
   }
@@ -415,6 +419,7 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
     await repo.dongSetDaReleaseHet(created.map((c) => c.dot_vai_id), actorId);
     created.forEach((c) => sockets.emit('workflow:updated', { lenhId: c.id, stage: 'GIA_CONG', giaCong: true }));
     sockets.emit('dashboard:refresh', {});
+    release1Erp.xepHang(created.map((c) => c.id), actorId, opts.nguonErp || 'RELEASE_1');
     const detail = await getLenhDetail(created[0].id);
     return {
       ...detail, created_summary: created, created_count: created.length,
@@ -459,6 +464,7 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
   await repo.dongSetDaReleaseHet(created.map((c) => c.dot_vai_id), actorId);
   created.forEach((c) => sockets.emit('workflow:updated', { lenhId: c.id, stage: c.trang_thai }));
   sockets.emit('dashboard:refresh', {});
+  release1Erp.xepHang(created.map((c) => c.id), actorId, opts.nguonErp || 'RELEASE_1');
 
   const detail = await getLenhDetail(created[0].id);
   return {
@@ -1265,7 +1271,7 @@ async function confirmKeHoachTam(id, actorId) {
     dotVaiIds: [kt.dot_vai_ve_id], chuyenId: kt.chuyen_id,
     soLuongRelease: kt.so_luong != null ? kt.so_luong : undefined,
     ngayKeHoach: kt.ngay_ke_hoach, tgBdKh: kt.tg_bd_kh, tgKtKh: kt.tg_kt_kh,
-  }, actorId);
+  }, actorId, { nguonErp: 'KE_HOACH_TAM' });
   await repo.deleteKeHoachTam(id);
   await repo.logKeHoachTam('XAC_NHAN_KE_HOACH_TAM', kt.dot_vai_ve_id, {
     chuyen_id: kt.chuyen_id, ngay_ke_hoach: kt.ngay_ke_hoach, so_luong: kt.so_luong,
@@ -1805,6 +1811,9 @@ async function replan(lenhId, { chuyenId, ngayKeHoach, lyDo, tgBdKh, tgKtKh, slR
   sockets.emit('dashboard:refresh', {});
   // Đổi SL release là đổi con số mà màn Sản xuất / dashboard đang đọc ⇒ báo luôn cho chúng tải lại.
   if (items.length) sockets.emit('production:updated', { lenhId });
+  // Báo ERP kế hoạch MỚI của lệnh — `replanBatch` gọi hàm này từng lệnh, hàng chờ của `release1Erp` gom
+  //   lại nên phần in inset vẫn đi chung 1 lượt.
+  release1Erp.xepHang([lenhId], actorId, 'REPLAN');
   return { id: lenhId, so_luong_release: slMoi, trang_thai: changMoi || lenh.trang_thai };
 }
 

@@ -42,6 +42,9 @@ const TEN_BANG = {
   ERP_GUI_KIEM_PHAM: 'kcs',
   // Gắn theo LƯỢT OQC (`oqc.id`, 02/10/2026) — 1 tem có thể OQC nhiều lượt/nhiều nguồn; khóa chống gửi trùng.
   ERP_GUI_OQC: 'oqc',
+  // Release 1 / kế hoạch lệnh (04/10/2026) — 1 lượt có thể nhiều lệnh (inset) ⇒ `id_ban_ghi` = lệnh ĐẦU,
+  //   danh sách mã lệnh nằm ở `ma_tem` (tìm được ở Lịch sử) + chuỗi `gui.DsRelease`.
+  ERP_GUI_RELEASE_1: 'lenh_san_xuat',
   // Tem 13 gia công (27/09/2026) — gắn `tem`+id tem: mỗi tem 1 lượt gửi, khóa chống gửi trùng theo tem.
   ERP_GUI_TEM_GIA_CONG: 'tem',
   // Lượt KÉO phần in đã sửa thông tin (GN) — không gắn bản ghi nào; ID kết nối sinh mỗi lượt.
