@@ -13,6 +13,8 @@ const { timTem } = require('../../utils/temPrefix');
 const { ghiLog } = require('../../utils/erpApiLog');
 // Cấp mã IDMES (dãy dùng chung mọi chiều đẩy ERP) — nguồn luật ở `utils/idMes.js`.
 const { capIdMes: capIdMesChung } = require('../../utils/idMes');
+// Lệnh có phần in đang ở Giao nhận (trả về GN) ⇒ tạm rời danh sách Chờ chạy (06/10/2026, `utils/traVeGn.js`).
+const { LENH_CHO_GN_SQL } = require('../../utils/traVeGn');
 
 const PHAN_AGG = `(SELECT string_agg(DISTINCT pin.ma_phan, ', ')
     FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
@@ -41,6 +43,7 @@ const NGC_LENH = (lenhCol) => `(SELECT string_agg(DISTINCT dvg.nha_gia_cong, ', 
 const PHAN_INFO_LATERAL = `
   LEFT JOIN LATERAL (
     SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, dh.bo_phan_bh,
+           pin.id AS phan_in_id,
            pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.ma_phan, pin.so_luong_don_hang,
            pin.tinh_chat_in,
            dv.han_giao_hang, dv.so_luong_vai_ve, dv.nha_gia_cong
@@ -86,11 +89,12 @@ async function listProductionCandidates({ search = '', offset = 0, limit = 20 })
     ${PHAN_INFO_LATERAL}
     WHERE ls.trang_thai = 'RELEASE_2'
       AND ${dkPain}
+      AND NOT ${LENH_CHO_GN_SQL('COALESCE(ls.lenh_lien_ket_id, ls.id)')}
       AND ($1 = '' OR ls.ma_lenh_san_xuat ~* $1 OR ${lenhPhanInMatch('ls.id', '$1')})`;
   const dataSql = `
     SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.chuyen_id, ls.ngay_ke_hoach, ls.giai_doan,
            cs.ma_chuyen, cs.ten_chuyen, lc.ma_loai AS ma_loai_chuyen, lc.ten_loai AS ten_loai_chuyen,
-           info.ten_khach_hang, info.ma_don_hang, info.ma_hang,
+           info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.phan_in_id,
            info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan,
            info.han_giao_hang, info.so_luong_vai_ve,
            ${NGC_LENH('ls.id')} AS nha_gia_cong, ${MA_QUET_LENH('ls.id')} AS ma_quet,

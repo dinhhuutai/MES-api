@@ -21,6 +21,8 @@ const erpRepo = require('../erpsync/erpsync.repository'); // reopenReadyForPhanI
 const thongBao = require('../thongbao/thongbao.service');
 // Gửi dữ liệu lệnh sang ERP sau Release 1 / Xác nhận kế hoạch tạm / Lập lại kế hoạch (04/10/2026) — chạy ngầm.
 const release1Erp = require('./release1Erp');
+// Khách gia công (II/AD) miễn Khuôn — nhãn cột Khuôn của Danh sách release.
+const { isKhuonOptional } = require('../../utils/tech');
 
 const TEST_TRAM = 'TEST_RUN';
 const CNSP_CP = 'TEST_CNSP';
@@ -339,6 +341,15 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
     throw new AppError('Chọn ít nhất một đợt vải', { status: 422, errorCode: 'NO_DOT_VAI' });
   }
   if (!chuyenId) throw new AppError('Chọn chuyền sản xuất', { status: 422, errorCode: 'NO_CHUYEN' });
+
+  // ⚠ CHẶN: phần in đang ở Giao nhận (trả về GN, chưa "Xác nhận lại") thì chưa release / chưa lưu kế hoạch
+  //   tạm được — màn Release 1 đã ẩn, chặn này cho đường Xác nhận kế hoạch tạm + màn để lâu chưa tải lại.
+  //   Chạy TRƯỚC mọi thao tác ghi (kể cả nhánh kế hoạch tạm bên dưới).
+  const dangOGn = await repo.phanInDangOGnTheoDot(dotVaiIds);
+  if (dangOGn.length) {
+    throw new AppError(`${dangOGn.join(', ')} đang chờ Giao nhận sửa thông tin — chưa release được`,
+      { status: 409, errorCode: 'DANG_O_GN', details: dangOGn });
+  }
 
   // ⚠⚠ CHẶN: PHƯƠNG ÁN IN PHẢI KHỚP LOẠI CHUYỀN (chốt 18/08/2026 — `utils/phuongAnChuyen.js`).
   //   CHẶN TUYỆT ĐỐI, không có cờ bỏ qua. Lệch ⇒ phải đổi phương án in (lý do + người duyệt, mig 086).
@@ -902,6 +913,7 @@ async function approveRelease2(lenhId, actorId) {
   const lenh = await repo.getLenhBasic(lenhId);
   if (!lenh) throw new AppError('Lệnh sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   if (lenh.trang_thai === 'RELEASE_2') throw new AppError('Lệnh đã Release 2', { status: 409, errorCode: 'ALREADY' });
+  await assertKhongOGn(lenhId);
   const status = await repo.getLenhTestStatus(lenhId, byMa[CNSP_CP].id, byMa[QA_CP].id);
   if (!status.cnsp_done || !status.qa_done) {
     throw new AppError('Test Run chưa đủ xác nhận CNSP và QA', { status: 409, errorCode: 'TEST_INCOMPLETE' });
@@ -1187,13 +1199,24 @@ async function returnTestRunToReady(lenhId, { checklists, lyDo, loai }, actorId)
   };
 }
 
-// Chặn mọi thao tác test khi lệnh đang chờ kỹ thuật làm lại (đã bị QA trả về READY).
+// Chặn mọi thao tác test khi lệnh đang chờ kỹ thuật làm lại (đã bị QA trả về READY)
+// hoặc có phần in đang ở Giao nhận (trả về GN — 06/10/2026).
 async function assertKhongChoKyThuat(lenhId) {
   const info = await repo.lenhChoKyThuat(lenhId);
   if (info && info.cho_ky_thuat) {
     throw new AppError('Lệnh đang chờ kỹ thuật làm lại (READY) — chưa test được',
       { status: 409, errorCode: 'CHO_KY_THUAT' });
   }
+  if (info && info.cho_gn) throw loiDangOGn();
+}
+
+// Lệnh có phần in đang ở Giao nhận ⇒ khóa test / duyệt Release 2 / xác nhận chạy tới khi GN "Xác nhận lại"
+// (`utils/traVeGn.js`). Production gọi lại hàm này — đừng chép điều kiện sang chỗ khác.
+const loiDangOGn = () => new AppError('Phần in của lệnh đang chờ Giao nhận sửa thông tin — chờ GN xác nhận lại',
+  { status: 409, errorCode: 'DANG_O_GN' });
+async function assertKhongOGn(lenhId) {
+  const info = await repo.lenhChoKyThuat(lenhId);
+  if (info && info.cho_gn) throw loiDangOGn();
 }
 
 // ----- LẬP KẾ HOẠCH LẠI -----
@@ -1926,6 +1949,15 @@ async function upsertCaTuan({ nam, tuan, loaiCa, ghiChu }, actorId) {
   return repo.upsertCaTuan({ nam: y, tuan: w, loaiCa, ghiChu }, actorId);
 }
 
+// Nhãn cột "Test" (Danh sách release, mẫu checklist): QA đạt ⇒ OK · đạt nhờ "In không đạt" ⇒ "KĐ cho IN" ·
+// lệnh đã qua khỏi Test Run mà không có QA đạt (bổ sung / mẫu SL / SL < 100 / "Không test run" / gia công) ⇒
+// "Không test" · còn ở Test Run có lần test lỗi ⇒ "Lỗi" · chưa test ⇒ rỗng.
+function nhanTestRelease(r) {
+  if (r.test_qa_dat) return r.test_kd_cho_in ? 'KĐ cho IN' : 'OK';
+  if (r.lenh_trang_thai && r.lenh_trang_thai !== 'RELEASE_1') return 'Không test';
+  return r.test_loi ? 'Lỗi' : '';
+}
+
 // ----- DANH SÁCH RELEASE (modal/report + Excel/In) -----
 // `mode`: 'KE_HOACH' (mặc định) lọc theo ngày kế hoạch · 'RELEASE' lọc theo ngày TẠO LỆNH.
 //
@@ -1942,11 +1974,21 @@ async function releaseList(date, mode = 'KE_HOACH') {
   const items = raw.map((r) => {
     const dongDau = !daThay.has(r.lenh_id);
     daThay.add(r.lenh_id);
+    const mucLenh = (v) => (dongDau ? v : null); // số sổ cái tem chỉ có ở mức LỆNH (tem không lưu phần in)
     return {
       ...r,
       la_dong_dau: dongDau,
-      sl_da_in: dongDau ? r.sl_da_in : null,
-      sl_da_giao: dongDau ? r.sl_da_giao : null,
+      sl_da_in: mucLenh(r.sl_da_in),
+      sl_da_giao: mucLenh(r.sl_da_giao),
+      sl_dat: mucLenh(r.sl_dat),
+      sl_sua_dat: mucLenh(r.sl_sua_dat),
+      sl_huy: mucLenh(r.sl_huy),
+      sl_oqc: mucLenh(r.sl_oqc),
+      // Cột "Test" của bảng checklist — nhãn suy từ kết quả test CỦA LỆNH (§5.4).
+      test_nhan: nhanTestRelease(r),
+      // DANH MỤC KIỂM TRA Khuôn / Mực — theo ĐỢT của phần in trong lệnh; khách II/AD miễn Khuôn.
+      khuon_nhan: r.khuon_ok ? 'OK' : (isKhuonOptional(r.ten_khach_hang) ? 'Miễn' : ''),
+      muc_nhan: r.muc_ok ? 'OK' : '',
       // Nhãn tiếng Việt của giai đoạn HIỆN TẠI — dùng chung `STAGE_LABEL` với dashboard/Đơn hàng.
       // Trả lời trực tiếp câu "release 51 phần hôm 15/08, giờ chúng đang ở đâu".
       giai_doan_ten: STAGE_LABEL[r.giai_doan_hien_tai] || r.giai_doan_hien_tai || '—',
@@ -1994,6 +2036,7 @@ async function testCnspDone(date) { return attachPhanInList(await attachTestRuns
 async function testQaDone(date) { return attachPhanInList(await attachTestRuns(await repo.testDoneByDate(date, QA_CP)), 'lenh_id'); }
 
 module.exports = {
+  assertKhongOGn,
   listRelease1Candidates, autoPlanCandidates, createRelease1, traVeKyThuat, createDotSanXuat, release1History, listReleaseSets, releaseSet,
   listGopCandidates, gopDotVai, gopHistory,
   getReplanDetail,

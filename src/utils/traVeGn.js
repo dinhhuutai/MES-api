@@ -51,4 +51,27 @@ const TEN_THEO_MA = Object.fromEntries(THONG_TIN_GN.map((x) => [x.ma, x.ten]));
 const CHO_GN_SQL = (pinCol) => `EXISTS (SELECT 1 FROM qc_tra_ve gnq WHERE gnq.loai = '${LOAI_GN}'
   AND gnq.phan_in_id = ${pinCol} AND gnq.da_xu_ly = false)`;
 
-module.exports = { LOAI_GN, THONG_TIN_GN, TEN_THEO_MA, CHO_GN_SQL };
+// ⚠⚠ TRẢ VỀ GN TỪ CÁC MÀN SAU READY (06/10/2026, người dùng chốt "giữ lệnh, tạm rời màn"):
+//   Release 1 · Test Run · Release 2 · Chờ chạy cũng bấm được "Trả về GN". KHÔNG hủy lệnh, KHÔNG hủy xác
+//   nhận KT/QC — chỉ ghi cùng cờ `qc_tra_ve` TRA_VE_GN ⇒ đợt vải / lệnh có phần in đang ở GN RỜI màn đang
+//   đứng + bị KHÓA thao tác (test, duyệt Release 2, xác nhận chạy, release) tới khi GN "Xác nhận lại" thì
+//   hiện lại ĐÚNG màn cũ. Cờ ở mức PHẦN IN ⇒ mọi lệnh/đợt chưa chạy của phần in đó cùng tạm rời màn
+//   (thông tin phần in sai thì đợt nào cũng sai). Lệnh ĐANG CHẠY không bị đụng.
+// Gương ở: planning.repository `listRelease1Candidates` + `lenhWhere` (Test Run, Release 2) + `lenhChoKyThuat`
+//   · production.repository `listProductionCandidates` (Chờ chạy). Không gương vào dải Theo dõi / dashboard
+//   (cùng lý do với READY ở trên).
+// Lệnh có ≥1 phần in đang ở GN. `lenhCol` = biểu thức trỏ id lệnh mang junction đợt vải.
+const LENH_CHO_GN_SQL = (lenhCol) => `EXISTS (SELECT 1 FROM lenh_sx_dot_vai gnl JOIN dot_vai_ve gnd ON gnd.id = gnl.dot_vai_ve_id
+  WHERE gnl.lenh_san_xuat_id = ${lenhCol} AND ${CHO_GN_SQL('gnd.phan_in_id')})`;
+
+// Màn được phép bấm "Trả về GN" (nhãn ghi vào audit + trang chờ sửa thông tin).
+const NGUON_TRA_VE_GN = {
+  KT: 'READY Kỹ thuật',
+  QC: 'QC chuẩn bị kỹ thuật',
+  RELEASE1: 'Release 1',
+  TEST_RUN: 'Test Run',
+  RELEASE2: 'Release 2',
+  CHO_CHAY: 'Chờ sản xuất',
+};
+
+module.exports = { LOAI_GN, THONG_TIN_GN, TEN_THEO_MA, CHO_GN_SQL, LENH_CHO_GN_SQL, NGUON_TRA_VE_GN };

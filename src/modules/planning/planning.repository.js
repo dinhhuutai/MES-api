@@ -16,6 +16,8 @@ const { mauTim } = require('../../utils/timKiem');
 //   vải của cùng phần in dùng CHUNG một badge: đợt mới về là đợt cũ đang chờ release cũng tụt xuống
 //   "Chờ Ready" (và ngược lại, đợt mới thừa hưởng "Đã Ready" của đợt cũ). Nguồn luật: `utils/tech.js`.
 const { qcDotSql } = require('../../utils/tech');
+// Phần in đang ở Giao nhận (trả về GN, chưa "Xác nhận lại") ⇒ tạm rời Release 1 / Test Run / Release 2.
+const { CHO_GN_SQL, LENH_CHO_GN_SQL } = require('../../utils/traVeGn');
 // Giai đoạn HIỆN TẠI của phần in — dùng CHUNG hàm với dashboard/Đơn hàng (`dominantStageScalar`)
 // để "Danh sách release" và các màn khác không bao giờ ra 2 con số đá nhau.
 const { dominantStageScalar, STAGE_LABEL, lenhStageCase } = require('../../utils/stage');
@@ -66,6 +68,7 @@ async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
                        WHERE gsd.dot_vai_ve_id = dv.id AND gs.trang_thai = 'MO' LIMIT 1) gsx ON TRUE
     WHERE pin.dang_hoat_dong AND dv.trang_thai <> 'DA_HUY'
       AND ${dkPain}
+      AND NOT ${CHO_GN_SQL('pin.id')}
       AND dv.tg_chuyen_ready IS NOT NULL
       AND (COALESCE(dv.so_luong_vai_ve,0) - ${DA_REL}) > 0
       AND NOT EXISTS (SELECT 1 FROM ke_hoach_tam kht
@@ -93,6 +96,17 @@ async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
   if (data.rows.length < limit) return { rows: data.rows, total: offset + data.rows.length };
   const count = await query(countSql, [mauTim(search)]);
   return { rows: data.rows, total: count.rows[0].total };
+}
+
+// Mã phần in (khử trùng) của các đợt vải mà phần in ĐANG Ở Giao nhận — chốt chặn Release 1 / KH tạm.
+async function phanInDangOGnTheoDot(dotVaiIds) {
+  if (!dotVaiIds || !dotVaiIds.length) return [];
+  const { rows } = await query(
+    `SELECT DISTINCT pin.ma_phan FROM dot_vai_ve dv JOIN phan_in pin ON pin.id = dv.phan_in_id
+      WHERE dv.id = ANY($1::uuid[]) AND ${CHO_GN_SQL('pin.id')}`.replace(/\s+/g, ' '),
+    [dotVaiIds]
+  );
+  return rows.map((r) => r.ma_phan);
 }
 
 // SL đã đưa vào / còn lại của từng đợt vải (cho createRelease1 validate + prefill).
@@ -504,6 +518,7 @@ const ngcLenh = (lenhCol) => `(SELECT string_agg(DISTINCT dvg.nha_gia_cong, ', '
 const PHAN_INFO_LATERAL = `
   LEFT JOIN LATERAL (
     SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, dh.bo_phan_bh,
+           pin.id AS phan_in_id,
            pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.ma_phan, dv.barcode, pin.barcode AS barcode_phan_in,
            pin.so_luong_don_hang, pin.tinh_chat_in,
            dv.so_luong_vai_ve, dv.ngay_vai_ve, dv.han_giao_hang, ldv.ten_loai AS loai_dot_vai,
@@ -582,9 +597,11 @@ const LENH_JOIN = `
     LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
     LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id`;
 
+// ⚠ Lệnh có phần in đang ở Giao nhận (trả về GN) TẠM RỜI Test Run / Release 2 — xem `utils/traVeGn.js`.
 const lenhWhere = (extraWhere, dkPain) => `
     WHERE ls.trang_thai = 'RELEASE_1'
       AND ${dkPain}
+      AND NOT ${LENH_CHO_GN_SQL('ls.id')}
       AND ($1 = '' OR ls.ma_lenh_san_xuat ~* $1 OR ${lenhPhanInMatch('ls.id', '$1')})
       ${extraWhere}`;
 
@@ -595,7 +612,7 @@ function lenhListSql(extraWhere, dkPain = 'TRUE') {
   return `
     SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.trang_thai, ls.ngay_ke_hoach,
            cs.ma_chuyen, cs.ten_chuyen, lc.ma_loai AS ma_loai_chuyen, lc.ten_loai AS ten_loai_chuyen,
-           info.ten_khach_hang, info.ma_don_hang, info.ma_hang,
+           info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.phan_in_id,
            info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan, info.tinh_chat_in,
            info.phuong_an_in, info.barcode_hskt, info.hskt_id, info.hskt_inset,
            info.so_luong_don_hang, info.so_luong_vai_ve, info.ngay_vai_ve,
@@ -1662,10 +1679,12 @@ async function phanInIdsByLenh(lenhId) {
   return rows.map((r) => r.phan_in_id);
 }
 
-// Lệnh có đang chờ kỹ thuật làm lại không (khóa mọi thao tác test) + có phiếu SX chưa.
+// Lệnh có đang chờ kỹ thuật làm lại không (khóa mọi thao tác test) + có phiếu SX chưa
+// + có phần in đang ở Giao nhận không (`cho_gn` — khóa test / Release 2 / xác nhận chạy, 06/10/2026).
 async function lenhChoKyThuat(lenhId) {
   const { rows } = await query(
     `SELECT ${CHO_KY_THUAT_SQL('ls.id')} AS cho_ky_thuat,
+            ${LENH_CHO_GN_SQL('ls.id')} AS cho_gn,
             EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = ls.id) AS co_phieu
        FROM lenh_san_xuat ls WHERE ls.id = $1`.replace(/\s+/g, ' '),
     [lenhId]
@@ -1841,7 +1860,7 @@ async function dotVaiIdsByLenh(lenhIds = []) {
 async function getLenhDotVai(lenhId) {
   const { rows } = await query(
     `SELECT dv.id AS dot_vai_id, dv.ma_dot_vai, dv.so_luong_vai_ve,
-            pin.ma_phan, pin.mau_vai, kh.ten_khach_hang
+            pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, kh.ten_khach_hang
      FROM lenh_sx_dot_vai lsd
      JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
      JOIN phan_in pin ON pin.id = dv.phan_in_id
@@ -2143,6 +2162,22 @@ async function upsertCaTuan({ nam, tuan, loaiCa, ghiChu }, actorId) {
 // `mode`: 'KE_HOACH' (mặc định) = lọc theo `ngay_ke_hoach` (ngày hàng lên chuyền — dùng để in phiếu
 //   release) · 'RELEASE' = lọc theo ngày TẠO LỆNH (ngày bấm Release 1) ⇒ khớp đúng với sidebar
 //   "Đã hoàn thành" của màn Release 1.
+// Đợt (ĐÃ RELEASE) có xác nhận mục `ma` còn hiệu lực: dòng TỔNG của phần in DAT, hoặc dòng RIÊNG của đợt
+// (`ready_xac_nhan_dot`) DAT. ⚠ CỐ Ý KHÔNG dùng `tech.dotMucDatSql`: luật đó so thêm mốc `tg_chuyen_ready`
+//   để phân biệt đợt MỚI về sau lần xác nhận (câu hỏi của màn READY). Đợt đã nằm trong lệnh thì chắc chắn
+//   đã qua READY; dữ liệu trước mig 056 có `tg_chuyen_ready` điền bù SAU ngày xác nhận ⇒ luật mốc trả
+//   "chưa" oan (đã gặp trên THLA_TEST 06/10/2026). Dòng tổng đang HUY (Mở READY / trả về KT) ⇒ rỗng = đúng hiện trạng.
+const daXacNhanMucSql = (dvAlias, ma) => `(EXISTS (SELECT 1 FROM ket_qua_checkpoint zrk JOIN checkpoint zrc ON zrc.id = zrk.checkpoint_id AND zrc.ma_checkpoint = '${ma}' WHERE zrk.phan_in_id = ${dvAlias}.phan_in_id AND zrk.trang_thai = 'DAT') OR EXISTS (SELECT 1 FROM ready_xac_nhan_dot zrx JOIN checkpoint zrxc ON zrxc.id = zrx.checkpoint_id AND zrxc.ma_checkpoint = '${ma}' WHERE zrx.dot_vai_ve_id = ${dvAlias}.id AND zrx.trang_thai = 'DAT'))`;
+
+// ⚠ CỘT THEO MẪU "BẢNG CHECKLIST RELEASE" (06/10/2026, người dùng chốt "điền sẵn từ MES"):
+//   · mức PHẦN IN (trong lệnh): `tinh_chat_in` · `han_giao` (hạn hoàn thành = hạn giao sớm nhất các đợt của
+//     phần in trong lệnh) · `khuon_ok`/`muc_ok` = MỌI đợt của phần in trong lệnh đã có xác nhận mục đó
+//     (`daXacNhanMucSql`).
+//   · mức LỆNH: `dinh_muc_gio` (chuyền) · `to_in` (tổ in phiếu gần nhất) · `tho_in` (phân công) · cờ test
+//     (`test_qa_dat` · `test_kd_cho_in` · `test_loi`) · sổ cái tem `tl.*` — Đạt/Sửa đạt/Hủy chỉ tính TEM GỐC
+//     (tem 17 con mang sẵn phần sửa đạt — cộng là đếm đôi), OQC = Σ `sl_oqc_dat` mọi tem (cả lô qua giao),
+//     cùng công thức thẻ trạm "Hành trình phần in" (`orders.repository qtySql`). Tem không lưu phần in ⇒ số
+//     mức lệnh chỉ để ở DÒNG ĐẦU của lệnh (service).
 async function releaseListByDate(date, mode = 'KE_HOACH') {
   const dkNgay = mode === 'RELEASE'
     ? "(ls.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date"
@@ -2152,18 +2187,32 @@ async function releaseListByDate(date, mode = 'KE_HOACH') {
            ls.tg_bd_kh, ls.tg_kt_kh, ls.giai_doan, ls.trang_thai AS lenh_trang_thai,
            pin.id AS phan_in_id,
            ${dominantStageScalar('pin.id')} AS giai_doan_hien_tai,
-           cs.ma_chuyen, cs.ten_chuyen, lc.ma_loai AS ma_loai_chuyen, lc.ten_loai AS ten_loai_chuyen,
-           pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.so_luong_don_hang,
+           cs.ma_chuyen, cs.ten_chuyen, cs.dinh_muc_gio, lc.ma_loai AS ma_loai_chuyen, lc.ten_loai AS ten_loai_chuyen,
+           pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.so_luong_don_hang, pin.tinh_chat_in,
            mh.ma_hang, mh.ten_ma_hang, dh.ma_don_hang, dh.so_po, kh.ten_khach_hang,
            u.ho_ten AS owner,
-           pv.sl_release_phan, pv.slnv,
+           pv.sl_release_phan, pv.slnv, pv.han_giao, pv.khuon_ok, pv.muc_ok,
            count(*) OVER (PARTITION BY ls.id)::int AS so_phan_in,
-           COALESCE((SELECT SUM(t.so_luong) FROM phieu_san_xuat ps JOIN tem t ON t.phieu_san_xuat_id=ps.id WHERE ps.lenh_san_xuat_id=ls.id AND t.trang_thai<>'HUY'),0)::int AS sl_da_in,
-           COALESCE((SELECT SUM(t.sl_da_giao) FROM phieu_san_xuat ps JOIN tem t ON t.phieu_san_xuat_id=ps.id WHERE ps.lenh_san_xuat_id=ls.id AND t.trang_thai<>'HUY'),0)::int AS sl_da_giao
+           tl.sl_da_in, tl.sl_da_giao, tl.sl_dat, tl.sl_sua_dat, tl.sl_huy, tl.sl_oqc,
+           (SELECT string_agg(DISTINCT pc.tho_in, ', ') FROM phieu_san_xuat ps2 JOIN phan_cong_san_xuat pc ON pc.phieu_san_xuat_id=ps2.id WHERE ps2.lenh_san_xuat_id=ls.id AND COALESCE(pc.tho_in,'')<>'') AS tho_in,
+           (SELECT ti.ma_to FROM phieu_san_xuat ps3 JOIN to_in ti ON ti.id=ps3.to_in_id WHERE ps3.lenh_san_xuat_id=ls.id ORDER BY ps3.tg_bd DESC NULLS LAST LIMIT 1) AS to_in,
+           EXISTS (SELECT 1 FROM ket_qua_checkpoint kt JOIN checkpoint ct ON ct.id=kt.checkpoint_id AND ct.ma_checkpoint='TEST_QA' WHERE kt.lenh_san_xuat_id=ls.id AND kt.trang_thai='DAT') AS test_qa_dat,
+           EXISTS (SELECT 1 FROM test_run tr WHERE tr.lenh_san_xuat_id=ls.id AND tr.ket_qua='${KET_QUA_IN_KHONG_DAT}') AS test_kd_cho_in,
+           EXISTS (SELECT 1 FROM test_run tr WHERE tr.lenh_san_xuat_id=ls.id AND tr.ket_qua='CO_LOI') AS test_loi
     FROM lenh_san_xuat ls
     LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
     LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
-    JOIN LATERAL (SELECT dv.phan_in_id, COALESCE(SUM(lsd.so_luong),0)::int AS sl_release_phan, COALESCE(SUM(dv.so_luong_vai_ve),0)::int AS slnv FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id=lsd.dot_vai_ve_id WHERE lsd.lenh_san_xuat_id=ls.id GROUP BY dv.phan_in_id) pv ON true
+    JOIN LATERAL (SELECT dv.phan_in_id, COALESCE(SUM(lsd.so_luong),0)::int AS sl_release_phan, COALESCE(SUM(dv.so_luong_vai_ve),0)::int AS slnv,
+                         min(dv.han_giao_hang) AS han_giao,
+                         bool_and(${daXacNhanMucSql('dv', 'KHUON')}) AS khuon_ok,
+                         bool_and(${daXacNhanMucSql('dv', 'MUC')}) AS muc_ok
+                    FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id=lsd.dot_vai_ve_id WHERE lsd.lenh_san_xuat_id=ls.id GROUP BY dv.phan_in_id) pv ON true
+    LEFT JOIN LATERAL (SELECT COALESCE(SUM(t.so_luong),0)::int AS sl_da_in, COALESCE(SUM(t.sl_da_giao),0)::int AS sl_da_giao,
+                              COALESCE(SUM(t.sl_kcs_dat) FILTER (WHERE t.tem_goc_id IS NULL),0)::int AS sl_dat,
+                              COALESCE(SUM(t.sl_sua_dat) FILTER (WHERE t.tem_goc_id IS NULL),0)::int AS sl_sua_dat,
+                              COALESCE(SUM(COALESCE(t.sl_kcs_huy,0) + COALESCE(t.sl_sua_huy,0)) FILTER (WHERE t.tem_goc_id IS NULL),0)::int AS sl_huy,
+                              COALESCE(SUM(t.sl_oqc_dat),0)::int AS sl_oqc
+                         FROM phieu_san_xuat ps JOIN tem t ON t.phieu_san_xuat_id=ps.id WHERE ps.lenh_san_xuat_id=ls.id AND t.trang_thai<>'HUY') tl ON true
     JOIN phan_in pin ON pin.id = pv.phan_in_id
     JOIN ma_hang mh ON mh.id = pin.ma_hang_id
     JOIN don_hang dh ON dh.id = mh.don_hang_id
@@ -2198,7 +2247,7 @@ module.exports = {
   releaseListByDate,
   phanInIdByDotVai, dotVaiReleasedOne, auditTraVeKyThuat,
   listCaTuan, caModeMap, upsertCaTuan,
-  listRelease1Candidates, release1HistoryByDate, nextMaLenh, nextMaLenhTx, createLenh,
+  listRelease1Candidates, phanInDangOGnTheoDot, release1HistoryByDate, nextMaLenh, nextMaLenhTx, createLenh,
   release1DoneByDate, planDoneByDate, testDoneByDate,
   testedDotVaiIds, getDotVaiQty, getDotVaiRemaining, getDotVaiForCompose, getPainVsChuyen, phanInDangChay, addLenhDotVai, dotVaiAlreadyReleased,
   activateEpUi, getLenhGiaiDoan, getChuyenLoai,

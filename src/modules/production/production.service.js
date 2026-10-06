@@ -333,6 +333,7 @@ async function startProduction(lenhId, actorId, chuyenId = null) {
   if (lenh.trang_thai !== 'RELEASE_2') {
     throw new AppError('Lệnh chưa ở trạng thái Release 2', { status: 409, errorCode: 'WRONG_STAGE' });
   }
+  await planningService.assertKhongOGn(lenhId); // phần in đang ở Giao nhận (trả về GN) ⇒ chưa chạy được
   // Chuyền THỰC TẾ chạy (kế thừa chuyền kế hoạch, cho phép đổi khi xác nhận chạy).
   const chuyenThucTe = chuyenId || lenh.chuyen_id;
   const maPhieu = await repo.nextMaPhieu();
@@ -355,6 +356,7 @@ async function startProductionSpecial(lenhId, actorId, chuyenId = null, lyDo = n
   if (lenh.trang_thai !== 'RELEASE_1') {
     throw new AppError('Chạy đặc biệt chỉ áp dụng cho đợt đã Release 1 & CHƯA Test Run', { status: 409, errorCode: 'WRONG_STAGE' });
   }
+  await planningService.assertKhongOGn(lenhId);
   const chuyenThucTe = chuyenId || lenh.chuyen_id;
   const maPhieu = await repo.nextMaPhieu();
   await withTransaction(async (client) => {

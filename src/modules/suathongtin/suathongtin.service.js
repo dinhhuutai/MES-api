@@ -5,12 +5,20 @@ const repo = require('./suathongtin.repository');
 // Sửa trường phần in / đợt vải: TÁI DÙNG đúng đường ghi của *Quản trị phần in* (whitelist cột cứng,
 // guard hạ SL vải dưới SL đã in, tính lại phương án in khi đổi loại/SL, audit). ⚠ Đừng viết UPDATE riêng.
 const phanInAdmin = require('../phaninadmin/phaninadmin.service');
-const { THONG_TIN_GN, TEN_THEO_MA } = require('../../utils/traVeGn');
+const { THONG_TIN_GN, TEN_THEO_MA, NGUON_TRA_VE_GN } = require('../../utils/traVeGn');
 const AppError = require('../../utils/AppError');
 const sockets = require('../../sockets');
 const erp = require('../../utils/erpApiChung');
 
-const NGUON_HOP_LE = { KT: 'READY Kỹ thuật', QC: 'QC chuẩn bị kỹ thuật' };
+const NGUON_HOP_LE = NGUON_TRA_VE_GN;
+
+// Phần in rời/về lại MỌI màn có thể đang chứa nó (READY · Release 1 · Test Run · Release 2 · Chờ chạy)
+//   ⇒ bắn đủ 3 sự kiện mà các màn đó đang nghe để tải lại ngầm.
+function baoCacMan(payload) {
+  sockets.emit('ready:confirmed', payload);
+  sockets.emit('workflow:updated', payload);
+  sockets.emit('production:updated', payload);
+}
 const ngayHopLe = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? v : null);
 
 function danhMuc() {
@@ -33,10 +41,11 @@ async function chiTiet(phanInId) {
   return { ...ct, tra_ve_dang_cho: dangCho, lich_su: lichSu, co_ly_do_huy: coLyDoHuy(dangCho) };
 }
 
-// READY (Kỹ thuật / QC) trả phần in về GN.
+// READY (Kỹ thuật / QC) · Release 1 · Test Run · Release 2 · Chờ chạy trả phần in về GN
+//   (`nguon` ∈ `NGUON_TRA_VE_GN`; lệnh giữ nguyên — xem `utils/traVeGn.js`). `lenhId` (tùy chọn) chỉ để ghi vết.
 // ⚠ Guard chạy TRƯỚC khi ghi: phần in phải còn hoạt động, chưa đang ở GN, và phải chọn ÍT NHẤT 1 mục
 //   (hoặc gõ ô "Khác") — lý do rỗng thì GN không biết phải sửa gì.
-async function traVe({ phanInId, thongTin, khac, nguon }, actorId) {
+async function traVe({ phanInId, thongTin, khac, nguon, lenhId }, actorId) {
   const pin = await repo.getPhanInCoBan(phanInId);
   if (!pin) throw new AppError('Phần in không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   if (!pin.dang_hoat_dong) throw new AppError('Phần in đã bị hủy', { status: 409, errorCode: 'DA_HUY' });
@@ -64,10 +73,11 @@ async function traVe({ phanInId, thongTin, khac, nguon }, actorId) {
   const kq = await withTransaction(async (client) => {
     const r = await repo.insertTraVe(client, { phanInId, checklistList: ten.join(', '), lyDo }, actorId);
     await repo.ghiAudit(client, r.id, 'TRA_VE_GN',
-      { phan_in_id: phanInId, ma_phan: pin.ma_phan, nguon: nguonSach, thong_tin: ma, khac: khacSach || null }, actorId);
+      { phan_in_id: phanInId, ma_phan: pin.ma_phan, nguon: nguonSach, nguon_ten: NGUON_HOP_LE[nguonSach],
+        lenh_id: lenhId || null, thong_tin: ma, khac: khacSach || null }, actorId);
     return r;
   });
-  sockets.emit('ready:confirmed', { phanInId, tra_ve_gn: true });
+  baoCacMan({ phanInId, tra_ve_gn: true });
   sockets.emit('gn:updated', { phanInId });
   return { id: kq.id, phan_in_id: phanInId, ma_phan: pin.ma_phan, ly_do: lyDo };
 }
@@ -111,7 +121,8 @@ async function xacNhanLai(phanInId, { ghiChu } = {}, actorId) {
   if (!ids.length) {
     throw new AppError('Phần in không còn chờ Giao nhận sửa (đã có người xác nhận lại)', { status: 409, errorCode: 'ALREADY' });
   }
-  sockets.emit('ready:confirmed', { phanInId, gn_xac_nhan: true });
+  // Phần in hiện lại ĐÚNG màn nó đã rời (READY / Release 1 / Test Run / Release 2 / Chờ chạy).
+  baoCacMan({ phanInId, gn_xac_nhan: true });
   sockets.emit('gn:updated', { phanInId });
   sockets.emit('dashboard:refresh', {});
   return { phan_in_id: phanInId, ma_phan: pin.ma_phan, so_luot: ids.length };

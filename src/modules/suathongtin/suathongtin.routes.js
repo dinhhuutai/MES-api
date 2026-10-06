@@ -10,10 +10,11 @@ router.use(auth);
 
 // PHẦN IN CHỜ SỬA THÔNG TIN — READY trả về Giao nhận (25/09/2026, mig 105). Xem `utils/traVeGn.js`.
 // ⚠ 2 nhóm quyền:
-//   · BÊN TRẢ VỀ (READY Kỹ thuật / QC): `READY_KHUON/FILM/MUC/QC` — gửi yêu cầu + đọc danh mục.
+//   · BÊN TRẢ VỀ: READY Kỹ thuật / QC (`READY_KHUON/FILM/MUC/QC`) + từ 06/10/2026 Release 1 (`RELEASE1`) ·
+//     Test Run (`TESTRUN_QA`) · Release 2 (`RELEASE2`) · Chờ chạy (`PROD_RUN`) — gửi yêu cầu + đọc danh mục.
 //   · BÊN SỬA (Giao nhận): `GN_SUA_THONG_TIN` — xem danh sách, sửa, xác nhận lại.
 // ⚠ Route TĨNH (`danh-muc`, `tra-ve`, `phan-in/:id`, `dot-vai/:id`) đặt TRƯỚC `/:phanInId`.
-const BEN_TRA = ['READY_KHUON', 'READY_FILM', 'READY_MUC', 'READY_QC'];
+const BEN_TRA = ['READY_KHUON', 'READY_FILM', 'READY_MUC', 'READY_QC', 'RELEASE1', 'TESTRUN_QA', 'RELEASE2', 'PROD_RUN'];
 const BEN_SUA = ['GN_SUA_THONG_TIN'];
 
 router.get('/danh-muc', rbac(...BEN_TRA, ...BEN_SUA), c.danhMuc);
