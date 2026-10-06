@@ -5,7 +5,7 @@ const repo = require('./suathongtin.repository');
 // Sửa trường phần in / đợt vải: TÁI DÙNG đúng đường ghi của *Quản trị phần in* (whitelist cột cứng,
 // guard hạ SL vải dưới SL đã in, tính lại phương án in khi đổi loại/SL, audit). ⚠ Đừng viết UPDATE riêng.
 const phanInAdmin = require('../phaninadmin/phaninadmin.service');
-const { THONG_TIN_GN, TEN_THEO_MA, NGUON_TRA_VE_GN } = require('../../utils/traVeGn');
+const { THONG_TIN_GN, TEN_THEO_MA, NGUON_TRA_VE_GN, dsManQuayVe } = require('../../utils/traVeGn');
 const AppError = require('../../utils/AppError');
 const sockets = require('../../sockets');
 const erp = require('../../utils/erpApiChung');
@@ -106,15 +106,19 @@ async function suaDotVai(dotVaiId, patch, actorId) {
   return r;
 }
 
-// GN xác nhận đã sửa xong ⇒ tắt cờ ⇒ phần in QUAY LẠI màn READY (listCandidates hết bị lọc).
+// GN xác nhận đã sửa xong ⇒ tắt cờ ⇒ phần in QUAY LẠI ĐÚNG MÀN ĐÃ BẤM TRẢ VỀ (READY · QC READY · Release 1 ·
+// Test Run · Release 2 · Chờ chạy): lệnh/đợt/xác nhận giữ nguyên lúc trả về nên chỉ cần gỡ cờ là mọi danh sách
+// hết lọc (`utils/traVeGn.js`). `ve_man` = tên màn quay về để GN biết (dòng cũ không có nguồn ⇒ READY).
 async function xacNhanLai(phanInId, { ghiChu } = {}, actorId) {
   const pin = await repo.getPhanInCoBan(phanInId);
   if (!pin) throw new AppError('Phần in không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   const ghiChuSach = String(ghiChu || '').trim().slice(0, 500) || null;
+  const veMan = dsManQuayVe(await repo.dangCho(phanInId));
   const ids = await withTransaction(async (client) => {
     const xs = await repo.xuLyHet(client, phanInId, actorId);
     for (const id of xs) {
-      await repo.ghiAudit(client, id, 'GN_XAC_NHAN_LAI', { phan_in_id: phanInId, ma_phan: pin.ma_phan, ghi_chu: ghiChuSach }, actorId);
+      await repo.ghiAudit(client, id, 'GN_XAC_NHAN_LAI',
+        { phan_in_id: phanInId, ma_phan: pin.ma_phan, ghi_chu: ghiChuSach, ve_man: veMan }, actorId);
     }
     return xs;
   });
@@ -125,7 +129,7 @@ async function xacNhanLai(phanInId, { ghiChu } = {}, actorId) {
   baoCacMan({ phanInId, gn_xac_nhan: true });
   sockets.emit('gn:updated', { phanInId });
   sockets.emit('dashboard:refresh', {});
-  return { phan_in_id: phanInId, ma_phan: pin.ma_phan, so_luot: ids.length };
+  return { phan_in_id: phanInId, ma_phan: pin.ma_phan, so_luot: ids.length, ve_man: veMan };
 }
 
 // ─── GN HỦY ĐỢT VẢI — KHÔNG IN NỮA (26/09/2026) ──────────────────────────────────────────────

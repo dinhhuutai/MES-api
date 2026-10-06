@@ -74,4 +74,15 @@ const NGUON_TRA_VE_GN = {
   CHO_CHAY: 'Chờ sản xuất',
 };
 
-module.exports = { LOAI_GN, THONG_TIN_GN, TEN_THEO_MA, CHO_GN_SQL, LENH_CHO_GN_SQL, NGUON_TRA_VE_GN };
+// Màn phần in QUAY VỀ khi GN "Xác nhận lại" = đúng màn đã bấm trả về (lệnh/đợt giữ nguyên nên tự hiện lại
+// đúng chỗ — không có bước "chuyển trạm" nào). Bảng này chỉ để NÓI cho GN biết (nút, thông báo, audit).
+// Gương FE: `SuaThongTinPage MAN_QUAY_VE`.
+const MAN_QUAY_VE = {
+  KT: 'READY', QC: 'QC READY', RELEASE1: 'Release 1', TEST_RUN: 'Test Run', RELEASE2: 'Release 2', CHO_CHAY: 'Chờ sản xuất',
+};
+// Danh sách màn (khử trùng) từ các lượt trả về đang chờ — dòng cũ không có `nguon` ⇒ READY.
+const dsManQuayVe = (dsTraVe = []) => [...new Set(dsTraVe.map((q) => MAN_QUAY_VE[q.nguon] || MAN_QUAY_VE.KT))];
+
+module.exports = {
+  LOAI_GN, THONG_TIN_GN, TEN_THEO_MA, CHO_GN_SQL, LENH_CHO_GN_SQL, NGUON_TRA_VE_GN, MAN_QUAY_VE, dsManQuayVe,
+};
