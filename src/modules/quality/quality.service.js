@@ -186,7 +186,7 @@ async function qcTraVeHistory(loai, date) {
 
 // Danh sách trả về theo loại (modal "Danh sách trả về" ở từng màn). Chỉ nhận loại đã khai ở RETURN_COL
 // (whitelist) — loại lạ bị bỏ, không nội suy chuỗi client vào SQL.
-const LOAI_TRA_VE_HOP_LE = ['READY', 'RELEASE1', 'TEST_RUN_KT', 'TEST_RUN', 'OQC', 'OQC_SUA', 'OQC_GIA_CONG', 'TRA_VE_GN'];
+const LOAI_TRA_VE_HOP_LE = ['READY', 'RELEASE1', 'TEST_RUN_KT', 'TEST_RUN', 'TEST_RUN_KH', 'OQC', 'OQC_SUA', 'OQC_GIA_CONG', 'TRA_VE_GN'];
 async function traVeDanhSach({ loai, tuNgay, denNgay }) {
   const loais = String(loai || '').split(',').map((x) => x.trim().toUpperCase())
     .filter((x) => LOAI_TRA_VE_HOP_LE.includes(x));

@@ -256,6 +256,15 @@ const returnTestRunToReady = asyncHandler(async (req, res) =>
   ok(res, await service.returnTestRunToReady(req.params.lenhId, req.body, req.user.id),
     'Đã trả về Kỹ thuật — phần in quay lại READY'));
 
+// Test Run trả về KẾ HOẠCH (giữ lệnh) + khối "Test Run trả về" / xác nhận lại ở màn Release 1 (07/10/2026).
+const testRunTraVeKeHoach = asyncHandler(async (req, res) =>
+  ok(res, await service.traVeKeHoachTuTestRun(req.params.lenhId, req.body, req.user.id),
+    'Đã trả về Kế hoạch — lệnh được giữ, chờ Kế hoạch xác nhận lại Release 1'));
+const release1TestRunTraVe = asyncHandler(async (req, res) => ok(res, await service.listTestRunTraVeKh()));
+const release1XacNhanLai = asyncHandler(async (req, res) =>
+  ok(res, await service.xacNhanLaiTestRunTraVe(req.params.lenhId, req.body, req.user.id),
+    'Đã xác nhận lại Release 1 — lệnh quay về Test Run'));
+
 const today = () => new Date().toISOString().slice(0, 10);
 const release1Done = asyncHandler(async (req, res) => ok(res, await service.release1Done(req.query.date || today())));
 const release2Done = asyncHandler(async (req, res) => ok(res, await service.release2Done(req.query.date || today())));
@@ -278,5 +287,6 @@ module.exports = {
   giaCongList, giaCongToOqc, giaCongHistory, giaCongTemCancelable, giaCongTemHuy, giaCongTraLai,
   keHoachTamList, keHoachTamSet, keHoachTamConfirm, keHoachTamUpdate, keHoachTamDelete, keHoachTamHistory, keHoachTamDone, keHoachTamTheoDoi,
   cancelableLenh, cancelLenh, lanTestChoHuy, lanTestCancelable, huyLanTest, returnTestRunToReady,
+  testRunTraVeKeHoach, release1TestRunTraVe, release1XacNhanLai,
   release1Done, release2Done, replanDone, testCnspDone, testQaDone,
 };

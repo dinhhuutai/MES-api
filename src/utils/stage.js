@@ -42,6 +42,8 @@ const CHIP_STAGES = {
 };
 
 const { techDoneSqlByPin, qcDotSql } = require('./tech');
+// Lệnh bị Test Run trả về Kế hoạch (giữ lệnh, 07/10/2026) ⇒ giai đoạn Release 1 — `utils/traVeKeHoach.js`.
+const { LENH_CHO_KH_SQL } = require('./traVeKeHoach');
 
 // CASE tính stage cho 1 ĐỢT VẢI, dựa trên rowsource alias `a` có cột:
 //   a.phan_in_id, a.lenh_id (lệnh non-HUY mới nhất của đợt, NULL nếu chưa release), a.lenh_tt,
@@ -76,6 +78,9 @@ function dotStageCase(a) {
            AND NOT EXISTS(SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id=${a}.lenh_id)
            AND NOT ${qcDot} THEN
         CASE WHEN ${techDoneSqlByPin(`${a}.phan_in_id`)} THEN 'READY_QA' ELSE 'READY_KT' END
+      WHEN ${a}.lenh_tt='RELEASE_1'
+           AND NOT EXISTS(SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id=${a}.lenh_id)
+           AND ${LENH_CHO_KH_SQL(`${a}.lenh_id`)} THEN 'RELEASE_1'
       WHEN ${a}.lenh_tt='GIA_CONG' THEN 'GIA_CONG'
       WHEN EXISTS(SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id=${a}.lenh_id AND ps.trang_thai='DANG_CHAY') THEN 'SAN_XUAT'
       WHEN ${a}.lenh_tt='RELEASE_2' THEN 'CHO_SAN_XUAT'
@@ -138,6 +143,7 @@ function lenhStageCase(lenhCol, trangThaiCol) {
       WHEN ${trangThaiCol}='GIA_CONG' THEN 'GIA_CONG'
       WHEN ${trangThaiCol}='RELEASE_1' AND ${conPinChuaQc} THEN
         CASE WHEN ${duMucKt} THEN 'READY_QA' ELSE 'READY_KT' END
+      WHEN ${trangThaiCol}='RELEASE_1' AND ${LENH_CHO_KH_SQL(lenhCol)} THEN 'RELEASE_1'
       WHEN ${trangThaiCol}='RELEASE_2' THEN 'CHO_SAN_XUAT'
       WHEN ${kqLenh('TEST_CNSP')} AND ${kqLenh('TEST_QA')} THEN 'RELEASE_2'
       WHEN ${kqLenh('TEST_CNSP')} THEN 'TESTRUN_QA'

@@ -11,7 +11,7 @@ const { buildMeta } = require('../../utils/pagination');
 const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
 const { isKhuonOptional } = require('../../utils/tech');
-const { slaQcReady, slaReadyHan } = require('../../utils/slaTheoGio');
+const { slaQcReady, slaReadyHan, giaHanTraVeKt } = require('../../utils/slaTheoGio');
 const hsktRepo = require('../hskt/hskt.repository');
 
 // Đổi phương án in của HSKT active của phần in (khi xác nhận Khuôn có nhập phương án in).
@@ -473,11 +473,13 @@ async function listCandidates({ search, page, limit, offset, onlyQcReady = false
         tg_vao: vao.length ? new Date(Math.min(...vao)).toISOString() : r.tg_vao,
         // ⚠⚠ SLA READY THEO HẠN GIAO CỦA ĐỢT (utils/slaTheoGio luật (4) — 25/09/2026): còn ≤1 ngày ⇒ đỏ,
         //   còn 2 ngày ⇒ vàng. Đợt thiếu hạn ⇒ lùi về luật giờ lên MES (07:30–15:00 ⇒ 8h, 15:00–20:30 ⇒ 21h).
+        // ⚠ Bị trạm khác TRẢ VỀ KỸ THUẬT (`kt_tra_ve_tg`, 07/10/2026) ⇒ gia hạn tới ít nhất lúc trả về + 1 giờ
+        //   (`slaTheoGio.giaHanTraVeKt`) — KT kịp xác nhận lại mà không bị bắt nhập lý do nghẽn.
         ...(() => {
           if (techDone) return { sla_phut: null };
           const moc = vao.length ? new Date(Math.min(...vao)) : r.tg_vao;
           const k = slaReadyHan(moc, han[0] || r.han_giao_hang, moc, readySla, readyCanhBao);
-          return { sla_phut: k.sla, canh_bao_truoc_phut: k.canhBao };
+          return { sla_phut: giaHanTraVeKt(k.sla, moc, r.kt_tra_ve_tg), canh_bao_truoc_phut: k.canhBao };
         })(),
         film_nguoi: it.FILM?.nguoi || null, film_tg: it.FILM?.tg || null,
         khuon_nguoi: it.KHUON?.nguoi || null, khuon_tg: it.KHUON?.tg || null,

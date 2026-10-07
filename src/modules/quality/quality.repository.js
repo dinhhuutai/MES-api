@@ -805,6 +805,8 @@ const RETURN_COL = {
   READY: 'phan_in_id', RELEASE1: 'phan_in_id', TEST_RUN_KT: 'phan_in_id',
   TEST_RUN: 'dot_vai_ve_id', OQC: 'tem_id', OQC_SUA: 'tem_id',
   OQC_GIA_CONG: 'lenh_san_xuat_id',
+  // Test Run trả về KẾ HOẠCH, GIỮ lệnh (07/10/2026, `utils/traVeKeHoach.js`) — cờ mức LỆNH.
+  TEST_RUN_KH: 'lenh_san_xuat_id',
   // READY (Kỹ thuật / QC) trả phần in về GIAO NHẬN sửa thông tin (25/09/2026). Mức phần in; khi còn cờ
   // chưa xử lý thì phần in RỜI màn READY (xem technical.repository `CHO_GN_SQL`), GN xác nhận lại là quay về.
   TRA_VE_GN: 'phan_in_id',

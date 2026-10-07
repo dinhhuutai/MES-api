@@ -227,7 +227,29 @@ function slaReadyHan(tgVao, han, tgLenMes, macDinh, canhBaoMacDinh) {
 }
 const slaQcReady = (tg, macDinh) => slaKhung(khungQc(), tg, macDinh);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// (5) GIA HẠN KHI BỊ TRẢ VỀ KỸ THUẬT (07/10/2026, người dùng chốt): phần in bị trạm khác trả về KT (mốc
+//     `tech.ktTraVeSql`) thì KT có ÍT NHẤT `TRA_VE_KT_GIA_HAN_PHUT` phút kể từ lúc bị trả về mới tính nghẽn —
+//     hạn đỏ = MUỘN HƠN giữa (hạn theo luật (4)/(1), lúc trả về + 60′). Không có thì READY theo hạn giao đỏ
+//     NGAY khi hàng sát hạn bị trả về ⇒ KT bị bắt nhập lý do nghẽn cho việc vừa nhận.
+//   · Chỉ áp khi lần trả về NẰM SAU mốc vào READY của dòng (đợt mới về sau lần trả về cũ thì không hưởng).
+//   · Hằng số trong code (chưa đưa lên trang Checkpoint & Checklist).
+// ─────────────────────────────────────────────────────────────────────────────
+const TRA_VE_KT_GIA_HAN_PHUT = 60;
+const msOf = (v) => { if (!v) return NaN; const t = new Date(v).getTime(); return t; };
+// JS: `sla` = số phút (tính từ `tgVao`) theo luật thường; trả số phút đã gia hạn.
+function giaHanTraVeKt(sla, tgVao, traVe) {
+  const vao = msOf(tgVao); const tv = msOf(traVe);
+  if (sla == null || Number.isNaN(vao) || Number.isNaN(tv) || tv < vao) return sla;
+  return Math.max(sla, Math.ceil((tv + TRA_VE_KT_GIA_HAN_PHUT * 60000 - vao) / 60000));
+}
+// SQL: cùng luật trên biểu thức `slaSql` (phút từ `tgVaoCol`), `traVeCol` = mốc trả về KT (có thể NULL).
+const giaHanTraVeKtSql = (slaSql, tgVaoCol, traVeCol) => `(CASE WHEN ${traVeCol} IS NOT NULL AND ${tgVaoCol} IS NOT NULL
+    AND ${traVeCol} >= ${tgVaoCol} THEN GREATEST(${slaSql}, ceil(EXTRACT(EPOCH FROM (${traVeCol} + interval '${TRA_VE_KT_GIA_HAN_PHUT} minutes' - ${tgVaoCol})) / 60)::int)
+    ELSE ${slaSql} END)`;
+
 module.exports = {
+  TRA_VE_KT_GIA_HAN_PHUT, giaHanTraVeKt, giaHanTraVeKtSql,
   // cấu hình (mig 109)
   MAC_DINH, MA_SLA, chuanHoa, apDung, napCauHinh, batDauNapDinhKy, layCauHinh,
   hanBat, testRunTruocSxPhut, gioSxKhSql,

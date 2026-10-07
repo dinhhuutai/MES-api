@@ -258,6 +258,16 @@ const qcMoLaiSql = (pinCol) => `GREATEST(
     WHERE zn.phan_in_id = ${pinCol} AND zn.trang_thai <> 'DAT'),
   (SELECT max(zg.updated_date) FROM qc_tra_ve zg WHERE zg.phan_in_id = ${pinCol} AND zg.loai = 'TRA_VE_GN' AND zg.da_xu_ly))`;
 
+// ⚠⚠ MỐC PHẦN IN BỊ TRẢ VỀ KỸ THUẬT GẦN NHẤT (07/10/2026, người dùng chốt: "trạm khác trả về Kỹ thuật thì cho
+//   Kỹ thuật thêm 1 tiếng để xác nhận lại, tránh nghẽn khỏi phải nhập lý do"). Các đường trả về KT đều ghi
+//   `qc_tra_ve` mức phần in: QC READY (`READY`) · Release 1 / KH tạm / Xác nhận chạy / Sản xuất (`RELEASE1`) ·
+//   Test Run (`TEST_RUN_KT`). Luật gia hạn ở `utils/slaTheoGio.js giaHanTraVeKt*`. NULL = chưa từng bị trả về.
+// ⚠ Dùng CHUNG: màn READY KT (`technical.listCandidates` → service) · `dashboard.flowRows` · bảng theo dõi
+//   (`siso.repository nghenReadyKt`).
+const LOAI_TRA_VE_KT = ['READY', 'RELEASE1', 'TEST_RUN_KT'];
+const ktTraVeSql = (pinCol) => `(SELECT max(zkt.created_date) FROM qc_tra_ve zkt
+  WHERE zkt.phan_in_id = ${pinCol} AND zkt.loai IN (${LOAI_TRA_VE_KT.map((l) => `'${l}'`).join(',')}))`;
+
 // MỐC QC READY GẦN NHẤT của PHẦN IN (02/10/2026 — cột "Ngày xác nhận" trang Hủy lệnh xác nhận):
 // muộn nhất của dòng TỔNG `QC_XAC_NHAN` DAT và dòng THEO ĐỢT (`ready_xac_nhan_dot`) DAT. NULL = chưa QC.
 // Chỉ để HIỂN THỊ — quyết định "đã Ready" vẫn là `qcDotSql`/`dotMucDatSql` theo từng đợt.
@@ -270,7 +280,7 @@ const qcXacNhanPhanInSql = (pinCol) => `GREATEST(
     WHERE zqb.phan_in_id = ${pinCol} AND zqb.trang_thai = 'DAT'))`;
 
 module.exports = {
-  qcMoLaiSql, qcXacNhanPhanInSql,
+  qcMoLaiSql, qcXacNhanPhanInSql, LOAI_TRA_VE_KT, ktTraVeSql,
   KHUON_OPTIONAL_KH, KHUON_OPT_SQL_LIST, isKhuonOptional, laHangGiaCong,
   requiredTechItems, hienFilm, techDoneSql, techDoneSqlByPin,
   NHAN_HE_THONG, nguoiXacNhanSql,

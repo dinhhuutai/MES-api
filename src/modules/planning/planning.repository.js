@@ -21,6 +21,8 @@ const { CHO_GN_SQL, LENH_CHO_GN_SQL } = require('../../utils/traVeGn');
 // Giai đoạn HIỆN TẠI của phần in — dùng CHUNG hàm với dashboard/Đơn hàng (`dominantStageScalar`)
 // để "Danh sách release" và các màn khác không bao giờ ra 2 con số đá nhau.
 const { dominantStageScalar, STAGE_LABEL, lenhStageCase } = require('../../utils/stage');
+const { coCotThoInKh } = require('../../utils/thoInKeHoach');
+const { LOAI_TRA_VE_KH, LENH_CHO_KH_SQL } = require('../../utils/traVeKeHoach');
 
 // SL vải đã ĐƯA VÀO đợt SX của 1 đợt vải = Σ lenh_sx_dot_vai.so_luong các lệnh non-HUY gắn đợt đó
 // (mig 052: SL đưa vào theo TỪNG đợt nằm ở junction — đúng cả khi 1 lệnh gồm nhiều đợt).
@@ -291,15 +293,18 @@ async function nextMaLenhTx(client) {
   return rows[0].ma;
 }
 
+// `data.thoInKh` (mig 111) — thợ in KẾ HOẠCH chọn lúc Release 1; chỉ ghi khi bên gọi truyền khóa này VÀ đã
+//   có cột (`coCotThoInKh` dò trước — hàm này chạy trong transaction, đừng để lỗi 42703).
 async function createLenh(client, data, actorId) {
+  const themTho = data.thoInKh !== undefined && (await coCotThoInKh());
   const { rows } = await client.query(
     `INSERT INTO lenh_san_xuat
        (workflow_version_id, ma_lenh_san_xuat, chuyen_id, so_luong_release, ngay_ke_hoach, trang_thai,
-        giai_doan, lenh_lien_ket_id, tg_bd_kh, tg_kt_kh, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+        giai_doan, lenh_lien_ket_id, tg_bd_kh, tg_kt_kh, created_by${themTho ? ', tho_in_kh' : ''})
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11${themTho ? ',$12' : ''}) RETURNING id`,
     [data.versionId, data.maLenh, data.chuyenId, data.soLuongRelease, data.ngayKeHoach || null,
      data.trangThai || 'RELEASE_1', data.giaiDoan || 'IN', data.lenhLienKetId || null,
-     data.tgBdKh || null, data.tgKtKh || null, actorId]
+     data.tgBdKh || null, data.tgKtKh || null, actorId, ...(themTho ? [data.thoInKh || null] : [])]
   );
   return rows[0].id;
 }
@@ -598,10 +603,12 @@ const LENH_JOIN = `
     LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id`;
 
 // ⚠ Lệnh có phần in đang ở Giao nhận (trả về GN) TẠM RỜI Test Run / Release 2 — xem `utils/traVeGn.js`.
+// ⚠ Lệnh bị Test Run trả về Kế hoạch (cờ TEST_RUN_KH) cũng tạm rời — nằm ở màn Release 1 tới khi KH xác nhận lại.
 const lenhWhere = (extraWhere, dkPain) => `
     WHERE ls.trang_thai = 'RELEASE_1'
       AND ${dkPain}
       AND NOT ${LENH_CHO_GN_SQL('ls.id')}
+      AND NOT ${LENH_CHO_KH_SQL('ls.id')}
       AND ($1 = '' OR ls.ma_lenh_san_xuat ~* $1 OR ${lenhPhanInMatch('ls.id', '$1')})
       ${extraWhere}`;
 
@@ -1113,16 +1120,23 @@ async function cancelGiaCongTemTx(client, { temId, phieuId, lenhId, lenhTrangTha
 }
 
 // ----- KẾ HOẠCH TẠM (mig 058): lập kế hoạch sớm cho đợt vải CHƯA QC -----
-async function upsertKeHoachTam({ dotVaiId, phanInId, chuyenId, ngayKeHoach, tgBdKh, tgKtKh, soLuong }, actorId) {
+// `thoInKh` (mig 111): thợ in kế hoạch — chỉ ghi khi bên gọi truyền khóa (lập lại từ Release 1 không chọn thợ
+//   ⇒ null = kế hoạch mới không có thợ, ghi đè đúng). Chép sang lệnh khi xác nhận kế hoạch tạm.
+async function upsertKeHoachTam({ dotVaiId, phanInId, chuyenId, ngayKeHoach, tgBdKh, tgKtKh, soLuong, thoInKh }, actorId) {
+  const themTho = thoInKh !== undefined && (await coCotThoInKh());
   await query(
-    `INSERT INTO ke_hoach_tam (dot_vai_ve_id, phan_in_id, chuyen_id, ngay_ke_hoach, tg_bd_kh, tg_kt_kh, so_luong, trang_thai, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,'CHO',$8)
+    `INSERT INTO ke_hoach_tam (dot_vai_ve_id, phan_in_id, chuyen_id, ngay_ke_hoach, tg_bd_kh, tg_kt_kh, so_luong, trang_thai, created_by${themTho ? ', tho_in_kh' : ''})
+     VALUES ($1,$2,$3,$4,$5,$6,$7,'CHO',$8${themTho ? ',$9' : ''})
      ON CONFLICT (dot_vai_ve_id) DO UPDATE SET chuyen_id=EXCLUDED.chuyen_id, ngay_ke_hoach=EXCLUDED.ngay_ke_hoach,
        tg_bd_kh=EXCLUDED.tg_bd_kh, tg_kt_kh=EXCLUDED.tg_kt_kh, so_luong=EXCLUDED.so_luong, trang_thai='CHO',
-       updated_by=EXCLUDED.created_by, updated_date=now()`.replace(/\s+/g, ' '),
-    [dotVaiId, phanInId, chuyenId || null, ngayKeHoach || null, tgBdKh || null, tgKtKh || null, soLuong || null, actorId]
+       ${themTho ? 'tho_in_kh=EXCLUDED.tho_in_kh,' : ''} updated_by=EXCLUDED.created_by, updated_date=now()`.replace(/\s+/g, ' '),
+    [dotVaiId, phanInId, chuyenId || null, ngayKeHoach || null, tgBdKh || null, tgKtKh || null, soLuong || null, actorId,
+      ...(themTho ? [thoInKh || null] : [])]
   );
-  await logKeHoachTam('LUU_KE_HOACH_TAM', dotVaiId, { chuyen_id: chuyenId || null, ngay_ke_hoach: ngayKeHoach || null, so_luong: soLuong || null }, actorId);
+  await logKeHoachTam('LUU_KE_HOACH_TAM', dotVaiId, {
+    chuyen_id: chuyenId || null, ngay_ke_hoach: ngayKeHoach || null, so_luong: soLuong || null,
+    ...(themTho && thoInKh ? { tho_in: thoInKh } : {}),
+  }, actorId);
 }
 
 // ─── LỊCH SỬ KẾ HOẠCH TẠM ────────────────────────────────────────────────────
@@ -1282,9 +1296,10 @@ async function listKeHoachTamRows({ search = '', offset = 0, limit = 200 }) {
     LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id
     WHERE kt.trang_thai = 'CHO' AND pin.dang_hoat_dong AND dv.trang_thai <> 'DA_HUY'
       AND ${dkPain} AND ${SEARCH}`;
+  const colTho = (await coCotThoInKh()) ? 'kt.tho_in_kh' : 'NULL::text AS tho_in_kh';
   const dataSql = `
     SELECT kt.id, kt.dot_vai_ve_id, kt.phan_in_id, kt.chuyen_id, kt.ngay_ke_hoach, kt.tg_bd_kh, kt.tg_kt_kh, kt.so_luong,
-           dv.ma_dot_vai, dv.han_giao_hang, dv.so_luong_vai_ve, cs.ten_chuyen, ldv.ten_loai AS loai_dot_vai,
+           ${colTho}, dv.ma_dot_vai, dv.han_giao_hang, dv.so_luong_vai_ve, cs.ten_chuyen, ldv.ten_loai AS loai_dot_vai,
            pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in, dv.barcode, pin.barcode AS barcode_phan_in, dv.nha_gia_cong,
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
            ${hsktCols('pin.id')},
@@ -1319,8 +1334,10 @@ async function getOpenSetOfDotVai(dotVaiId) {
 }
 
 async function getKeHoachTam(id) {
+  const colTho = (await coCotThoInKh()) ? 'kt.tho_in_kh' : 'NULL::text AS tho_in_kh';
   const { rows } = await query(
     `SELECT kt.id, kt.dot_vai_ve_id, kt.phan_in_id, kt.chuyen_id, kt.ngay_ke_hoach, kt.tg_bd_kh, kt.tg_kt_kh, kt.so_luong,
+            ${colTho},
             EXISTS (SELECT 1 FROM dot_vai_ve zdv WHERE zdv.id = kt.dot_vai_ve_id AND ${qcDotSql('zdv', 'kt.phan_in_id')}) AS qc_done
      FROM ke_hoach_tam kt WHERE kt.id = $1`.replace(/\s+/g, ' '),
     [id]
@@ -1685,11 +1702,70 @@ async function lenhChoKyThuat(lenhId) {
   const { rows } = await query(
     `SELECT ${CHO_KY_THUAT_SQL('ls.id')} AS cho_ky_thuat,
             ${LENH_CHO_GN_SQL('ls.id')} AS cho_gn,
+            ${LENH_CHO_KH_SQL('ls.id')} AS cho_ke_hoach,
+            EXISTS (SELECT 1 FROM ket_qua_checkpoint kqa JOIN checkpoint cqa ON cqa.id = kqa.checkpoint_id AND cqa.ma_checkpoint = 'TEST_QA' WHERE kqa.lenh_san_xuat_id = ls.id AND kqa.trang_thai = 'DAT') AS qa_dat,
             EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = ls.id) AS co_phieu
        FROM lenh_san_xuat ls WHERE ls.id = $1`.replace(/\s+/g, ' '),
     [lenhId]
   );
   return rows[0] || null;
+}
+
+// ─── TEST RUN TRẢ VỀ KẾ HOẠCH (07/10/2026, `utils/traVeKeHoach.js`) ───────────
+// Khối "Test Run trả về" đầu màn Release 1: 1 dòng / (lệnh × đợt vải) của lệnh còn cờ TEST_RUN_KH, lệnh vẫn
+// `RELEASE_1` chưa phiếu. Lệnh đang ở Giao nhận thì để GN giữ (không hiện). Lọc phương án in như màn Release 1.
+async function listLenhTraVeKh() {
+  const dkPain = await dkTrang('KH_RELEASE1', 'pin', 'pin.id');
+  const colTho = (await coCotThoInKh()) ? 'ls.tho_in_kh' : 'NULL::text AS tho_in_kh';
+  const sql = `
+    SELECT ls.id AS lenh_id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.ngay_ke_hoach, ls.tg_bd_kh, ls.tg_kt_kh,
+           ls.chuyen_id, ${colTho}, cs.ma_chuyen, cs.ten_chuyen, lc.ma_loai AS ma_loai_chuyen,
+           dv.id AS dot_vai_id, dv.ma_dot_vai, dv.so_luong_vai_ve, dv.ngay_vai_ve, dv.han_giao_hang, dv.barcode,
+           dv.nha_gia_cong, COALESCE(lsd.so_luong, 0)::int AS sl_release_dot,
+           pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
+           pin.so_luong_don_hang, ldv.ten_loai AS loai_dot_vai, mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
+           ${hsktCols('pin.id')},
+           tv.ly_do AS tra_ve_ly_do, tv.created_date AS tra_ve_tg, tv.nguoi AS tra_ve_nguoi, tv.so_lan AS tra_ve_so_lan
+    FROM lenh_san_xuat ls
+    JOIN LATERAL (SELECT q.ly_do, q.created_date, nd.ho_ten AS nguoi,
+                         (SELECT count(DISTINCT q2.created_date) FROM qc_tra_ve q2 WHERE q2.lenh_san_xuat_id = ls.id AND q2.loai = '${LOAI_TRA_VE_KH}')::int AS so_lan
+                    FROM qc_tra_ve q LEFT JOIN nguoi_dung nd ON nd.id = q.created_by
+                   WHERE q.lenh_san_xuat_id = ls.id AND q.loai = '${LOAI_TRA_VE_KH}' AND q.da_xu_ly = false
+                   ORDER BY q.created_date DESC LIMIT 1) tv ON true
+    JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
+    JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+    JOIN phan_in pin ON pin.id = dv.phan_in_id AND pin.dang_hoat_dong
+    JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+    JOIN don_hang dh ON dh.id = mh.don_hang_id
+    JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+    LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id
+    LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+    LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
+    WHERE ls.trang_thai = 'RELEASE_1'
+      AND NOT EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = ls.id)
+      AND NOT ${LENH_CHO_GN_SQL('ls.id')}
+      AND ${dkPain}
+    ORDER BY tv.created_date DESC, ls.ma_lenh_san_xuat, pin.ma_phan`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim());
+  return rows;
+}
+
+// Cặp (đợt vải, phần in) của 1 lệnh — ghi `qc_tra_ve` TEST_RUN_KH từng đợt.
+async function dotPhanInCuaLenh(lenhId) {
+  const { rows } = await query(
+    `SELECT dv.id AS dot_vai_id, dv.phan_in_id FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+      WHERE lsd.lenh_san_xuat_id = $1 ORDER BY dv.ma_dot_vai`.replace(/\s+/g, ' '),
+    [lenhId]
+  );
+  return rows;
+}
+
+// Ghi thợ in KẾ HOẠCH của lệnh (mig 111). Trả false khi chưa có cột (bên gọi báo "chưa lưu thợ in").
+async function setThoInKh(lenhId, thoInKh, actorId) {
+  if (!(await coCotThoInKh())) return false;
+  await query('UPDATE lenh_san_xuat SET tho_in_kh = $2, updated_by = $3, updated_date = CURRENT_TIMESTAMP WHERE id = $1',
+    [lenhId, thoInKh || null, actorId]);
+  return true;
 }
 
 async function logLenhCancel(lenhId, maLenh, lyDo, actorId) {
@@ -2182,9 +2258,11 @@ async function releaseListByDate(date, mode = 'KE_HOACH') {
   const dkNgay = mode === 'RELEASE'
     ? "(ls.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date"
     : 'ls.ngay_ke_hoach = $1::date';
+  // `tho_in_kh` (mig 111) = thợ in KẾ HOẠCH chọn lúc Release 1; cột "Thợ in" hiện phân công thật trước, chưa có thì kế hoạch.
+  const colTho = (await coCotThoInKh()) ? 'ls.tho_in_kh' : 'NULL::text AS tho_in_kh';
   const sql = `
     SELECT ls.id AS lenh_id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.ngay_ke_hoach, ls.created_date,
-           ls.tg_bd_kh, ls.tg_kt_kh, ls.giai_doan, ls.trang_thai AS lenh_trang_thai,
+           ls.tg_bd_kh, ls.tg_kt_kh, ls.giai_doan, ls.trang_thai AS lenh_trang_thai, ${colTho},
            pin.id AS phan_in_id,
            ${dominantStageScalar('pin.id')} AS giai_doan_hien_tai,
            cs.ma_chuyen, cs.ten_chuyen, cs.dinh_muc_gio, lc.ma_loai AS ma_loai_chuyen, lc.ten_loai AS ten_loai_chuyen,
@@ -2266,6 +2344,7 @@ module.exports = {
   listCancelableLenh, getLenhForCancel, cancelLenhOrder, cancelReadyQcForDotVai, logLenhCancel,
   cancelPhieuTemByLenhTx,
   cancelReadyItemsByPhanIn, cancelTestResults, coKetQuaTest, testRunsChoHuy, huyTestRunsTx, phanInIdsByLenh, lenhChoKyThuat,
+  listLenhTraVeKh, dotPhanInCuaLenh, setThoInKh,
   listLanTestChoHuy, getLanTestForHuy,
   // Luật "lệnh đang chờ kỹ thuật làm lại" — bảng theo dõi Dashboard (siso) dùng để loại lệnh này khỏi nghẽn Test Run.
   CHO_KY_THUAT_SQL,

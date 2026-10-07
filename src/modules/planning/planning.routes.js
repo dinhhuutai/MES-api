@@ -35,6 +35,9 @@ router.post('/release1/set/:setId', rbac('RELEASE1'), c.releaseSet);
 router.post('/release1', rbac('RELEASE1'), c.createRelease1);
 // Trả đợt vải ở Release 1 NGƯỢC về Kỹ thuật (mở lại READY: hủy xác nhận Khuôn/Film/Mực/QC + cờ làm lại).
 router.post('/release1/tra-ve-ky-thuat', rbac('RELEASE1'), c.release1TraVeKyThuat);
+// Lệnh bị Test Run trả về Kế hoạch (giữ lệnh) — khối đầu màn Release 1 + xác nhận lại (07/10/2026).
+router.get('/release1/test-run-tra-ve', rbac('RELEASE1'), c.release1TestRunTraVe);
+router.post('/release1/test-run-tra-ve/:lenhId/xac-nhan', rbac('RELEASE1'), c.release1XacNhanLai);
 
 // Tạo Đợt sản xuất (màn "Tạo đợt sản xuất" — gộp/tách nhiều đợt vải + SL từng đợt)
 router.post('/dot-san-xuat', rbac('RELEASE1'), c.createDotSanXuat);
@@ -58,6 +61,8 @@ router.post('/test-run/:lenhId/cancel-qa', rbac('TESTRUN_QA'), c.cancelQA);
 // Test Run QC trả về Release 1 (hủy lệnh, đợt vải về pool) — kèm lý do.
 // Test không đạt → trả về KỸ THUẬT (READY) theo mục rớt; lệnh GIỮ NGUYÊN để QC xong nhảy lại Test Run.
 router.post('/test-run/:lenhId/tra-ve-ky-thuat', rbac('TESTRUN_QA'), c.returnTestRunToReady);
+// Test Run trả về KẾ HOẠCH (Release 1) — GIỮ lệnh, chỉ gắn cờ + chuông cho Kế hoạch (07/10/2026).
+router.post('/test-run/:lenhId/tra-ve-ke-hoach', rbac('TESTRUN_QA'), c.testRunTraVeKeHoach);
 
 // Release 2 (Kế hoạch duyệt cuối)
 router.get('/release2/candidates', rbac('RELEASE2'), c.release2Candidates);

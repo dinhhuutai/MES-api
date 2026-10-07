@@ -83,4 +83,24 @@ async function lichSu({ maTrang = '', tuNgay, denNgay } = {}) {
   return { items, co_bang: true };
 }
 
-module.exports = { ghi, danhSach, lichSu, coBang };
+// ─────────────────────────────────────────────────────────────────────────────
+// GỢI Ý / LẤY LẠI LÝ DO NGHẼN THEO NHÓM CODE PHẦN (07/10/2026, người dùng chốt): trong CÙNG 1 NGÀY (giờ VN),
+// cùng màn (`maTrang`), code phần chung 3 đoạn đầu (vd `DK-2610-004` của `DK-2610-004-A01-F01-C01`) đã có lý do
+// ⇒ code phần sau dùng lại lý do đó, khỏi nhập lại. Trả lý do MỚI NHẤT của mỗi nhóm.
+// · Khớp qua `phan_in.ma_phan` (`phan_in_id` luôn được suy khi ghi — `ghi`), KHÔNG qua `ma_doi_tuong` (màn theo
+//   tem/lệnh lưu mã tem/mã lệnh ở đó).
+// · Tiền tố tính Ở CẢ 2 ĐẦU bằng cùng luật: tách dấu '-', lấy tối đa 3 đoạn đầu (FE `utils/nghen.js tienToCodePhan`).
+// ─────────────────────────────────────────────────────────────────────────────
+const tienToCodePhan = (ma) => String(ma || '').trim().split('-').slice(0, 3).join('-');
+async function goiY({ maTrang = '', tien = '' } = {}) {
+  const ma = String(maTrang || '').trim();
+  const ds = [...new Set(String(tien || '').split(',').map((x) => tienToCodePhan(x)).filter(Boolean))].slice(0, 200);
+  if (!ma || !ds.length) return { items: [] };
+  if (!(await coBang())) return { items: [], co_bang: false };
+  const { rows } = await query(
+    "SELECT DISTINCT ON (x.tien) x.tien, x.ly_do, x.ma_phan, x.created_date, x.nguoi FROM (SELECT array_to_string((string_to_array(p.ma_phan, '-'))[1:3], '-') AS tien, l.ly_do, p.ma_phan, l.created_date, u.ho_ten AS nguoi FROM ly_do_nghen l JOIN phan_in p ON p.id = l.phan_in_id LEFT JOIN nguoi_dung u ON u.id = l.created_by WHERE l.dang_hoat_dong AND l.ma_trang = $1 AND (l.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = (now() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date) x WHERE x.tien = ANY($2::text[]) ORDER BY x.tien, x.created_date DESC",
+    [ma, ds]);
+  return { items: rows };
+}
+
+module.exports = { ghi, danhSach, lichSu, goiY, coBang, tienToCodePhan };

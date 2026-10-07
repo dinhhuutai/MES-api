@@ -13,6 +13,8 @@ const { layBarcodeTem, layBarcodeTem13 } = require('../../utils/erpTemBarcode');
 const { STAGE_LABEL } = require('../../utils/stage'); // nhãn giai đoạn — dùng chung với dashboard
 const { kiemCap } = require('../../utils/phuongAnChuyen'); // luật PA in ↔ loại chuyền (chặn ở Release 1)
 const { tinhNangBat } = require('../../utils/caiDatTinhNang'); // công tắc bật/tắt luật trên (mig 087)
+const { coCotThoInKh, chuanHoaThoIn } = require('../../utils/thoInKeHoach'); // thợ in kế hoạch (mig 111)
+const { LOAI_TRA_VE_KH } = require('../../utils/traVeKeHoach'); // Test Run trả về Kế hoạch (giữ lệnh)
 const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
 const erpRepo = require('../erpsync/erpsync.repository'); // reopenReadyForPhanIn (mở lại READY)
@@ -249,11 +251,11 @@ async function autoPlanCandidates({ search }) {
 // GIA CÔNG: đợt SX gửi ra ngoài gia công → KHÔNG in trong xưởng. Release 1 / Tạo đợt SX chỉ TẠO LỆNH
 // ở trạng thái 'GIA_CONG' (đậu ở màn "Gia công" của Kế hoạch); chưa tạo phiếu/tem, CHƯA qua OQC.
 // Kế hoạch bấm "Chuyển OQC" (confirmGiaCongToOqc) mới tạo phiếu HOAN_TAT + tem CHO_OQC và sang OQC.
-async function createGiaCongLenh(client, { versionId, chuyenId, junctions, tongSL, ngayKeHoach, tgBdKh, tgKtKh }, actorId) {
+async function createGiaCongLenh(client, { versionId, chuyenId, junctions, tongSL, ngayKeHoach, tgBdKh, tgKtKh, thoInKh }, actorId) {
   const maLenh = await repo.nextMaLenhTx(client);
   const lenhId = await repo.createLenh(client, {
     versionId, maLenh, chuyenId, soLuongRelease: tongSL, ngayKeHoach, trangThai: 'GIA_CONG', giaiDoan: 'IN',
-    tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null,
+    tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null, thoInKh,
   }, actorId);
   for (const j of junctions) await repo.addLenhDotVai(client, lenhId, j.dotVaiId, actorId, j.soLuong);
   return { id: lenhId, ma_lenh_san_xuat: maLenh };
@@ -336,11 +338,16 @@ async function kiemPainVsChuyen(dotVaiIds, chuyenId) {
 
 // `opts.nguonErp` = nhãn thao tác gửi kèm lượt báo ERP (`release1Erp`): mặc định RELEASE_1; Xác nhận kế
 //   hoạch tạm truyền KE_HOACH_TAM.
-async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach, tgBdKh, tgKtKh }, actorId, opts = {}) {
+// `thoIn` (mig 111, 07/10/2026) = danh sách thợ in KẾ HOẠCH (chuỗi tên ngăn dấu phẩy, hoặc mảng) — ghi vào
+//   mọi lệnh tạo ra / mọi dòng kế hoạch tạm của lượt này. Chưa chạy migration ⇒ bỏ qua (fail-open, release vẫn
+//   chạy) và trả `tho_in_chua_luu: true` để FE báo.
+async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach, tgBdKh, tgKtKh, thoIn }, actorId, opts = {}) {
   if (!Array.isArray(dotVaiIds) || dotVaiIds.length === 0) {
     throw new AppError('Chọn ít nhất một đợt vải', { status: 422, errorCode: 'NO_DOT_VAI' });
   }
   if (!chuyenId) throw new AppError('Chọn chuyền sản xuất', { status: 422, errorCode: 'NO_CHUYEN' });
+  const thoInKh = chuanHoaThoIn(thoIn);
+  const thoInChuaLuu = !!thoInKh && !(await coCotThoInKh());
 
   // ⚠ CHẶN: phần in đang ở Giao nhận (trả về GN, chưa "Xác nhận lại") thì chưa release / chưa lưu kế hoạch
   //   tạm được — màn Release 1 đã ẩn, chặn này cho đường Xác nhận kế hoạch tạm + màn để lâu chưa tải lại.
@@ -374,13 +381,13 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
     const qty = (dotVaiIds.length === 1 && soLuongRelease != null) ? Math.min(Number(soLuongRelease) || con, con) : con;
     await repo.upsertKeHoachTam({
       dotVaiId: dvId, phanInId: qcMap[dvId]?.phan_in_id, chuyenId, ngayKeHoach,
-      tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null, soLuong: qty,
+      tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null, soLuong: qty, thoInKh,
     }, actorId);
     tamCount += 1;
   }
   if (readyIds.length === 0) {
     sockets.emit('dashboard:refresh', {});
-    return { created_count: 0, created_summary: [], ke_hoach_tam_count: tamCount, chi_tam: true };
+    return { created_count: 0, created_summary: [], ke_hoach_tam_count: tamCount, chi_tam: true, tho_in_chua_luu: thoInChuaLuu };
   }
 
   // RELEASE THEO SỐ LƯỢNG: mỗi đợt còn "con_release = SL vải về − đã release". Release 1 lần = 1 lệnh với
@@ -403,7 +410,7 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
     }
   }
   if (plan.length === 0) {
-    if (tamCount > 0) { sockets.emit('dashboard:refresh', {}); return { created_count: 0, created_summary: [], ke_hoach_tam_count: tamCount, chi_tam: true }; }
+    if (tamCount > 0) { sockets.emit('dashboard:refresh', {}); return { created_count: 0, created_summary: [], ke_hoach_tam_count: tamCount, chi_tam: true, tho_in_chua_luu: thoInChuaLuu }; }
     throw new AppError('Các đợt vải đã release đủ số lượng', { status: 409, errorCode: 'ALL_RELEASED' });
   }
 
@@ -420,7 +427,7 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
           // ⚠ Phải truyền giờ BD/KT: `createGiaCongLenh` nhận sẵn 2 tham số này nhưng caller quên
           //   ⇒ lệnh gia công release từ màn Release 1 mất giờ kế hoạch (fix 2026-08-12).
           versionId: version.id, chuyenId, junctions: [{ dotVaiId: dvId, soLuong: qty }], tongSL: qty, ngayKeHoach,
-          tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null,
+          tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null, thoInKh,
         }, actorId);
         out.push({ ...c, dot_vai_id: dvId });
       }
@@ -434,7 +441,7 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
     const detail = await getLenhDetail(created[0].id);
     return {
       ...detail, created_summary: created, created_count: created.length,
-      gia_cong: true, skipped_test_count: created.length,
+      gia_cong: true, skipped_test_count: created.length, tho_in_chua_luu: thoInChuaLuu,
     };
   }
 
@@ -458,7 +465,7 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
       const maLenh = await repo.nextMaLenhTx(client);
       const id = await repo.createLenh(client, {
         versionId: version.id, maLenh, chuyenId, soLuongRelease: qty, ngayKeHoach, trangThai,
-        tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null,
+        tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null, thoInKh,
       }, actorId);
       await repo.addLenhDotVai(client, id, dvId, actorId, qty);
       out.push({ id, ma_lenh_san_xuat: maLenh, trang_thai: trangThai, so_dot_vai: 1, dot_vai_id: dvId });
@@ -484,6 +491,7 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
     created_count: created.length,
     ke_hoach_tam_count: tamCount,
     skipped_test_count: created.filter((c) => c.trang_thai === 'RELEASE_2').length,
+    tho_in_chua_luu: thoInChuaLuu,
   };
 }
 
@@ -1208,6 +1216,98 @@ async function assertKhongChoKyThuat(lenhId) {
       { status: 409, errorCode: 'CHO_KY_THUAT' });
   }
   if (info && info.cho_gn) throw loiDangOGn();
+  if (info && info.cho_ke_hoach) throw loiChoKeHoach();
+}
+
+// ─── TEST RUN TRẢ VỀ KẾ HOẠCH (RELEASE 1) — GIỮ LỆNH (07/10/2026, `utils/traVeKeHoach.js`) ──────────────
+// KHÁC `returnTestRunToReady` (về Kỹ thuật) và `DOI_PA_IN` (hủy lệnh): ở đây KHÔNG đụng lệnh, KHÔNG hủy kết quả
+// test / KT / QC — chỉ gắn cờ TEST_RUN_KH (+ chuông cho Kế hoạch). Lệnh tạm rời Test Run, hiện ở khối "Test
+// Run trả về" màn Release 1; Kế hoạch "Xác nhận Release 1" (`xacNhanLaiTestRunTraVe`) ⇒ quay lại Test Run.
+const loiChoKeHoach = () => new AppError('Lệnh đang được trả về Kế hoạch — chờ Kế hoạch xác nhận lại Release 1',
+  { status: 409, errorCode: 'CHO_KE_HOACH' });
+
+async function traVeKeHoachTuTestRun(lenhId, { lyDo } = {}, actorId) {
+  const reason = (lyDo || '').trim();
+  if (!reason) throw new AppError('Nhập lý do trả về Kế hoạch', { status: 422, errorCode: 'NO_LY_DO' });
+  const lenh = await repo.getLenhBasic(lenhId);
+  if (!lenh) throw new AppError('Lệnh sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  if (lenh.trang_thai !== 'RELEASE_1') {
+    throw new AppError('Chỉ trả về Kế hoạch khi lệnh đang ở Test Run', { status: 409, errorCode: 'WRONG_STAGE' });
+  }
+  // ⚠ Guard chạy TRƯỚC mọi thao tác ghi; đủ các ca lệnh KHÔNG còn nằm ở hàng đợi Test Run.
+  const info = (await repo.lenhChoKyThuat(lenhId)) || {};
+  if (info.co_phieu) throw new AppError('Lệnh đã bắt đầu sản xuất — không trả về Kế hoạch được', { status: 409, errorCode: 'HAS_PHIEU' });
+  if (info.qa_dat) throw new AppError('QA đã xác nhận Test Run — lệnh đang chờ Kế hoạch duyệt Release 2', { status: 409, errorCode: 'DA_TEST_DAT' });
+  if (info.cho_ke_hoach) throw loiChoKeHoach();
+  if (info.cho_ky_thuat) throw new AppError('Lệnh đang chờ kỹ thuật làm lại (READY)', { status: 409, errorCode: 'CHO_KY_THUAT' });
+  if (info.cho_gn) throw loiDangOGn();
+
+  const dots = await repo.dotPhanInCuaLenh(lenhId);
+  if (!dots.length) throw new AppError('Lệnh không có đợt vải', { status: 409, errorCode: 'EMPTY' });
+  for (const d of dots) {
+    await qaRepo.insertQcTraVe({ loai: LOAI_TRA_VE_KH, phanInId: d.phan_in_id, dotVaiId: d.dot_vai_id, lenhId, lyDo: reason }, actorId);
+  }
+  await repo.logPlanChange(null, lenhId, 'TRA_VE_KE_HOACH_TEST_RUN',
+    { trang_thai: 'RELEASE_1' }, { ma_lenh: lenh.ma_lenh_san_xuat, ly_do: reason, giu_lenh: true }, actorId);
+  // Chuông cho Kế hoạch — 1 lần / phần in. ⚠ KHÔNG `await` (Web Push có thể chậm), hàm tự nuốt lỗi.
+  [...new Set(dots.map((d) => d.phan_in_id))].forEach((pinId) => {
+    thongBao.banThongBao({ loaiTraVe: LOAI_TRA_VE_KH, phanInId: pinId, actorId });
+  });
+  sockets.emit('workflow:updated', { lenhId, stage: 'RELEASE_1', traVe: true });
+  sockets.emit('ready:confirmed', { traVe: true }); // màn Release 1 nghe sự kiện này để tải lại ngầm
+  sockets.emit('dashboard:refresh', {});
+  return { lenh_id: lenhId, ma_lenh: lenh.ma_lenh_san_xuat, dot_vai: dots.length };
+}
+
+// Khối "Test Run trả về" của màn Release 1 — kèm `tra_ve` (khuôn `TraVeBadge`).
+async function listTestRunTraVeKh() {
+  const rows = await repo.listLenhTraVeKh();
+  return rows.map((r) => ({
+    ...r,
+    _key: `${r.lenh_id}|${r.dot_vai_id}`,
+    tra_ve: { ly_do: r.tra_ve_ly_do, tg: r.tra_ve_tg, nguoi: r.tra_ve_nguoi, so_lan: r.tra_ve_so_lan || 1 },
+  }));
+}
+
+// Kế hoạch XÁC NHẬN LẠI Release 1 cho lệnh bị Test Run trả về: đổi chuyền / ngày / giờ (khác kế hoạch đang có
+// thì đi qua `replan` — đổi chặng gia công, ghi audit REPLAN, báo ERP) + thợ in kế hoạch ⇒ gỡ cờ ⇒ Test Run.
+// ⚠ Giờ FE gửi dạng `YYYY-MM-DDTHH:MM:00` (y như Release 1); bỏ trống = giữ giờ cũ (luật `replan`).
+async function xacNhanLaiTestRunTraVe(lenhId, { chuyenId, ngayKeHoach, tgBdKh, tgKtKh, thoIn } = {}, actorId) {
+  const lenh = await repo.getLenhForReplan(lenhId);
+  if (!lenh) throw new AppError('Lệnh sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  const info = (await repo.lenhChoKyThuat(lenhId)) || {};
+  if (lenh.trang_thai !== 'RELEASE_1' || lenh.co_phieu || !info.cho_ke_hoach) {
+    throw new AppError('Lệnh không còn chờ Kế hoạch xác nhận lại', { status: 409, errorCode: 'KHONG_CHO_KH' });
+  }
+  if (info.cho_gn) throw loiDangOGn();
+
+  const gioGui = (v) => (v ? String(v).slice(11, 16) : null);
+  const ngayMoi = ngayKeHoach ? toDateStr(ngayKeHoach) : toDateStr(lenh.ngay_ke_hoach);
+  const doiKeHoach = (!!chuyenId && chuyenId !== lenh.chuyen_id)
+    || (!!ngayKeHoach && toDateStr(ngayKeHoach) !== toDateStr(lenh.ngay_ke_hoach))
+    || (!!tgBdKh && gioGui(tgBdKh) !== gioCua(lenh.tg_bd_kh))
+    || (!!tgKtKh && gioGui(tgKtKh) !== gioCua(lenh.tg_kt_kh));
+  let kq = null;
+  if (doiKeHoach) {
+    kq = await replan(lenhId, {
+      chuyenId: chuyenId || lenh.chuyen_id, ngayKeHoach: ngayMoi, tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null,
+      lyDo: 'Xác nhận lại Release 1 sau khi Test Run trả về Kế hoạch',
+    }, actorId);
+  }
+  let thoInChuaLuu = false;
+  if (thoIn !== undefined) {
+    const thoInKh = chuanHoaThoIn(thoIn);
+    thoInChuaLuu = !(await repo.setThoInKh(lenhId, thoInKh, actorId)) && !!thoInKh;
+  }
+  await qaRepo.resolveReturns(LOAI_TRA_VE_KH, lenhId);
+  await repo.logPlanChange(null, lenhId, 'XAC_NHAN_LAI_RELEASE_1',
+    { trang_thai: lenh.trang_thai }, { ma_lenh: lenh.ma_lenh_san_xuat, doi_ke_hoach: doiKeHoach, nguon: LOAI_TRA_VE_KH }, actorId);
+  sockets.emit('workflow:updated', { lenhId, stage: (kq && kq.trang_thai) || 'TEST_RUN' });
+  sockets.emit('dashboard:refresh', {});
+  return {
+    lenh_id: lenhId, ma_lenh: lenh.ma_lenh_san_xuat, doi_ke_hoach: doiKeHoach,
+    trang_thai: (kq && kq.trang_thai) || lenh.trang_thai, tho_in_chua_luu: thoInChuaLuu,
+  };
 }
 
 // Lệnh có phần in đang ở Giao nhận ⇒ khóa test / duyệt Release 2 / xác nhận chạy tới khi GN "Xác nhận lại"
@@ -1290,10 +1390,11 @@ async function confirmKeHoachTam(id, actorId) {
   }
 
   // Tái dùng createRelease1 với chuyền/giờ/ngày đã lưu (giờ phần in đã QC → đi đường release thật).
+  // Thợ in kế hoạch (mig 111) lưu ở dòng kế hoạch tạm ⇒ chép sang lệnh.
   const res = await createRelease1({
     dotVaiIds: [kt.dot_vai_ve_id], chuyenId: kt.chuyen_id,
     soLuongRelease: kt.so_luong != null ? kt.so_luong : undefined,
-    ngayKeHoach: kt.ngay_ke_hoach, tgBdKh: kt.tg_bd_kh, tgKtKh: kt.tg_kt_kh,
+    ngayKeHoach: kt.ngay_ke_hoach, tgBdKh: kt.tg_bd_kh, tgKtKh: kt.tg_kt_kh, thoIn: kt.tho_in_kh,
   }, actorId, { nguonErp: 'KE_HOACH_TAM' });
   await repo.deleteKeHoachTam(id);
   await repo.logKeHoachTam('XAC_NHAN_KE_HOACH_TAM', kt.dot_vai_ve_id, {
@@ -2041,7 +2142,7 @@ module.exports = {
   listGopCandidates, gopDotVai, gopHistory,
   getReplanDetail,
   listTestRunCandidates, getLenhDetail, recordTestRun, confirmTest, confirmTestBatch, cancelTest, listOwnerChoIn,
-  returnTestRunToReady,
+  returnTestRunToReady, traVeKeHoachTuTestRun, listTestRunTraVeKh, xacNhanLaiTestRunTraVe,
   listRelease2Candidates, approveRelease2, approveRelease2Batch, skipTestRun, testRunHistory,
   listReplanCandidates, replan, replanBatch, planHistory,
   listReplanIds: (o) => repo.listReplanIds(o),

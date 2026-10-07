@@ -254,7 +254,7 @@ async function banThongBao({ loaiTraVe, phanInId }) {
       tieu_de: 'Phần in bị trả về',
       than: `${tin.ma_phan} · ${tin.ten_tram}${tin.checklist_list ? ` — ${tin.checklist_list}` : ''}`
         + `\n${tin.ly_do || ''}`.trimEnd(),
-      duong_dan: `/ky-thuat/ready?q=${encodeURIComponent(tin.ma_phan || '')}`,
+      duong_dan: tb.duongDanTraVe(maLoai, tin.ma_phan),
       the: `tra-ve-${tin.id}`,
     });
     if (kq.endpoint_chet.length) {

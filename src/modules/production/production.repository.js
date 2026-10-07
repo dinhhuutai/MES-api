@@ -15,6 +15,7 @@ const { ghiLog } = require('../../utils/erpApiLog');
 const { capIdMes: capIdMesChung } = require('../../utils/idMes');
 // Lệnh có phần in đang ở Giao nhận (trả về GN) ⇒ tạm rời danh sách Chờ chạy (06/10/2026, `utils/traVeGn.js`).
 const { LENH_CHO_GN_SQL } = require('../../utils/traVeGn');
+const { coCotThoInKh } = require('../../utils/thoInKeHoach');
 
 const PHAN_AGG = `(SELECT string_agg(DISTINCT pin.ma_phan, ', ')
     FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
@@ -278,9 +279,12 @@ async function setLenhTrangThai(client, lenhId, trangThai, actorId) {
   );
 }
 
+// `tho_in_kh` (mig 111) = thợ in KẾ HOẠCH chọn lúc Release 1 — RunPanel điền sẵn vào khối Phân công khi chưa
+//   phân công (chưa chạy migration ⇒ NULL).
 async function getLenhBasic(lenhId) {
+  const colTho = (await coCotThoInKh()) ? 'ls.tho_in_kh' : 'NULL::text AS tho_in_kh';
   const { rows } = await query(
-    `SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.trang_thai, ls.chuyen_id,
+    `SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.trang_thai, ls.chuyen_id, ${colTho},
             cs.ma_chuyen, cs.ten_chuyen, ${PHAN_AGG} AS phan_list
      FROM lenh_san_xuat ls LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
      WHERE ls.id = $1`,

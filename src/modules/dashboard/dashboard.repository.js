@@ -3,8 +3,9 @@
 const { query } = require('../../config/db');
 const ordersRepo = require('../orders/orders.repository');
 const { dotStageCase, readyFallback, ORDER_SQL_ARRAY } = require('../../utils/stage');
-const { techDoneSql, mocDotMucSql, qcDotSql } = require('../../utils/tech');
-const { slaReadyHanSql, canhBaoReadyHanSql, slaQcReadySql, slaTestRunSql, canhBaoTestRunSql, gioSxKhSql } = require('../../utils/slaTheoGio');
+const { techDoneSql, mocDotMucSql, qcDotSql, ktTraVeSql } = require('../../utils/tech');
+const { slaReadyHanSql, canhBaoReadyHanSql, slaQcReadySql, slaTestRunSql, canhBaoTestRunSql, gioSxKhSql, giaHanTraVeKtSql } = require('../../utils/slaTheoGio');
+const { LENH_CHO_KH_SQL, MOC_TRA_VE_KH_SQL } = require('../../utils/traVeKeHoach');
 // Hiển thị theo PHƯƠNG ÁN IN — cấu hình động từng trang (mig 067), mặc định BẬT HẾT = không lọc.
 const { dkTrang } = require('../../utils/phuongAnIn');
 const { maTemUngVien } = require('../../utils/temPrefix');
@@ -651,6 +652,8 @@ async function tinhTrangDetail(phanInId) {
 //   2 subquery nằm trong nhánh CASE ⇒ chỉ chạy cho đợt đang ở đúng trạm đó.
 //   Đợt CHƯA có lệnh chỉ ở RELEASE_1 khi CHÍNH ĐỢT đã được QC phủ (`tech.qcDotSql` — gương `dotStageCase`); bản cũ
 //   hỏi "phần in có QC chưa" ⇒ đợt mới về sau lần QC cũ (đang Chờ Ready) bị đo như hàng chờ release.
+// ⚠ 07/10/2026: lệnh bị Test Run trả về Kế hoạch (giữ lệnh, `utils/traVeKeHoach.js`) ⇒ RELEASE_1, đồng hồ từ lúc bị
+//   trả về (gương `dotStageCase`) · READY Kỹ thuật bị trạm khác trả về ⇒ gia hạn 1 giờ (`slaTheoGio.giaHanTraVeKtSql`).
 async function flowRows(tramMa = '') {
   const dkPain = await dkTrang('DB_NGHEN', 'pin', 'b.phan_in_id');
   const sql = `
@@ -744,7 +747,7 @@ async function flowRows(tramMa = '') {
            cur.ma_tram, tr.ten_tram, tr.thu_tu,
            CASE WHEN cur.ma_tram='OQC' AND COALESCE(gc.is_gia_cong,false) THEN 0
                 WHEN cur.ma_tram='READY' AND ${KT_DONE_FLOW} THEN ${slaQcReadySql('kt.kt_tg', 'qcp.sla')}
-                WHEN cur.ma_tram='READY' THEN ${slaReadyHanSql('tv.tg_vao', 'b.han_giao_hang', 'b.dv_tg', 'tr.thoi_gian_quy_dinh_phut')}
+                WHEN cur.ma_tram='READY' THEN ${giaHanTraVeKtSql(slaReadyHanSql('tv.tg_vao', 'b.han_giao_hang', 'b.dv_tg', 'tr.thoi_gian_quy_dinh_phut'), 'tv.tg_vao', ktTraVeSql('b.phan_in_id'))}
                 WHEN cur.ma_tram='TEST_RUN' THEN ${slaTestRunSql('tv.tg_vao', 'lk.lenh_bd_kh', 'tr.thoi_gian_quy_dinh_phut')}
                 WHEN cur.ma_tram='CHO_KHO' THEN tr.thoi_gian_quy_dinh_phut + COALESCE(b.cho_kho_phut, 60)
                 ELSE tr.thoi_gian_quy_dinh_phut END AS sla_phut,
@@ -769,6 +772,7 @@ async function flowRows(tramMa = '') {
         WHEN lk.lenh_id IS NULL THEN (CASE WHEN EXISTS (SELECT 1 FROM dot_vai_ve zqd
                WHERE zqd.id = b.dot_vai_ve_id AND ${qcDotSql('zqd', 'zqd.phan_in_id')}) THEN 'RELEASE_1' ELSE 'READY' END)
         WHEN lk.lenh_tt='RELEASE_1' AND ph.dot_vai_ve_id IS NULL AND qc.phan_in_id IS NULL THEN 'READY'
+        WHEN lk.lenh_tt='RELEASE_1' AND ph.dot_vai_ve_id IS NULL AND ${LENH_CHO_KH_SQL('lk.lenh_id')} THEN 'RELEASE_1'
         WHEN lk.lenh_tt='GIA_CONG' THEN 'GIA_CONG'
         WHEN ph.co_chay THEN 'SAN_XUAT'
         WHEN lk.lenh_tt='RELEASE_2' THEN 'SAN_XUAT'
@@ -784,7 +788,7 @@ async function flowRows(tramMa = '') {
       END) AS ma_tram) cur
     CROSS JOIN LATERAL (SELECT (CASE cur.ma_tram
         WHEN 'READY' THEN (CASE WHEN ${KT_DONE_FLOW} THEN kt.kt_tg ELSE b.dv_tg END)
-        WHEN 'RELEASE_1' THEN COALESCE((SELECT ${mocDotMucSql('zrd', 'zrd.phan_in_id', 'QC_XAC_NHAN')}
+        WHEN 'RELEASE_1' THEN COALESCE(${MOC_TRA_VE_KH_SQL('lk.lenh_id')}, (SELECT ${mocDotMucSql('zrd', 'zrd.phan_in_id', 'QC_XAC_NHAN')}
                                           FROM dot_vai_ve zrd WHERE zrd.id = b.dot_vai_ve_id), qc.qc_tg, b.dv_tg)
         WHEN 'TEST_RUN' THEN lk.lenh_tg
         WHEN 'RELEASE_2' THEN COALESCE(qa.qa_tg, lk.lenh_tg)

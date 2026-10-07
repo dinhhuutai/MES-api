@@ -7,9 +7,9 @@ const { query } = require('../../config/db');
 const { mauTim } = require('../../utils/timKiem');
 const { MAN, LOAI_NGAY, O_SI_SO, VN, DV, OPEN_PIN_SQL } = require('../../utils/siSoTram');
 const { DO_SL } = require('../../utils/bangTheoDoi');
-const { slaReadySql, slaQcReadySql, slaTestRunSql, mocDoReadySql, hanBat, gioSxKhSql } = require('../../utils/slaTheoGio');
+const { slaReadySql, slaQcReadySql, slaTestRunSql, mocDoReadySql, hanBat, gioSxKhSql, TRA_VE_KT_GIA_HAN_PHUT } = require('../../utils/slaTheoGio');
 const {
-  hanGiaoReadySql, mocDotMucSql, mocKtXongDotSql, relRoiReadyDotSql, qcMoLaiSql, khongReadyTuDongSql,
+  hanGiaoReadySql, mocDotMucSql, mocKtXongDotSql, relRoiReadyDotSql, qcMoLaiSql, khongReadyTuDongSql, ktTraVeSql,
 } = require('../../utils/tech');
 const { CHO_GN_SQL } = require('../../utils/traVeGn');
 const { CHO_KY_THUAT_SQL } = require('../planning/planning.repository');
@@ -282,16 +282,21 @@ const READY_DOT = `SELECT d.phan_in_id, d.tg_chuyen_ready AS vao_ready, d.han_gi
 // READY KT — gương màn READY (Kỹ thuật): vào = đợt lên READY; rời = KT đủ mục / QC / release. SLA theo HẠN GIAO
 // của chính đợt (thiếu ⇒ hạn mức phần in `tech.hanGiaoReadySql`, y như `han[0] || r.han_giao_hang` của service),
 // thiếu hạn / luật hạn tắt ⇒ theo giờ lên MES (`slaReadySql`, fallback SLA trạm READY).
+// ⚠ Gia hạn 1 giờ khi bị trạm khác TRẢ VỀ KỸ THUẬT (07/10/2026, gương màn READY — `slaTheoGio.giaHanTraVeKt*`):
+//   mốc nghẽn = MUỘN HƠN giữa (hạn thường, lúc trả về + 60′). Chỉ áp khi lần trả về nằm trong khoảng [vào, rời)
+//   của chính đợt — lần trả về muộn hơn lúc đợt rời trạm không được kéo lùi nghẽn của chu kỳ cũ.
 function nghenReadyKt(s) {
   const vao = 'r.vao_ready';
   const theoGio = `(${vao} + ${phut(slaReadySql(vao, s))})`;
-  const bd = hanBat()
+  const bd0 = hanBat()
     ? `(CASE WHEN r.han IS NULL THEN ${theoGio} ELSE GREATEST(${vao} + interval '1 minute', ${mocDoReadySql('r.han')}) END)`
     : theoGio;
+  const bd = `(CASE WHEN r.kt_tv IS NOT NULL AND r.kt_tv >= ${vao} AND (r.ra0 IS NULL OR r.kt_tv <= r.ra0)
+      THEN GREATEST(${bd0}, r.kt_tv + interval '${TRA_VE_KT_GIA_HAN_PHUT} minutes') ELSE ${bd0} END)`;
   return `SELECT r.phan_in_id, r.vao_ready AS tg_vao,
       CASE WHEN r.ra0 IS NULL THEN NULL ELSE GREATEST(r.vao_ready, r.ra0) END AS tg_ra, ${bd} AS bd, r.chan, NULL::text AS ly_do
     FROM (SELECT x.*, LEAST(x.kt_xong, x.qc_xong, x.moc_rel) AS ra0,
-            COALESCE(x.han_dot, ${hanGiaoReadySql('x.phan_in_id')}) AS han
+            COALESCE(x.han_dot, ${hanGiaoReadySql('x.phan_in_id')}) AS han, ${ktTraVeSql('x.phan_in_id')} AS kt_tv
           FROM (${READY_DOT}) x OFFSET 0) r`;
 }
 

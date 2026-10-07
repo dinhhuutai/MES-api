@@ -87,6 +87,20 @@ const LOAI_TB = {
     tuTram: 'Test Run - QA',
     denTram: DEN_READY,
   },
+  // Test Run trả về KẾ HOẠCH, GIỮ lệnh (07/10/2026, `utils/traVeKeHoach.js`) — đích là màn Release 1 nên
+  //   người nhận là Kế hoạch (`RELEASE1`), bấm thông báo về `trang` (không phải READY như 3 loại trên).
+  TRA_VE_TEST_RUN_KH: {
+    ten: 'Test Run - QA trả về Kế hoạch',
+    mo_ta: 'QA trả lệnh về Kế hoạch (Release 1) — lệnh được giữ, Kế hoạch xác nhận lại là lệnh quay về Test Run.',
+    loaiTraVe: 'TEST_RUN_KH',
+    nguon: 'QC_TRA_VE',
+    quyenNhan: ['RELEASE1'],
+    quyenGui: ['TESTRUN_QA'],
+    nhanTram: 'Test Run - QA',
+    tuTram: 'Test Run - QA',
+    denTram: 'Release 1 (Kế hoạch)',
+    trang: '/ke-hoach/release-1',
+  },
 
   // ─── Họ thông báo thứ 2: DUYỆT ĐỔI PHƯƠNG ÁN IN (mig 086) ──────────────────
   // ⚠ Nguồn `YEU_CAU_DUYET` — KHÔNG có `loaiTraVe`. Repo dựng SQL theo `nguon` nên 3 loại này
@@ -152,6 +166,10 @@ const nhanLuong = (v) => (v.nguon === 'YEU_CAU_DUYET'
 //   kèm `boNgay=1` để KHÔNG giấu mất phần in của ngày khác.
 const duongDanDoiPa = (maPhan) =>
   `/don-hang/phan-in?stage=ALL&boNgay=1&q=${encodeURIComponent(maPhan || '')}`;
+// Bấm thông báo họ TRẢ VỀ → màn ĐÍCH của loại đó (`trang`, mặc định READY Kỹ thuật), tìm sẵn code phần.
+// ⚠ Gương FE `utils/thongBaoHienThi.js duongDanThongBao` — sửa CẢ HAI.
+const duongDanTraVe = (maLoai, maPhan) =>
+  `${(LOAI_TB[maLoai] && LOAI_TB[maLoai].trang) || '/ky-thuat/ready'}?q=${encodeURIComponent(maPhan || '')}`;
 
 // Nhóm loại theo NGUỒN dữ liệu — repo dựng SQL riêng cho từng nguồn.
 // ⚠ Thiếu bộ lọc này thì bộ dựng `CASE q.loai WHEN 'undefined' …` của nguồn `qc_tra_ve` sẽ nuốt cả
@@ -348,7 +366,7 @@ const coQuyenNhanLoai = (perms = [], maLoai) => {
 const coQuyenNhan = () => true;
 
 module.exports = {
-  LOAI_TB, CO_HE_THONG, QUYEN_NHAN, LOAI_QC, LOAI_DUYET_TB, duongDanDoiPa,
+  LOAI_TB, CO_HE_THONG, QUYEN_NHAN, LOAI_QC, LOAI_DUYET_TB, duongDanDoiPa, duongDanTraVe,
   LOAI_TRA_VE_TO_TB, CAC_LOAI_TRA_VE, nhanLuong,
   laLoaiHopLe, layCaiDatHeThong, heThongBat, xoaCache, nguoiNhan,
   coQuyenNhan, coQuyenNhanLoai,
