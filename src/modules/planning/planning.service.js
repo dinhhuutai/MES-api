@@ -2158,9 +2158,11 @@ async function attachTestRuns(rows) {
   if (!ids.length) return rows.map((r) => ({ ...r, tests: [] }));
   const trs = await repo.testRunsByLenh(ids);
   const byLenh = {};
+  // ⚠ Chép CẢ `owner_cho_in` (lần "In không đạt"): thiếu là cột "Lần test" hiện "… · — cho IN" dù audit
+  //   `IN_KHONG_DAT` có tên (lỗi tới 07/10/2026 — `testRunsByLenh` đọc tên mà bước này bỏ rơi).
   trs.forEach((t) => {
     (byLenh[t.lenh_san_xuat_id] || (byLenh[t.lenh_san_xuat_id] = []))
-      .push({ lan: t.lan_test, ket_qua: t.ket_qua, ghi_chu: t.ghi_chu });
+      .push({ lan: t.lan_test, ket_qua: t.ket_qua, ghi_chu: t.ghi_chu, owner_cho_in: t.owner_cho_in || null });
   });
   return rows.map((r) => ({ ...r, tests: byLenh[r.lenh_id] || [] }));
 }
