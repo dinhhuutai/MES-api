@@ -15,6 +15,7 @@ const { kiemCap } = require('../../utils/phuongAnChuyen'); // luật PA in ↔ l
 const { tinhNangBat } = require('../../utils/caiDatTinhNang'); // công tắc bật/tắt luật trên (mig 087)
 const { coCotThoInKh, chuanHoaThoIn } = require('../../utils/thoInKeHoach'); // thợ in kế hoạch (mig 111)
 const { LOAI_TRA_VE_KH } = require('../../utils/traVeKeHoach'); // Test Run trả về Kế hoạch (giữ lệnh)
+const { LOAI_CHUYEN_CA } = require('../../utils/ca'); // loại chuyền cài ca riêng được (mig 112)
 const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
 const erpRepo = require('../erpsync/erpsync.repository'); // reopenReadyForPhanIn (mở lại READY)
@@ -1572,8 +1573,8 @@ async function confirmGiaCongToOqc(lenhId, { soLuong, items } = {}, actorId) {
     throw new AppError('Lệnh đã chuyển đủ số lượng xuống OQC', { status: 409, errorCode: 'DA_DU_SL' });
   }
   // ─── NHẬN THEO TỪNG CODE PHẦN (09/09/2026) ──────────────────────────────────────────────────
-  // `items` = [{ dotVaiId, soLuong }] — mỗi phần tử là MỘT code phần, tối đa `TOI_DA_IN_TEM` vì tờ
-  // decal chỉ có 2 khung tem. Không truyền `items` ⇒ giữ NGUYÊN đường cũ (nhận ở MỨC LỆNH), đó là
+  // `items` = [{ dotVaiId, soLuong }] — mỗi phần tử là MỘT code phần, tối đa `TOI_DA_IN_TEM` (in 2 tem/tờ,
+  // nhiều tờ 1 cửa sổ). Không truyền `items` ⇒ giữ NGUYÊN đường cũ (nhận ở MỨC LỆNH), đó là
   // đường mà nút "Chuyển OQC (N lệnh)" hàng loạt đang dùng.
   const dsItem = Array.isArray(items) ? items.filter((x) => x && x.dotVaiId) : [];
   if (dsItem.length) {
@@ -1655,18 +1656,19 @@ async function confirmGiaCongToOqc(lenhId, { soLuong, items } = {}, actorId) {
 // Nay mỗi lượt nhận chọn tối đa `TOI_DA_IN_TEM` code phần, nhập SL cho từng cái ⇒ 1 phiếu + N tem, mỗi
 // tem gắn ĐỢT VẢI của đúng code phần đó. Phần in nào về đủ thì RỜI màn, các phần còn lại ở lại.
 //
-// ⚠⚠ TỐI ĐA 2 vì tờ decal chỉ có 2 khung tem (cùng ràng buộc với "in 1–2 tem/tờ" ở trang Sửa) — và
-//   1 lần bấm = 1 cửa sổ in, không được mở nhiều cửa sổ (trình duyệt CHẶN POPUP từ cửa sổ thứ 2).
+// ⚠⚠ 07/10/2026 nâng trần 2 → 50 (người dùng chốt "in bao nhiêu tem cũng được, mỗi lượt vẫn 2 tem"): FE in
+//   N tem thành ⌈N/2⌉ tờ trong 1 cửa sổ (`printTemLabel.printGiaCongVeTem`). Vẫn giữ trần vì mỗi tem xin 1 mã
+//   ERP TUẦN TỰ trước transaction. Gương FE `GiaCongPage TOI_DA_PHAN`.
 // ⚠⚠ GHI **1 DÒNG AUDIT CHO MỖI CODE PHẦN** (không phải 1 dòng cho cả lượt): nhờ vậy màn *Lịch sử
 //   chuyển* liệt kê đúng từng code phần và in lại được tem của riêng nó.
 // ⚠ MÃ TEM xin RIÊNG cho từng tem (mỗi lượt gọi ERP TIÊU MỘT SỐ) — lấy TRƯỚC transaction, SAU mọi
 //   guard, đúng luật đã ghi ở §6 "BA DÃY SỐ ĐỘC LẬP".
-const TOI_DA_IN_TEM = 2;
+const TOI_DA_IN_TEM = 50;
 
 async function nhanGiaCongTheoPhanIn(lenh, items, actorId) {
   const lenhId = lenh.id;
   if (items.length > TOI_DA_IN_TEM) {
-    throw new AppError(`Mỗi lần in chỉ chọn tối đa ${TOI_DA_IN_TEM} code phần (tờ tem có 2 khung)`,
+    throw new AppError(`Mỗi lần nhận chỉ chọn tối đa ${TOI_DA_IN_TEM} code phần`,
       { status: 422, errorCode: 'QUA_NHIEU_PHAN' });
   }
   // Phần còn lại của TỪNG code phần — nguồn tính giống hệt màn Gia công đang hiện, không tự tính lại.
@@ -1840,7 +1842,9 @@ function gioCua(v) {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
-async function replan(lenhId, { chuyenId, ngayKeHoach, lyDo, tgBdKh, tgKtKh, slRelease }, actorId) {
+// `thoIn` (07/10/2026, mig 111): THỢ IN KẾ HOẠCH — không gửi (`undefined`) = GIỮ NGUYÊN; gửi chuỗi = ghi đè
+//   (chuỗi rỗng = xóa). Thiếu cột (chưa chạy mig) ⇒ vẫn lập lại kế hoạch, trả `tho_in_chua_luu` để FE báo.
+async function replan(lenhId, { chuyenId, ngayKeHoach, lyDo, tgBdKh, tgKtKh, slRelease, thoIn }, actorId) {
   if (!ngayKeHoach) throw new AppError('Chọn ngày sản xuất theo kế hoạch', { status: 422, errorCode: 'NO_NGAY' });
   // Lý do KHÔNG bắt buộc (chốt 2026-08-14) — dời ngày/chuyền là việc điều độ hằng ngày, bắt nhập lý do
   // mỗi lần chỉ khiến người dùng gõ cho có. Vẫn ghi vào audit khi có nhập.
@@ -1916,19 +1920,27 @@ async function replan(lenhId, { chuyenId, ngayKeHoach, lyDo, tgBdKh, tgKtKh, slR
   //   mới cũng phải là gia công, nên bỏ hẳn lời gọi cho tường minh (và đỡ 1 lượt truy vấn).
   const changMoi = lenh.co_phieu ? null : await chuyenChangTheoChuyen(lenh, newChuyen, dsDot, slCu);
 
+  // Thợ in kế hoạch — chỉ đụng khi bên gọi GỬI ô này và DB đã có cột (dò TRƯỚC transaction).
+  const guiTho = thoIn !== undefined;
+  const coTho = guiTho && (await coCotThoInKh());
+  const thoMoi = coTho ? chuanHoaThoIn(thoIn) : undefined;
+  const doiTho = coTho && (thoMoi || null) !== (lenh.tho_in_kh || null);
+
   let slMoi = slCu;
   await withTransaction(async (client) => {
     await repo.updateLenhPlan(client, lenhId,
-      { chuyenId: newChuyen, ngayKeHoach, tgBdKh: bdMoi, tgKtKh: ktMoi }, actorId);
+      { chuyenId: newChuyen, ngayKeHoach, tgBdKh: bdMoi, tgKtKh: ktMoi, thoInKh: doiTho ? thoMoi : undefined }, actorId);
     if (changMoi) await repo.setLenhTrangThaiTx(client, lenhId, changMoi, actorId);
     if (items.length) slMoi = await repo.updateReleaseTx(client, lenhId, items, actorId);
     await repo.logPlanChange(client, lenhId, 'REPLAN',
       { chuyen_id: lenh.chuyen_id || null, ngay_ke_hoach: toDateStr(lenh.ngay_ke_hoach),
         gio_bd: gioCua(lenh.tg_bd_kh), gio_kt: gioCua(lenh.tg_kt_kh),
-        ...(items.length ? { so_luong_release: slCu } : {}) },
+        ...(items.length ? { so_luong_release: slCu } : {}),
+        ...(doiTho ? { tho_in_kh: lenh.tho_in_kh || null } : {}) },
       { chuyen_id: newChuyen || null, ngay_ke_hoach: ngayMoi, ly_do: lyDoSach,
         gio_bd: gioCua(bdMoi), gio_kt: gioCua(ktMoi),
-        ...(items.length ? { so_luong_release: slMoi } : {}) },
+        ...(items.length ? { so_luong_release: slMoi } : {}),
+        ...(doiTho ? { tho_in_kh: thoMoi } : {}) },
       actorId);
   });
   sockets.emit('workflow:updated', { lenhId, stage: changMoi || 'RELEASE_2', replan: true, giaCong: changMoi === 'GIA_CONG' || undefined });
@@ -1938,7 +1950,10 @@ async function replan(lenhId, { chuyenId, ngayKeHoach, lyDo, tgBdKh, tgKtKh, slR
   // Báo ERP kế hoạch MỚI của lệnh — `replanBatch` gọi hàm này từng lệnh, hàng chờ của `release1Erp` gom
   //   lại nên phần in inset vẫn đi chung 1 lượt.
   release1Erp.xepHang([lenhId], actorId, 'REPLAN');
-  return { id: lenhId, so_luong_release: slMoi, trang_thai: changMoi || lenh.trang_thai };
+  return {
+    id: lenhId, so_luong_release: slMoi, trang_thai: changMoi || lenh.trang_thai,
+    ...(guiTho && !coTho ? { tho_in_chua_luu: true } : {}),
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1986,13 +2001,17 @@ async function replanBatch(lenhIds, body, actorId) {
     throw new AppError('Chọn ít nhất một lệnh', { status: 422, errorCode: 'NO_LENH' });
   }
   let okCount = 0;
+  let thoInChuaLuu = false;
   const errors = [];
   for (const id of lenhIds) {
-    try { await replan(id, body, actorId); okCount += 1; }
-    catch (e) { errors.push({ lenhId: id, message: e.message }); }
+    try {
+      const kq = await replan(id, body, actorId);
+      okCount += 1;
+      if (kq && kq.tho_in_chua_luu) thoInChuaLuu = true;
+    } catch (e) { errors.push({ lenhId: id, message: e.message }); }
   }
   sockets.emit('dashboard:refresh', {});
-  return { okCount, failedCount: errors.length, errors };
+  return { okCount, failedCount: errors.length, errors, ...(thoInChuaLuu ? { tho_in_chua_luu: true } : {}) };
 }
 
 // Chuẩn hóa giá trị ngày (Date của pg hoặc chuỗi) về 'YYYY-MM-DD' theo giờ địa phương (server GMT+7), tránh lệch ngày do ISO/UTC.
@@ -2042,12 +2061,27 @@ async function testRunHistory(date) {
 // ----- CÀI ĐẶT CA THEO TUẦN -----
 async function listCaTuan() { return repo.listCaTuan(); }
 
-async function upsertCaTuan({ nam, tuan, loaiCa, ghiChu }, actorId) {
+// `loaiChuyen` (mig 112): mảng mã loại chuyền ('MAY'/'BAN'/'ROBOT') để cài RIÊNG; rỗng/thiếu = CHUNG (cả xưởng
+//   — kéo luôn các dòng riêng của tuần về cùng loại ca, xem `repo.upsertCaTuan`). Chuỗi đơn cũng nhận.
+async function upsertCaTuan({ nam, tuan, loaiCa, ghiChu, loaiChuyen }, actorId) {
   const y = Number(nam); const w = Number(tuan);
   if (!Number.isInteger(y) || y < 2000 || y > 2100) throw new AppError('Năm không hợp lệ', { status: 422, errorCode: 'INVALID' });
   if (!Number.isInteger(w) || w < 1 || w > 53) throw new AppError('Tuần không hợp lệ (1–53)', { status: 422, errorCode: 'INVALID' });
   if (!['NGAN', 'DAI', 'HANH_CHINH'].includes(loaiCa)) throw new AppError('Loại ca phải là NGAN, DAI hoặc HANH_CHINH', { status: 422, errorCode: 'INVALID' });
-  return repo.upsertCaTuan({ nam: y, tuan: w, loaiCa, ghiChu }, actorId);
+  const ds = [...new Set((Array.isArray(loaiChuyen) ? loaiChuyen : [loaiChuyen])
+    .map((x) => String(x || '').trim().toUpperCase()).filter(Boolean))];
+  const sai = ds.filter((x) => !LOAI_CHUYEN_CA.includes(x));
+  if (sai.length) {
+    throw new AppError(`Chỉ cài ca riêng cho ${LOAI_CHUYEN_CA.join(' / ')} (nhận được: ${sai.join(', ')})`, { status: 422, errorCode: 'INVALID' });
+  }
+  if (ds.length && !(await repo.caTuanCoLoaiChuyen())) {
+    throw new AppError('Cơ sở dữ liệu chưa chạy migration 112 — chưa cài ca riêng theo loại chuyền được (chỉ cài chung)',
+      { status: 409, errorCode: 'CHUA_MIGRATION_112' });
+  }
+  if (!ds.length) return [await repo.upsertCaTuan({ nam: y, tuan: w, loaiCa, ghiChu }, actorId)];
+  const out = [];
+  for (const lc of ds) out.push(await repo.upsertCaTuan({ nam: y, tuan: w, loaiCa, ghiChu, loaiChuyen: lc }, actorId));
+  return out;
 }
 
 // Nhãn cột "Test" (Danh sách release, mẫu checklist): QA đạt ⇒ OK · đạt nhờ "In không đạt" ⇒ "KĐ cho IN" ·

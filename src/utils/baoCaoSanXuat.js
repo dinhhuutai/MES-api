@@ -3,7 +3,7 @@
 // ─── BÁO CÁO SẢN XUẤT NGÀY (Sản xuất › Báo cáo sản xuất, 02/10/2026) ─────────────────────────────
 // Hàm THUẦN — dữ liệu thô lấy ở `modules/production/baoCaoSanXuat.js`. Dựng 2 bảng từ CÙNG một lượt dữ
 // liệu (FE bật/tắt bảng không phải gọi lại API):
-//   · Bảng 1 `theo_to`  : Tổ in (C1…) × nhóm chuyền (MTD · Banin · RB · MT · LG · MEP) + dòng Tổng mỗi tổ.
+//   · Bảng 1 `theo_nhom`: nhóm chuyền (MTD · Banin · RB · MT · LG · MEP) cả xưởng — không tách tổ (07/10/2026).
 //   · Bảng 2 `chi_tiet` : 1 dòng / (chuyền × phần in).
 // Mỗi ô = 5 cột-nhóm Tổng · HC · CA1 · CA2 · CA3, mỗi cột-nhóm 4 số: kh (SL kế hoạch) · tt (SL in thực
 // tế) · gk (số giờ KH) · gt (số giờ TT). FE tự tính % = tt/kh và C.lệch giờ = gt − gk.
@@ -120,13 +120,24 @@ const coSo = (bo) => CA.some((c) => bo[c].kh || bo[c].tt || bo[c].gk || bo[c].gt
 // So mã tự nhiên: C2 < C10, M5 < M10A.
 const soTuNhien = (a, b) => String(a || '').localeCompare(String(b || ''), 'vi', { numeric: true, sensitivity: 'base' });
 
+// `loaiCa`: chuỗi (cả xưởng 1 loại ca) HOẶC hàm `(maLoaiChuyen) → loại ca` (mig 112 — tuần cài ca riêng cho
+//   Máy/Bàn/Robot). Mỗi phiếu chia ca theo loại ca của CHUYỀN chạy phiếu đó. Ngày D luôn 06:00 → 06:00 với mọi
+//   loại ca nên khung ngày (W0/W1) không đổi.
 function dungBaoCaoSanXuat({
   ngay, loaiCa = 'NGAN', bayGio = Date.now(), phieus = [], tems = [], lenhs = [], pins = [], chuyens = [], tos = [],
 }) {
-  const khung = khungCa(ngay, loaiCa);
+  const loaiCaCuaLoai = typeof loaiCa === 'function' ? loaiCa : () => loaiCa;
+  const khung = khungCa(ngay, loaiCaCuaLoai(null));
   const lenhById = new Map(lenhs.map((l) => [String(l.id), l]));
   const chuyenById = new Map(chuyens.map((c) => [String(c.id), c]));
   const toById = new Map(tos.map((t) => [String(t.id), t]));
+  const loaiCaPhieu = (p) => loaiCaCuaLoai((chuyenById.get(String(p.chuyen_id)) || {}).ma_loai || null);
+  const khungTheoLoai = new Map();
+  const khungPhieu = (p) => {
+    const lca = loaiCaPhieu(p);
+    if (!khungTheoLoai.has(lca)) khungTheoLoai.set(lca, khungCa(ngay, lca));
+    return khungTheoLoai.get(lca);
+  };
 
   // Phần in của từng lệnh (sắp theo code phần ⇒ "phần in đầu" ổn định) + đợt vải → phần in.
   const pinsTheoLenh = new Map();
@@ -188,7 +199,7 @@ function dungBaoCaoSanXuat({
     let tong = 0;
     if (kc) {
       const [a, b] = kc;
-      khung.forEach((w) => {
+      khungPhieu(p).forEach((w) => {
         const h = chongLan(a, b, w.a, w.b) / GIO;
         if (!h) return;
         tong += h;
@@ -206,7 +217,7 @@ function dungBaoCaoSanXuat({
     if (!p) return;
     const ds = dsPin(p.lenh_id);
     const pin = (t.dot_vai_ve_id && ds.find((x) => (x.dot_ids || []).map(String).includes(String(t.dot_vai_ve_id)))) || ds[0];
-    dv(p, pin).bo[caCuaTem(t.ca_hint, t.gio, loaiCa)].tt += Number(t.so_luong) || 0;
+    dv(p, pin).bo[caCuaTem(t.ca_hint, t.gio, loaiCaPhieu(p))].tt += Number(t.so_luong) || 0;
   });
 
   // 3. Kế hoạch của lệnh → phiếu chạy nhiều giờ nhất trong ngày.
@@ -220,7 +231,7 @@ function dungBaoCaoSanXuat({
     const a = ms(l.tg_bd_kh);
     const b = ms(l.tg_kt_kh);
     if (a != null && b != null && b > a) {
-      khung.forEach((w) => {
+      khungPhieu(chinh).forEach((w) => {
         const ov = chongLan(a, b, w.a, w.b);
         if (!ov) return;
         ds.forEach((pin) => {
@@ -232,7 +243,7 @@ function dungBaoCaoSanXuat({
     } else if (l.ngay_kh === ngay) {
       // Không có giờ KH: trọn SL vào ca chạy nhiều giờ nhất của phiếu chính (không có giờ chạy ⇒ ca đầu).
       const bo = dv(chinh, ds[0]).bo;
-      const caChon = khung.map((w) => w.ca).sort((x, y) => bo[y].gt - bo[x].gt)[0];
+      const caChon = khungPhieu(chinh).map((w) => w.ca).sort((x, y) => bo[y].gt - bo[x].gt)[0];
       ds.forEach((pin) => { dv(chinh, pin).bo[caChon].kh += slPin(pin); });
     }
   });
@@ -260,35 +271,26 @@ function dungBaoCaoSanXuat({
       || soTuNhien(x.po, y.po) || soTuNhien(x.ma_phan, y.ma_phan))
     .map((r) => ({ ...r, to: [...r.to].sort(soTuNhien).join(', ') || null, m: xuatBo(r.bo), bo: undefined }));
 
-  // 5. Bảng 1 — gom (tổ × nhóm chuyền).
-  const theoTo = new Map();
+  // 5. Bảng 1 — gom theo nhóm chuyền cho cả xưởng (07/10/2026 người dùng bỏ cột Tổ — trước đó tổ × nhóm).
+  const theoNhom = new Map();
+  const tongCong = boRong();
   donVi.forEach(({ phieu, bo }) => {
-    const t = toById.get(String(phieu.to_in_id));
-    const kTo = t ? String(t.id) : '';
-    if (!theoTo.has(kTo)) theoTo.set(kTo, { ma_to: t ? t.ma_to : null, ten_to: t ? t.ten_to : 'Chưa chọn tổ', nhom: new Map(), tong: boRong() });
-    const g = theoTo.get(kTo);
     const c = chuyenById.get(String(phieu.chuyen_id)) || {};
     const n = nhomCuaLoai(c.ma_loai);
-    if (!g.nhom.has(n)) g.nhom.set(n, boRong());
-    congBo(g.nhom.get(n), bo);
-    congBo(g.tong, bo);
+    if (!theoNhom.has(n)) theoNhom.set(n, boRong());
+    congBo(theoNhom.get(n), bo);
+    congBo(tongCong, bo);
   });
-  const tongCong = boRong();
-  const bang1 = [...theoTo.values()].filter((g) => coSo(g.tong))
-    .sort((x, y) => (x.ma_to == null) - (y.ma_to == null) || soTuNhien(x.ma_to, y.ma_to))
-    .map((g) => {
-      congBo(tongCong, g.tong);
-      const dsNhom = [...NHOM, ...(g.nhom.has('KHAC') && coSo(g.nhom.get('KHAC')) ? [NHOM_KHAC] : [])];
-      return {
-        ma_to: g.ma_to, ten_to: g.ten_to,
-        nhom: dsNhom.map((n) => ({ key: n.key, label: n.label, m: xuatBo(g.nhom.get(n.key) || boRong()) })),
-        tong: xuatBo(g.tong),
-      };
-    });
+  const dsNhom = [...NHOM, ...(theoNhom.has('KHAC') && coSo(theoNhom.get('KHAC')) ? [NHOM_KHAC] : [])];
+  const bang1 = dsNhom.map((n) => ({ key: n.key, label: n.label, m: xuatBo(theoNhom.get(n.key) || boRong()) }));
 
+  // `loai_ca` = loại ca CHUNG; `loai_ca_rieng` = loại chuyền cài khác chung (mig 112) để FE ghi rõ.
+  const chung = loaiCaCuaLoai(null);
+  const rieng = {};
+  ['MAY', 'BAN', 'ROBOT'].forEach((lc) => { const v = loaiCaCuaLoai(lc); if (v !== chung) rieng[lc] = v; });
   return {
-    ngay, loai_ca: loaiCa, ca: CA,
-    theo_to: bang1, tong: xuatBo(tongCong), chi_tiet: chiTiet,
+    ngay, loai_ca: chung, loai_ca_rieng: rieng, ca: CA,
+    theo_nhom: bang1, tong: xuatBo(tongCong), chi_tiet: chiTiet,
   };
 }
 

@@ -20,10 +20,20 @@ function caFromHour(gio, phut, loaiCa) {
   return 'Ca 3';
 }
 
-// Suy ca từ các giá trị đã EXTRACT ở SQL (giờ/phút/năm/tuần theo VN) + map cấu hình tuần.
-function caFromParts(gio, phut, nam, tuan, modeMap) {
-  const mode = (modeMap && modeMap.get(`${nam}-${tuan}`)) || 'NGAN';
-  return caFromHour(gio, phut, mode);
+// ----- LOẠI CA THEO TUẦN × LOẠI CHUYỀN (mig 112, 07/10/2026) -----
+// `modeMap` (`planning.repository.caModeMap`): khóa `nam-tuan` = dòng CHUNG (mọi chuyền), `nam-tuan|MAY` =
+// dòng RIÊNG của loại chuyền. Luật: đúng loại chuyền ⇒ CHUNG ⇒ NGAN. Chỉ Máy / Bàn / Robot cài riêng được —
+// loại khác (Máy tròn, Logo, Ép, Gia công) luôn theo CHUNG. ⚠ Mọi chỗ suy ca PHẢI đi qua hàm này.
+const LOAI_CHUYEN_CA = ['MAY', 'BAN', 'ROBOT'];
+function loaiCaCua(modeMap, khoaTuan, loaiChuyen) {
+  if (!modeMap) return 'NGAN';
+  const lc = String(loaiChuyen || '').toUpperCase();
+  return (lc && modeMap.get(`${khoaTuan}|${lc}`)) || modeMap.get(khoaTuan) || 'NGAN';
+}
+
+// Suy ca từ các giá trị đã EXTRACT ở SQL (giờ/phút/năm/tuần theo VN) + map cấu hình tuần (+ loại chuyền).
+function caFromParts(gio, phut, nam, tuan, modeMap, loaiChuyen = null) {
+  return caFromHour(gio, phut, loaiCaCua(modeMap, `${nam}-${tuan}`, loaiChuyen));
 }
 
 // ----- MÃ NGÀY CA (mig 068) — chuỗi gợi ý sẵn ở màn Sản xuất, người dùng sửa được -----
@@ -88,8 +98,9 @@ function khoaTuanIso(ngay) {
 //   ngày của ca đêm) ⇒ kế hoạch bắt đầu 02:00 ngày 21/09 (ca 3 / ca Dài 2 qua nửa đêm) là `260920C3`.
 // Thiếu giờ bắt đầu ⇒ `YYMMDD` trần của ngày kế hoạch (không bịa ca); thiếu cả ngày ⇒ ''.
 // `tuGio` / `ngayKeHoach`: chuỗi GIỜ VN 'YYYY/MM/DD HH:mm:ss' | 'YYYY-MM-DD[ T]HH:mm[:ss]' (chỉ đọc chữ số,
-//   không qua Date của máy chủ). `modeMap` = Map `nam-tuan` → loai_ca (`planning.repository.caModeMap`).
-function ngayCaKeHoach(tuGio, ngayKeHoach, modeMap) {
+//   không qua Date của máy chủ). `modeMap` = `planning.repository.caModeMap` · `loaiChuyen` = mã loại chuyền
+//   của lệnh (mig 112 — tuần có cài riêng cho Máy/Bàn/Robot).
+function ngayCaKeHoach(tuGio, ngayKeHoach, modeMap, loaiChuyen = null) {
   const tach = (v) => /^(\d{4})[/-](\d{1,2})[/-](\d{1,2})(?:[ T](\d{1,2}):(\d{1,2}))?/.exec(String(v || '').trim());
   const p2 = (n) => String(n).padStart(2, '0');
   const ymd = (y, m, d) => `${String(y).slice(2)}${p2(m)}${p2(d)}`;
@@ -99,11 +110,14 @@ function ngayCaKeHoach(tuGio, ngayKeHoach, modeMap) {
     // Lùi 6 giờ để ra NGÀY SX (giờ 00:00–05:59 thuộc ca đêm của hôm trước).
     const t = new Date(Date.UTC(+g[1], +g[2] - 1, +g[3], gio, phut) - 6 * 3600 * 1000);
     const ngaySx = `${t.getUTCFullYear()}-${p2(t.getUTCMonth() + 1)}-${p2(t.getUTCDate())}`;
-    const loai = (modeMap && modeMap.get(khoaTuanIso(ngaySx))) || 'NGAN';
+    const loai = loaiCaCua(modeMap, khoaTuanIso(ngaySx), loaiChuyen);
     return `${ymd(t.getUTCFullYear(), t.getUTCMonth() + 1, t.getUTCDate())}${maCa(gio, phut, loai)}`;
   }
   const n = tach(ngayKeHoach) || g;
   return n ? ymd(n[1], n[2], n[3]) : '';
 }
 
-module.exports = { caFromHour, caFromParts, maCa, maNgayCa, ngayTuMaNgayCa, gioBatDauCa, khoaTuanIso, ngayCaKeHoach };
+module.exports = {
+  caFromHour, caFromParts, maCa, maNgayCa, ngayTuMaNgayCa, gioBatDauCa, khoaTuanIso, ngayCaKeHoach,
+  loaiCaCua, LOAI_CHUYEN_CA,
+};

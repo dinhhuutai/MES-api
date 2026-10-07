@@ -83,7 +83,7 @@ async function guiOqc(oqcId, actorId = null, opts = {}) {
 
   const payload = taoPayload(r, { idMes, soLuong: quaGiao, soLuongHuy: Number(o.so_luong_loi) || 0 });
   payload.BarcodeIn = maTemNhan(r.ma_tem, o.nguon === 'SUA' ? 17 : 15, null, r.la_tem_sua);
-  if (!payload.Ngayca) payload.Ngayca = await maNgayCaHomNay();
+  if (!payload.Ngayca) payload.Ngayca = await maNgayCaHomNay(r.loai_chuyen);
   const moc = await mocXacNhanOqc(oqcId);
   if (!payload.Tugio) payload.Tugio = moc;
   if (!payload.Dengio) payload.Dengio = moc;

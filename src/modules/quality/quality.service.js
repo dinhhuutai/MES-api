@@ -317,7 +317,7 @@ async function listSuaCandidates({ search, filters }) {
   const partMap = new Map(parts.map((p) => [p.tem_id, p]));
   const out = rows.map((r) => {
     const p = partMap.get(r.tem_id) || {};
-    return { ...r, ca: caFromParts(p.ca_gio, p.ca_phut, p.ca_nam, p.ca_tuan, map) };
+    return { ...r, ca: caFromParts(p.ca_gio, p.ca_phut, p.ca_nam, p.ca_tuan, map, p.loai_chuyen) };
   });
   // Đánh dấu tem bị OQC trả về SỬA (badge + lý do) — giống badge "Bị OQC trả về" ở KCS.
   const rm = await repo.activeReturnsMap('OQC_SUA', out.map((r) => r.tem_id));

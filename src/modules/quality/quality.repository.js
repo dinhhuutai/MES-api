@@ -156,15 +156,22 @@ async function getTemBasic(temId) {
 }
 
 // Giờ/tuần VN (để suy ca) cho danh sách tem — query nhẹ theo PK, tách khỏi TEM_CTX (IPS-safe).
+// `loai_chuyen` (mig 112) = loại chuyền của lệnh — tuần cài ca riêng Máy/Bàn/Robot (`utils/ca.js loaiCaCua`).
 async function caPartsForTems(temIds) {
   if (!temIds || temIds.length === 0) return [];
   const { rows } = await query(
-    `SELECT id AS tem_id,
-            EXTRACT(HOUR    FROM created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS ca_gio,
-            EXTRACT(MINUTE  FROM created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS ca_phut,
-            EXTRACT(ISOYEAR FROM created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS ca_nam,
-            EXTRACT(WEEK    FROM created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS ca_tuan
-     FROM tem WHERE id = ANY($1::uuid[])`.replace(/\s+/g, ' '),
+    `SELECT t.id AS tem_id,
+            EXTRACT(HOUR    FROM t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS ca_gio,
+            EXTRACT(MINUTE  FROM t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS ca_phut,
+            EXTRACT(ISOYEAR FROM t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS ca_nam,
+            EXTRACT(WEEK    FROM t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS ca_tuan,
+            lc.ma_loai AS loai_chuyen
+     FROM tem t
+     LEFT JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+     LEFT JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+     LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+     LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
+     WHERE t.id = ANY($1::uuid[])`.replace(/\s+/g, ' '),
     [temIds]
   );
   return rows;

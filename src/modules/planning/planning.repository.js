@@ -1,6 +1,6 @@
 'use strict';
 
-const { query } = require('../../config/db');
+const { query, withTransaction } = require('../../config/db');
 // ⚠⚠ BẮT BUỘC — `updateReleaseTx` ném `BELOW_PRINTED`/`DOT_VAI_LA` bằng AppError. Thiếu dòng này thì
 //   guard biến thành `ReferenceError: AppError is not defined` (500 "Lỗi hệ thống") thay vì 409/422 có
 //   thông điệp. Lỗi sống ẩn từ 20/08/2026: `printed` luôn = 0 vì màn Lập kế hoạch lại chỉ nhận lệnh
@@ -794,9 +794,11 @@ async function listReplanCandidates({ search = '', offset = 0, limit = 50, loc =
     JOIN lenh_san_xuat ls ON ls.id = trang.id
     LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
     ${PHAN_INFO_LATERAL}`;
+  // Thợ in kế hoạch (mig 111) — cột "Thợ in" + đổ sẵn panel; thiếu cột ⇒ NULL.
+  const colTho = (await coCotThoInKh()) ? 'ls.tho_in_kh' : 'NULL::text AS tho_in_kh';
   const dataSql = `
     SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.ngay_ke_hoach, ls.chuyen_id, ls.trang_thai,
-           ls.tg_bd_kh, ls.tg_kt_kh,
+           ls.tg_bd_kh, ls.tg_kt_kh, ${colTho},
            (${lenhStageCase('ls.id', 'ls.trang_thai')}) AS giai_doan_hien_tai,
            EXISTS (SELECT 1 FROM phieu_san_xuat ps2 WHERE ps2.lenh_san_xuat_id = ls.id) AS co_phieu,
            cs.ma_chuyen, cs.ten_chuyen,
@@ -1780,9 +1782,11 @@ async function logLenhCancel(lenhId, maLenh, lyDo, actorId) {
 //   để (a) service chặn hạ SL release xuống dưới mức đã nhận, (b) SidePanel hiện "đã nhận x/y".
 //   Lệnh in thường luôn = 0 ở màn này (có phiếu là đã bị loại khỏi danh sách).
 async function getLenhForReplan(lenhId) {
+  // `tho_in_kh` (mig 111) — dò cột; thiếu ⇒ NULL (màn Lập lại kế hoạch vẫn chạy, chỉ không lưu thợ in).
+  const coTho = await coCotThoInKh();
   const { rows } = await query(
     `SELECT ls.id, ls.ma_lenh_san_xuat, ls.trang_thai, ls.chuyen_id, ls.ngay_ke_hoach,
-            ls.so_luong_release, ls.tg_bd_kh, ls.tg_kt_kh,
+            ls.so_luong_release, ls.tg_bd_kh, ls.tg_kt_kh, ${coTho ? 'ls.tho_in_kh' : 'NULL::text AS tho_in_kh'},
             EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = ls.id) AS co_phieu,
             ${GIA_CONG_DA_CHUYEN} AS da_nhan
      FROM lenh_san_xuat ls WHERE ls.id = $1`.replace(/\s+/g, ' '),
@@ -1861,11 +1865,14 @@ async function updateReleaseTx(client, lenhId, items, actorId) {
 
 // Cập nhật kế hoạch của lệnh. `tgBdKh`/`tgKtKh` = giờ bắt đầu/kết thúc theo kế hoạch (mig gốc 001,
 // cùng 2 cột mà Release 1 / Tạo đợt SX ghi) — service đã ghép sẵn ngày + giờ trước khi gọi.
-async function updateLenhPlan(client, lenhId, { chuyenId, ngayKeHoach, tgBdKh, tgKtKh }, actorId) {
+// `thoInKh` (07/10/2026, mig 111): `undefined` = GIỮ NGUYÊN thợ in kế hoạch; chuỗi/null = ghi đè. ⚠ Bên gọi
+//   phải dò cột (`coCotThoInKh`) và CHỈ truyền khi đã có cột — chạy trong transaction, lỗi 42703 abort cả lượt.
+async function updateLenhPlan(client, lenhId, { chuyenId, ngayKeHoach, tgBdKh, tgKtKh, thoInKh }, actorId) {
+  const coTho = thoInKh !== undefined;
   await client.query(
     `UPDATE lenh_san_xuat SET chuyen_id = $2, ngay_ke_hoach = $3, tg_bd_kh = $4, tg_kt_kh = $5,
-       updated_by = $6, updated_date = CURRENT_TIMESTAMP WHERE id = $1`,
-    [lenhId, chuyenId, ngayKeHoach || null, tgBdKh || null, tgKtKh || null, actorId]
+       ${coTho ? 'tho_in_kh = $7,' : ''} updated_by = $6, updated_date = CURRENT_TIMESTAMP WHERE id = $1`,
+    [lenhId, chuyenId, ngayKeHoach || null, tgBdKh || null, tgKtKh || null, actorId, ...(coTho ? [thoInKh] : [])]
   );
 }
 
@@ -2189,37 +2196,80 @@ async function logInKhongDatTx(client, testRunId, payload, actorId) {
 }
 
 // ----- CÀI ĐẶT CA THEO TUẦN (migration 046) — best-effort nếu bảng chưa tạo -----
-async function listCaTuan() {
+// Mig 112 (07/10/2026): thêm `loai_chuyen` ('' = CHUNG · MAY · BAN · ROBOT), UNIQUE (nam, tuan, loai_chuyen).
+// ⚠ Dò cột trước khi dùng (khuôn `coCotThoInKh`): có ⇒ nhớ mãi; chưa ⇒ nhớ 60 s rồi dò lại (chạy migration
+//   xong tối đa 1 phút là nhận, không restart BE). Thiếu cột ⇒ đọc/ghi như cũ (1 loại ca / tuần).
+let caCoLoai = false;
+let caDoLuc = 0;
+async function caTuanCoLoaiChuyen() {
+  if (caCoLoai) return true;
+  if (Date.now() - caDoLuc < 60000) return false;
   try {
     const { rows } = await query(
-      `SELECT id, nam, tuan, loai_ca, ghi_chu, updated_date
-       FROM cai_dat_ca_tuan ORDER BY nam DESC, tuan DESC`.replace(/\s+/g, ' ')
+      "SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='cai_dat_ca_tuan' AND column_name='loai_chuyen'");
+    caCoLoai = rows.length > 0;
+  } catch (e) { caCoLoai = false; }
+  caDoLuc = Date.now();
+  return caCoLoai;
+}
+
+async function listCaTuan() {
+  try {
+    const coLoai = await caTuanCoLoaiChuyen();
+    const { rows } = await query(
+      `SELECT id, nam, tuan, loai_ca, ghi_chu, updated_date, ${coLoai ? 'loai_chuyen' : "''::text AS loai_chuyen"}
+       FROM cai_dat_ca_tuan ORDER BY nam DESC, tuan DESC${coLoai ? ', loai_chuyen' : ''}`.replace(/\s+/g, ' ')
     );
     return rows;
   } catch (e) { return []; }
 }
 
-// Map "nam-tuan" → loai_ca (để suy ca hàng loạt). Rỗng nếu bảng chưa có.
+// Map "nam-tuan" (dòng CHUNG) / "nam-tuan|MAY" (dòng riêng loại chuyền) → loai_ca. Đọc qua
+// `utils/ca.js loaiCaCua` — đừng `get()` thẳng. Rỗng nếu bảng chưa có.
 async function caModeMap() {
   const map = new Map();
   try {
-    const { rows } = await query('SELECT nam, tuan, loai_ca FROM cai_dat_ca_tuan');
-    rows.forEach((r) => map.set(`${r.nam}-${r.tuan}`, r.loai_ca));
+    const coLoai = await caTuanCoLoaiChuyen();
+    const { rows } = await query(`SELECT nam, tuan, loai_ca${coLoai ? ', loai_chuyen' : ''} FROM cai_dat_ca_tuan`);
+    rows.forEach((r) => map.set(`${r.nam}-${r.tuan}${r.loai_chuyen ? `|${r.loai_chuyen}` : ''}`, r.loai_ca));
   } catch (e) { /* bảng chưa tạo → mặc định NGAN ở nơi dùng */ }
   return map;
 }
 
-async function upsertCaTuan({ nam, tuan, loaiCa, ghiChu }, actorId) {
-  const { rows } = await query(
-    `INSERT INTO cai_dat_ca_tuan (nam, tuan, loai_ca, ghi_chu, created_by, updated_by, updated_date)
-     VALUES ($1,$2,$3,$4,$5,$5, now())
-     ON CONFLICT (nam, tuan) DO UPDATE
-       SET loai_ca = EXCLUDED.loai_ca, ghi_chu = EXCLUDED.ghi_chu,
-           updated_by = EXCLUDED.updated_by, updated_date = now()
-     RETURNING id, nam, tuan, loai_ca, ghi_chu`.replace(/\s+/g, ' '),
-    [nam, tuan, loaiCa, ghiChu || null, actorId]
-  );
-  return rows[0];
+// `loaiChuyen` '' = CHUNG. Lưu CHUNG ⇒ các dòng riêng cùng tuần cũng đổi theo (CHUNG = "cả xưởng đi ca này"),
+// không có quyền DELETE nên không xóa dòng riêng được — đổi về cùng giá trị là tương đương.
+async function upsertCaTuan({ nam, tuan, loaiCa, ghiChu, loaiChuyen = '' }, actorId) {
+  const coLoai = await caTuanCoLoaiChuyen();
+  if (!coLoai) {
+    const { rows } = await query(
+      `INSERT INTO cai_dat_ca_tuan (nam, tuan, loai_ca, ghi_chu, created_by, updated_by, updated_date)
+       VALUES ($1,$2,$3,$4,$5,$5, now())
+       ON CONFLICT (nam, tuan) DO UPDATE
+         SET loai_ca = EXCLUDED.loai_ca, ghi_chu = EXCLUDED.ghi_chu,
+             updated_by = EXCLUDED.updated_by, updated_date = now()
+       RETURNING id, nam, tuan, loai_ca, ghi_chu, ''::text AS loai_chuyen`.replace(/\s+/g, ' '),
+      [nam, tuan, loaiCa, ghiChu || null, actorId]
+    );
+    return rows[0];
+  }
+  return withTransaction(async (client) => {
+    const { rows } = await client.query(
+      `INSERT INTO cai_dat_ca_tuan (nam, tuan, loai_chuyen, loai_ca, ghi_chu, created_by, updated_by, updated_date)
+       VALUES ($1,$2,$3,$4,$5,$6,$6, now())
+       ON CONFLICT (nam, tuan, loai_chuyen) DO UPDATE
+         SET loai_ca = EXCLUDED.loai_ca, ghi_chu = EXCLUDED.ghi_chu,
+             updated_by = EXCLUDED.updated_by, updated_date = now()
+       RETURNING id, nam, tuan, loai_chuyen, loai_ca, ghi_chu`.replace(/\s+/g, ' '),
+      [nam, tuan, loaiChuyen || '', loaiCa, ghiChu || null, actorId]
+    );
+    if (!loaiChuyen) {
+      await client.query(
+        `UPDATE cai_dat_ca_tuan SET loai_ca = $3, updated_by = $4, updated_date = now()
+          WHERE nam = $1 AND tuan = $2 AND loai_chuyen <> '' AND loai_ca <> $3`.replace(/\s+/g, ' '),
+        [nam, tuan, loaiCa, actorId]);
+    }
+    return rows[0];
+  });
 }
 
 // DANH SÁCH RELEASE — cho modal/report + Excel/In. IPS-safe (SQL gộp 1 dòng, không comment `--`).
@@ -2324,7 +2374,7 @@ async function auditTraVeKyThuat(pinId, dotVaiId, lyDo, actorId) {
 module.exports = {
   releaseListByDate,
   phanInIdByDotVai, dotVaiReleasedOne, auditTraVeKyThuat,
-  listCaTuan, caModeMap, upsertCaTuan,
+  listCaTuan, caModeMap, upsertCaTuan, caTuanCoLoaiChuyen,
   listRelease1Candidates, phanInDangOGnTheoDot, release1HistoryByDate, nextMaLenh, nextMaLenhTx, createLenh,
   release1DoneByDate, planDoneByDate, testDoneByDate,
   testedDotVaiIds, getDotVaiQty, getDotVaiRemaining, getDotVaiForCompose, getPainVsChuyen, phanInDangChay, addLenhDotVai, dotVaiAlreadyReleased,

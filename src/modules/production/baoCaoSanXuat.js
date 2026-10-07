@@ -10,6 +10,7 @@
 
 const { query } = require('../../config/db');
 const { dungBaoCaoSanXuat, khoaTuanIso, suyLoaiCaTuTem } = require('../../utils/baoCaoSanXuat');
+const { LOAI_CHUYEN_CA } = require('../../utils/ca');
 
 const daCo = new Map();
 async function coCot(bang, cot) {
@@ -120,13 +121,17 @@ async function docTo(ids) {
   return rows;
 }
 
-// Loại ca ĐÃ CÀI cho tuần ISO của ngày; chưa cài / bảng chưa có (mig 046) ⇒ null (bên gọi suy từ tem).
+// Loại ca ĐÃ CÀI cho tuần ISO của ngày: { chung, rieng: {MAY|BAN|ROBOT: loại ca} } (mig 112 — đọc qua
+// `planning.repository.caModeMap`, cùng nguồn mọi chỗ suy ca). Chưa cài / bảng chưa có ⇒ chung null (bên gọi
+// suy từ tem).
 async function loaiCaCuaNgay(ngay) {
   try {
-    const { rows } = await query('SELECT loai_ca FROM cai_dat_ca_tuan WHERE nam = $1 AND tuan = $2',
-      khoaTuanIso(ngay).split('-').map(Number));
-    return (rows[0] && rows[0].loai_ca) || null;
-  } catch { return null; }
+    const map = await require('../planning/planning.repository').caModeMap();
+    const khoa = khoaTuanIso(ngay);
+    const rieng = {};
+    LOAI_CHUYEN_CA.forEach((lc) => { if (map.has(`${khoa}|${lc}`)) rieng[lc] = map.get(`${khoa}|${lc}`); });
+    return { chung: map.get(khoa) || null, rieng };
+  } catch { return { chung: null, rieng: {} }; }
 }
 
 const duyNhat = (arr) => [...new Set(arr.filter(Boolean).map(String))];
@@ -147,9 +152,11 @@ async function dungMoi(ngay) {
     docChuyen(duyNhat(phieus.map((p) => p.chuyen_id))),
     coTo ? docTo(duyNhat(phieus.map((p) => p.to_in_id))) : [],
   ]) : [[], [], [], [], []];
-  const caChot = loaiCa || suyLoaiCaTuTem(tems) || 'NGAN';
-  const kq = dungBaoCaoSanXuat({ ngay, loaiCa: caChot, bayGio: Date.now(), phieus, tems, lenhs, pins, chuyens, tos });
-  return { ...kq, loai_ca_da_cai: !!loaiCa };
+  const caChung = loaiCa.chung || suyLoaiCaTuTem(tems) || 'NGAN';
+  // Mig 112: chuyền Máy/Bàn/Robot có cài riêng ⇒ chia ca theo cài riêng; loại khác theo CHUNG.
+  const caTheoLoai = (lc) => loaiCa.rieng[String(lc || '').toUpperCase()] || caChung;
+  const kq = dungBaoCaoSanXuat({ ngay, loaiCa: caTheoLoai, bayGio: Date.now(), phieus, tems, lenhs, pins, chuyens, tos });
+  return { ...kq, loai_ca_da_cai: !!loaiCa.chung || Object.keys(loaiCa.rieng).length > 0 };
 }
 
 // Lưu PROMISE (không lưu kết quả) ⇒ nhiều người mở cùng lúc chỉ chạy 1 lượt; lỗi thì bỏ cache ngay.

@@ -12,7 +12,7 @@ const planningService = require('../planning/planning.service'); // rollbackLenh
 const erpsyncRepo = require('../erpsync/erpsync.repository');     // reopenReadyForPhanIn
 const qaRepo = require('../quality/quality.repository');          // qc_tra_ve (badge + lý do ở READY)
 const thongBao = require('../thongbao/thongbao.service');         // chuông Kỹ thuật (mig 085)
-const { caFromParts, maNgayCa, ngayTuMaNgayCa, gioBatDauCa } = require('../../utils/ca');
+const { caFromParts, maNgayCa, ngayTuMaNgayCa, gioBatDauCa, loaiCaCua } = require('../../utils/ca');
 const { layBarcodeTem, layNhieuBarcodeTem } = require('../../utils/erpTemBarcode');
 const { ghiInTem, taoPayload, laMaTemErp, ghiChuaCoMaErp } = require('../../utils/erpGhiInTem');
 const { apiChoPhepPhanIn } = require('../../utils/caiDatApi');
@@ -72,7 +72,8 @@ async function goiYTemMeta(lenhId, phieuId) {
   try {
     const [g, modeMap] = await Promise.all([repo.goiYTemMeta(lenhId, phieuId), planningRepo.caModeMap()]);
     if (!g) return null;
-    const mode = modeMap.get(`${g.nam}-${g.tuan}`) || 'NGAN';
+    // Mig 112: tuần cài ca riêng theo loại chuyền (Máy/Bàn/Robot) ⇒ lấy theo loại chuyền của lệnh.
+    const mode = loaiCaCua(modeMap, `${g.nam}-${g.tuan}`, g.loai_chuyen);
     // Hôm nay chưa có mốc nào (tem trước / giờ chạy phiếu) ⇒ "Từ giờ" = giờ bắt đầu CA hiện tại.
     return { ngay_ca: maNgayCa(g.ymd, g.gio, g.phut, mode), gio_bd: g.gio_bd || gioBatDauCa(g.gio, g.phut, mode), gio_kt: g.gio_kt || '' };
   } catch (e) {
@@ -517,6 +518,9 @@ async function printTem(phieuId, soLuong, actorId, body) {
 // ⚠ Trần TỪNG DÒNG chỉ tính trong LƯỢT NHẤN NÀY, không lũy kế qua các lượt in trước — vì bảng `tem`
 //   không lưu đợt vải (giữ schema như cũ) nên không biết đã in bao nhiêu cho từng phần in.
 //   Trần TỔNG của lệnh vẫn lũy kế đầy đủ nên không in vượt được toàn lệnh.
+// 07/10/2026: cũng là đường IN NHIỀU TEM 1 LẦN (ô "Số tem" ở RunPanel) — N dòng cùng đợt (hoặc `dotVaiId`
+//   null với lệnh thường) ⇒ N tem, FE in N tờ trong 1 cửa sổ.
+const TOI_DA_TEM_MOT_LUOT = 50;
 async function printTemBatch(phieuId, items, actorId, body) {
   const meta = temMeta(body);
   const raw = Array.isArray(items) ? items : [];
@@ -533,6 +537,10 @@ async function printTemBatch(phieuId, items, actorId, body) {
     }))
     .filter((it) => it.dotVaiId && (it.huy > 0 || it.thieu > 0));
   if (!list.length) throw new AppError('Nhập số lượng in cho ít nhất 1 phần in', { status: 422, errorCode: 'EMPTY' });
+  // Mỗi tem xin 1 mã ERP TUẦN TỰ trước transaction ⇒ chặn lượt quá lớn (người đứng máy chờ + giữ phiên lâu).
+  if (list.length > TOI_DA_TEM_MOT_LUOT) {
+    throw new AppError(`Mỗi lượt in tối đa ${TOI_DA_TEM_MOT_LUOT} tem (đang ${list.length})`, { status: 422, errorCode: 'QUA_NHIEU_TEM' });
+  }
 
   const phieu = await repo.getPhieuById(phieuId);
   if (!phieu) throw new AppError('Phiếu sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
@@ -542,14 +550,21 @@ async function printTemBatch(phieuId, items, actorId, body) {
 
   const dotVaiList = await repo.getLenhDotVaiList(phieu.lenh_san_xuat_id);
   const byId = new Map(dotVaiList.map((d) => [d.dot_vai_ve_id, d]));
+  // ⚠ 07/10/2026 in NHIỀU TEM cùng lúc (ô "Số tem"): 1 đợt có thể có N dòng trong lượt ⇒ trần 110% từng đợt
+  //   so với TỔNG SL các tem của đợt đó trong lượt, không phải từng tem (N tem nhỏ lách được trần).
+  const tongTheoDot = new Map();
   for (const it of list) {
     if (!it.dotVaiId) continue;
     const d = byId.get(it.dotVaiId);
     if (!d) throw new AppError('Đợt vải không thuộc đợt sản xuất này', { status: 422, errorCode: 'BAD_DOT_VAI' });
+    tongTheoDot.set(it.dotVaiId, (tongTheoDot.get(it.dotVaiId) || 0) + it.soLuong);
+  }
+  for (const [dotVaiId, slDot] of tongTheoDot) {
+    const d = byId.get(dotVaiId);
     const capDot = Math.floor((Number(d.sl_vao_sx) || 0) * 1.1);
-    if (capDot > 0 && it.soLuong > capDot) {
+    if (capDot > 0 && slDot > capDot) {
       throw new AppError(
-        `Phần in ${d.ma_phan}: vượt 110% SL vào sản xuất của đợt (tối đa ${capDot}, nhập ${it.soLuong})`,
+        `Phần in ${d.ma_phan}: vượt 110% SL vào sản xuất của đợt (tối đa ${capDot}, nhập ${slDot})`,
         { status: 422, errorCode: 'OVER_LIMIT_DOT' }
       );
     }
@@ -650,7 +665,7 @@ async function temLabel(temId, dotVaiId = null) {
   if (!data) throw new AppError('Tem không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   // Ca sản xuất = suy từ giờ VN lúc sản xuất + loại ca của tuần (Ngắn/Dài). Query nhẹ riêng (IPS-safe).
   const [parts, map] = await Promise.all([repo.caPartsForTem(temId), planningRepo.caModeMap()]);
-  data.ca = caFromParts(parts.ca_gio, parts.ca_phut, parts.ca_nam, parts.ca_tuan, map);
+  data.ca = caFromParts(parts.ca_gio, parts.ca_phut, parts.ca_nam, parts.ca_tuan, map, parts.loai_chuyen);
   return data;
 }
 

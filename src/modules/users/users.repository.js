@@ -1,34 +1,47 @@
 'use strict';
 
 const { query, withTransaction } = require('../../config/db');
-const { mauTim } = require('../../utils/timKiem');
+const { mauTim, chuanTuKhoa } = require('../../utils/timKiem');
+
+// Tìm NGƯỜI theo TỪNG TỪ (07/10/2026 — gương FE `utils/timKiem.js khopTungTu`): mỗi từ của ô tìm phải khớp
+// (không dấu, không phân biệt hoa thường) ít nhất 1 cột tên / tên đăng nhập (MSNV) / mã user ⇒ gõ "nguyen an"
+// ra "Nguyễn Văn An", gõ "an 0210" ra đúng người có MSNV 0210…. Tối đa 6 từ (câu SQL ngắn, IPS-safe).
+// Trả điều kiện SQL (đã push tham số vào `params`); không có từ nào ⇒ 'TRUE'.
+function dkTimNguoi(search, params, cot) {
+  const tu = chuanTuKhoa(search).split(' ').filter(Boolean).slice(0, 6);
+  return tu.map((t) => {
+    const n = params.push(mauTim(t));
+    return `(${cot.map((c) => `${c} ~* $${n}`).join(' OR ')})`;
+  }).join(' AND ') || 'TRUE';
+}
 
 // Danh sách RÚT GỌN để CHỌN NGƯỜI (combobox owner...) — chỉ id/họ tên/username, KHÔNG kèm
 // email/SĐT/vai trò/phòng ban. Dùng cho màn nghiệp vụ (vd OQC chọn owner cho giao) nên chỉ cần
 // đăng nhập, không đòi USER_VIEW (quyền quản trị user) — xem users.routes.
 async function listOptions({ search = '', limit = 500 }) {
+  const params = [limit];
+  const dk = dkTimNguoi(search, params, ['u.ho_ten', 'u.ten_dang_nhap', 'u.ma_user']);
   const { rows } = await query(
     `SELECT u.id, u.ho_ten, u.ten_dang_nhap
      FROM nguoi_dung u
-     WHERE u.dang_hoat_dong = true
-       AND ($1 = '' OR u.ho_ten ~* $1 OR u.ten_dang_nhap ~* $1)
+     WHERE u.dang_hoat_dong = true AND ${dk}
      ORDER BY u.ho_ten NULLS LAST, u.ten_dang_nhap
-     LIMIT $2`.replace(/\s+/g, ' '),
-    [mauTim(search), limit]
+     LIMIT $1`.replace(/\s+/g, ' '),
+    params
   );
   return rows;
 }
 
 async function list({ search = '', active = null, offset = 0, limit = 20 }) {
-  const tim = mauTim(search);
-  const params = [tim, limit, offset];
+  // Tham số của WHERE đứng TRƯỚC (câu đếm dùng đúng bộ này), LIMIT/OFFSET nối sau chỉ cho câu dữ liệu.
+  const params = [];
   let activeCond = '';
   if (active === true || active === false) {
     params.push(active);
     activeCond = ` AND u.dang_hoat_dong = $${params.length}`;
   }
-  const where = `WHERE ($1 = '' OR u.ho_ten ~* $1 OR u.ten_dang_nhap ~* $1
-                 OR u.ma_user ~* $1)${activeCond}`;
+  const where = `WHERE ${dkTimNguoi(search, params, ['u.ho_ten', 'u.ten_dang_nhap', 'u.ma_user'])}${activeCond}`;
+  const nLimit = params.length + 1;
 
   // Tổ (mig 104) — dò bảng trước, thiếu migration thì cột ra NULL (không 42703).
   const coTo = await require('../phongban/phongban.service').coBangTo();
@@ -45,12 +58,12 @@ async function list({ search = '', active = null, offset = 0, limit = 20 }) {
     ${where}
     GROUP BY u.id, pb.ten_phong_ban
     ORDER BY u.created_date DESC
-    LIMIT $2 OFFSET $3`;
+    LIMIT $${nLimit} OFFSET $${nLimit + 1}`;
   const countSql = `SELECT count(*)::int AS total FROM nguoi_dung u ${where}`;
 
   const [data, count] = await Promise.all([
-    query(dataSql, params),
-    query(countSql, active === null ? [tim] : [tim, active]),
+    query(dataSql, [...params, limit, offset]),
+    query(countSql, params),
   ]);
   return { rows: data.rows, total: count.rows[0].total };
 }

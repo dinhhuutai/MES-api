@@ -65,7 +65,7 @@ async function guiKiemPham(kcsId, temId, { dat = 0, hu = 0, thieu = 0 } = {}, ac
 
   const payload = taoPayload(r, { idMes, soLuong: Number(dat) || 0, soLuongHuy: Number(hu) || 0, soLuongThieu: Number(thieu) || 0 });
   // Cùng bài học `@pNgayca` của sửa đạt (23/09/2026): tem thiếu mã ngày ca ⇒ lấy NGÀY HÔM NAY.
-  if (!payload.Ngayca) payload.Ngayca = await maNgayCaHomNay();
+  if (!payload.Ngayca) payload.Ngayca = await maNgayCaHomNay(r.loai_chuyen);
   // Trường NGÀY GIỜ thiếu ⇒ lấy MỐC NHẬP KCS (người dùng chốt 26/09/2026: "ngày thì để hôm nay, có dữ
   //   liệu lúc nhập"). Proc dùng `@pDengio` làm Ngày/Giờ của phiếu chuyển giao SH6 ⇒ NULL là phiếu mất ngày.
   //   Tem có nhập giờ SX (Từ giờ/Đến giờ) thì GIỮ nguyên; `Ngayct` vốn đã là ngày gửi = hôm nay.

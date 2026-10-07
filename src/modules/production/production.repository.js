@@ -718,13 +718,21 @@ async function logPauseLenhChay(lenhId, maLenh, printed, actorId) {
 
 // Dữ liệu in NHÃN TEM (thông tin tem + phần in + lệnh + người in).
 // Giờ/tuần VN của 1 tem (để suy ca) — query nhẹ riêng, tách khỏi query nhãn (IPS-safe).
+// `loai_chuyen` (mig 112): loại chuyền của LỆNH (cùng nguồn `duLieuGhiInTem`) — tuần có cài ca riêng
+// Máy/Bàn/Robot thì ca suy theo loại đó (`utils/ca.js loaiCaCua`).
 async function caPartsForTem(temId) {
   const { rows } = await query(
-    `SELECT EXTRACT(HOUR    FROM created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS ca_gio,
-            EXTRACT(MINUTE  FROM created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS ca_phut,
-            EXTRACT(ISOYEAR FROM created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS ca_nam,
-            EXTRACT(WEEK    FROM created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS ca_tuan
-     FROM tem WHERE id = $1`.replace(/\s+/g, ' '),
+    `SELECT EXTRACT(HOUR    FROM t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS ca_gio,
+            EXTRACT(MINUTE  FROM t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS ca_phut,
+            EXTRACT(ISOYEAR FROM t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS ca_nam,
+            EXTRACT(WEEK    FROM t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS ca_tuan,
+            lc.ma_loai AS loai_chuyen
+     FROM tem t
+     LEFT JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+     LEFT JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+     LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+     LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
+     WHERE t.id = $1`.replace(/\s+/g, ' '),
     [temId]
   );
   return rows[0] || {};
@@ -917,8 +925,10 @@ async function goiYTemMeta(lenhId, phieuId) {
              WHERE ps.lenh_san_xuat_id=$1 AND t.trang_thai<>'HUY'
                AND (t.created_date ${VN})::date = (now() ${VN})::date
              ORDER BY t.created_date DESC LIMIT 1),
-      b AS (SELECT (now() ${VN})::date AS ngay, (now() ${VN}) AS tg)
-    SELECT to_char(b.ngay,'YYMMDD') AS ymd,
+      b AS (SELECT (now() ${VN})::date AS ngay, (now() ${VN}) AS tg),
+      lc AS (SELECT lc.ma_loai FROM lenh_san_xuat ls JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+               JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id WHERE ls.id = $1)
+    SELECT to_char(b.ngay,'YYMMDD') AS ymd, (SELECT ma_loai FROM lc) AS loai_chuyen,
            EXTRACT(HOUR    FROM b.tg)::int    AS gio,
            EXTRACT(MINUTE  FROM b.tg)::int    AS phut,
            EXTRACT(ISOYEAR FROM b.ngay)::int  AS nam,
@@ -980,7 +990,7 @@ async function duLieuGhiInTem(capTem = [], ngayCt = null) {
            (t.tem_goc_id IS NOT NULL) AS la_tem_sua,
            CASE WHEN t.tem_goc_id IS NOT NULL THEN t.sl_kcs_dat ELSE t.so_luong END AS so_luong,
            info.ma_phan,
-           ls.ma_lenh_san_xuat, cs.ma_chuyen,
+           ls.ma_lenh_san_xuat, cs.ma_chuyen, lc.ma_loai AS loai_chuyen,
            ${coTo ? 'ti.ma_to' : 'NULL::varchar'} AS ma_to,
            ps.chuyen_truong, ndct.ho_ten AS ca_truong,
            (SELECT string_agg(DISTINCT pc.tho_in, ',') FROM phan_cong_san_xuat pc
@@ -1003,6 +1013,7 @@ async function duLieuGhiInTem(capTem = [], ngayCt = null) {
       JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
       JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
       LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+      LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
       ${coTo ? 'LEFT JOIN to_in ti ON ti.id = ps.to_in_id' : ''}
       LEFT JOIN nguoi_dung ndct ON ndct.id = ps.ca_truong_id
       CROSS JOIN LATERAL (

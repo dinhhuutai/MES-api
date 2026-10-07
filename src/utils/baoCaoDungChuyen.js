@@ -60,7 +60,7 @@ function dungBaoCaoDungChuyen({ tuNgay, denNgay, rows = [], loaiCaNgay = () => '
       soPhut = Math.max(0, Math.round((Math.min(...chan) - bd) / PHUT));
     }
     const { nguyenNhan, ghiChu } = tachLyDo(r.ly_do, r.ten_ly_do);
-    const loaiCa = loaiCaNgay(r.ngay_sx) || 'NGAN';
+    const loaiCa = loaiCaNgay(r.ngay_sx, r.ma_loai_chuyen) || 'NGAN'; // mig 112: ca theo loại chuyền
     return {
       id: r.id,
       ngay_sx: r.ngay_sx,

@@ -56,13 +56,11 @@ async function docLanDung(tuNgay, denNgay, { coLyDoId, coTo }) {
   return rows;
 }
 
-// Loại ca theo NGÀY: tuần đã cài thì theo cài đặt; chưa cài ⇒ suy từ mã ca tem của ngày; không có ⇒ NGAN.
+// Loại ca theo NGÀY (+ loại chuyền, mig 112): tuần đã cài thì theo cài đặt (riêng Máy/Bàn/Robot ⇒ chung);
+// chưa cài ⇒ suy từ mã ca tem của ngày; không có ⇒ NGAN. Đọc qua `planning.repository.caModeMap`.
 async function hamLoaiCaNgay(cacNgay, tuNgay, denNgay) {
-  const tuan = new Map();
-  try {
-    const { rows } = await query('SELECT nam, tuan, loai_ca FROM cai_dat_ca_tuan');
-    rows.forEach((r) => tuan.set(`${r.nam}-${r.tuan}`, r.loai_ca));
-  } catch { /* bảng chưa có (mig 046) ⇒ suy từ tem / mặc định */ }
+  let tuan = new Map();
+  try { tuan = await require('../planning/planning.repository').caModeMap(); } catch { /* ⇒ suy từ tem / mặc định */ }
   const thieu = cacNgay.filter((d) => !tuan.has(khoaTuanIso(d)));
   const theoTem = new Map();
   if (thieu.length && await coCot('tem', 'ngay_ca')) {
@@ -79,7 +77,11 @@ async function hamLoaiCaNgay(cacNgay, tuNgay, denNgay) {
     });
     gom.forEach((ds, ngay) => { const lc = suyLoaiCaTuTem(ds); if (lc) theoTem.set(ngay, lc); });
   }
-  return (ngay) => tuan.get(khoaTuanIso(ngay)) || theoTem.get(ngay) || 'NGAN';
+  return (ngay, loaiChuyen) => {
+    const k = khoaTuanIso(ngay);
+    const lc = String(loaiChuyen || '').toUpperCase();
+    return (lc && tuan.get(`${k}|${lc}`)) || tuan.get(k) || theoTem.get(ngay) || 'NGAN';
+  };
 }
 
 async function dungMoi(tuNgay, denNgay) {

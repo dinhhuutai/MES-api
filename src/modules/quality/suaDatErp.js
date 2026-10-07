@@ -25,7 +25,7 @@ const { ghiLog } = require('../../utils/erpApiLog');
 const { capIdMes } = require('../../utils/idMes');
 const prodRepo = require('../production/production.repository');
 const repo = require('./quality.repository');
-const { maNgayCa } = require('../../utils/ca');
+const { maNgayCa, loaiCaCua } = require('../../utils/ca');
 
 const MA_API = 'ERP_GUI_SUA_DAT';
 
@@ -34,14 +34,15 @@ const MA_API = 'ERP_GUI_SUA_DAT';
 //   có mã ngày ca ⇒ người dùng chốt 24/09: **lấy NGÀY HÔM NAY**. Gửi đúng định dạng mã ngày ca mà tem
 //   15 đang gửi (`YYMMDD` + mã ca, vd `260924C1`) — suy từ giờ hiện tại & loại ca của tuần ISO, y
 //   như gợi ý "Ngày ca" ở màn Sản xuất. Lỗi gì cũng lùi về `YYMMDD` trần, không để trống.
-async function maNgayCaHomNay() {
+// `loaiChuyen` (mig 112) = loại chuyền của tem (`duLieuGhiInTem.loai_chuyen`) — tuần cài ca riêng theo loại.
+async function maNgayCaHomNay(loaiChuyen = null) {
   let ymd = null;
   try {
     const planningRepo = require('../planning/planning.repository');
     const [g, modeMap] = await Promise.all([prodRepo.goiYTemMeta(null, null), planningRepo.caModeMap()]);
     if (g) {
       ymd = g.ymd;
-      return maNgayCa(g.ymd, g.gio, g.phut, modeMap.get(`${g.nam}-${g.tuan}`) || 'NGAN');
+      return maNgayCa(g.ymd, g.gio, g.phut, loaiCaCua(modeMap, `${g.nam}-${g.tuan}`, loaiChuyen));
     }
   } catch { /* lùi xuống dưới */ }
   if (ymd) return ymd;
@@ -114,7 +115,7 @@ async function guiSuaDat(suaId, actorId, opts = {}) {
   if (idMes == null) return { ok: false, error: 'Không cấp được IDMES' };
 
   const payload = taoPayload(r, { idMes, soLuong: dat, soLuongHuy: Number(s.so_luong_sua_huy) || 0 });
-  if (!payload.Ngayca) payload.Ngayca = await maNgayCaHomNay();
+  if (!payload.Ngayca) payload.Ngayca = await maNgayCaHomNay(r.loai_chuyen);
   // Tem 17 không có giờ SX ⇒ Tugio/Dengio = MỐC XÁC NHẬN SỬA của lượt (proc SK6 dùng `@pDengio` làm
   //   Ngày/Giờ phiếu chuyển giao — NULL là phiếu mất ngày). Không đọc được ⇒ bây giờ (giờ VN).
   if (!payload.Tugio || !payload.Dengio) {
