@@ -31,7 +31,7 @@
 //     phần in; tem SX không lưu đợt vải ⇒ quy về phần in đầu (giới hạn đã biết, DATABASE.md §4).
 //   · Kế hoạch của lệnh tính cho PHIẾU chạy nhiều giờ nhất trong ngày (lệnh đổi tổ giữa ngày không đếm đôi).
 
-const { caFromHour } = require('./ca');
+const { caFromHour, khoaTuanIso } = require('./ca');
 
 const CA = ['HC', 'CA1', 'CA2', 'CA3'];
 const NHOM = [
@@ -63,16 +63,7 @@ function khungCa(ngay, loaiCa) {
   ];
 }
 
-// Tuần ISO của 1 ngày 'YYYY-MM-DD' → khóa `nam-tuan` của `cai_dat_ca_tuan`.
-function khoaTuanIso(ngay) {
-  const [y, m, d] = String(ngay).split('-').map(Number);
-  const t = new Date(Date.UTC(y, m - 1, d));
-  const thu = t.getUTCDay() || 7;
-  t.setUTCDate(t.getUTCDate() + 4 - thu);
-  const dauNam = Date.UTC(t.getUTCFullYear(), 0, 1);
-  const tuan = Math.ceil(((t.getTime() - dauNam) / 86400000 + 1) / 7);
-  return `${t.getUTCFullYear()}-${tuan}`;
-}
+// `khoaTuanIso` (tuần ISO → khóa `nam-tuan` của `cai_dat_ca_tuan`) nay ở `utils/ca.js`, export lại bên dưới.
 
 const chongLan = (a0, a1, b0, b1) => Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
 const ms = (v) => (v == null ? null : new Date(v).getTime());

@@ -64,14 +64,23 @@ async function guiLai(ma, auditId, actorId) {
   const d = await docDong(ma, auditId);
   if (!d) throw new AppError('Không tìm thấy dòng lịch sử', { status: 404, errorCode: 'NOT_FOUND' });
   const g = d.gia_tri_moi || {};
-  // GN hủy vải — dòng không gắn bản ghi (1 lượt nhiều phần in) ⇒ gửi lại ĐÚNG danh sách code phần đã gửi,
-  //   giữ nguyên ID kết nối cũ để 2 bên vẫn khớp.
+  // Hủy đợt READY bên ERP khi trả về GN (07/10/2026) — gửi lại ĐÚNG các cặp `code phần, IDDotReady` đã gửi,
+  //   giữ ID kết nối cũ; `id_ban_ghi` = lượt trả về GN ⇒ thành công thì lượt đó chuyển "ERP đã hủy" (`gnErp`).
+  //   Dòng trước 07/10/2026 chỉ có `DsPhan` (danh sách code phần, proc cũ) — proc mới không nhận nữa.
   if (ma === 'ERP_GUI_DS_HUY_VAI') {
     const gui = g.gui || {};
-    const ds = String(gui.DsPhan || '').split(',').map((s) => s.trim()).filter(Boolean);
-    if (!ds.length) throw new AppError('Dòng lịch sử không có danh sách code phần', { status: 409, errorCode: 'THIEU_DU_LIEU' });
-    const kq = await erp.guiDsHuyVai(ds, { actorId, idKetNoi: gui.IDKetNoi || g.id_mes || null });
-    loiNeu(kq, 'Gửi danh sách hủy vải');
+    if (!gui.DsPhanDotVai) {
+      throw new AppError('Dòng lịch sử dạng cũ (chỉ có danh sách code phần) — proc hủy mới nhận cặp code phần + IDDotReady, không gửi lại được',
+        { status: 409, errorCode: 'DONG_CU' });
+    }
+    const p = String(gui.DsPhanDotVai).split(',').map((s) => s.trim());
+    const cap = [];
+    for (let i = 0; i + 1 < p.length; i += 2) cap.push({ codePhan: p[i], idDotReady: p[i + 1] });
+    if (!cap.length) throw new AppError('Dòng lịch sử không có cặp code phần + IDDotReady', { status: 409, errorCode: 'THIEU_DU_LIEU' });
+    const idBanGhi = d.id_ban_ghi && d.id_ban_ghi !== '-' ? d.id_ban_ghi : null;
+    const kq = await erp.guiDsHuyVai(cap, { actorId, idKetNoi: gui.IDKetNoi || g.id_mes || null, idBanGhi });
+    loiNeu(kq, 'Gửi hủy đợt READY (trả về GN)');
+    if (idBanGhi) await require('../suathongtin/gnErp').danhDauGuiLaiThanhCong(idBanGhi, kq.id_ket_noi, actorId);
     return { ok: true };
   }
   // Release 1 / kế hoạch lệnh (04/10/2026) — gửi lại ĐÚNG thân đã gửi (IDMES + DsRelease cũ), xem

@@ -153,24 +153,24 @@ const DANH_MUC_API = [
     macDinh: () => env.erp.guiTemGiaCongEnabled,
     url: () => env.erp.guiTemGiaCongUrl,
   },
-  // GN HỦY VẢI (27/09/2026) — /gui-ds-huy-vai → proc SX_spr_DSPhieuNhanvaiReadyHuy.
+  // TRẢ VỀ GN ⇒ HỦY ĐỢT READY BÊN ERP (đổi 07/10/2026) — /gui-ds-huy-vai → proc SX_spr_DSPhieuNhanvaiReadyHuy.
   {
     ma: 'ERP_GUI_DS_HUY_VAI',
-    ten: 'Gửi danh sách hủy vải (GN) sang ERP',
-    mo_ta: 'Bấm "Hủy vải" ở Đơn hàng › Phần in chờ sửa thông tin ⇒ gửi DANH SÁCH CODE PHẦN vừa hủy (ngăn bằng dấu phẩy) '
-      + 'sang ERP (proc SX_spr_DSPhieuNhanvaiReadyHuy). Hủy nhiều phần cùng lúc = 1 lượt gọi. TẮT hay lỗi đều KHÔNG chặn '
-      + 'việc hủy trong MES; lượt trượt gửi lại ở Lịch sử.',
-    canh_bao: null,
+    ten: 'Hủy đợt READY bên ERP khi trả phần in về GN',
+    mo_ta: 'Mỗi lần bấm "Trả về GN" (READY · QC · Release 1 · Test Run · Release 2 · Chờ chạy) ⇒ gửi các cặp '
+      + '"code phần, IDDotReady" của đợt chưa sản xuất (@pDsPhanDotVai, proc SX_spr_DSPhieuNhanvaiReadyHuy). GN sửa + '
+      + 'xác nhận lại trên ERP ⇒ đồng bộ đợt vải kéo về và phần in tự quay lại đúng màn đã trả về. TẮT/lỗi ⇒ phần in vẫn '
+      + 'vào trang chờ sửa thông tin, GN bấm "Gửi hủy sang ERP" hoặc gửi lại ở Lịch sử.',
+    canh_bao: 'Tắt thì ERP không gỡ đợt ⇒ không có đường tự quay về — GN phải xác nhận tay trên MES.',
     macDinh: () => env.erp.guiDsHuyVaiEnabled,
     url: () => env.erp.guiDsHuyVaiUrl,
   },
-  // KÉO phần in đã sửa thông tin bên ERP về trang "Phần in chờ sửa thông tin" (25/09/2026).
+  // KÉO phần in đã sửa thông tin bên ERP về trang "Phần in chờ sửa thông tin" (25/09/2026) — NGỪNG 07/10/2026.
   {
     ma: 'ERP_DS_SUA_THONG_TIN',
-    ten: 'Lấy phần in đã sửa thông tin từ ERP',
-    mo_ta: 'Job ' + env.erp.syncIntervalMin + ' phút/lần gọi /ds-phan-in-sua-thong-tin, cập nhật lại thông tin các phần in '
-      + 'đang ở trang "Phần in chờ sửa thông tin" (READY trả về Giao nhận). Không có phần in nào chờ thì không gọi ERP. '
-      + 'GN vẫn phải bấm "Xác nhận lại" để phần in quay về READY.',
+    ten: 'Lấy phần in đã sửa thông tin từ ERP (đã ngừng)',
+    mo_ta: 'ĐÃ NGỪNG từ 07/10/2026: không còn job gọi /ds-phan-in-sua-thong-tin. Phần in trả về GN nay quay lại qua '
+      + '"Đồng bộ đợt vải từ ERP" khi GN xác nhận lại đợt trên ERP. Công tắc này không còn tác dụng — giữ để xem lịch sử cũ.',
     canh_bao: null,
     macDinh: () => env.erp.dsSuaThongTinEnabled,
     url: () => env.erp.dsSuaThongTinUrl,

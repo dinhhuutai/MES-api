@@ -88,8 +88,8 @@ async function start() {
     console.log(`[push] Web Push : ${tt.san_sang ? 'sẵn sàng' : `TẮT — ${tt.ly_do}`}`);
     // [ERP TẮT TẠM] không tự đồng bộ ERP. Bỏ comment để bật lại.
      startErpSyncJob();
-    // Kéo phần in GN đã sửa thông tin bên ERP (/ds-phan-in-sua-thong-tin, 25/09/2026) — cùng nhịp 5 phút.
-    require('./modules/suathongtin/erpCapNhat').startJob();
+    // ⚠ 07/10/2026 BỎ job kéo /ds-phan-in-sua-thong-tin: phần in trả về GN nay quay lại qua đồng bộ chính
+    //   (`erpsync.runSync` → `suathongtin/gnErp.truocDongBo`) khi GN xác nhận lại đợt trên ERP.
     startCleanupJob();
     startDryingJob();
     // Luật SLA theo giờ (mig 109) — nạp từ `cai_dat_sla_gio` + nạp lại mỗi 60s; thiếu bảng ⇒ mặc định.

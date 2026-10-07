@@ -68,4 +68,42 @@ function gioBatDauCa(gio, phut, loaiCa) {
   return (BAT_DAU[loaiCa === 'DAI' ? 'DAI' : 'NGAN'] || {})[label] || '';
 }
 
-module.exports = { caFromHour, caFromParts, maCa, maNgayCa, ngayTuMaNgayCa, gioBatDauCa };
+// Tuần ISO của 1 ngày 'YYYY-MM-DD' → khóa `nam-tuan` của `cai_dat_ca_tuan` (dùng chung Báo cáo SX / dừng chuyền
+// / ngày ca kế hoạch). Tính bằng Date.UTC ⇒ không phụ thuộc múi giờ máy chủ.
+function khoaTuanIso(ngay) {
+  const [y, m, d] = String(ngay).split('-').map(Number);
+  const t = new Date(Date.UTC(y, m - 1, d));
+  const thu = t.getUTCDay() || 7;
+  t.setUTCDate(t.getUTCDate() + 4 - thu);
+  const dauNam = Date.UTC(t.getUTCFullYear(), 0, 1);
+  const tuan = Math.ceil(((t.getTime() - dauNam) / 86400000 + 1) / 7);
+  return `${t.getUTCFullYear()}-${tuan}`;
+}
+
+// ----- NGÀY CA CỦA KẾ HOẠCH LỆNH (07/10/2026 — `@pNgayca` của proc `MES_spr_MES21X0`, API Release 1) -----
+// Cùng định dạng mã ngày ca của tem: YYMMDD + mã ca (C1/C2/C3 ca Ngắn · D1/D2 ca Dài · HC hành chính), vd ca
+// Ngắn 2 ngày 20/09/2026 ⇒ `260920C2`. Ca suy từ GIỜ BẮT ĐẦU kế hoạch (`Tugio`) theo loại ca của TUẦN ISO
+// (Kế hoạch › Cài đặt ca sản xuất; tuần chưa cài ⇒ Ngắn) — dùng chung `maCa`, không chép mốc giờ.
+// ⚠ NGÀY SX = ca BẮT ĐẦU trong ngày: 06:00 D → 06:00 D+1 (cùng quy ước Báo cáo sản xuất + luật `Dengio` +1
+//   ngày của ca đêm) ⇒ kế hoạch bắt đầu 02:00 ngày 21/09 (ca 3 / ca Dài 2 qua nửa đêm) là `260920C3`.
+// Thiếu giờ bắt đầu ⇒ `YYMMDD` trần của ngày kế hoạch (không bịa ca); thiếu cả ngày ⇒ ''.
+// `tuGio` / `ngayKeHoach`: chuỗi GIỜ VN 'YYYY/MM/DD HH:mm:ss' | 'YYYY-MM-DD[ T]HH:mm[:ss]' (chỉ đọc chữ số,
+//   không qua Date của máy chủ). `modeMap` = Map `nam-tuan` → loai_ca (`planning.repository.caModeMap`).
+function ngayCaKeHoach(tuGio, ngayKeHoach, modeMap) {
+  const tach = (v) => /^(\d{4})[/-](\d{1,2})[/-](\d{1,2})(?:[ T](\d{1,2}):(\d{1,2}))?/.exec(String(v || '').trim());
+  const p2 = (n) => String(n).padStart(2, '0');
+  const ymd = (y, m, d) => `${String(y).slice(2)}${p2(m)}${p2(d)}`;
+  const g = tach(tuGio);
+  if (g && g[4] != null) {
+    const gio = Number(g[4]); const phut = Number(g[5]);
+    // Lùi 6 giờ để ra NGÀY SX (giờ 00:00–05:59 thuộc ca đêm của hôm trước).
+    const t = new Date(Date.UTC(+g[1], +g[2] - 1, +g[3], gio, phut) - 6 * 3600 * 1000);
+    const ngaySx = `${t.getUTCFullYear()}-${p2(t.getUTCMonth() + 1)}-${p2(t.getUTCDate())}`;
+    const loai = (modeMap && modeMap.get(khoaTuanIso(ngaySx))) || 'NGAN';
+    return `${ymd(t.getUTCFullYear(), t.getUTCMonth() + 1, t.getUTCDate())}${maCa(gio, phut, loai)}`;
+  }
+  const n = tach(ngayKeHoach) || g;
+  return n ? ymd(n[1], n[2], n[3]) : '';
+}
+
+module.exports = { caFromHour, caFromParts, maCa, maNgayCa, ngayTuMaNgayCa, gioBatDauCa, khoaTuanIso, ngayCaKeHoach };

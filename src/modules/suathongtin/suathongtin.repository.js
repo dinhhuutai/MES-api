@@ -16,10 +16,24 @@ const AUDIT_NGUON = `(SELECT a.gia_tri_moi->>'nguon' FROM audit_log a
 const AUDIT_GHI_CHU_XN = `(SELECT a.gia_tri_moi->>'ghi_chu' FROM audit_log a
    WHERE a.ten_bang = 'qc_tra_ve' AND a.id_ban_ghi = q.id::text AND a.hanh_dong IN ('GN_XAC_NHAN_LAI','GN_HUY_DOT_VAI')
    ORDER BY a.thoi_gian DESC LIMIT 1)`;
-// Cách GN xử lý lượt trả về: 'GN_XAC_NHAN_LAI' (sửa xong, về READY) | 'GN_HUY_DOT_VAI' (hủy vải, không in).
+// Cách GN xử lý lượt trả về: 'GN_XAC_NHAN_LAI' (sửa xong, về màn cũ) | 'GN_HUY_DOT_VAI' (hủy vải, dữ liệu trước 07/10/2026).
 const AUDIT_KIEU_XU_LY = `(SELECT a.hanh_dong FROM audit_log a
    WHERE a.ten_bang = 'qc_tra_ve' AND a.id_ban_ghi = q.id::text AND a.hanh_dong IN ('GN_XAC_NHAN_LAI','GN_HUY_DOT_VAI')
    ORDER BY a.thoi_gian DESC LIMIT 1)`;
+// 07/10/2026: lượt được HỆ THỐNG đóng vì ERP gửi lại đợt sau khi GN xác nhận trên ERP (`gnErp`).
+const AUDIT_TU_DONG = `(SELECT (a.gia_tri_moi->>'tu_dong') = 'true' FROM audit_log a
+   WHERE a.ten_bang = 'qc_tra_ve' AND a.id_ban_ghi = q.id::text AND a.hanh_dong = 'GN_XAC_NHAN_LAI'
+   ORDER BY a.thoi_gian DESC LIMIT 1)`;
+// Lệnh HỦY ĐỢT READY bên ERP của lượt (`gnErp.huyBenErp`, audit `GN_ERP_HUY`): lượt THÀNH CÔNG gần nhất nếu
+//   có, không thì lượt thử gần nhất. JSON { ok, trang_thai, loi, id_ket_noi, tg, so_cap } — bỏ mảng `cap`.
+//   NULL = chưa gửi lần nào (lượt trước 07/10/2026). `erp_vang` = ERP đã gỡ đợt khỏi danh sách ready.
+const AUDIT_ERP_HUY = `(SELECT (a.gia_tri_moi - 'cap') || jsonb_build_object('tg', a.thoi_gian,
+     'so_cap', COALESCE(jsonb_array_length(CASE WHEN jsonb_typeof(a.gia_tri_moi->'cap') = 'array' THEN a.gia_tri_moi->'cap' END), 0))
+   FROM audit_log a WHERE a.ten_bang = 'qc_tra_ve' AND a.id_ban_ghi = q.id::text AND a.hanh_dong = 'GN_ERP_HUY'
+   ORDER BY ((a.gia_tri_moi->>'ok') = 'true') DESC, a.thoi_gian DESC LIMIT 1)`;
+const AUDIT_ERP_VANG = `EXISTS (SELECT 1 FROM audit_log a WHERE a.ten_bang = 'qc_tra_ve' AND a.id_ban_ghi = q.id::text
+   AND a.hanh_dong = 'GN_ERP_VANG')`;
+const COT_ERP = `${AUDIT_ERP_HUY} AS erp_huy, ${AUDIT_ERP_VANG} AS erp_vang`;
 
 const COT_PIN = `pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
   pin.so_luong_don_hang, pin.barcode AS barcode_phan_in, pin.dang_hoat_dong,
@@ -39,6 +53,7 @@ async function danhSach({ search = '', trangThai = 'CHO', tuNgay = null, denNgay
            CASE WHEN q.da_xu_ly THEN q.updated_date END AS tg_xu_ly,
            nd.ho_ten AS nguoi_tra_ve, nd2.ho_ten AS nguoi_xu_ly,
            ${AUDIT_NGUON} AS nguon, ${AUDIT_GHI_CHU_XN} AS ghi_chu_xac_nhan, ${AUDIT_KIEU_XU_LY} AS kieu_xu_ly,
+           ${AUDIT_TU_DONG} AS tu_dong_xn, ${COT_ERP},
            ${COT_PIN}
     FROM qc_tra_ve q
     JOIN phan_in pin ON pin.id = q.phan_in_id
@@ -65,7 +80,7 @@ async function danhSach({ search = '', trangThai = 'CHO', tuNgay = null, denNgay
 async function dangCho(phanInId) {
   const sql = `
     SELECT q.id, q.ly_do, q.checklist_list, q.created_date AS tg_tra_ve, nd.ho_ten AS nguoi_tra_ve,
-           ${AUDIT_NGUON} AS nguon
+           ${AUDIT_NGUON} AS nguon, ${COT_ERP}
     FROM qc_tra_ve q LEFT JOIN nguoi_dung nd ON nd.id = q.created_by
     WHERE q.loai = '${LOAI_GN}' AND q.phan_in_id = $1 AND q.da_xu_ly = false
     ORDER BY q.created_date DESC`;
@@ -79,7 +94,8 @@ async function lichSu(phanInId) {
     SELECT q.id, q.ly_do, q.checklist_list, q.da_xu_ly, q.created_date AS tg_tra_ve,
            CASE WHEN q.da_xu_ly THEN q.updated_date END AS tg_xu_ly,
            nd.ho_ten AS nguoi_tra_ve, nd2.ho_ten AS nguoi_xu_ly,
-           ${AUDIT_NGUON} AS nguon, ${AUDIT_GHI_CHU_XN} AS ghi_chu_xac_nhan, ${AUDIT_KIEU_XU_LY} AS kieu_xu_ly
+           ${AUDIT_NGUON} AS nguon, ${AUDIT_GHI_CHU_XN} AS ghi_chu_xac_nhan, ${AUDIT_KIEU_XU_LY} AS kieu_xu_ly,
+           ${AUDIT_TU_DONG} AS tu_dong_xn, ${COT_ERP}
     FROM qc_tra_ve q
     LEFT JOIN nguoi_dung nd ON nd.id = q.created_by
     LEFT JOIN nguoi_dung nd2 ON nd2.id = q.updated_by
@@ -122,17 +138,9 @@ async function ghiAudit(client, id, hanhDong, moi, actorId) {
   );
 }
 
-// Đợt vải CÒN SỐNG của phần in, kèm cờ đã release (đợt đã có lệnh ≠ HUY thì không hủy được).
-async function dotVaiSong(phanInId) {
-  const { rows } = await query(
-    `SELECT dv.id, dv.ma_dot_vai, EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id WHERE lsd.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY') AS da_release FROM dot_vai_ve dv WHERE dv.phan_in_id = $1 AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY') ORDER BY dv.created_date`,
-    [phanInId]);
-  return rows;
-}
-
 async function dotVaiThuocPhanIn(dotVaiId) {
   const { rows } = await query('SELECT phan_in_id FROM dot_vai_ve WHERE id = $1', [dotVaiId]);
   return rows[0]?.phan_in_id || null;
 }
 
-module.exports = { danhSach, dangCho, lichSu, getPhanInCoBan, insertTraVe, xuLyHet, ghiAudit, dotVaiThuocPhanIn, dotVaiSong };
+module.exports = { danhSach, dangCho, lichSu, getPhanInCoBan, insertTraVe, xuLyHet, ghiAudit, dotVaiThuocPhanIn };

@@ -10,10 +10,12 @@
 //   · `REPLAN`       — Lập lại kế hoạch (`replan` / `replanBatch`) — gửi lại kế hoạch MỚI của lệnh
 //   Đợt chưa Ready rơi vào kế hoạch tạm (chưa có lệnh) ⇒ CHƯA gửi; gửi lúc kế hoạch tạm được xác nhận.
 //
-// HỢP ĐỒNG PROC (11 tham số):
+// HỢP ĐỒNG PROC (12 tham số):
 //   @pIDMES int · @pnhanvien nvarchar(20) · @pbanin nvarchar(20) · @pLoaichuyen nvarchar(20)
 //   · @pNgaykehoach / @pTugio / @pDengio datetime · @pInset int · @pBarcodeHKT nvarchar(20) · @pPain int
-//   · @pDsRelease nvarchar(4000)
+//   · @pDsRelease nvarchar(4000) · @pNgayca nvarchar(20) (07/10/2026 — body `Ngayca`)
+// `Ngayca` = mã ngày ca của KẾ HOẠCH, cùng định dạng tem (`260920C2` · `D2` ca Dài · `HC` hành chính): suy từ
+//   GIỜ BẮT ĐẦU kế hoạch theo loại ca của tuần ở *Kế hoạch › Cài đặt* — luật ở `utils/ca.js ngayCaKeHoach`.
 // `DsRelease` = các BẢN GHI 12 TRƯỜNG nối tiếp, TẤT CẢ ngăn bằng dấu phẩy (cùng khuôn `DsMaloi`):
 //   MaLenh, IDDotNhanvai, DDHID, DDHsubID, BarcodePTHDH, CodePhan, Soluongrelease, Loaikd, Ngaynhanvai,
 //   Hangiao, NGC, Duan
@@ -43,6 +45,7 @@ const { apiBat } = require('../../utils/caiDatApi');
 const { capIdMes } = require('../../utils/idMes');
 const { ngayGioErp } = require('../../utils/erpNgayGio');
 const { goiErp, tenDangNhap, catChuoi } = require('../../utils/erpApiChung');
+const { ngayCaKeHoach } = require('../../utils/ca');
 
 const MA_API = 'ERP_GUI_RELEASE_1';
 const NHAN = 'gui-erp-release-1';
@@ -144,7 +147,14 @@ function chiaLo(dong) {
 
 const dsMaLenh = (lo) => [...new Set(lo.map((x) => x.r.ma_lenh))].join(', ');
 
-function taoBody(lo, { idMes, nhanvien, nguon }) {
+// Loại ca theo tuần (Kế hoạch › Cài đặt). Lỗi đọc ⇒ Map rỗng ⇒ mọi tuần coi là ca Ngắn — không chặn gửi.
+async function napLoaiCa() {
+  try {
+    return await require('./planning.repository').caModeMap();
+  } catch (e) { return new Map(); }
+}
+
+function taoBody(lo, { idMes, nhanvien, nguon, loaiCa }) {
   const d = lo[0].r; // phần đầu chung của cả nhóm (cùng chuyền/ngày/giờ/HSKT — xem `chiaNhom`)
   return {
     IDMES: idMes,
@@ -158,6 +168,7 @@ function taoBody(lo, { idMes, nhanvien, nguon }) {
     BarcodeHKT: catChuoi(d.barcode_hskt, 20),
     Pain: Number(d.pain) || 0,
     DsRelease: catChuoi(lo.map((x) => x.s).join(','), DAI_DS),
+    Ngayca: catChuoi(ngayCaKeHoach(d.tu_gio, d.ngay_ke_hoach, loaiCa), 20),
     Nguon: nguon,
   };
 }
@@ -194,7 +205,7 @@ async function guiTheoLenh(lenhIds, actorId = null, nguon = 'RELEASE_1') {
   const { rows } = await query(SQL_DONG, [ids]);
   if (!rows.length) return { ok: false, bo_qua: true, ly_do: 'KHONG_DU_LIEU', luot: [] };
 
-  const nhanvien = await tenDangNhap(actorId);
+  const [nhanvien, loaiCa] = await Promise.all([tenDangNhap(actorId), napLoaiCa()]);
   const luot = [];
   for (const nhom of chiaNhom(rows)) {
     for (const lo of chiaLo(nhom)) {
@@ -207,7 +218,7 @@ async function guiTheoLenh(lenhIds, actorId = null, nguon = 'RELEASE_1') {
         continue;
       }
       // eslint-disable-next-line no-await-in-loop
-      const kq = await goi(taoBody(lo, { idMes, nhanvien, nguon }), {
+      const kq = await goi(taoBody(lo, { idMes, nhanvien, nguon, loaiCa }), {
         idBanGhi: lo[0].r.lenh_id, maTem, actorId, moTa: `${nguon} · lệnh ${maTem}`,
       });
       luot.push({ ...kq, ma_lenh: maTem, id_mes: idMes, so_ban_ghi: lo.length });
@@ -271,7 +282,11 @@ async function guiLai(gui, { idBanGhi = null, actorId = null } = {}) {
     return { ok: false, bo_qua: true, ly_do: 'THIEU_DU_LIEU' };
   }
   const maTem = maLenhTuDs(gui.DsRelease);
-  return goi({ ...gui }, { idBanGhi, maTem, actorId, moTa: `gửi lại · lệnh ${maTem}` });
+  const body = { ...gui };
+  // Dòng gửi trước 07/10/2026 chưa có `Ngayca` (proc nay bắt buộc `@pNgayca`) ⇒ suy từ CHÍNH giờ/ngày kế hoạch
+  //   trong thân cũ — vẫn là kế hoạch của lượt đó, không đọc lại lệnh.
+  if (body.Ngayca == null) body.Ngayca = catChuoi(ngayCaKeHoach(body.Tugio, body.Ngaykehoach, await napLoaiCa()), 20);
+  return goi(body, { idBanGhi, maTem, actorId, moTa: `gửi lại · lệnh ${maTem}` });
 }
 
 module.exports = {

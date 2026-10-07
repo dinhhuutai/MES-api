@@ -297,16 +297,29 @@ async function guiPhanLoaiLoi(payload, { temId = null, actorId = null } = {}) {
   });
 }
 
-// ─── 4. BÁO ERP DANH SÁCH CODE PHẦN GN HỦY VẢI (27/09/2026) ─────────────────────
-// Router ERP `/gui-ds-huy-vai` → proc `SX_spr_DSPhieuNhanvaiReadyHuy`. Body:
-//   `DsPhan`   NVARCHAR(4000) — code phần ngăn bằng dấu phẩy, không khoảng trắng (khuôn `@pDsPhan` của
-//              `SX_spr_DSPhieuNhanvaiReady`, cùng họ proc).
-//   `IDKetNoi` NVARCHAR(50)   — ID kết nối của lượt (truy vết 2 bên); router bỏ qua cũng không sao.
-// ⚠ KHÔNG ném lỗi — trả kết quả để bên gọi báo cho người bấm (nút Hủy vải đang chờ).
-async function guiDsHuyVai(dsPhan, { actorId = null, idKetNoi = null } = {}) {
-  const ds = [...new Set((dsPhan || []).map((x) => String(x || '').trim().replace(/,/g, ' ')).filter(Boolean))];
+// ─── 4. BÁO ERP HỦY ĐỢT READY KHI TRẢ PHẦN IN VỀ GN (đổi 07/10/2026) ──────────────
+// Router ERP `/gui-ds-huy-vai` → proc `SX_spr_DSPhieuNhanvaiReadyHuy(@pDsPhanDotVai nvarchar(4000))`
+// (soạn sẵn: `docs/erp-router/gui-ds-huy-vai.js`). Body:
+//   `DsPhanDotVai` — các CẶP `code phần, IDDotReady` nối tiếp, TẤT CẢ ngăn dấu phẩy (cứ 2 giá trị = 1 cặp,
+//                    proc tách bằng `F_ConvStrToTable2Column` → giatri1 = Phan, giatri2 = Dotvai), vd
+//                    `SL-2609-004-A25-F02-C01,RD026LA-004803,SL-2609-004-A25-F02-C02,RD026LA-004803`.
+//   `IDKetNoi`     — ID kết nối của lượt (truy vết 2 bên); router bỏ qua cũng không sao.
+// `cap` = [{ codePhan, idDotReady }]. Thiếu 1 trong 2 giá trị ⇒ bỏ cặp (ô rỗng làm LỆCH mọi cặp phía sau).
+// `idBanGhi` = `qc_tra_ve.id` của lượt trả về GN ⇒ "Gửi lại" ở *Cài đặt API › Lịch sử* biết đánh dấu lượt nào.
+// ⚠ KHÔNG ném lỗi — trả kết quả để bên gọi ghi trạng thái.
+async function guiDsHuyVai(cap, { actorId = null, idKetNoi = null, idBanGhi = null } = {}) {
+  const sach = (v) => String(v == null ? '' : v).trim().replace(/,/g, ' ');
+  const daCo = new Set();
+  const ds = [];
+  for (const c of cap || []) {
+    const a = sach(c && c.codePhan); const b = sach(c && c.idDotReady);
+    const k = `${a.toUpperCase()}|${b.toUpperCase()}`;
+    if (!a || !b || daCo.has(k)) continue;
+    daCo.add(k);
+    ds.push(`${a},${b}`);
+  }
   if (!ds.length) return { ok: false, bo_qua: true, ly_do: 'THIEU_DU_LIEU' };
-  // ⚠ Chia LÔ ≤ 4000 ký tự thay vì `catChuoi` — cắt cụt sẽ xé đôi 1 code phần và ERP hủy nhầm/sót mã.
+  // ⚠ Chia LÔ ≤ 4000 ký tự theo ranh giới CẶP thay vì `catChuoi` — cắt cụt sẽ xé đôi 1 cặp, ERP hủy nhầm/sót.
   const lo = [];
   let cur = [];
   for (const m of ds) {
@@ -317,7 +330,7 @@ async function guiDsHuyVai(dsPhan, { actorId = null, idKetNoi = null } = {}) {
   const ketQua = [];
   for (let i = 0; i < lo.length; i += 1) {
     const id = idKetNoi && lo.length === 1 ? idKetNoi : taoIdKetNoi('HV');
-    const body = { DsPhan: lo[i].join(','), IDKetNoi: id };
+    const body = { DsPhanDotVai: lo[i].join(','), IDKetNoi: id };
     // eslint-disable-next-line no-await-in-loop
     const kq = await goiErp('ERP_GUI_DS_HUY_VAI', {
       nhan: 'gui-ds-huy-vai',
@@ -326,7 +339,9 @@ async function guiDsHuyVai(dsPhan, { actorId = null, idKetNoi = null } = {}) {
       body,
       timeoutMs: env.erp.guiDsHuyVaiTimeoutMs,
       retry: env.erp.guiDsHuyVaiRetry,
-      moTa: `${lo[i].length} code phần`,
+      idBanGhi,
+      maTem: [...new Set(lo[i].map((x) => x.split(',')[0]))].join(', '),
+      moTa: `${lo[i].length} cặp code phần · đợt READY`,
       actorId,
     });
     ketQua.push(kq);
@@ -338,7 +353,7 @@ async function guiDsHuyVai(dsPhan, { actorId = null, idKetNoi = null } = {}) {
     bo_qua: ketQua.some((k) => k.bo_qua),
     error: loi.length ? loi.map((k) => k.error).join(' | ') : undefined,
     id_ket_noi: ketQua.map((k) => k.id_ket_noi).filter(Boolean).join(', '),
-    so_ma: ds.length,
+    so_cap: ds.length,
   };
 }
 

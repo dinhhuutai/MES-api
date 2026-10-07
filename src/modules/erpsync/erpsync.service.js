@@ -333,6 +333,15 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
       })));
     } catch (e) { console.error(`[erp-sync] ✗ Lưu dữ liệu thô lỗi: ${e.message}`); }
 
+    // PHẦN IN TRẢ VỀ GN (07/10/2026, `suathongtin/gnErp.js`): dòng của đợt đã HỦY bên ERP lúc trả về GN —
+    //   ERP gửi lại sau khi GN xác nhận ⇒ đổi khóa đợt cũ sang khóa mới (không đẻ đợt trùng) rồi upsert như
+    //   thường, sau vòng lặp tự trả phần in về đúng màn; dòng CŨ còn nằm trong cửa sổ ERP ⇒ BỎ QUA.
+    //   Chỉ lượt gọi ERP thật mới được ghi "vắng" (bản `duLieu` tải sẵn của Cập nhật theo code phần thì không).
+    let gn = null;
+    try {
+      gn = await require('../suathongtin/gnErp').truocDongBo({ rows, prepared, theoDoiVang: !duLieu && nguon === NGUON });
+    } catch (e) { console.error(`[erp-sync] ✗ Bước phần in trả về GN lỗi: ${e.message}`); }
+
     let soMoi = 0; let soCapNhat = 0; let soBoQua = 0; let soKhongCode = 0; let soBoLoai = 0; let soBoTcin = 0;
     const errors = [];
     const newDotVaiIds = [];
@@ -348,6 +357,7 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
         if (p.noCode) soKhongCode += 1; else if (p.isBoLoai) soBoLoai += 1; else if (p.isBoTcin) soBoTcin += 1;
         continue;
       }
+      if (gn && gn.boQua.has(p)) { soBoQua += 1; continue; } // đợt đã hủy bên ERP, ERP chưa xác nhận lại
       // `laDotMoi` = lần sync NÀY có đợt vải MỚI vào READY (insert mới, hoặc promote đợt cũ còn kẹt).
       // Tách khỏi `intoReady` (chỉ nghĩa "dòng xử lý xong") vì luật KTCankiemtra chỉ áp cho ĐỢT MỚI.
       let pinId = null; let affectedDotVaiIds = []; let intoReady = false; let laDotMoi = false;
@@ -449,8 +459,15 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
         if (r && r.doi) soDoiPain += 1;
       } catch (e) { console.error(`[erp-sync] ✗ Áp phương án in theo sản lượng lỗi (${hid}): ${e.message}`); }
     }
+    // Phần in GN mà ERP vừa gửi lại ⇒ áp thông tin đã sửa + đóng lượt trả về ⇒ hiện lại đúng màn cũ.
+    let gnTraLai = [];
+    if (gn) {
+      try { gnTraLai = await gn.sau(); } catch (e) { console.error(`[erp-sync] ✗ Trả phần in GN về màn cũ lỗi: ${e.message}`); }
+    }
     const trangThai = errors.length && soMoi + soCapNhat === 0 ? 'LOI' : 'THANH_CONG';
     const notes = [];
+    if (gn && gn.so_bo_qua) notes.push(`bỏ qua ${gn.so_bo_qua} dòng của đợt đã trả về GN (ERP chưa xác nhận lại)`);
+    if (gnTraLai.length) notes.push(`ERP gửi lại ${gnTraLai.length} phần in trả về GN: ${gnTraLai.map((x) => x.ma_phan).join(', ')}`);
     if (soKhongCode) notes.push(`bỏ qua ${soKhongCode} dòng không có code_part`);
     if (soBoLoai) notes.push(`bỏ qua ${soBoLoai} dòng loaikd ngoài ${[...LAY_LOAIKD].join('/')}`);
     if (soBoTcin) notes.push(`bỏ qua ${soBoTcin} dòng tính chất in ngoài phạm vi`);

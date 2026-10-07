@@ -4,6 +4,9 @@
 // Luồng: Kỹ thuật / QC ở màn READY thấy thông tin phần in SAI (màu, kích phim, SLĐH…) → bấm
 // "Trả về GN", tick các mục sai (+ ô "Khác") → phần in RỜI màn READY, hiện ở trang
 // *Đơn hàng › Phần in chờ sửa thông tin* → GN sửa rồi bấm "Xác nhận lại" → phần in QUAY LẠI READY.
+// ⚠⚠ TỪ 07/10/2026: trả về GN đồng thời HỦY ĐỢT READY bên ERP; GN sửa + xác nhận lại TRÊN ERP, đồng bộ ERP kéo
+//   đợt về thì phần in TỰ quay lại đúng màn (`modules/suathongtin/gnErp.js`). Trang chờ sửa thông tin không còn
+//   nút Hủy vải / Xác nhận lại / Lấy từ ERP (chỉ còn đường dự phòng khi lệnh hủy chưa tới được ERP).
 //
 // ⚠ Lưu vào `qc_tra_ve` với `loai = 'TRA_VE_GN'` (cột `loai` là VARCHAR tự do ⇒ KHÔNG cần bảng mới).
 //   `checklist_list` = TÊN các mục đã tick (ngăn bằng ", "), `ly_do` = câu tóm tắt đọc được ngay.
@@ -38,8 +41,8 @@ const THONG_TIN_GN = [
   { ma: 'DON_HANG', ten: 'Đơn hàng', nhom: 'Mã ERP (sửa bên ERP)', sua: false },
   { ma: 'MA_HANG', ten: 'Mã hàng', nhom: 'Mã ERP (sửa bên ERP)', sua: false },
   { ma: 'CODE_PHAN', ten: 'Code phần', nhom: 'Mã ERP (sửa bên ERP)', sua: false },
-  // 26/09/2026: không phải thông tin sai mà là đề nghị GN HỦY đợt vải (không in nữa) — GN bấm
-  // "Hủy đợt vải" ở trang chờ sửa thông tin.
+  // 26/09/2026: không phải thông tin sai mà là đề nghị GN HỦY đợt vải (không in nữa). Từ 07/10/2026 đợt đã bị
+  // hủy bên ERP ngay lúc trả về — GN không xác nhận lại trên ERP là xong (không còn nút "Hủy đợt vải" ở MES).
   { ma: 'HUY_VAI', ten: 'Hủy vải không in', nhom: 'Khác', sua: false },
 ];
 const TEN_THEO_MA = Object.fromEntries(THONG_TIN_GN.map((x) => [x.ma, x.ten]));

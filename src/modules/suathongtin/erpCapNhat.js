@@ -1,30 +1,18 @@
 'use strict';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// KÉO THÔNG TIN ĐÃ SỬA TỪ ERP cho trang *Đơn hàng › Phần in chờ sửa thông tin* (25/09/2026).
+// ÁP THÔNG TIN ERP ĐÃ SỬA LÊN PHẦN IN ĐANG CHỜ GN (25/09/2026; đổi vai 07/10/2026).
 //
-// Luồng: READY (KT/QC) trả phần in về GN → GN sửa BÊN ERP → job 5 phút/lần gọi
-//   GET {ERP_DS_PHAN_IN_SUA_THONG_TIN_URL}?fromDate=<ngày vải về sớm nhất − 3>T00:00:00&dsPhan=<code1,code2,…>
-//   (router ERP → proc `SX_spr_DSPhieuNhanvaiReady(@pTuNgay, @pDsPhan NVARCHAR(4000))`)
-// → CẬP NHẬT lại phần in + đợt vải đang chờ → GN tích chọn rồi "Xác nhận lại" ⇒ phần in về READY.
-//
-// ⚠⚠ LUẬT LẤY (chốt 26/09, đổi 30/09/2026):
-//   · THEO CODE PHẦN — MỌI phần in đang chờ GN, KHÔNG còn giới hạn "trả về trong ngày" (hôm nay trả, mai
-//     GN mới sửa bên ERP vẫn tự cập nhật). `fromDate` chỉ để proc không cắt mất đợt cũ (`tuNgay`).
-//   · ĐỢT VẢI ghép theo MÃ ĐỢT ERP (`IDDotReady` ↔ `dot_vai_ve.barcode`), dư đúng 1–1 thì ghép nốt.
-//   · MỖI LƯỢT TỐI ĐA 100 code phần (`TOI_DA_MOI_LUOT`); còn dư thì lượt sau (5 phút sau) lấy tiếp —
-//     xoay vòng theo "lần hỏi ERP gần nhất" (RAM, `lanHoi`): phần in CHƯA hỏi lần nào đi trước, rồi tới
-//     phần in hỏi lâu nhất. 100 mã × ~26 ký tự ≈ 2.600 < 4.000 (`@pDsPhan NVARCHAR(4000)`).
-//   ⚠ Router ERP phải đọc `req.query.dsPhan` và truyền vào `@pDsPhan` (bản ERP gửi 26/09 còn ghim NULL ⇒
-//     proc trả MỌI phần in từ ngày đó — MES vẫn tự lọc theo code phần nên không sai, chỉ nặng hơn).
+// ⚠⚠ 07/10/2026 BỎ job kéo `/ds-phan-in-sua-thong-tin` + nút "Lấy từ ERP" (người dùng chốt): trả về GN nay
+//   HỦY đợt READY bên ERP ngay (`gnErp.huyBenErp`), GN sửa + xác nhận lại TRÊN ERP ⇒ dòng quay về qua đồng bộ
+//   chính `/phieu-nhan-vai-60` ⇒ `gnErp.truocDongBo` gọi `capNhatMotPhanIn` dưới đây rồi tự trả phần in về đúng
+//   màn. File chỉ còn phần "so ERP ↔ MES rồi ghi chỗ khác" (tách khỏi `runSync` vì `upsertPhanIn` giữ nguyên
+//   đơn/mã hàng và `upsertDotVai` không đổi SL đợt đã có).
 //
 // ⚠⚠ Hình dạng dòng = CÙNG trường với `/phieu-nhan-vai-60` (`code_part`, `customer_name`, `order_name`,
 //   `item_name`, `fabric_color`, `fabric_size`, `film_size`, `order_qty`, `tinhchatin`, `due_date`,
-//   `ngaynhanvai`, `received_qty`, `loaikd`, `NGC`, `IDDotReady`, `BarcodePTHDH`…) — proc cùng họ
-//   `SX_Spr_DSPhieuNhanvai…`. Đọc bằng CHÍNH các hàm `erp*` của `erpsync.service`. Khác thì sửa ở ĐÂY.
-//
-// ⚠⚠ CỐ Ý KHÔNG DÙNG `runSync` của đồng bộ chính: khóa đợt vải `ERP-<md5>` băm cả màu/kích/SL ⇒ ERP
-//   sửa màu là ra khóa MỚI ⇒ `runSync` sẽ ĐẺ THÊM một đợt vải trùng. Ở đây chỉ CẬP NHẬT bản ghi có sẵn.
+//   `ngaynhanvai`, `received_qty`, `loaikd`, `NGC`, `IDDotReady`, `BarcodePTHDH`…). Đọc bằng CHÍNH các hàm
+//   `erp*` của `erpsync.service`. Khác thì sửa ở ĐÂY.
 //
 // PHẠM VI GHI (chỉ phần in đang chờ GN — `qc_tra_ve` TRA_VE_GN chưa xử lý):
 //   · PHẦN IN — khách/đơn/mã hàng + màu/kích vải/kích phim/SLĐH/tính chất in/subID ⇒ `ganLaiTheoDong`
@@ -34,31 +22,16 @@
 //     dự án · inset ⇒ `phaninadmin.suaDotVai` (guard hạ SL dưới SL đã in + tính lại phương án in).
 //     Đợt không ghép được dòng ERP ⇒ ghi vào kết quả, GN sửa tay trên trang.
 //   · Mức phần in lấy dòng ERP có mã đợt THUỘC phần in (ERP có thể trả dòng đơn khác trùng code phần).
-//   · CHỈ GHI KHI KHÁC giá trị hiện tại ⇒ job chạy 5 phút/lần không đẻ audit rác.
-//   · KHÔNG tự "Xác nhận lại" — GN vẫn phải bấm (người dùng chốt).
+//   · CHỈ GHI KHI KHÁC giá trị hiện tại ⇒ không đẻ audit rác.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const { query } = require('../../config/db');
-const env = require('../../config/env');
-const { apiBat } = require('../../utils/caiDatApi');
-const { LOAI_GN } = require('../../utils/traVeGn');
 const erpSvc = require('../erpsync/erpsync.service');
 const erpRepo = require('../erpsync/erpsync.repository');
 const phanInAdmin = require('../phaninadmin/phaninadmin.service');
 const repo = require('./suathongtin.repository');
-const sockets = require('../../sockets');
-const { ghiLog } = require('../../utils/erpApiLog');
-const { taoIdKetNoi } = require('../../utils/idKetNoi');
 
 const E = erpSvc._erp;
-const MA_API = 'ERP_DS_SUA_THONG_TIN';
-
-// Kết quả lượt chạy gần nhất (RAM) — trang hiện "ERP cập nhật lúc …". Mất khi restart BE, chấp nhận.
-let lanCuoi = null;
-let dangChay = false;
-const TOI_DA_MOI_LUOT = 100;
-// ma_phan → mốc (ms) lần gần nhất đã gửi lên ERP. Mất khi restart BE ⇒ lượt đầu hỏi lại từ đầu, vô hại.
-const lanHoi = new Map();
 
 const hoa = (v) => E.clean(v).toUpperCase();
 const soHoacNull = (v) => { const n = Number(v); return v == null || v === '' || !Number.isFinite(n) ? null : n; };
@@ -74,43 +47,6 @@ const ngayStr = (v) => {
 };
 // Dòng ERP mới nhất (theo mốc ERP tạo) — dùng cho thông tin mức PHẦN IN khi ERP trả nhiều dòng.
 const mocDong = (r) => String(r.erp_datetime || r.created_date || r.ngaynhanvai || '');
-
-// MỌI phần in đang chờ GN (lượt trả về chưa xử lý) — KHÔNG còn lọc "trả về trong ngày" (30/09/2026:
-// hôm nay trả mà mai GN mới sửa bên ERP thì vẫn phải tự cập nhật). `ngay_som` = ngày vải về sớm nhất
-// của các đợt sống ⇒ dùng tính `fromDate` (proc ERP lọc `Dotnhanvai > @pTuNgay`).
-async function phanInDangCho() {
-  const { rows } = await query(
-    `SELECT pin.id, pin.ma_phan, pin.barcode, pin.thoi_gian_cho_kho_phut, min(q.created_date) AS tg_tra_ve,
-            (SELECT min(COALESCE(dv.ngay_vai_ve, (dv.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date))
-               FROM dot_vai_ve dv WHERE dv.phan_in_id = pin.id AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY')) AS ngay_som
-       FROM qc_tra_ve q JOIN phan_in pin ON pin.id = q.phan_in_id AND pin.dang_hoat_dong
-      WHERE q.loai = $1 AND q.da_xu_ly = false
-      GROUP BY pin.id`.replace(/\s+/g, ' '),
-    [LOAI_GN]
-  );
-  return rows;
-}
-
-// Chọn tối đa 100 phần in cho lượt này: chưa hỏi lần nào trước, rồi tới phần hỏi lâu nhất.
-function chonLuot(pins) {
-  return [...pins]
-    .sort((a, b) => (lanHoi.get(hoa(a.ma_phan)) || 0) - (lanHoi.get(hoa(b.ma_phan)) || 0)
-      || String(a.tg_tra_ve).localeCompare(String(b.tg_tra_ve)))
-    .slice(0, TOI_DA_MOI_LUOT);
-}
-
-// `fromDate` gửi ERP, dạng 'YYYY-MM-DDT00:00:00' (không hậu tố Z) — đúng định dạng router ERP nhận.
-// ⚠ Proc lọc `Dotnhanvai > @pTuNgay` (lớn hơn HẲN) ⇒ lấy ngày vải về sớm nhất của các phần in trong lượt
-//   rồi LÙI THÊM `LUI_NGAY` ngày (lệch múi giờ + ngày vải về MES ≠ mốc ERP). Thiếu ngày ⇒ lùi từ hôm nay.
-//   Không dùng một mốc thật xa: router ERP đang ghim `@pDsPhan = NULL` thì proc trả MỌI dòng từ mốc đó.
-const LUI_NGAY = 3;
-const LUI_MAC_DINH = 60;
-function tuNgay(pins) {
-  const ngay = pins.map((p) => ngayStr(p.ngay_som)).filter(Boolean).sort()[0];
-  const d = ngay ? new Date(`${ngay}T00:00:00`) : new Date();
-  d.setDate(d.getDate() - (ngay ? LUI_NGAY : LUI_MAC_DINH));
-  return `${ngayStr(d)}T00:00:00`;
-}
 
 // Đợt vải CHƯA release (đang chờ READY) của 1 phần in.
 async function dotChoCuaPhanIn(pinId) {
@@ -246,99 +182,4 @@ async function capNhatMotPhanIn(pin, dong, actorId) {
   return out;
 }
 
-// Chạy 1 lượt. `tuDong` = job; bấm tay thì `actorId` = người bấm.
-async function dongBo({ tuDong = false, actorId = null } = {}) {
-  if (dangChay) return { bo_qua: 'Đang có lượt khác chạy' };
-  if (!(await apiBat(MA_API))) {
-    lanCuoi = { tg: new Date().toISOString(), tu_dong: tuDong, bo_qua: 'API đang TẮT (Hệ thống › Cài đặt API)' };
-    return lanCuoi;
-  }
-  dangChay = true;
-  const t0 = Date.now();
-  let idKn = null;
-  try {
-    const tatCa = await phanInDangCho();
-    if (!tatCa.length) {
-      lanCuoi = { tg: new Date().toISOString(), tu_dong: tuDong, so_cho: 0, bo_qua: 'Không có phần in nào đang chờ sửa thông tin — không gọi ERP' };
-      return lanCuoi;
-    }
-    // Dọn mốc của phần in không còn chờ (đã xác nhận lại) cho Map khỏi phình.
-    const conCho = new Set(tatCa.map((p) => hoa(p.ma_phan)));
-    for (const k of [...lanHoi.keys()]) if (!conCho.has(k)) lanHoi.delete(k);
-    const pins = chonLuot(tatCa);
-    const fromDate = tuNgay(pins);
-    const dsPhan = pins.map((p) => p.ma_phan).join(',');
-    // ⚠⚠ ID KẾT NỐI (27/09/2026): mỗi lượt kéo 1 ID, gửi kèm query `IDKetNoi` (router ERP bỏ qua khóa
-    //   lạ, nhưng log truy cập bên ERP có) + ghi lịch sử ở *Cài đặt API* — trước đây lượt kéo này
-    //   KHÔNG để lại vết nào ngoài console.
-    idKn = taoIdKetNoi('GN');
-    let data;
-    try {
-      ({ data } = await E.fetchErp(env.erp.dsSuaThongTinUrl, fromDate, { dsPhan, IDKetNoi: idKn }));
-    } catch (e) {
-      await ghiLog(MA_API, {
-        thanhCong: false, idMes: idKn, url: env.erp.dsSuaThongTinUrl, thoiGianMs: Date.now() - t0,
-        gui: { fromDate, dsPhan, IDKetNoi: idKn }, loi: e.message, actorId,
-      });
-      throw e;
-    }
-    await ghiLog(MA_API, {
-      thanhCong: true, idMes: idKn, url: env.erp.dsSuaThongTinUrl, thoiGianMs: Date.now() - t0,
-      gui: { fromDate, dsPhan, IDKetNoi: idKn },
-      nhan: { so_dong: data.length, code_phan: [...new Set(data.map((r) => r.code_part).filter(Boolean))] },
-      actorId,
-    });
-    const moc = Date.now();
-    for (const p of pins) lanHoi.set(hoa(p.ma_phan), moc);
-
-    const theoMa = new Map();
-    for (const r of data) {
-      const ma = hoa(r.code_part);
-      if (!ma) continue;
-      if (!theoMa.has(ma)) theoMa.set(ma, []);
-      theoMa.get(ma).push(r);
-    }
-    const ketQua = []; const loi = [];
-    for (const pin of pins) {
-      const dong = theoMa.get(hoa(pin.ma_phan));
-      if (!dong) continue;
-      try {
-        const kq = await capNhatMotPhanIn(pin, dong, actorId);
-        if (kq.phan_in.length || kq.dot_vai.length || kq.ghi_chu) ketQua.push(kq);
-      } catch (e) { loi.push(`${pin.ma_phan}: ${e.message}`); }
-    }
-    const soDoi = ketQua.filter((k) => k.phan_in.length || k.dot_vai.length).length;
-    if (soDoi) {
-      sockets.emit('gn:updated', { erp: true });
-      sockets.emit('dashboard:refresh', {});
-    }
-    lanCuoi = {
-      tg: new Date().toISOString(), tu_dong: tuDong, id_ket_noi: idKn, so_cho: tatCa.length, so_hoi: pins.length,
-      con_lai_luot_sau: Math.max(0, tatCa.length - pins.length), from_date: fromDate, tong_erp: data.length,
-      co_tren_erp: pins.filter((p) => theoMa.has(hoa(p.ma_phan))).length,
-      so_cap_nhat: soDoi, chi_tiet: ketQua.slice(0, 50), loi: loi.slice(0, 20),
-      thoi_gian_ms: Date.now() - t0,
-    };
-    if (soDoi || loi.length) console.log(`[gn-erp] cập nhật ${soDoi} phần in · ${loi.length} lỗi`);
-    return lanCuoi;
-  } catch (e) {
-    lanCuoi = { tg: new Date().toISOString(), tu_dong: tuDong, id_ket_noi: idKn, loi_chung: e.message };
-    console.error('[gn-erp] Lỗi:', e.message);
-    if (!tuDong) throw e;
-    return lanCuoi;
-  } finally { dangChay = false; }
-}
-
-const trangThai = () => ({ lan_cuoi: lanCuoi, url: env.erp.dsSuaThongTinUrl, dang_chay: dangChay, toi_da_moi_luot: TOI_DA_MOI_LUOT });
-
-// Job cùng nhịp với đồng bộ đợt vải (ERP_SYNC_INTERVAL_MIN, sàn 5 phút). Lệch 90s so với job chính để
-// 2 proc ERP không chạy cùng lúc.
-function startJob() {
-  const ms = Math.max(5, env.erp.syncIntervalMin) * 60 * 1000;
-  const run = () => dongBo({ tuDong: true }).catch((e) => console.error('[gn-erp] Lỗi:', e.message));
-  setTimeout(run, 90000);
-  setInterval(run, ms);
-  console.log(`[gn-erp] Job lấy phần in đã sửa thông tin từ ERP mỗi ${Math.max(5, env.erp.syncIntervalMin)} phút: ${env.erp.dsSuaThongTinUrl}`);
-}
-
-module.exports = { dongBo, trangThai, startJob, _capNhatMotPhanIn: capNhatMotPhanIn };
+module.exports = { capNhatMotPhanIn };
