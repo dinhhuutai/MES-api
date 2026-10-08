@@ -47,7 +47,13 @@ async function demHomNay() {
       SELECT ls.id, ls.trang_thai, ${da} AS da FROM lenh_san_xuat ls WHERE ls.trang_thai <> 'HUY'),
     l0 AS MATERIALIZED (SELECT ls.id, ls.da, ${cho} AS cho FROM c ls WHERE ls.trang_thai = 'RELEASE_1' OR ls.da),
     l AS (SELECT id, cho FROM l0 WHERE cho OR da),
-    p AS (SELECT DISTINCT l.id AS lenh_id, l.cho, pin.id AS pin_id, pin.ma_hang_id, mh.don_hang_id
+    ${DEM_TU_L}`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim());
+  return ketQua(rows[0]);
+}
+
+// Đuôi chung: từ CTE `l(id, cho)` (1 dòng / lệnh) ⇒ đếm lệnh + phần in / mã / đơn theo MỌI phần in của lệnh.
+const DEM_TU_L = `p AS (SELECT DISTINCT l.id AS lenh_id, l.cho, pin.id AS pin_id, pin.ma_hang_id, mh.don_hang_id
       FROM l JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = l.id
       JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
       JOIN phan_in pin ON pin.id = dv.phan_in_id AND pin.dang_hoat_dong
@@ -57,7 +63,22 @@ async function demHomNay() {
       count(DISTINCT ma_hang_id)::int AS ma_tong, count(DISTINCT ma_hang_id) FILTER (WHERE cho)::int AS ma_cho,
       count(DISTINCT don_hang_id)::int AS don_tong, count(DISTINCT don_hang_id) FILTER (WHERE cho)::int AS don_cho
     FROM p`;
-  const { rows } = await query(sql.replace(/\s+/g, ' ').trim());
+
+// ─── THEO NGÀY SẢN XUẤT KẾ HOẠCH (08/10/2026, người dùng: "test run là phải ở ngày sản xuất mới test — nhiều phần in
+// có kế hoạch trước nên nằm sẵn ở Test Run, có khi mai mới test") ─────────────────────────────────────────────────
+// Tập lệnh = lệnh (≠ HUY) có `ngay_ke_hoach` = D VÀ (đang chờ ở màn Test Run — `dkChoTestSql`, cùng hàng đợi màn
+//   · HOẶC đã QA xác nhận test, BẤT KỂ ngày test — test sớm 1 ngày vẫn là "đã test" của lệnh ngày D).
+// ⇒ TÌNH TRẠNG HIỆN TẠI lọc theo ngày kế hoạch (không dựng lại quá khứ): xem ngày cũ = "lệnh của ngày đó giờ đã test
+//   chưa". Lệnh đi tắt Test Run (bổ sung / SL nhỏ / nút "Không test run") không có QA ⇒ không tính; lệnh đang ở GN /
+//   bị trả về KH tạm rời Test Run ⇒ không tính (như màn). ⚠ Lệnh kế hoạch NGÀY TRƯỚC mà chưa test KHÔNG nằm trong D.
+async function demTheoNgayKh(ngay) {
+  const d = NGAY_RE.test(String(ngay || '').trim()) ? String(ngay).trim() : homNayVN();
+  const cho = await dkChoTestSql('ls');
+  const sql = `WITH l AS MATERIALIZED (
+      SELECT ls.id, ${cho} AS cho FROM lenh_san_xuat ls
+      WHERE ls.trang_thai <> 'HUY' AND ls.ngay_ke_hoach = $1::date AND (${cho} OR ${QA_DAT('ls')}))),
+    ${DEM_TU_L}`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [d]);
   return ketQua(rows[0]);
 }
 
@@ -106,4 +127,4 @@ async function demTheoNgay(ngay) {
   return ketQua(rows[0]);
 }
 
-module.exports = { dkChoTestSql, dkDaTestSql, demHomNay, demTheoNgay };
+module.exports = { dkChoTestSql, dkDaTestSql, demHomNay, demTheoNgay, demTheoNgayKh };

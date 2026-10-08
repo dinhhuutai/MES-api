@@ -1270,8 +1270,11 @@ async function listTestRunTraVeKh() {
   }));
 }
 
-// Kế hoạch XÁC NHẬN LẠI Release 1 cho lệnh bị Test Run trả về: đổi chuyền / ngày / giờ (khác kế hoạch đang có
-// thì đi qua `replan` — đổi chặng gia công, ghi audit REPLAN, báo ERP) + thợ in kế hoạch ⇒ gỡ cờ ⇒ Test Run.
+// Kế hoạch XÁC NHẬN LẠI Release 1 cho lệnh bị Test Run trả về ⇒ gỡ cờ ⇒ Test Run.
+// ⚠⚠ LUÔN = MỘT LẦN "LẬP LẠI KẾ HOẠCH" (08/10/2026, người dùng chốt — trước đó chỉ đi `replan` khi KHÁC kế hoạch
+//   cũ, giữ nguyên thì không báo ERP): gọi `replan` kể cả khi chuyền / ngày / giờ / thợ in không đổi ⇒ audit
+//   `REPLAN` (hiện ở sidebar Đã hoàn thành màn Lập lại kế hoạch) + gửi ERP `ERP_GUI_RELEASE_1` (Nguon REPLAN) +
+//   đổi chặng nếu chuyển sang chuyền gia công. Thợ in đi chung `replan` (không gửi = giữ, rỗng = xóa).
 // ⚠ Giờ FE gửi dạng `YYYY-MM-DDTHH:MM:00` (y như Release 1); bỏ trống = giữ giờ cũ (luật `replan`).
 async function xacNhanLaiTestRunTraVe(lenhId, { chuyenId, ngayKeHoach, tgBdKh, tgKtKh, thoIn } = {}, actorId) {
   const lenh = await repo.getLenhForReplan(lenhId);
@@ -1288,26 +1291,19 @@ async function xacNhanLaiTestRunTraVe(lenhId, { chuyenId, ngayKeHoach, tgBdKh, t
     || (!!ngayKeHoach && toDateStr(ngayKeHoach) !== toDateStr(lenh.ngay_ke_hoach))
     || (!!tgBdKh && gioGui(tgBdKh) !== gioCua(lenh.tg_bd_kh))
     || (!!tgKtKh && gioGui(tgKtKh) !== gioCua(lenh.tg_kt_kh));
-  let kq = null;
-  if (doiKeHoach) {
-    kq = await replan(lenhId, {
-      chuyenId: chuyenId || lenh.chuyen_id, ngayKeHoach: ngayMoi, tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null,
-      lyDo: 'Xác nhận lại Release 1 sau khi Test Run trả về Kế hoạch',
-    }, actorId);
-  }
-  let thoInChuaLuu = false;
-  if (thoIn !== undefined) {
-    const thoInKh = chuanHoaThoIn(thoIn);
-    thoInChuaLuu = !(await repo.setThoInKh(lenhId, thoInKh, actorId)) && !!thoInKh;
-  }
+  const kq = await replan(lenhId, {
+    chuyenId: chuyenId || lenh.chuyen_id, ngayKeHoach: ngayMoi, tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null,
+    thoIn, lyDo: 'Xác nhận lại Release 1 sau khi Test Run trả về Kế hoạch',
+  }, actorId);
+  const thoInChuaLuu = !!kq.tho_in_chua_luu && !!chuanHoaThoIn(thoIn);
   await qaRepo.resolveReturns(LOAI_TRA_VE_KH, lenhId);
   await repo.logPlanChange(null, lenhId, 'XAC_NHAN_LAI_RELEASE_1',
     { trang_thai: lenh.trang_thai }, { ma_lenh: lenh.ma_lenh_san_xuat, doi_ke_hoach: doiKeHoach, nguon: LOAI_TRA_VE_KH }, actorId);
-  sockets.emit('workflow:updated', { lenhId, stage: (kq && kq.trang_thai) || 'TEST_RUN' });
+  sockets.emit('workflow:updated', { lenhId, stage: kq.trang_thai || 'TEST_RUN' });
   sockets.emit('dashboard:refresh', {});
   return {
     lenh_id: lenhId, ma_lenh: lenh.ma_lenh_san_xuat, doi_ke_hoach: doiKeHoach,
-    trang_thai: (kq && kq.trang_thai) || lenh.trang_thai, tho_in_chua_luu: thoInChuaLuu,
+    trang_thai: kq.trang_thai || lenh.trang_thai, tho_in_chua_luu: thoInChuaLuu,
   };
 }
 

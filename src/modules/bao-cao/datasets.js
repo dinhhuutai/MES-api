@@ -353,8 +353,12 @@ async function runTestRun({ loc = {}, gioi_han }) {
   }
   // Nhánh "đã test" lọc theo NGÀY xác nhận TEST_QA — MẶC ĐỊNH (để trống) = HÔM NAY (dataset "Test Run hôm nay").
   // Nhánh "có mặt/chờ test" là snapshot HIỆN TẠI (không theo ngày) → luôn hiện lệnh đang chờ test ở Test Run.
-  const dayVal = clean(loc.ngay) || 'HOM_NAY';
-  const daTestDate = ngayCond('tq.tg', dayVal, true);
+  // Ngày SX kế hoạch (08/10/2026): lọc CẢ 2 nhánh theo `ngay_ke_hoach`; khi đã chọn thì "Ngày (đã test)" để trống
+  //   = KHÔNG lọc ngày test (lệnh ngày KH đó test sớm hôm trước vẫn là "đã test").
+  const dkKh = ngayCond('ls.ngay_ke_hoach', loc.ngay_kh, false);
+  if (dkKh) conds.push(dkKh);
+  const dayVal = clean(loc.ngay) || (dkKh ? '' : 'HOM_NAY');
+  const daTestDate = (dayVal && ngayCond('tq.tg', dayVal, true)) || 'TRUE';
   // "Đang chờ test" = ĐÚNG hàng đợi màn Test Run (08/10/2026 — trước đó chỉ `RELEASE_1` + chưa QA nên đếm cả lệnh
   //   đang ở GN / bị trả về Kế hoạch / bị ẩn theo cấu hình hiển thị). Luật chung với metric "Test Run hôm nay".
   const coMat = await dkChoTestSql('ls');
@@ -1064,7 +1068,10 @@ const TRAM_OPTS = () => CP_FLOW_TRAM.map((t) => ({ v: t.ma, ten: t.ten }));
 const LOC_DEF = {
   ngay: { ma: 'ngay', ten: 'Ngày', kieu: 'ngay', mo_ta: 'Để trống = mọi ngày · "Hôm nay" = tự đổi theo ngày xem.' },
   ngay_testrun: { ma: 'ngay', ten: 'Ngày (đã test)', kieu: 'ngay',
-    mo_ta: 'Lọc NGÀY cho nhánh "đã test". Để trống = HÔM NAY. Nhánh "chờ test" luôn hiện theo hiện tại.' },
+    mo_ta: 'Lọc NGÀY cho nhánh "đã test". Để trống = HÔM NAY (khi đã chọn Ngày SX kế hoạch: để trống = không lọc ngày test). Nhánh "chờ test" luôn hiện theo hiện tại.' },
+  // 08/10/2026: test run làm ĐÚNG NGÀY SẢN XUẤT — lệnh kế hoạch ngày sau đã nằm sẵn ở màn Test Run nhưng chưa tới ngày test.
+  ngay_kh: { ma: 'ngay_kh', ten: 'Ngày SX kế hoạch', kieu: 'ngay',
+    mo_ta: 'Để trống = mọi ngày. Chọn ngày ⇒ chỉ lệnh có NGÀY SX KẾ HOẠCH đó (đang chờ test + đã test, tình trạng hiện tại).' },
   ngay_ready: { ma: 'ngay', ten: 'Ngày (đã QA READY)', kieu: 'ngay',
     mo_ta: 'Để trống = CHỈ danh sách đang ở READY hiện tại · Chọn ngày (Hôm nay/cụ thể) = THÊM phần in đã QA xác nhận READY ngày đó.' },
   // Nguồn "Open" (26/09/2026): phần in đang ở READY có ĐỢT VẢI CÒN CHỜ lên READY (ERP lên MES) trong ngày đó.
@@ -1108,8 +1115,10 @@ const DEFS = [
     mo_ta: '1 dòng = 1 lệnh liên quan Test Run. Mặc định (để trống Ngày) = "đang chờ test" (ĐÚNG hàng đợi màn Test Run hiện tại) + "đã test '
       + 'HÔM NAY" (kèm kết quả + thông tin test của QC: người test, loại, giờ, ghi chú, QC xác nhận). Đặt Ngày cụ thể để xem '
       + 'nhánh "đã test" của ngày khác; chọn "Loại danh sách" để chỉ xem 1 nhóm. Cột "Tình trạng" phân biệt Đang chờ test / Đã test; '
-      + '"Kết quả test" = Đạt · Không đạt (owner cho IN) · Test lỗi — chờ test lại · Chờ test. Số đếm đơn / mã / phần: nhóm metric "Test Run hôm nay".',
-    loc: locList(['ngay_testrun', 'loai_ds_testrun', 'chuyen', 'nhom_bo_sung', 'tim']), cot: COT_TEST_RUN, run: runTestRun },
+      + '"Kết quả test" = Đạt · Không đạt (owner cho IN) · Test lỗi — chờ test lại · Chờ test. '
+      + 'Lọc "Ngày SX kế hoạch" = chỉ lệnh kế hoạch ngày đó (test run làm đúng ngày sản xuất; lệnh kế hoạch ngày sau nằm sẵn ở Test Run sẽ không hiện). '
+      + 'Số đếm đơn / mã / phần: nhóm metric "Test Run hôm nay" (theo ngày test) hoặc "Test Run theo ngày SX kế hoạch".',
+    loc: locList(['ngay_kh', 'ngay_testrun', 'loai_ds_testrun', 'chuyen', 'nhom_bo_sung', 'tim']), cot: COT_TEST_RUN, run: runTestRun },
   { ma: 'DS_TEM', ten: 'Tem (KCS / Sửa / OQC / Giao)', don_vi_dong: 'tem',
     mo_ta: '1 dòng = 1 tem theo ngày in tem, kèm sổ cái số lượng từng công đoạn.',
     loc: locList(['ngay', 'trang_thai_tem', 'chuyen', 'nhom_bo_sung', 'tim']), cot: COT_TEM, run: runTem },
@@ -1160,7 +1169,10 @@ const DEFS = [
 const BY_MA = Object.fromEntries(DEFS.map((d) => [d.ma, d]));
 
 // Nguồn có bộ lọc NGÀY (khóa `ngay`) — trang "Báo cáo của tôi" dùng để hiện ô chọn ngày ngoài danh sách.
-const coLocNgay = (nguon) => !!(BY_MA[nguon] && (BY_MA[nguon].loc || []).some((l) => l.ma === 'ngay'));
+// ⚠ 08/10/2026: KHÓA NGÀY của 1 nguồn = mọi bộ lọc kiểu 'ngay' (không chỉ khóa `ngay` — `DS_TEST_RUN` có thêm
+//   `ngay_kh`) ⇒ ô Ngày ở "Báo cáo của tôi" đè đúng khóa khối đang đặt.
+const cacKhoaNgay = (nguon) => ((BY_MA[nguon] && BY_MA[nguon].loc) || []).filter((l) => l.kieu === 'ngay').map((l) => l.ma);
+const coLocNgay = (nguon) => cacKhoaNgay(nguon).length > 0;
 
 // Danh mục cho FE (không kèm run).
 const catalog = () => DEFS.map(({ run, ...d }) => d);
@@ -1189,4 +1201,4 @@ async function computeBlocks(blocks) {
   return Object.fromEntries(entries);
 }
 
-module.exports = { catalog, runOne, computeBlocks, MAX_ROWS, coLocNgay };
+module.exports = { catalog, runOne, computeBlocks, MAX_ROWS, coLocNgay, cacKhoaNgay };

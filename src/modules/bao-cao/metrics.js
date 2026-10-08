@@ -599,15 +599,41 @@ const testRunTheoNgayCached = (ngay) => {
     const nhom = 'Test Run hôm nay (chọn được ngày)';
     const ngayNote = ' Ô này chọn được NGÀY: ngày cũ = Tổng là hàng có mặt ở Test Run trong ngày đó, Còn chờ là tồn cuối ngày.';
     DEFS.push(
-      { ma: `TR_HN_${k.toUpperCase()}_TONG`, ten: `Test Run: Tổng ${ten}`, nhom, don_vi: dv, theo_ngay: true,
+      { ma: `TR_HN_${k.toUpperCase()}_TONG`, ten: `Test Run: Tổng ${ten}`, nhom, don_vi: dv, theo_ngay: true, nhan_ngay: 'Ngày test',
         mo_ta: `Số ${ten} phải test hôm nay = đang chờ ở màn Test Run + đã QA xác nhận test hôm nay. = Đã test xong + Còn chờ.${ngayNote}`,
         run: async ({ ngay } = {}) => (await testRunTheoNgayCached(ngay))[k].tong },
-      { ma: `TR_HN_${k.toUpperCase()}_DA`, ten: `Test Run: ${ten} đã test xong`, nhom, don_vi: dv, theo_ngay: true,
+      { ma: `TR_HN_${k.toUpperCase()}_DA`, ten: `Test Run: ${ten} đã test xong`, nhom, don_vi: dv, theo_ngay: true, nhan_ngay: 'Ngày test',
         mo_ta: `Số ${ten} đã QA xác nhận test hôm nay (Đạt hoặc In không đạt có owner cho IN) và không còn lệnh nào chờ test.${ngayNote}`,
         run: async ({ ngay } = {}) => (await testRunTheoNgayCached(ngay))[k].da },
-      { ma: `TR_HN_${k.toUpperCase()}_CHO`, ten: `Test Run: ${ten} còn chờ test`, nhom, don_vi: dv, theo_ngay: true,
+      { ma: `TR_HN_${k.toUpperCase()}_CHO`, ten: `Test Run: ${ten} còn chờ test`, nhom, don_vi: dv, theo_ngay: true, nhan_ngay: 'Ngày test',
         mo_ta: `Số ${ten} còn ít nhất 1 lệnh đang chờ ở màn Test Run hôm nay (kể cả lệnh test lỗi đang chờ kỹ thuật).${ngayNote}`,
         run: async ({ ngay } = {}) => (await testRunTheoNgayCached(ngay))[k].cho },
+    );
+  });
+
+// ---------- TEST RUN THEO NGÀY SẢN XUẤT KẾ HOẠCH (08/10/2026) — `testRunHomNay.demTheoNgayKh` ----------
+// Ngày của ô = NGÀY SX KẾ HOẠCH của lệnh (không phải ngày test): lệnh ngày D đang chờ ở màn Test Run + lệnh ngày D
+//   đã QA xác nhận (test ngày nào cũng được). Tình trạng HIỆN TẠI. Tổng = Đã test xong + Còn chờ.
+const testRunKhCached = (ngay) => {
+  const d = NGAY_METRIC_RE.test(String(ngay || '')) ? String(ngay) : 'HOM_NAY';
+  return nhoNang(`testRunKh:${d}`, () => require('./testRunHomNay').demTheoNgayKh(d === 'HOM_NAY' ? null : d));
+};
+[['don', 'đơn hàng', 'đơn'], ['ma', 'mã hàng', 'mã'], ['phan', 'phần in', 'phần'], ['lenh', 'lệnh SX', 'lệnh']]
+  .forEach(([k, ten, dv]) => {
+    const nhom = 'Test Run theo ngày SX kế hoạch (chọn được ngày)';
+    const chung = { nhom, don_vi: dv, theo_ngay: true, nhan_ngay: 'Ngày SX kế hoạch' };
+    const note = ' Ngày của ô = NGÀY SẢN XUẤT KẾ HOẠCH của lệnh (Hôm nay = lệnh kế hoạch hôm nay); tình trạng hiện tại.'
+      + ' Lệnh kế hoạch ngày khác dù đang nằm ở màn Test Run KHÔNG tính.';
+    DEFS.push(
+      { ...chung, ma: `TR_KH_${k.toUpperCase()}_TONG`, ten: `Test Run theo ngày SX KH: Tổng ${ten}`,
+        mo_ta: `Số ${ten} có lệnh kế hoạch ngày đó phải test = đang chờ ở màn Test Run + đã QA xác nhận test. = Đã test xong + Còn chờ.${note}`,
+        run: async ({ ngay } = {}) => (await testRunKhCached(ngay))[k].tong },
+      { ...chung, ma: `TR_KH_${k.toUpperCase()}_DA`, ten: `Test Run theo ngày SX KH: ${ten} đã test xong`,
+        mo_ta: `Số ${ten} có mọi lệnh kế hoạch ngày đó đã QA xác nhận test (Đạt hoặc In không đạt có owner cho IN).${note}`,
+        run: async ({ ngay } = {}) => (await testRunKhCached(ngay))[k].da },
+      { ...chung, ma: `TR_KH_${k.toUpperCase()}_CHO`, ten: `Test Run theo ngày SX KH: ${ten} còn chờ test`,
+        mo_ta: `Số ${ten} còn ít nhất 1 lệnh kế hoạch ngày đó đang chờ ở màn Test Run (kể cả test lỗi chờ kỹ thuật).${note}`,
+        run: async ({ ngay } = {}) => (await testRunKhCached(ngay))[k].cho },
     );
   });
 

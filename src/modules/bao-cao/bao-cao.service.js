@@ -15,10 +15,12 @@ function listDatasets() {
   return datasets.catalog();
 }
 
-// Khối danh sách "THEO NGÀY" = nguồn có bộ lọc ngày VÀ khối đang đặt ngày (HOM_NAY / cụ thể).
+// Khối danh sách "THEO NGÀY" = nguồn có bộ lọc ngày VÀ khối đang đặt ngày (HOM_NAY / cụ thể) ở ÍT NHẤT 1 khóa ngày.
+// ⚠ 08/10/2026: khóa ngày lấy từ nguồn (`datasets.cacKhoaNgay` — vd `DS_TEST_RUN` có `ngay` + `ngay_kh`), không
+//   còn cứng `ngay`. `khoaNgayDangDat(c)` = các khóa ngày khối đó đang đặt ⇒ ô Ngày ở "Báo cáo của tôi" đè đúng chúng.
+const khoaNgayDangDat = (c) => datasets.cacKhoaNgay(c.ds.nguon).filter((k) => String((c.ds.loc || {})[k] || '').trim());
 const khoiTheoNgay = (noiDung) => Object.entries((noiDung && noiDung.o) || {})
-  .filter(([, c]) => c && c.loai === 'danh_sach' && c.ds && c.ds.nguon && datasets.coLocNgay(c.ds.nguon)
-    && String((c.ds.loc || {}).ngay || '').trim());
+  .filter(([, c]) => c && c.loai === 'danh_sach' && c.ds && c.ds.nguon && khoaNgayDangDat(c).length > 0);
 const NGAY_HOP_LE = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) || String(v || '').toUpperCase() === 'HOM_NAY';
 // Ô metric THEO NGÀY (08/10/2026) = metric khai `theo_ngay` (nhóm "Test Run hôm nay") — luôn là số của 1 ngày
 //   (không đặt ngày = hôm nay) ⇒ ô Ngày ở "Báo cáo của tôi" đè được, như khối danh sách theo ngày.
@@ -32,7 +34,8 @@ async function listReports({ search, userId, all }) {
   return rows.map(({ noi_dung_json: nd, ...r }) => {
     const ks = khoiTheoNgay(nd);
     const ms = oMetricTheoNgay(nd);
-    const locNgay = ks.length ? String(ks[0][1].ds.loc.ngay) : ms.length ? String(ms[0][1].ngay || 'HOM_NAY') : null;
+    const locNgay = ks.length ? String(ks[0][1].ds.loc[khoaNgayDangDat(ks[0][1])[0]])
+      : ms.length ? String(ms[0][1].ngay || 'HOM_NAY') : null;
     return { ...r, co_loc_ngay: ks.length + ms.length > 0, loc_ngay: locNgay };
   });
 }
@@ -135,7 +138,10 @@ async function renderReport(id, { noiDung, ngay } = {}) {
   //   này — KHÔNG ghi DB, báo cáo lưu giữ nguyên. Khối không đặt ngày (ảnh chụp hiện tại) không bị đụng.
   if (NGAY_HOP_LE(ngay)) {
     const nd = JSON.parse(JSON.stringify(rep.noi_dung_json || {}));
-    for (const [, c] of khoiTheoNgay(nd)) c.ds.loc = { ...c.ds.loc, ngay: String(ngay) };
+    for (const [, c] of khoiTheoNgay(nd)) {
+      const doi = Object.fromEntries(khoaNgayDangDat(c).map((k) => [k, String(ngay)]));
+      c.ds.loc = { ...c.ds.loc, ...doi };
+    }
     for (const [, c] of oMetricTheoNgay(nd)) c.ngay = String(ngay); // 08/10/2026: ô metric theo ngày cũng đổi
     rep.noi_dung_json = nd;
   }
