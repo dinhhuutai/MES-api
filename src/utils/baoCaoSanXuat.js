@@ -30,6 +30,15 @@
 //   · Lệnh nhiều phần in (gom set cũ): giờ chia ĐỀU cho các phần in; SL KH theo `lenh_sx_dot_vai` của từng
 //     phần in; tem SX không lưu đợt vải ⇒ quy về phần in đầu (giới hạn đã biết, DATABASE.md §4).
 //   · Kế hoạch của lệnh tính cho PHIẾU chạy nhiều giờ nhất trong ngày (lệnh đổi tổ giữa ngày không đếm đôi).
+//   · ⚠⚠ (08/10/2026) GIỜ (KH lẫn TT) LÀ GIỜ CỦA CHUYỀN: nhiều lệnh chạy CÙNG LÚC trên 1 chuyền (lệnh in set
+//     inset, xác nhận chạy nhiều lệnh một lượt — đo prod 08/10: 6 lệnh cùng M2, cùng khung KH 14:00→01:00) ⇒
+//     mỗi khoảnh khắc chia ĐỀU cho các lệnh đang chạy (`chiaGioCungLuc`) ⇒ Σ giờ của chuyền = giờ đồng hồ (hợp
+//     các khoảng). Bản cũ cộng từng phiếu ⇒ 6 lệnh × 11 giờ KH = 66 giờ KH cho 1 chuyền.
+//   · ⚠ GIỜ KT KH < GIỜ BĐ KH = kế hoạch QUA NỬA ĐÊM (14:00 → 01:00 hôm sau). FE ghép cả 2 giờ với CÙNG ngày
+//     SX KH ⇒ prod 08/10 có 364 lệnh lưu `tg_kt_kh` < `tg_bd_kh` (67 lệnh trong 7 ngày) — bản cũ bỏ qua khoảng
+//     đó ⇒ "Số giờ KH" trống. Đọc thì cộng 1 ngày; từ 08/10 lúc ghi cũng đã sửa (`planning.repository KT_QUA_DEM`).
+//   · Loại dữ liệu do SCRIPT hệ thống ghi (`chay_den_giao_ton_san_xuat_truoc_0110.sql`, 02/10/2026 20:33):
+//     phiếu `ghi_chu` mở đầu `[HỆ THỐNG` (4.626 phiếu) + tem `HT-…` (4.657 tem) — không phải sản xuất thật.
 
 const { caFromHour, khoaTuanIso } = require('./ca');
 
@@ -67,6 +76,35 @@ function khungCa(ngay, loaiCa) {
 
 const chongLan = (a0, a1, b0, b1) => Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
 const ms = (v) => (v == null ? null : new Date(v).getTime());
+
+// Chia giờ THEO THỜI ĐIỂM trong khung [wa, wb): `ds` = [{ k, a, b }] các khoảng chạy trên CÙNG 1 chuyền. Tại mỗi
+// đoạn giữa 2 mốc liên tiếp, giờ của đoạn chia đều cho các khoảng đang phủ nó ⇒ Σ kết quả = độ dài HỢP các khoảng
+// (giờ đồng hồ của chuyền), không nhân theo số lệnh chạy song song. Trả Map k → số giờ.
+function chiaGioCungLuc(ds, wa, wb) {
+  const cat = ds.map((x) => ({ k: x.k, a: Math.max(x.a, wa), b: Math.min(x.b, wb) })).filter((x) => x.b > x.a);
+  const out = new Map();
+  if (!cat.length) return out;
+  const moc = [...new Set(cat.flatMap((x) => [x.a, x.b]))].sort((p, q) => p - q);
+  for (let i = 0; i + 1 < moc.length; i += 1) {
+    const s = moc[i];
+    const e = moc[i + 1];
+    const dang = cat.filter((x) => x.a <= s && x.b >= e);
+    if (dang.length) {
+      const h = (e - s) / GIO / dang.length;
+      dang.forEach((x) => out.set(x.k, (out.get(x.k) || 0) + h));
+    }
+  }
+  return out;
+}
+
+// Khoảng kế hoạch của lệnh; KT < BĐ ⇒ qua nửa đêm (+1 ngày). Thiếu / bằng nhau ⇒ null.
+function khoangKeHoach(l) {
+  const a = ms(l.tg_bd_kh);
+  let b = ms(l.tg_kt_kh);
+  if (a == null || b == null) return null;
+  if (b < a) b += 24 * GIO;
+  return b > a ? [a, b] : null;
+}
 
 // Ca của tem: hậu tố mã ngày ca người in đã chọn; thiếu ⇒ suy từ giờ in tem theo loại ca của tuần.
 function caCuaTem(hint, gio, loaiCa) {
@@ -188,30 +226,34 @@ function dungBaoCaoSanXuat({
     b = Math.min(b, W1);
     return b > a ? [a, b] : null;
   };
-  const gioPhieu = new Map(); // phiếu → tổng giờ trong ngày (chọn phiếu "chính" của lệnh)
+  const gioPhieu = new Map(); // phiếu → giờ RIÊNG của phiếu trong ngày (chỉ để chọn phiếu "chính" của lệnh)
   const phieuTheoLenh = new Map();
+  const phieuTheoChuyen = new Map();
+  const phieuById = new Map(phieus.map((p) => [String(p.id), p]));
   phieus.forEach((p) => {
     const k = String(p.lenh_id);
     if (!phieuTheoLenh.has(k)) phieuTheoLenh.set(k, []);
     phieuTheoLenh.get(k).push(p);
+    const c = String(p.chuyen_id);
+    if (!phieuTheoChuyen.has(c)) phieuTheoChuyen.set(c, []);
     const kc = khoangChay(p);
-    const ds = dsPin(p.lenh_id);
-    let tong = 0;
-    if (kc) {
-      const [a, b] = kc;
-      khungPhieu(p).forEach((w) => {
-        const h = chongLan(a, b, w.a, w.b) / GIO;
-        if (!h) return;
-        tong += h;
-        ds.forEach((pin) => { dv(p, pin).bo[w.ca].gt += h / ds.length; });
+    if (kc) phieuTheoChuyen.get(c).push({ k: String(p.id), a: kc[0], b: kc[1], p });
+    gioPhieu.set(String(p.id), kc ? (kc[1] - kc[0]) / GIO : 0);
+    dsPin(p.lenh_id).forEach((pin) => dv(p, pin)); // phiếu chỉ có tem (giờ chạy ngoài ngày) vẫn có dòng
+  });
+  // Giờ TT theo CHUYỀN: các phiếu chạy cùng lúc trên 1 chuyền chia nhau giờ đồng hồ; trong phiếu chia đều phần in.
+  phieuTheoChuyen.forEach((ds) => {
+    if (!ds.length) return;
+    khungPhieu(ds[0].p).forEach((w) => {
+      chiaGioCungLuc(ds, w.a, w.b).forEach((h, pid) => {
+        const p = phieuById.get(pid);
+        const pins = dsPin(p.lenh_id);
+        pins.forEach((pin) => { dv(p, pin).bo[w.ca].gt += h / pins.length; });
       });
-    }
-    gioPhieu.set(String(p.id), tong);
-    ds.forEach((pin) => dv(p, pin)); // phiếu chỉ có tem (giờ chạy ngoài ngày) vẫn có dòng
+    });
   });
 
   // 2. SL in thực tế từ tem.
-  const phieuById = new Map(phieus.map((p) => [String(p.id), p]));
   tems.forEach((t) => {
     const p = phieuById.get(String(t.phieu_id));
     if (!p) return;
@@ -220,7 +262,9 @@ function dungBaoCaoSanXuat({
     dv(p, pin).bo[caCuaTem(t.ca_hint, t.gio, loaiCaPhieu(p))].tt += Number(t.so_luong) || 0;
   });
 
-  // 3. Kế hoạch của lệnh → phiếu chạy nhiều giờ nhất trong ngày.
+  // 3. Kế hoạch của lệnh → phiếu chạy nhiều giờ nhất trong ngày. SL KH chia theo tỷ lệ giờ của CHÍNH lệnh;
+  //    giờ KH gom theo chuyền rồi chia theo thời điểm như giờ TT (các lệnh in set chung 1 khung kế hoạch).
+  const khTheoChuyen = new Map();
   phieuTheoLenh.forEach((dsPhieu, lenhId) => {
     const l = lenhById.get(lenhId);
     if (!l) return;
@@ -228,24 +272,31 @@ function dungBaoCaoSanXuat({
       || (ms(y.tg_bd) - ms(x.tg_bd)))[0];
     const ds = dsPin(lenhId);
     const slPin = (pin) => (Number(pin.sl) || (ds.length === 1 ? Number(l.so_luong_release) || 0 : 0));
-    const a = ms(l.tg_bd_kh);
-    const b = ms(l.tg_kt_kh);
-    if (a != null && b != null && b > a) {
+    const kk = khoangKeHoach(l);
+    if (kk) {
+      const [a, b] = kk;
       khungPhieu(chinh).forEach((w) => {
         const ov = chongLan(a, b, w.a, w.b);
         if (!ov) return;
-        ds.forEach((pin) => {
-          const o = dv(chinh, pin).bo[w.ca];
-          o.kh += slPin(pin) * (ov / (b - a));
-          o.gk += ov / GIO / ds.length;
-        });
+        ds.forEach((pin) => { dv(chinh, pin).bo[w.ca].kh += slPin(pin) * (ov / (b - a)); });
       });
+      const c = String(chinh.chuyen_id);
+      if (!khTheoChuyen.has(c)) khTheoChuyen.set(c, []);
+      khTheoChuyen.get(c).push({ k: lenhId, a, b, chinh, ds });
     } else if (l.ngay_kh === ngay) {
       // Không có giờ KH: trọn SL vào ca chạy nhiều giờ nhất của phiếu chính (không có giờ chạy ⇒ ca đầu).
       const bo = dv(chinh, ds[0]).bo;
       const caChon = khungPhieu(chinh).map((w) => w.ca).sort((x, y) => bo[y].gt - bo[x].gt)[0];
       ds.forEach((pin) => { dv(chinh, pin).bo[caChon].kh += slPin(pin); });
     }
+  });
+  khTheoChuyen.forEach((ds) => {
+    khungPhieu(ds[0].chinh).forEach((w) => {
+      chiaGioCungLuc(ds, w.a, w.b).forEach((h, lenhId) => {
+        const x = ds.find((y) => y.k === lenhId);
+        x.ds.forEach((pin) => { dv(x.chinh, pin).bo[w.ca].gk += h / x.ds.length; });
+      });
+    });
   });
 
   // 4. Bảng 2 — gom (chuyền × phần in).
@@ -294,4 +345,6 @@ function dungBaoCaoSanXuat({
   };
 }
 
-module.exports = { dungBaoCaoSanXuat, khungCa, khoaTuanIso, caCuaTem, nhomCuaLoai, suyLoaiCaTuTem, CA, NHOM };
+module.exports = {
+  dungBaoCaoSanXuat, khungCa, khoaTuanIso, caCuaTem, nhomCuaLoai, suyLoaiCaTuTem, chiaGioCungLuc, khoangKeHoach, CA, NHOM,
+};

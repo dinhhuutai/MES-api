@@ -6,7 +6,7 @@
 //   đổi tab không gọi lại API và không bao giờ ra 2 con số đá nhau.
 
 const repo = require('./thoigiantram.repository');
-const { slaReadyHan, slaQcReady, testRunTruocSxPhut } = require('../../utils/slaTheoGio');
+const { slaReadyHan, slaQcReady, slaTestRun } = require('../../utils/slaTheoGio');
 
 const LOC_KEYS = ['timKiem', 'khach', 'don', 'maHang', 'codePhan', 'mauVai', 'chuyen',
   'loaiMoc', 'tuNgay', 'denNgay', 'trangThai'];
@@ -32,7 +32,7 @@ function slaCua(tram, slaRows) {
 
 // ⚠⚠ SLA KHÔNG CỐ ĐỊNH (24/09/2026, luật ở `utils/slaTheoGio.js`) — gắn `sla_phut` cho TỪNG DÒNG:
 //   · READY_KT (+ 3 checklist Khuôn/Film/Mực): theo GIỜ ĐỢT LÊN READY (07:30–15:00 ⇒ 8h · 15:00–20:30 ⇒ 21h)
-//   · TEST_RUN: hạn = giờ SX kế hoạch của lệnh − 1h ⇒ sla = phút từ lúc vào tới hạn
+//   · TEST_RUN: hạn = giờ SX kế hoạch của lệnh − 1h ⇒ sla = phút từ lúc vào tới hạn, tối thiểu 2h (08/10/2026)
 //   Dòng không áp được luật ⇒ giữ SLA trạm/checklist. FE (`thongKe`) ưu tiên `sla_phut` của dòng.
 async function ganSlaDong(maTram, ds, slaMacDinh) {
   if (!ds.length) return ds;
@@ -42,13 +42,8 @@ async function ganSlaDong(maTram, ds, slaMacDinh) {
   if (maTram === 'READY_QC') return ds.map((r) => ({ ...r, sla_phut: slaQcReady(r.tg_vao, slaMacDinh) }));
   if (maTram === 'TEST_RUN') {
     const bd = await repo.gioSxKeHoach([...new Set(ds.map((r) => r.ma_lenh_san_xuat).filter(Boolean))]);
-    return ds.map((r) => {
-      const h = bd.get(r.ma_lenh_san_xuat);
-      const truoc = testRunTruocSxPhut(); // null = luật tắt (mig 109)
-      if (!h || !r.tg_vao || truoc == null) return { ...r, sla_phut: slaMacDinh };
-      const han = new Date(h).getTime() - truoc * 60000;
-      return { ...r, sla_phut: Math.max(1, Math.floor((han - new Date(r.tg_vao).getTime()) / 60000)) };
-    });
+    // Luật tắt / thiếu giờ SX / thiếu mốc vào ⇒ `slaTestRun` trả SLA trạm.
+    return ds.map((r) => ({ ...r, sla_phut: slaTestRun(r.tg_vao, bd.get(r.ma_lenh_san_xuat), slaMacDinh) }));
   }
   return ds;
 }

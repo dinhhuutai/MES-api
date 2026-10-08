@@ -34,6 +34,12 @@ const MA_QUET_LENH = (lenhCol) => `(SELECT concat_ws(',', string_agg(DISTINCT pi
     LEFT JOIN hskt_phan_in hp_q ON hp_q.phan_in_id = pin_q.id AND hp_q.dang_hoat_dong
     LEFT JOIN ho_so_ky_thuat h_q ON h_q.id = hp_q.hskt_id AND h_q.dang_hoat_dong
    WHERE lsd_q.lenh_san_xuat_id = COALESCE(ls.lenh_lien_ket_id, ${lenhCol}))`.replace(/\s+/g, ' ');
+// CHỈ mã TDTHĐH (08/10/2026) — modal Chờ chạy + ô tìm bảng Đang chạy QUÉT để tích: mã phần in (1–1 code phần) ưu tiên trước mã HSKT
+// (1 mã phủ nhiều code phần — đo prod 08/10: 143/612 mã HSKT của lệnh chờ chạy phủ >1 phần in) nên phải tách.
+const MA_VACH_PIN_LENH = (lenhCol) => `(SELECT string_agg(DISTINCT pin_v.barcode, ',')
+    FROM lenh_sx_dot_vai lsd_v JOIN dot_vai_ve dv_v ON dv_v.id = lsd_v.dot_vai_ve_id
+    JOIN phan_in pin_v ON pin_v.id = dv_v.phan_in_id
+   WHERE lsd_v.lenh_san_xuat_id = COALESCE(ls.lenh_lien_ket_id, ${lenhCol}))`.replace(/\s+/g, ' ');
 
 const NGC_LENH = (lenhCol) => `(SELECT string_agg(DISTINCT dvg.nha_gia_cong, ', ')
     FROM lenh_sx_dot_vai lsg JOIN dot_vai_ve dvg ON dvg.id = lsg.dot_vai_ve_id
@@ -98,7 +104,7 @@ async function listProductionCandidates({ search = '', offset = 0, limit = 20 })
            info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.phan_in_id,
            info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan,
            info.han_giao_hang, info.so_luong_vai_ve,
-           ${NGC_LENH('ls.id')} AS nha_gia_cong, ${MA_QUET_LENH('ls.id')} AS ma_quet,
+           ${NGC_LENH('ls.id')} AS nha_gia_cong, ${MA_QUET_LENH('ls.id')} AS ma_quet, ${MA_VACH_PIN_LENH('ls.id')} AS ma_vach_pin,
            (SELECT count(*) FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id)::int AS so_dot_vai,
            (SELECT count(DISTINCT dv.phan_in_id) FROM lenh_sx_dot_vai lsd2 JOIN dot_vai_ve dv ON dv.id = lsd2.dot_vai_ve_id WHERE lsd2.lenh_san_xuat_id = ls.id)::int AS so_phan_in,
            (SELECT COALESCE(SUM(t.so_luong),0)::int FROM tem t JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
@@ -1100,6 +1106,7 @@ async function monitorRunning() {
             (SELECT count(DISTINCT dv2.phan_in_id) FROM lenh_sx_dot_vai lsd2 JOIN dot_vai_ve dv2 ON dv2.id = lsd2.dot_vai_ve_id WHERE lsd2.lenh_san_xuat_id = ls.id)::int AS so_phan_in,
             info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan, info.mau_vai, info.kich_vai, info.kich_phim,
             info.han_giao_hang, ${NGC_LENH('ls.id')} AS nha_gia_cong, ${MA_QUET_LENH('ls.id')} AS ma_quet,
+            ${MA_VACH_PIN_LENH('ls.id')} AS ma_vach_pin,
             (SELECT COALESCE(SUM(t.so_luong),0)::int FROM tem t WHERE t.phieu_san_xuat_id=ps.id AND t.trang_thai <> 'HUY') AS printed,
             (SELECT count(*) FROM tem t WHERE t.phieu_san_xuat_id=ps.id AND t.trang_thai <> 'HUY')::int AS so_tem,
             EXISTS (SELECT 1 FROM ngung_chuyen n WHERE n.phieu_san_xuat_id=ps.id AND n.trang_thai='DANG_NGUNG') AS dang_ngung,

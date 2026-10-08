@@ -11,6 +11,7 @@ router.use(auth);
 // Xác nhận chạy + in tem
 router.get('/candidates', rbac('PROD_RUN'), c.candidates);
 router.get('/run/:lenhId', rbac('PROD_RUN', 'PROD_MONITOR'), c.getRun);
+router.post('/start-batch', rbac('PROD_RUN'), c.startBatch); // nhiều lệnh 1 lượt (modal Chờ chạy)
 router.post('/:lenhId/start', rbac('PROD_RUN'), c.start);
 
 // Chạy đặc biệt (bỏ Test Run) — cùng danh sách Test Run, chạy thẳng đợt còn RELEASE_1

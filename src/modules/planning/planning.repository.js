@@ -293,6 +293,12 @@ async function nextMaLenhTx(client) {
   return rows[0].ma;
 }
 
+// GIỜ KT KẾ HOẠCH QUA NỬA ĐÊM (08/10/2026): FE ghép giờ BĐ + giờ KT với CÙNG ngày SX KH ⇒ ca 14:00 → 01:00 bị lưu
+// KT < BĐ (prod 08/10: 364 lệnh — Báo cáo sản xuất mất "Số giờ KH", ERP Release 1 nhận `Dengio` lùi 1 ngày).
+// MỌI câu GHI `tg_kt_kh` (lệnh + kế hoạch tạm) đi qua biểu thức này: KT < BĐ ⇒ cộng 1 ngày. Thiếu 1 trong 2 ⇒ giữ nguyên.
+const KT_QUA_DEM = (bd, kt) => `(CASE WHEN ${kt}::timestamptz < ${bd}::timestamptz
+  THEN ${kt}::timestamptz + interval '1 day' ELSE ${kt}::timestamptz END)`;
+
 // `data.thoInKh` (mig 111) — thợ in KẾ HOẠCH chọn lúc Release 1; chỉ ghi khi bên gọi truyền khóa này VÀ đã
 //   có cột (`coCotThoInKh` dò trước — hàm này chạy trong transaction, đừng để lỗi 42703).
 async function createLenh(client, data, actorId) {
@@ -301,7 +307,7 @@ async function createLenh(client, data, actorId) {
     `INSERT INTO lenh_san_xuat
        (workflow_version_id, ma_lenh_san_xuat, chuyen_id, so_luong_release, ngay_ke_hoach, trang_thai,
         giai_doan, lenh_lien_ket_id, tg_bd_kh, tg_kt_kh, created_by${themTho ? ', tho_in_kh' : ''})
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11${themTho ? ',$12' : ''}) RETURNING id`,
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,${KT_QUA_DEM('$9', '$10')},$11${themTho ? ',$12' : ''}) RETURNING id`.replace(/\s+/g, ' '),
     [data.versionId, data.maLenh, data.chuyenId, data.soLuongRelease, data.ngayKeHoach || null,
      data.trangThai || 'RELEASE_1', data.giaiDoan || 'IN', data.lenhLienKetId || null,
      data.tgBdKh || null, data.tgKtKh || null, actorId, ...(themTho ? [data.thoInKh || null] : [])]
@@ -1128,7 +1134,7 @@ async function upsertKeHoachTam({ dotVaiId, phanInId, chuyenId, ngayKeHoach, tgB
   const themTho = thoInKh !== undefined && (await coCotThoInKh());
   await query(
     `INSERT INTO ke_hoach_tam (dot_vai_ve_id, phan_in_id, chuyen_id, ngay_ke_hoach, tg_bd_kh, tg_kt_kh, so_luong, trang_thai, created_by${themTho ? ', tho_in_kh' : ''})
-     VALUES ($1,$2,$3,$4,$5,$6,$7,'CHO',$8${themTho ? ',$9' : ''})
+     VALUES ($1,$2,$3,$4,$5,${KT_QUA_DEM('$5', '$6')},$7,'CHO',$8${themTho ? ',$9' : ''})
      ON CONFLICT (dot_vai_ve_id) DO UPDATE SET chuyen_id=EXCLUDED.chuyen_id, ngay_ke_hoach=EXCLUDED.ngay_ke_hoach,
        tg_bd_kh=EXCLUDED.tg_bd_kh, tg_kt_kh=EXCLUDED.tg_kt_kh, so_luong=EXCLUDED.so_luong, trang_thai='CHO',
        ${themTho ? 'tho_in_kh=EXCLUDED.tho_in_kh,' : ''} updated_by=EXCLUDED.created_by, updated_date=now()`.replace(/\s+/g, ' '),
@@ -1870,8 +1876,8 @@ async function updateReleaseTx(client, lenhId, items, actorId) {
 async function updateLenhPlan(client, lenhId, { chuyenId, ngayKeHoach, tgBdKh, tgKtKh, thoInKh }, actorId) {
   const coTho = thoInKh !== undefined;
   await client.query(
-    `UPDATE lenh_san_xuat SET chuyen_id = $2, ngay_ke_hoach = $3, tg_bd_kh = $4, tg_kt_kh = $5,
-       ${coTho ? 'tho_in_kh = $7,' : ''} updated_by = $6, updated_date = CURRENT_TIMESTAMP WHERE id = $1`,
+    `UPDATE lenh_san_xuat SET chuyen_id = $2, ngay_ke_hoach = $3, tg_bd_kh = $4, tg_kt_kh = ${KT_QUA_DEM('$4', '$5')},
+       ${coTho ? 'tho_in_kh = $7,' : ''} updated_by = $6, updated_date = CURRENT_TIMESTAMP WHERE id = $1`.replace(/\s+/g, ' '),
     [lenhId, chuyenId, ngayKeHoach || null, tgBdKh || null, tgKtKh || null, actorId, ...(coTho ? [thoInKh] : [])]
   );
 }

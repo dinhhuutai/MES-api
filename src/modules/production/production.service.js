@@ -328,7 +328,9 @@ async function resumeLine(phieuId, actorId, gioKt = null) {
   return getRun(phieu.lenh_san_xuat_id);
 }
 
-async function startProduction(lenhId, actorId, chuyenId = null) {
+// LÕI "Xác nhận chạy" 1 lệnh (guard + transaction + vết dòng chảy), KHÔNG bắn socket — dùng chung cho
+// `startProduction` (1 lệnh) và `startProductionBatch` (nhiều lệnh, bắn socket 1 lần ở cuối).
+async function batDauChay(lenhId, actorId, chuyenId = null) {
   const lenh = await repo.getLenhBasic(lenhId);
   if (!lenh) throw new AppError('Lệnh sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   if (lenh.trang_thai !== 'RELEASE_2') {
@@ -337,6 +339,7 @@ async function startProduction(lenhId, actorId, chuyenId = null) {
   await planningService.assertKhongOGn(lenhId); // phần in đang ở Giao nhận (trả về GN) ⇒ chưa chạy được
   // Chuyền THỰC TẾ chạy (kế thừa chuyền kế hoạch, cho phép đổi khi xác nhận chạy).
   const chuyenThucTe = chuyenId || lenh.chuyen_id;
+  if (!chuyenThucTe) throw new AppError('Lệnh chưa có chuyền — chọn chuyền thực tế', { status: 422, errorCode: 'THIEU_CHUYEN' });
   const maPhieu = await repo.nextMaPhieu();
   await withTransaction(async (client) => {
     if (chuyenId && chuyenId !== lenh.chuyen_id) await repo.setLenhChuyen(client, lenhId, chuyenId, actorId);
@@ -344,9 +347,55 @@ async function startProduction(lenhId, actorId, chuyenId = null) {
     await repo.setLenhTrangThai(client, lenhId, 'SAN_XUAT', actorId);
   });
   await tracking.moveByLenh(lenhId, 'SAN_XUAT', actorId); // theo dõi dòng chảy
+  return lenh;
+}
+
+async function startProduction(lenhId, actorId, chuyenId = null) {
+  await batDauChay(lenhId, actorId, chuyenId);
   sockets.emit('production:updated', { lenhId, stage: 'SAN_XUAT' });
   sockets.emit('dashboard:refresh', {});
   return getRun(lenhId);
+}
+
+// XÁC NHẬN CHẠY NHIỀU LỆNH 1 LƯỢT (08/10/2026, modal Chờ chạy: quét/tích nhiều dòng rồi bấm 1 lần).
+// `items` = [{ lenhId, chuyenId? }] (chuyenId trống = chuyền kế hoạch). Mỗi lệnh đi ĐÚNG lõi `batDauChay`
+// (transaction RIÊNG, chạy TUẦN TỰ — `nextMaPhieu` cấp mã tuần tự) ⇒ lệnh lỗi không kéo lệnh khác; trả
+// `{ ok, loi }` để FE giữ lại dòng lỗi. Socket bắn 1 lần ở cuối (màn nghe gộp tải lại 1 lần).
+const TOI_DA_CHAY_MOT_LUOT = 100;
+const RE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+async function startProductionBatch(items, actorId) {
+  const ds = [];
+  const thay = new Set();
+  (Array.isArray(items) ? items : []).forEach((it) => {
+    const lenhId = String((it && it.lenhId) || '').trim();
+    if (!lenhId || thay.has(lenhId)) return;
+    thay.add(lenhId);
+    ds.push({ lenhId, chuyenId: String((it && it.chuyenId) || '').trim() || null });
+  });
+  if (!ds.length) throw new AppError('Chưa chọn lệnh nào để chạy', { status: 422, errorCode: 'VALIDATION' });
+  if (ds.length > TOI_DA_CHAY_MOT_LUOT) {
+    throw new AppError(`Tối đa ${TOI_DA_CHAY_MOT_LUOT} lệnh mỗi lần xác nhận chạy`, { status: 422, errorCode: 'QUA_NHIEU_LENH' });
+  }
+  const ok = []; const loi = [];
+  for (const { lenhId, chuyenId } of ds) {
+    if (!RE_UUID.test(lenhId) || (chuyenId && !RE_UUID.test(chuyenId))) {
+      loi.push({ lenhId, message: 'Mã lệnh / chuyền không hợp lệ', errorCode: 'VALIDATION' });
+      continue;
+    }
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      const lenh = await batDauChay(lenhId, actorId, chuyenId);
+      ok.push({ lenhId, ma: lenh.ma_lenh_san_xuat });
+    } catch (e) {
+      if (!(e instanceof AppError)) console.error('[xac-nhan-chay-nhieu]', lenhId, e);
+      loi.push({ lenhId, message: e instanceof AppError ? e.message : 'Lỗi hệ thống', errorCode: e.errorCode || 'LOI' });
+    }
+  }
+  if (ok.length) {
+    sockets.emit('production:updated', { lenhIds: ok.map((x) => x.lenhId), stage: 'SAN_XUAT' });
+    sockets.emit('dashboard:refresh', {});
+  }
+  return { ok, loi };
 }
 
 // Chạy ĐẶC BIỆT (bỏ Test Run — chỉ thị đặc biệt): khởi chạy đợt SX còn ở RELEASE_1 (chưa Test Run).
@@ -1035,7 +1084,7 @@ async function vuotSanXuat(phieuId, soLuong, actorId) {
 }
 
 module.exports = {
-  listCandidates, getRun, startProduction, startProductionSpecial, printTem, printTemBatch, reprintTem, temLabel, temLogs, finishRun, monitor, vuotSanXuat,
+  listCandidates, getRun, startProduction, startProductionBatch, startProductionSpecial, printTem, printTemBatch, reprintTem, temLabel, temLogs, finishRun, monitor, vuotSanXuat,
   getXePhoi, listTemChoPhoi, addToXe, adjustPhoi, listDrying, confirmDry, redry,
   stopLine, resumeLine, addVaiHuy, savePhanCong,
   dsLyDoNgung, taoLyDoNgung, suaLyDoNgung, doiTrangThaiLyDoNgung,

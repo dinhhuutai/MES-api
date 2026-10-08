@@ -44,6 +44,12 @@ const baoCaoKiemHang = asyncHandler(async (req, res) => {
 const start = asyncHandler(async (req, res) =>
   ok(res, await service.startProduction(req.params.lenhId, req.user.id, req.body.chuyenId || null), 'Đã xác nhận chạy'));
 
+// Xác nhận chạy NHIỀU lệnh (modal Chờ chạy, 08/10/2026): body { items: [{ lenhId, chuyenId? }] } ⇒ { ok, loi }.
+const startBatch = asyncHandler(async (req, res) => {
+  const kq = await service.startProductionBatch((req.body || {}).items, req.user.id);
+  return ok(res, kq, `Đã xác nhận chạy ${kq.ok.length} lệnh${kq.loi.length ? ` · ${kq.loi.length} lệnh lỗi` : ''}`);
+});
+
 // Chạy đặc biệt (bỏ Test Run): danh sách = CÙNG candidate Test Run; hành động = khởi chạy thẳng.
 const chayDacBietCandidates = asyncHandler(async (req, res) => {
   const { page, limit, offset } = getPaging(req.query);
@@ -207,7 +213,7 @@ const vuotSanXuat = asyncHandler(async (req, res) =>
   ok(res, await service.vuotSanXuat(req.params.phieuId, req.body?.soLuong, req.user.id), 'Đã ghi nhận vượt sản xuất'));
 
 module.exports = {
-  candidates, getRun, start, chayDacBietCandidates, chayDacBiet, printTem, printTemBatch, reprintTem, temLabel, temLogs, finish, monitor,
+  candidates, getRun, start, startBatch, chayDacBietCandidates, chayDacBiet, printTem, printTemBatch, reprintTem, temLabel, temLogs, finish, monitor,
   xePhoi, temChoPhoi, themTem, adjustPhoi, drying, confirmDry, redry,
   stopLine, resumeLine, addVaiHuy, savePhanCong, vuotSanXuat,
   lyDoNgungList, lyDoNgungCreate, lyDoNgungUpdate, lyDoNgungToggle,

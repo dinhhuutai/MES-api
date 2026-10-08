@@ -28,6 +28,10 @@ async function coCot(bang, cot) {
 const KHUNG = "(($1::date + time '06:00') AT TIME ZONE 'Asia/Ho_Chi_Minh')";
 
 const TRONG_NGAY = (cot) => `(${cot} >= ${KHUNG} AND ${cot} < ${KHUNG} + interval '1 day')`;
+// Bỏ dữ liệu SCRIPT hệ thống ghi (02/10/2026 `chay_den_giao_ton_san_xuat_truoc_0110.sql`): phiếu `[HỆ THỐNG…` +
+// tem `HT-…` — không phải sản xuất thật (đo prod 08/10: 4.626 phiếu · 4.657 tem, đều dồn vào ngày 02/10).
+const PHIEU_THAT = "COALESCE(ps.ghi_chu, '') NOT LIKE '[HỆ THỐNG%'";
+const TEM_THAT = "t.ma_tem NOT LIKE 'HT-%'";
 // Tem thuộc ngày D: ngày ca = D; tem cũ chưa có ngày ca thì theo lúc in.
 const TEM_CUA_NGAY = (coNgayCa) => (coNgayCa
   ? `(t.ngay_ca = $1::date OR (t.ngay_ca IS NULL AND ${TRONG_NGAY('t.created_date')}))`
@@ -40,12 +44,12 @@ async function docPhieu(ngay, { coTo, coNgayCa }) {
       ps.tg_bd, ps.tg_kt, ${coTo ? 'ps.to_in_id' : 'NULL::uuid'} AS to_in_id
     FROM phieu_san_xuat ps
     JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
-    WHERE ps.trang_thai <> 'HUY' AND ls.trang_thai <> 'HUY'
+    WHERE ps.trang_thai <> 'HUY' AND ls.trang_thai <> 'HUY' AND ${PHIEU_THAT}
       AND NOT EXISTS (SELECT 1 FROM chuyen_san_xuat cs JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
                        WHERE cs.id = COALESCE(ps.chuyen_id, ls.chuyen_id) AND lc.ma_loai = 'GIA_CONG')
       AND (${TRONG_NGAY('ps.tg_bd')} OR ${TRONG_NGAY('ps.tg_kt')}
            OR EXISTS (SELECT 1 FROM tem t WHERE t.phieu_san_xuat_id = ps.id AND t.trang_thai <> 'HUY'
-                       AND ${TEM_CUA_NGAY(coNgayCa)}))`;
+                       AND ${TEM_THAT} AND ${TEM_CUA_NGAY(coNgayCa)}))`;
   const { rows } = await query(sql.replace(/\s+/g, ' '), [ngay]);
   return rows;
 }
@@ -67,7 +71,7 @@ async function docTem(ngay, phieuIds, { coNgayCa, coDot, coGoc }) {
       EXTRACT(HOUR FROM t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS gio,
       SUM(t.so_luong)::int AS so_luong, min(${tu}) AS tu_min, max(${den}) AS den_max
     FROM tem t
-    WHERE t.phieu_san_xuat_id = ANY($2::uuid[]) AND t.trang_thai <> 'HUY' ${coGoc ? 'AND t.tem_goc_id IS NULL' : ''}
+    WHERE t.phieu_san_xuat_id = ANY($2::uuid[]) AND t.trang_thai <> 'HUY' AND ${TEM_THAT} ${coGoc ? 'AND t.tem_goc_id IS NULL' : ''}
       AND ${TEM_CUA_NGAY(coNgayCa)}
     GROUP BY 1, 2, 3, 4`;
   const { rows } = await query(sql.replace(/\s+/g, ' '), [ngay, phieuIds]);

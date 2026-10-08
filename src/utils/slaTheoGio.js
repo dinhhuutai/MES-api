@@ -18,7 +18,10 @@
 //     · từ tg_bd_kh − 120 phút               ⇒ VÀNG (cảnh báo trước 60 phút so với hạn)
 //     ⇒ sla_phut = phút từ lúc vào Test Run tới hạn; canh_bao = 60.
 //     · lệnh chưa đặt GIỜ SX ⇒ ngày SX kế hoạch lúc 07:30; không có cả ngày ⇒ SLA trạm TEST_RUN như cũ.
-//     · hạn đã qua ngay lúc vào trạm ⇒ sla = 1 phút (không để 0 — 0 nghĩa là "không tính SLA").
+//     · ⚠ TỐI THIỂU `toi_thieu_phut` (mặc định 120) kể từ lúc Release 1 đưa lệnh xuống (08/10/2026, người dùng
+//       chốt): sla_phut = MAX(toi_thieu, phút tới hạn) ⇒ lệnh release sát/qua giờ SX vẫn có 2 giờ rồi mới nghẽn
+//       (đo prod 08/10: 17/108 lệnh chờ test đỏ NGAY lúc vào trạm vì hạn đã qua trước khi lệnh được tạo).
+//       Mốc vào = `lenh_san_xuat.created_date` (bản đồ nghẽn + `siSoTram.DV.TEST_RUN`). 0 = không gia hạn.
 //
 // (3) QC READY (checklist QC_XAC_NHAN) — theo GIỜ KỸ THUẬT XÁC NHẬN XONG (mốc vào hàng đợi QC, giờ VN):
 //     · 16:30 ≤ giờ < 24:00 ⇒ 16 giờ (960 phút) — KT xong cuối ca thì QC làm sáng hôm sau
@@ -53,7 +56,7 @@ const MAC_DINH = {
   QC_READY_THEO_GIO: { bat: true, gia_tri: { khung: [{ tu: '16:30', den: '24:00', phut: 960 }] } },
   // ⚠⚠ GIỜ SX KẾ HOẠCH = `tg_bd_kh`; THIẾU (đo prod 24/09: 117/163 lệnh chờ test chỉ có NGÀY) ⇒ lấy
   //   `ngay_ke_hoach` lúc `gio_sx_mac_dinh` (giờ mặc định của form Release 1).
-  TEST_RUN_THEO_GIO_SX: { bat: true, gia_tri: { truoc_sx_phut: 60, canh_bao_phut: 60, gio_sx_mac_dinh: '07:30' } },
+  TEST_RUN_THEO_GIO_SX: { bat: true, gia_tri: { truoc_sx_phut: 60, canh_bao_phut: 60, gio_sx_mac_dinh: '07:30', toi_thieu_phut: 120 } },
 };
 const MA_SLA = Object.keys(MAC_DINH);
 
@@ -89,9 +92,12 @@ function chuanHoa(ma, g) {
   if (ma === 'TEST_RUN_THEO_GIO_SX') {
     const truoc = soNguyen(v.truoc_sx_phut, 0, 1440); const cb = soNguyen(v.canh_bao_phut, 0, 1440);
     const gio = String(v.gio_sx_mac_dinh || '').trim();
-    if (truoc == null || cb == null) throw new Error('Số phút phải là số nguyên 0–1440');
+    // Khóa thêm 08/10/2026 — dòng đã lưu trước đó (seed mig 109) chưa có ⇒ dùng mặc định, KHÔNG coi là hỏng.
+    const thieuToiThieu = v.toi_thieu_phut == null || v.toi_thieu_phut === '';
+    const toiThieu = thieuToiThieu ? MAC_DINH.TEST_RUN_THEO_GIO_SX.gia_tri.toi_thieu_phut : soNguyen(v.toi_thieu_phut, 0, 1440);
+    if (truoc == null || cb == null || toiThieu == null) throw new Error('Số phút phải là số nguyên 0–1440');
     if (!RE_GIO.test(gio) || gio === '24:00') throw new Error('Giờ SX mặc định phải dạng HH:MM');
-    return { truoc_sx_phut: truoc, canh_bao_phut: cb, gio_sx_mac_dinh: gio };
+    return { truoc_sx_phut: truoc, canh_bao_phut: cb, gio_sx_mac_dinh: gio, toi_thieu_phut: toiThieu };
   }
   throw new Error(`Luật SLA lạ: ${ma}`);
 }
@@ -140,6 +146,8 @@ const testBat = () => cfg.TEST_RUN_THEO_GIO_SX.bat;
 // Phải xong Test Run trước giờ SX bao nhiêu phút. Luật tắt ⇒ null (người gọi dùng SLA trạm).
 const testRunTruocSxPhut = () => (testBat() ? cfg.TEST_RUN_THEO_GIO_SX.gia_tri.truoc_sx_phut : null);
 const gioSxMacDinh = () => cfg.TEST_RUN_THEO_GIO_SX.gia_tri.gio_sx_mac_dinh;
+// SLA Test Run tối thiểu (phút từ lúc vào trạm). Không bao giờ < 1 (0 = "không tính SLA").
+const testRunToiThieuPhut = () => Math.max(1, Number(cfg.TEST_RUN_THEO_GIO_SX.gia_tri.toi_thieu_phut) || 0);
 
 const gioSxKhSql = (tgBdKhCol, ngayKhCol) =>
   `COALESCE(${tgBdKhCol}, ((${ngayKhCol})::date + time '${gioSxMacDinh()}') ${VN})`;
@@ -171,10 +179,11 @@ const canhBaoReadyHanSql = (hanCol, macDinh) => (hanBat()
   : `(${macDinh})`);
 
 // `tgVaoCol` = lúc vào Test Run; `tgBdKhCol` = giờ SX kế hoạch; `macDinh` = SLA trạm TEST_RUN.
+// sla = MAX(tối thiểu, phút tới hạn) — xem luật (2).
 function slaTestRunSql(tgVaoCol, tgBdKhCol, macDinh) {
   if (!testBat()) return `(${macDinh})`;
   return `(CASE WHEN ${tgBdKhCol} IS NULL OR ${tgVaoCol} IS NULL THEN ${macDinh}
-    ELSE GREATEST(1, floor(EXTRACT(EPOCH FROM ((${tgBdKhCol} - interval '${Number(testRunTruocSxPhut())} minutes') - ${tgVaoCol})) / 60))::int END)`;
+    ELSE GREATEST(${testRunToiThieuPhut()}, floor(EXTRACT(EPOCH FROM ((${tgBdKhCol} - interval '${Number(testRunTruocSxPhut())} minutes') - ${tgVaoCol})) / 60))::int END)`;
 }
 function canhBaoTestRunSql(tgBdKhCol, macDinh) {
   if (!testBat()) return `(${macDinh})`;
@@ -226,6 +235,13 @@ function slaReadyHan(tgVao, han, tgLenMes, macDinh, canhBaoMacDinh) {
   return { sla: Math.max(1, Math.floor((moc - vao) / 60000)), canhBao: hanCanhBao() };
 }
 const slaQcReady = (tg, macDinh) => slaKhung(khungQc(), tg, macDinh);
+// Luật (2) cho service — gương `slaTestRunSql`. `tgBdKh` = giờ SX kế hoạch (đã lùi về ngày KH + giờ mặc định).
+function slaTestRun(tgVao, tgBdKh, macDinh) {
+  const vao = msOf(tgVao); const bd = msOf(tgBdKh);
+  if (!testBat() || Number.isNaN(vao) || Number.isNaN(bd)) return macDinh;
+  const han = bd - testRunTruocSxPhut() * 60000;
+  return Math.max(testRunToiThieuPhut(), Math.floor((han - vao) / 60000));
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // (5) GIA HẠN KHI BỊ TRẢ VỀ KỸ THUẬT (07/10/2026, người dùng chốt): phần in bị trạm khác trả về KT (mốc
@@ -255,5 +271,5 @@ module.exports = {
   hanBat, testRunTruocSxPhut, gioSxKhSql,
   mocDoReadySql, slaReadyHanSql, canhBaoReadyHanSql,
   mocDoReady, slaReadyHan,
-  slaReadySql, slaQcReadySql, slaTestRunSql, canhBaoTestRunSql, slaReady, slaQcReady, phutTrongNgayVN,
+  slaReadySql, slaQcReadySql, slaTestRunSql, canhBaoTestRunSql, slaReady, slaQcReady, slaTestRun, phutTrongNgayVN,
 };
