@@ -2383,7 +2383,7 @@ module.exports = {
   listTestRunCandidates, listRelease2Candidates, getLenhBasic, getLenhDotVai, dotVaiIdsByLenh, getTestRuns,
   getLenhTestStatus, insertTestRun, insertTestRunTx, upsertLenhResult, insertStatusLog, setLenhTrangThai,
   testRunHistoryByDate, testRunsByLenh,
-  KET_QUA_IN_KHONG_DAT, usersByUsernames, logInKhongDatTx,
+  KET_QUA_IN_KHONG_DAT, OWNER_CHO_IN_SQL, usersByUsernames, logInKhongDatTx,
   listReplanCandidates, listReplanIds, listReplanMaQuet, getLenhForReplan, getReplanDotVai, updateReleaseTx, updateLenhPlan, setLenhTrangThaiTx, logPlanChange, planHistoryByDate,
   phanInRowsByLenh,
   listGiaCongLenh, getGiaCongLenh, listGiaCongHistory, giaCongPhanInRows, temCoCotDotVai,

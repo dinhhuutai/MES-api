@@ -583,6 +583,26 @@ CP_FLOW.forEach((cp) => {
   });
 });
 
+// ---------- TEST RUN HÔM NAY (08/10/2026) — đơn / mã / phần in / lệnh: Tổng · Đã test xong · Còn chờ ----------
+// Cùng tập với danh sách `DS_TEST_RUN` (chờ test = hàng đợi màn Test Run + đã QA xác nhận hôm nay) — luật ở
+// `./testRunHomNay.js`. Tổng = Đã test xong + Còn chờ ⇒ % = ô "đã test" / ô "tổng" bằng công thức.
+const testRunHomNayCached = () => nhoNang('testRunHomNay', () => require('./testRunHomNay').demHomNay());
+[['don', 'đơn hàng', 'đơn'], ['ma', 'mã hàng', 'mã'], ['phan', 'phần in', 'phần'], ['lenh', 'lệnh SX', 'lệnh']]
+  .forEach(([k, ten, dv]) => {
+    const nhom = 'Test Run hôm nay';
+    DEFS.push(
+      { ma: `TR_HN_${k.toUpperCase()}_TONG`, ten: `Test Run hôm nay: Tổng ${ten}`, nhom, don_vi: dv,
+        mo_ta: `Số ${ten} phải test hôm nay = đang chờ ở màn Test Run + đã QA xác nhận test hôm nay. = Đã test xong + Còn chờ.`,
+        run: async () => (await testRunHomNayCached())[k].tong },
+      { ma: `TR_HN_${k.toUpperCase()}_DA`, ten: `Test Run hôm nay: ${ten} đã test xong`, nhom, don_vi: dv,
+        mo_ta: `Số ${ten} đã QA xác nhận test hôm nay (Đạt hoặc In không đạt có owner cho IN) và không còn lệnh nào chờ test.`,
+        run: async () => (await testRunHomNayCached())[k].da },
+      { ma: `TR_HN_${k.toUpperCase()}_CHO`, ten: `Test Run hôm nay: ${ten} còn chờ test`, nhom, don_vi: dv,
+        mo_ta: `Số ${ten} còn ít nhất 1 lệnh đang chờ ở màn Test Run (kể cả lệnh test lỗi đang chờ kỹ thuật).`,
+        run: async () => (await testRunHomNayCached())[k].cho },
+    );
+  });
+
 // ---------- SL ĐƠN HÀNG XÁC NHẬN HÔM NAY (theo trạm) — Σ SLĐH phần in RỜI/hoàn tất trạm trong ngày ----------
 CP_FLOW.forEach((cp) => DEFS.push({
   ma: `SLDON_XN_${cp.ma}`,

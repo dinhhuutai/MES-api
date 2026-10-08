@@ -19,6 +19,8 @@ const { flowRowsCached } = require('./flowCache');
 const { KHUON_OPT_SQL_LIST, KHUON_OPTIONAL_KH, nguoiXacNhanSql, khongReadyTuDongSql, conDotChuaReadySql, dotMucDatSql } = require('../../utils/tech');
 const { mauTim } = require('../../utils/timKiem');
 const { CP_PHAN_IN } = require('../../utils/siSoTram');
+const { dkChoTestSql } = require('./testRunHomNay');
+const { OWNER_CHO_IN_SQL, KET_QUA_IN_KHONG_DAT } = require('../planning/planning.repository');
 
 const VN_TODAY = "(now() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date";
 const clean = (v) => (v == null ? '' : String(v).trim());
@@ -353,7 +355,9 @@ async function runTestRun({ loc = {}, gioi_han }) {
   // Nhánh "có mặt/chờ test" là snapshot HIỆN TẠI (không theo ngày) → luôn hiện lệnh đang chờ test ở Test Run.
   const dayVal = clean(loc.ngay) || 'HOM_NAY';
   const daTestDate = ngayCond('tq.tg', dayVal, true);
-  const coMat = `(ls.trang_thai = 'RELEASE_1' AND tq.tg IS NULL)`;
+  // "Đang chờ test" = ĐÚNG hàng đợi màn Test Run (08/10/2026 — trước đó chỉ `RELEASE_1` + chưa QA nên đếm cả lệnh
+  //   đang ở GN / bị trả về Kế hoạch / bị ẩn theo cấu hình hiển thị). Luật chung với metric "Test Run hôm nay".
+  const coMat = await dkChoTestSql('ls');
   const daTest = `(tq.tg IS NOT NULL AND ${daTestDate})`;
   const loai = clean(loc.loai_ds).toUpperCase();
   if (loai === 'CO_MAT') conds.push(coMat);
@@ -364,7 +368,11 @@ async function runTestRun({ loc = {}, gioi_han }) {
     SELECT ls.ma_lenh_san_xuat, ls.so_luong_release, ${loaiDotTheoLenh('ls.id')},
            to_char(ls.ngay_ke_hoach, 'DD/MM/YYYY') AS ngay_ke_hoach,
            (CASE WHEN tq.tg IS NULL THEN 'Đang chờ test' ELSE 'Đã test' END) AS tinh_trang,
-           (CASE WHEN tq.tg IS NULL THEN 'Chờ test' ELSE 'Đạt' END) AS test_ket_qua,
+           (CASE WHEN tq.tg IS NULL THEN
+                   (CASE WHEN ltr.ket_qua IS NOT NULL AND ltr.ket_qua NOT IN ('DAT', '${KET_QUA_IN_KHONG_DAT}')
+                         THEN 'Test lỗi — chờ test lại' ELSE 'Chờ test' END)
+                 WHEN ltr.ket_qua = '${KET_QUA_IN_KHONG_DAT}' THEN 'Không đạt · ' || COALESCE(ltr.owner_cho_in, '—') || ' cho IN'
+                 ELSE 'Đạt' END) AS test_ket_qua,
            to_char(tq.tg AT TIME ZONE 'Asia/Ho_Chi_Minh', 'DD/MM/YYYY HH24:MI') AS test_tg,
            to_char(tq.tg AT TIME ZONE 'Asia/Ho_Chi_Minh', 'DD/MM/YYYY') AS ngay_test,
            tq.loai_raw AS loai_test_raw, tq.ghi_chu AS test_ghi_chu, nqa.ho_ten AS nguoi_qa,
@@ -389,6 +397,11 @@ async function runTestRun({ loc = {}, gioi_han }) {
       ORDER BY kq.tg_xac_nhan DESC NULLS LAST LIMIT 1
     ) tc ON true
     LEFT JOIN nguoi_dung nqa ON nqa.id = tq.nguoi_xac_nhan_id
+    LEFT JOIN LATERAL (
+      SELECT tr.ket_qua, ${OWNER_CHO_IN_SQL('tr')} FROM test_run tr
+      WHERE tr.lenh_san_xuat_id = ls.id AND tr.ket_qua IS DISTINCT FROM 'HUY'
+      ORDER BY tr.lan_test DESC NULLS LAST, tr.created_date DESC LIMIT 1
+    ) ltr ON true
     LEFT JOIN LATERAL (
       SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang,
              pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.ma_phan, pin.tinh_chat_in, pin.so_luong_don_hang
@@ -1092,9 +1105,10 @@ const DEFS = [
     mo_ta: '1 dòng = 1 đợt sản xuất (lệnh SX) theo ngày kế hoạch. Dựng bảng kiểu "Test Run bàn A/B / máy tự động".',
     loc: locList(['ngay', 'chuyen', 'trang_thai_lsx', 'nhom_bo_sung', 'tim']), cot: COT_DOT_SX, run: runDotSanXuat },
   { ma: 'DS_TEST_RUN', ten: 'Test Run hôm nay (có mặt / đã test)', don_vi_dong: 'lệnh SX',
-    mo_ta: '1 dòng = 1 lệnh liên quan Test Run. Mặc định (để trống Ngày) = "đang chờ test ở Test Run hiện tại" + "đã test '
+    mo_ta: '1 dòng = 1 lệnh liên quan Test Run. Mặc định (để trống Ngày) = "đang chờ test" (ĐÚNG hàng đợi màn Test Run hiện tại) + "đã test '
       + 'HÔM NAY" (kèm kết quả + thông tin test của QC: người test, loại, giờ, ghi chú, QC xác nhận). Đặt Ngày cụ thể để xem '
-      + 'nhánh "đã test" của ngày khác; chọn "Loại danh sách" để chỉ xem 1 nhóm. Cột "Tình trạng" phân biệt Đang chờ test / Đã test.',
+      + 'nhánh "đã test" của ngày khác; chọn "Loại danh sách" để chỉ xem 1 nhóm. Cột "Tình trạng" phân biệt Đang chờ test / Đã test; '
+      + '"Kết quả test" = Đạt · Không đạt (owner cho IN) · Test lỗi — chờ test lại · Chờ test. Số đếm đơn / mã / phần: nhóm metric "Test Run hôm nay".',
     loc: locList(['ngay_testrun', 'loai_ds_testrun', 'chuyen', 'nhom_bo_sung', 'tim']), cot: COT_TEST_RUN, run: runTestRun },
   { ma: 'DS_TEM', ten: 'Tem (KCS / Sửa / OQC / Giao)', don_vi_dong: 'tem',
     mo_ta: '1 dòng = 1 tem theo ngày in tem, kèm sổ cái số lượng từng công đoạn.',
