@@ -88,8 +88,10 @@ function evalExpr(expr, resolve) {
 
 // ---- Tính toàn bộ lưới ----
 // cells: { "A1": {loai, ...} }; metricValues: { MA: number }.
+// `khoaO(c)` = khóa giá trị của ô metric trong `metricValues` (mặc định `c.metric`; ô metric chọn NGÀY dùng
+//   `MA@YYYY-MM-DD` — xem `metrics.khoaMetric`, truyền từ `bao-cao.service`).
 // Trả { "A1": { value, kieu:'so'|'text'|'loi', loi? } }.
-function evaluateGrid(cells = {}, metricValues = {}) {
+function evaluateGrid(cells = {}, metricValues = {}, khoaO = (c) => c.metric) {
   const memo = {}; // key -> { v } | { err }
   const stack = new Set();
 
@@ -105,7 +107,7 @@ function evaluateGrid(cells = {}, metricValues = {}) {
       else if (c.loai === 'tha_xuong') throw new Error('#TEXT'); // trình thả xuống = text
       else if (c.loai === 'hop_kiem') v = c.gia_tri === true ? 1 : 0; // hộp kiểm: TRUE=1, FALSE=0
       else if (c.loai === 'metric') {
-        const mv = metricValues[c.metric];
+        const mv = metricValues[khoaO(c)];
         if (mv == null || typeof mv === 'object') throw new Error('#METRIC');
         v = Number(mv); if (!Number.isFinite(v)) throw new Error('#METRIC');
       } else if (c.loai === 'cong_thuc') {
@@ -127,8 +129,8 @@ function evaluateGrid(cells = {}, metricValues = {}) {
     if (c.loai === 'text') { out[key] = { value: c.gia_tri ?? '', kieu: 'text' }; continue; }
     if (c.loai === 'tha_xuong') { out[key] = { value: c.gia_tri ?? '', kieu: 'text' }; continue; }
     // Metric kiểu văn bản (vd thời gian hiện tại) → giữ nguyên chuỗi, không ép thành số.
-    if (c.loai === 'metric' && typeof metricValues[c.metric] === 'string') {
-      out[key] = { value: metricValues[c.metric], kieu: 'text' }; continue;
+    if (c.loai === 'metric' && typeof metricValues[khoaO(c)] === 'string') {
+      out[key] = { value: metricValues[khoaO(c)], kieu: 'text' }; continue;
     }
     if (c.loai === 'hop_kiem') { out[key] = { value: c.gia_tri === true, kieu: 'bool' }; continue; }
     try { out[key] = { value: resolve(key), kieu: 'so' }; }

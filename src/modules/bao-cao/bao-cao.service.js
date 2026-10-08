@@ -20,14 +20,20 @@ const khoiTheoNgay = (noiDung) => Object.entries((noiDung && noiDung.o) || {})
   .filter(([, c]) => c && c.loai === 'danh_sach' && c.ds && c.ds.nguon && datasets.coLocNgay(c.ds.nguon)
     && String((c.ds.loc || {}).ngay || '').trim());
 const NGAY_HOP_LE = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) || String(v || '').toUpperCase() === 'HOM_NAY';
+// Ô metric THEO NGÀY (08/10/2026) = metric khai `theo_ngay` (nhóm "Test Run hôm nay") — luôn là số của 1 ngày
+//   (không đặt ngày = hôm nay) ⇒ ô Ngày ở "Báo cáo của tôi" đè được, như khối danh sách theo ngày.
+const oMetricTheoNgay = (noiDung) => Object.entries((noiDung && noiDung.o) || {})
+  .filter(([, c]) => c && c.loai === 'metric' && metrics.BY_MA[c.metric] && metrics.BY_MA[c.metric].theo_ngay);
 
-// Danh sách báo cáo + `loc_ngay` (giá trị ngày đang đặt trong báo cáo) khi có khối danh sách THEO NGÀY ⇒
+// Danh sách báo cáo + `loc_ngay` (giá trị ngày đang đặt trong báo cáo) khi có khối danh sách / ô metric THEO NGÀY ⇒
 // trang "Báo cáo của tôi" hiện ô chọn ngày ngay trên dòng (26/09/2026). KHÔNG trả nguyên `noi_dung_json`.
 async function listReports({ search, userId, all }) {
   const rows = await repo.list({ search: search || '', userId, all: !!all });
   return rows.map(({ noi_dung_json: nd, ...r }) => {
     const ks = khoiTheoNgay(nd);
-    return { ...r, co_loc_ngay: ks.length > 0, loc_ngay: ks.length ? String(ks[0][1].ds.loc.ngay) : null };
+    const ms = oMetricTheoNgay(nd);
+    const locNgay = ks.length ? String(ks[0][1].ds.loc.ngay) : ms.length ? String(ms[0][1].ngay || 'HOM_NAY') : null;
+    return { ...r, co_loc_ngay: ks.length + ms.length > 0, loc_ngay: locNgay };
   });
 }
 
@@ -84,9 +90,10 @@ async function renderContent(rep) {
   const cells = noiDung.o || {};
   // Metric dùng trong Ô (loai='metric') + metric là NGUỒN BIỂU ĐỒ (bieu_do[].nguon='metric').
   // ⚠ Trước đây chỉ gom metric trong ô ⇒ biểu đồ nguồn "nhóm chỉ số" không có giá trị (ra rỗng/0).
+  // Ô metric mang thêm `ngay` (metric `theo_ngay`) ⇒ tính riêng từng ngày, khóa `MA@ngày` (`metrics.khoaMetric`).
   const cellMetrics = Object.values(cells)
     .filter((c) => c && c.loai === 'metric' && c.metric)
-    .map((c) => c.metric);
+    .map((c) => ({ ma: c.metric, ngay: c.ngay }));
   const chartMetrics = (noiDung.bieu_do || [])
     .filter((b) => b && b.nguon === 'metric' && Array.isArray(b.metrics))
     .flatMap((b) => b.metrics)
@@ -101,10 +108,11 @@ async function renderContent(rep) {
     metrics.compute(usedMetrics),
     datasets.computeBlocks(dsBlocks),
   ]);
-  const ketQua = evaluateGrid(cells, metricValues);
+  const ketQua = evaluateGrid(cells, metricValues, (c) => metrics.khoaMetric(c.metric, c.ngay));
   // Tên metric (ma→ten) cho các metric đã dùng — để biểu đồ nguồn "nhóm chỉ số" hiện TÊN ở trang Xem.
   const metricNames = Object.fromEntries(
-    [...new Set(usedMetrics)].map((ma) => [ma, metrics.BY_MA[ma] ? metrics.BY_MA[ma].ten : ma])
+    [...new Set(usedMetrics.map((x) => (typeof x === 'string' ? x : x.ma)))]
+      .map((ma) => [ma, metrics.BY_MA[ma] ? metrics.BY_MA[ma].ten : ma])
   );
   return {
     id: rep.id, ma_bao_cao: rep.ma_bao_cao, ten_bao_cao: rep.ten_bao_cao,
@@ -128,6 +136,7 @@ async function renderReport(id, { noiDung, ngay } = {}) {
   if (NGAY_HOP_LE(ngay)) {
     const nd = JSON.parse(JSON.stringify(rep.noi_dung_json || {}));
     for (const [, c] of khoiTheoNgay(nd)) c.ds.loc = { ...c.ds.loc, ngay: String(ngay) };
+    for (const [, c] of oMetricTheoNgay(nd)) c.ngay = String(ngay); // 08/10/2026: ô metric theo ngày cũng đổi
     rep.noi_dung_json = nd;
   }
   return renderContent(rep);

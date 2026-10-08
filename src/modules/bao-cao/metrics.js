@@ -128,6 +128,8 @@ const VN_TODAY = "(now() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date";
 const TODAY_TS = (col) => `(${col} AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = ${VN_TODAY}`;
 // Lọc "hôm nay" cho cột DATE.
 const TODAY_DT = (col) => `${col} = ${VN_TODAY}`;
+// Ngày cụ thể của ô metric `theo_ngay` (xem `khoaMetric`); 'HOM_NAY' / trống ⇒ hôm nay.
+const NGAY_METRIC_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 // Đếm ket_qua_checkpoint DAT hôm nay cho 1 mã checkpoint (mức phần in).
 // ⚠⚠ LOẠI phần in do HỆ THỐNG tự xác nhận READY (ERP `KTCankiemtra=0`) — người dùng chốt 19/08/2026.
@@ -586,20 +588,26 @@ CP_FLOW.forEach((cp) => {
 // ---------- TEST RUN HÔM NAY (08/10/2026) — đơn / mã / phần in / lệnh: Tổng · Đã test xong · Còn chờ ----------
 // Cùng tập với danh sách `DS_TEST_RUN` (chờ test = hàng đợi màn Test Run + đã QA xác nhận hôm nay) — luật ở
 // `./testRunHomNay.js`. Tổng = Đã test xong + Còn chờ ⇒ % = ô "đã test" / ô "tổng" bằng công thức.
-const testRunHomNayCached = () => nhoNang('testRunHomNay', () => require('./testRunHomNay').demHomNay());
+// ⚠ `theo_ngay: true` — ô metric chọn được NGÀY (trình thiết kế) + ô Ngày ở "Báo cáo của tôi" đè được; `run({ngay})`
+//   nhận 'YYYY-MM-DD' (thiếu ⇒ hôm nay). Ngày cũ dựng lại từ khoảng vào/ra trạm (`testRunHomNay.demTheoNgay`).
+const testRunTheoNgayCached = (ngay) => {
+  const d = NGAY_METRIC_RE.test(String(ngay || '')) ? String(ngay) : 'HOM_NAY';
+  return nhoNang(`testRun:${d}`, () => require('./testRunHomNay').demTheoNgay(d === 'HOM_NAY' ? null : d));
+};
 [['don', 'đơn hàng', 'đơn'], ['ma', 'mã hàng', 'mã'], ['phan', 'phần in', 'phần'], ['lenh', 'lệnh SX', 'lệnh']]
   .forEach(([k, ten, dv]) => {
-    const nhom = 'Test Run hôm nay';
+    const nhom = 'Test Run hôm nay (chọn được ngày)';
+    const ngayNote = ' Ô này chọn được NGÀY: ngày cũ = Tổng là hàng có mặt ở Test Run trong ngày đó, Còn chờ là tồn cuối ngày.';
     DEFS.push(
-      { ma: `TR_HN_${k.toUpperCase()}_TONG`, ten: `Test Run hôm nay: Tổng ${ten}`, nhom, don_vi: dv,
-        mo_ta: `Số ${ten} phải test hôm nay = đang chờ ở màn Test Run + đã QA xác nhận test hôm nay. = Đã test xong + Còn chờ.`,
-        run: async () => (await testRunHomNayCached())[k].tong },
-      { ma: `TR_HN_${k.toUpperCase()}_DA`, ten: `Test Run hôm nay: ${ten} đã test xong`, nhom, don_vi: dv,
-        mo_ta: `Số ${ten} đã QA xác nhận test hôm nay (Đạt hoặc In không đạt có owner cho IN) và không còn lệnh nào chờ test.`,
-        run: async () => (await testRunHomNayCached())[k].da },
-      { ma: `TR_HN_${k.toUpperCase()}_CHO`, ten: `Test Run hôm nay: ${ten} còn chờ test`, nhom, don_vi: dv,
-        mo_ta: `Số ${ten} còn ít nhất 1 lệnh đang chờ ở màn Test Run (kể cả lệnh test lỗi đang chờ kỹ thuật).`,
-        run: async () => (await testRunHomNayCached())[k].cho },
+      { ma: `TR_HN_${k.toUpperCase()}_TONG`, ten: `Test Run: Tổng ${ten}`, nhom, don_vi: dv, theo_ngay: true,
+        mo_ta: `Số ${ten} phải test hôm nay = đang chờ ở màn Test Run + đã QA xác nhận test hôm nay. = Đã test xong + Còn chờ.${ngayNote}`,
+        run: async ({ ngay } = {}) => (await testRunTheoNgayCached(ngay))[k].tong },
+      { ma: `TR_HN_${k.toUpperCase()}_DA`, ten: `Test Run: ${ten} đã test xong`, nhom, don_vi: dv, theo_ngay: true,
+        mo_ta: `Số ${ten} đã QA xác nhận test hôm nay (Đạt hoặc In không đạt có owner cho IN) và không còn lệnh nào chờ test.${ngayNote}`,
+        run: async ({ ngay } = {}) => (await testRunTheoNgayCached(ngay))[k].da },
+      { ma: `TR_HN_${k.toUpperCase()}_CHO`, ten: `Test Run: ${ten} còn chờ test`, nhom, don_vi: dv, theo_ngay: true,
+        mo_ta: `Số ${ten} còn ít nhất 1 lệnh đang chờ ở màn Test Run hôm nay (kể cả lệnh test lỗi đang chờ kỹ thuật).${ngayNote}`,
+        run: async ({ ngay } = {}) => (await testRunTheoNgayCached(ngay))[k].cho },
     );
   });
 
@@ -645,14 +653,27 @@ function catalog() {
   return DEFS.map(({ run, ...d }) => ({ ...d, kieu: d.kieu || 'so' }));
 }
 
-// Tính giá trị cho 1 tập mã metric (chỉ metric được dùng) → { ma: value }. Giá trị realtime.
+// KHÓA GIÁ TRỊ của 1 ô metric: metric `theo_ngay` + ngày cụ thể 'YYYY-MM-DD' ⇒ `MA@YYYY-MM-DD`; còn lại (hôm nay
+//   / metric không theo ngày) ⇒ chính `MA` — báo cáo cũ + biểu đồ nguồn metric đọc khóa cũ, không đổi gì.
+function khoaMetric(ma, ngay) {
+  return BY_MA[ma] && BY_MA[ma].theo_ngay && NGAY_METRIC_RE.test(String(ngay || '')) ? `${ma}@${ngay}` : ma;
+}
+
+// Tính giá trị cho 1 tập metric (chỉ metric được dùng) → { khóa: value }. Giá trị realtime.
+// Mỗi phần tử là MÃ (hôm nay/hiện tại) hoặc `{ ma, ngay }` (ô metric có chọn ngày — xem `khoaMetric`).
 async function compute(maList) {
-  const uniq = [...new Set(maList)].filter((ma) => BY_MA[ma]);
-  const results = await Promise.all(uniq.map(async (ma) => {
-    try { return [ma, await BY_MA[ma].run()]; }
-    catch (e) { return [ma, { loi: e.message }]; }
+  const viec = new Map();
+  (maList || []).forEach((x) => {
+    const ma = typeof x === 'string' ? x : x && x.ma;
+    if (!BY_MA[ma]) return;
+    const khoa = khoaMetric(ma, typeof x === 'string' ? null : x.ngay);
+    if (!viec.has(khoa)) viec.set(khoa, { ma, ngay: khoa === ma ? null : khoa.slice(ma.length + 1) });
+  });
+  const results = await Promise.all([...viec].map(async ([khoa, { ma, ngay }]) => {
+    try { return [khoa, await BY_MA[ma].run(ngay ? { ngay } : {})]; }
+    catch (e) { return [khoa, { loi: e.message }]; }
   }));
   return Object.fromEntries(results);
 }
 
-module.exports = { catalog, compute, BY_MA };
+module.exports = { catalog, compute, BY_MA, khoaMetric };

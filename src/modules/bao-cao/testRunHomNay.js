@@ -58,7 +58,10 @@ async function demHomNay() {
       count(DISTINCT don_hang_id)::int AS don_tong, count(DISTINCT don_hang_id) FILTER (WHERE cho)::int AS don_cho
     FROM p`;
   const { rows } = await query(sql.replace(/\s+/g, ' ').trim());
-  const r = rows[0] || {};
+  return ketQua(rows[0]);
+}
+
+function ketQua(r = {}) {
   const bo = (k) => {
     const tong = Number(r[`${k}_tong`]) || 0;
     const choN = Number(r[`${k}_cho`]) || 0;
@@ -67,4 +70,40 @@ async function demHomNay() {
   return { lenh: bo('lenh'), phan: bo('phan'), ma: bo('ma'), don: bo('don') };
 }
 
-module.exports = { dkChoTestSql, dkDaTestSql, demHomNay };
+// ─── NGÀY ĐÃ QUA (08/10/2026, người dùng hỏi "metric cho chọn theo ngày được không") ──────────────────────────
+// Dựng lại từ khoảng [vào, ra) của trạm Test Run trong bộ máy sĩ số (`siSoTram DV.TEST_RUN` — nguồn của dải Theo
+// dõi màn Test Run; vào = lệnh tạo ở Release 1, ra = QA xác nhận đạt hoặc lệnh rời Release 1; lệnh đi tắt Test Run
+// không tính). Ngày D (00:00 → 24:00 giờ VN):
+//   · Tổng      = lệnh CÓ MẶT ở Test Run trong ngày D (tồn đầu ngày + nhận trong ngày) = vào < cuối D, ra ≥ đầu D.
+//   · Còn chờ   = lệnh còn ở Test Run lúc CUỐI ngày D (tồn cuối) = chưa ra hoặc ra ≥ cuối D.
+//   · Đã test xong = Tổng − Còn chờ (rời Test Run trong ngày D) — cùng luật phần in/mã/đơn với hôm nay.
+// ⚠ Khác đường hôm nay: KHÔNG trừ được lệnh lúc đó đang ở GN / bị trả về Kế hoạch / bị ẩn theo cấu hình hiển
+//   thị (không có lịch sử các trạng thái đó) ⇒ số ngày cũ có thể nhỉnh hơn số màn Test Run hiện lúc ấy. Lệnh bị
+//   HỦY sau đó hoặc lần test bị hủy rồi test lại ⇒ đọc theo dữ liệu HIỆN TẠI.
+// Ngày ≥ hôm nay / không hợp lệ ⇒ đường hôm nay (`demHomNay`, khớp đúng màn Test Run).
+const NGAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+const homNayVN = () => new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(0, 10); // VN = UTC+7, không giờ mùa hè
+
+async function demTheoNgay(ngay) {
+  const d = String(ngay || '').trim();
+  if (!NGAY_RE.test(d) || d >= homNayVN()) return demHomNay();
+  const { DV } = require('../../utils/siSoTram');
+  const sql = `WITH b AS (SELECT ($1::date)::timestamp AT TIME ZONE 'Asia/Ho_Chi_Minh' AS dau,
+        ($1::date + 1)::timestamp AT TIME ZONE 'Asia/Ho_Chi_Minh' AS cuoi),
+    tr AS MATERIALIZED (SELECT z.phan_in_id, z.ma_lenh_san_xuat, z.tg_vao, z.tg_ra FROM (${DV.TEST_RUN}) z),
+    p AS (SELECT DISTINCT tr.ma_lenh_san_xuat AS lenh, tr.phan_in_id AS pin_id, pin.ma_hang_id, mh.don_hang_id,
+        (tr.tg_ra IS NULL OR tr.tg_ra >= b.cuoi) AS cho
+      FROM tr CROSS JOIN b
+      JOIN phan_in pin ON pin.id = tr.phan_in_id
+      JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+      WHERE tr.tg_vao IS NOT NULL AND tr.tg_vao < b.cuoi AND (tr.tg_ra IS NULL OR tr.tg_ra >= b.dau))
+    SELECT count(DISTINCT lenh)::int AS lenh_tong, count(DISTINCT lenh) FILTER (WHERE cho)::int AS lenh_cho,
+      count(DISTINCT pin_id)::int AS phan_tong, count(DISTINCT pin_id) FILTER (WHERE cho)::int AS phan_cho,
+      count(DISTINCT ma_hang_id)::int AS ma_tong, count(DISTINCT ma_hang_id) FILTER (WHERE cho)::int AS ma_cho,
+      count(DISTINCT don_hang_id)::int AS don_tong, count(DISTINCT don_hang_id) FILTER (WHERE cho)::int AS don_cho
+    FROM p`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [d]);
+  return ketQua(rows[0]);
+}
+
+module.exports = { dkChoTestSql, dkDaTestSql, demHomNay, demTheoNgay };
