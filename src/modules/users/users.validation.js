@@ -10,6 +10,7 @@ const createRules = [
   body('email').optional({ values: 'falsy' }).isEmail().withMessage('Email không hợp lệ'),
   body('gioiTinh').optional({ values: 'falsy' }).isIn(['NAM', 'NU']).withMessage('Giới tính không hợp lệ'),
   body('roleIds').optional().isArray().withMessage('roleIds phải là mảng'),
+  body('toPhongBanId').optional({ values: 'falsy' }).isUUID().withMessage('Tổ không hợp lệ'),
 ];
 
 const updateRules = [
@@ -17,6 +18,7 @@ const updateRules = [
   body('email').optional({ values: 'falsy' }).isEmail().withMessage('Email không hợp lệ'),
   body('gioiTinh').optional({ values: 'falsy' }).isIn(['NAM', 'NU']).withMessage('Giới tính không hợp lệ'),
   body('roleIds').optional().isArray().withMessage('roleIds phải là mảng'),
+  body('toPhongBanId').optional({ values: 'falsy' }).isUUID().withMessage('Tổ không hợp lệ'),
 ];
 
 const resetPasswordRules = [

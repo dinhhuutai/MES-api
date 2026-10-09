@@ -77,4 +77,4 @@ async function baoCaoKiemHang(tuNgay, denNgay) {
   return hua;
 }
 
-module.exports = { baoCaoKiemHang };
+module.exports = { baoCaoKiemHang, coPhanLoaiLoi };

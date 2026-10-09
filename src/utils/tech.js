@@ -232,6 +232,17 @@ const hanGiaoReadySql = (pinCol) => `COALESCE(
                       WHERE lsh.dot_vai_ve_id = dv4.id AND lh.trang_thai <> 'HUY')),
   (SELECT min(dv7.han_giao_hang) FROM dot_vai_ve dv7
     WHERE dv7.phan_in_id = ${pinCol} AND dv7.trang_thai NOT IN ('DA_GOP','DA_HUY')))`;
+// Cùng luật, NEO THEO MỐC `mocCol` (09/10/2026 — sidebar "Đã hoàn thành" READY/QC xem được ngày cũ): hạn của đợt
+// đã lên MES (`created_date` — `tg_chuyen_ready` dữ liệu cũ có thể muộn hơn chính lần xác nhận) và CHƯA release
+// TẠI mốc đó (đợt đang chờ lúc xác nhận); không có ⇒ lùi về `hanGiaoReadySql`. Không neo thì ngày cũ hiện hạn của
+// đợt về SAU lần xác nhận.
+const hanGiaoReadyTaiMocSql = (pinCol, mocCol) => `COALESCE(
+  (SELECT min(dv8.han_giao_hang) FROM dot_vai_ve dv8
+    WHERE dv8.phan_in_id = ${pinCol} AND dv8.trang_thai NOT IN ('DA_GOP','DA_HUY')
+      AND dv8.created_date <= ${mocCol}
+      AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsm JOIN lenh_san_xuat lm ON lm.id = lsm.lenh_san_xuat_id
+                      WHERE lsm.dot_vai_ve_id = dv8.id AND lm.trang_thai <> 'HUY' AND lm.created_date < ${mocCol})),
+  ${hanGiaoReadySql(pinCol)})`;
 
 // Điều kiện WHERE "đợt `alias` đang chờ ở READY mà KỸ THUẬT CHƯA xong" (việc của màn KT) — tách riêng
 // (01/10/2026) để bảng theo dõi Dashboard lấy được HẠN GIAO / MỐC LÊN READY của đúng các đợt này mà
@@ -287,5 +298,5 @@ module.exports = {
   readyTuDongSql, khongReadyTuDongSql,
   dotMucDatSql, mocDotMucSql, mocKtXongDotSql, relRoiReadyDotSql,
   qcDotSql, ktDotXongSql, conDotChuaReadySql, conDotChoQcSql, conDotChuaKtSql,
-  dotChuaKtDk, hanGiaoReadySql,
+  dotChuaKtDk, hanGiaoReadySql, hanGiaoReadyTaiMocSql,
 };

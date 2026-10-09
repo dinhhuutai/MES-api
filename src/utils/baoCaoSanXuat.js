@@ -40,7 +40,7 @@
 //   · Loại dữ liệu do SCRIPT hệ thống ghi (`chay_den_giao_ton_san_xuat_truoc_0110.sql`, 02/10/2026 20:33):
 //     phiếu `ghi_chu` mở đầu `[HỆ THỐNG` (4.626 phiếu) + tem `HT-…` (4.657 tem) — không phải sản xuất thật.
 
-const { caFromHour, khoaTuanIso } = require('./ca');
+const { caFromHour, khoaTuanIso, khoaNhomCa } = require('./ca');
 
 const CA = ['HC', 'CA1', 'CA2', 'CA3'];
 const NHOM = [
@@ -335,13 +335,27 @@ function dungBaoCaoSanXuat({
   const dsNhom = [...NHOM, ...(theoNhom.has('KHAC') && coSo(theoNhom.get('KHAC')) ? [NHOM_KHAC] : [])];
   const bang1 = dsNhom.map((n) => ({ key: n.key, label: n.label, m: xuatBo(theoNhom.get(n.key) || boRong()) }));
 
+  // 6. Bảng theo KHÁCH HÀNG (09/10/2026 — trang Báo cáo sản xuất, nút chuyển bảng): cùng đơn vị (phiếu × phần in) ⇒ Σ khách =
+  //    Tổng cộng. Giờ của lệnh nhiều phần in đã chia đều theo phần in ở bước 1/3 ⇒ khách nào nhận đúng phần mình.
+  const theoKhach = new Map();
+  donVi.forEach(({ pin, bo }) => {
+    const ten = pin.ten_khach_hang || '(Chưa rõ khách)';
+    if (!theoKhach.has(ten)) theoKhach.set(ten, boRong());
+    congBo(theoKhach.get(ten), bo);
+  });
+  const bangKhach = [...theoKhach.entries()].filter(([, bo]) => coSo(bo))
+    .sort((x, y) => soTuNhien(x[0], y[0]))
+    .map(([ten, bo]) => ({ key: ten, label: ten, m: xuatBo(bo) }));
+
   // `loai_ca` = loại ca CHUNG; `loai_ca_rieng` = loại chuyền cài khác chung (mig 112) để FE ghi rõ.
   const chung = loaiCaCuaLoai(null);
   const rieng = {};
-  ['MAY', 'BAN', 'ROBOT'].forEach((lc) => { const v = loaiCaCuaLoai(lc); if (v !== chung) rieng[lc] = v; });
+  // Nhóm "Chuyền khác" (Gia công, Máy tròn, Logo, Ép — mặc định Hành chính) chỉ ghi khi ngày đó CÓ chuyền thuộc nhóm.
+  const coKhac = chuyens.some((c) => khoaNhomCa(c.ma_loai) === 'KHAC');
+  ['MAY', 'BAN', 'ROBOT', ...(coKhac ? ['KHAC'] : [])].forEach((lc) => { const v = loaiCaCuaLoai(lc); if (v !== chung) rieng[lc] = v; });
   return {
     ngay, loai_ca: chung, loai_ca_rieng: rieng, ca: CA,
-    theo_nhom: bang1, tong: xuatBo(tongCong), chi_tiet: chiTiet,
+    theo_nhom: bang1, theo_khach: bangKhach, tong: xuatBo(tongCong), chi_tiet: chiTiet,
   };
 }
 

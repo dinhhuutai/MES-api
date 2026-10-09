@@ -1033,7 +1033,7 @@ async function confirmQcBatch(phanInIds, actorId) {
 
 // Hủy xác nhận 1 mục READY (Admin/quyền READY_CANCEL) — khi bấm nhầm.
 // Hủy 1 mục kỹ thuật mà QC đã xác nhận → hủy luôn QC để giữ nhất quán (QC cần đủ 4 mục).
-async function cancelItem(phanInId, ma, actorId) {
+async function cancelItem(phanInId, ma, actorId, dotVaiId = null) {
   const CANCELABLE = [...INPUT_CPS, QC_CP];
   if (!CANCELABLE.includes(ma)) {
     throw new AppError('Mục không hợp lệ để hủy', { status: 400, errorCode: 'INVALID_ITEM' });
@@ -1041,6 +1041,7 @@ async function cancelItem(phanInId, ma, actorId) {
   const { tram, byMa } = await loadConfig();
   const cp = byMa[ma];
   if (!cp) throw new AppError(`Checkpoint ${ma} không còn hiệu lực`, { status: 404, errorCode: 'NO_CHECKPOINT' });
+  if (dotVaiId) return huyXacNhanTheoDot(phanInId, ma, dotVaiId, actorId, byMa);
 
   // Chỉ chặn khi phần in ĐÃ RELEASE HẾT các đợt vải (không còn đợt nào ở READY để mà sửa).
   // Còn ít nhất 1 đợt CHƯA release ⇒ phần in vẫn đang ở READY cho đợt đó ⇒ CHO hủy xác nhận
@@ -1065,6 +1066,48 @@ async function cancelItem(phanInId, ma, actorId) {
   });
   await repo.logCancel(phanInId, huyList, actorId);
   sockets.emit('ready:confirmed', { phanInId, huy: huyList });
+  sockets.emit('dashboard:refresh', {});
+  return getDetail(phanInId);
+}
+
+// HỦY XÁC NHẬN THEO ĐỢT VẢI (09/10/2026 — tab "Hủy xác nhận READY" liệt kê thêm lượt theo đợt, xem
+// `repo.listConfirmHistory`). Chỉ hủy dòng `ready_xac_nhan_dot` của ĐÚNG đợt đó — dòng tổng + đợt khác giữ nguyên.
+//   · Guard (TRƯỚC mọi ghi): đợt thuộc phần in, còn sống, CHƯA release; dòng theo đợt đang DAT + hiệu lực và KHÔNG bị
+//     dòng tổng phủ (bị phủ thì việc xác nhận nằm ở dòng tổng — hủy dòng đó, ngày của nó).
+//   · Hủy Khuôn/Film/Mực ⇒ kéo QC của chính đợt (gương `cancelItem` mức phần in). QC của đợt nằm ở dòng TỔNG
+//     ⇒ không tự hủy (sẽ hủy QC mọi đợt) — báo người dùng hủy QC trước (409 `QC_O_DONG_TONG`).
+async function huyXacNhanTheoDot(phanInId, ma, dotVaiId, actorId, byMa) {
+  const cpId = byMa[ma].id;
+  const st = await repo.trangThaiXacNhanDot(dotVaiId, cpId);
+  if (!st || String(st.phan_in_id) !== String(phanInId) || !st.song) {
+    throw new AppError('Đợt vải không thuộc phần in này hoặc đã hủy', { status: 404, errorCode: 'NOT_FOUND' });
+  }
+  if (st.da_release) {
+    throw new AppError('Đợt vải đã release — hãy hủy lệnh ở trạm sau (Release/Test Run) trước khi hủy READY', { status: 409, errorCode: 'ALREADY_RELEASED' });
+  }
+  if (st.phu_boi_tong) {
+    throw new AppError('Xác nhận của đợt này nằm ở dòng tổng của phần in — hủy dòng đó (lọc theo ngày của nó)', { status: 409, errorCode: 'O_DONG_TONG' });
+  }
+  if (!st.x_dat || !st.hieu_luc) throw new AppError('Mục này chưa được xác nhận cho đợt vải', { status: 409, errorCode: 'NOT_CONFIRMED' });
+
+  const huyList = [ma];
+  let huyQc = false;
+  if (INPUT_CPS.includes(ma) && byMa[QC_CP]) {
+    const qc = await repo.trangThaiXacNhanDot(dotVaiId, byMa[QC_CP].id);
+    if (qc && qc.phu_boi_tong) {
+      throw new AppError('Đợt này đã được QC xác nhận ở dòng tổng — hủy "QC xác nhận" trước', { status: 409, errorCode: 'QC_O_DONG_TONG' });
+    }
+    huyQc = !!(qc && qc.x_dat && qc.hieu_luc);
+  }
+  await withTransaction(async (client) => {
+    await repo.ghiXacNhanDot(client, { phanInId, dotVaiId, checkpointId: cpId, trangThai: 'HUY', actorId });
+    if (huyQc) {
+      await repo.ghiXacNhanDot(client, { phanInId, dotVaiId, checkpointId: byMa[QC_CP].id, trangThai: 'HUY', actorId });
+      huyList.push(QC_CP);
+    }
+  });
+  await repo.logCancel(phanInId, huyList, actorId, { dot_vai_ve_id: dotVaiId, ma_dot_vai: st.ma_dot_vai });
+  sockets.emit('ready:confirmed', { phanInId, huy: huyList, dotVaiIds: [dotVaiId] });
   sockets.emit('dashboard:refresh', {});
   return getDetail(phanInId);
 }

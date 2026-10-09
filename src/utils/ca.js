@@ -22,13 +22,27 @@ function caFromHour(gio, phut, loaiCa) {
 
 // ----- LOẠI CA THEO TUẦN × LOẠI CHUYỀN (mig 112, 07/10/2026) -----
 // `modeMap` (`planning.repository.caModeMap`): khóa `nam-tuan` = dòng CHUNG (mọi chuyền), `nam-tuan|MAY` =
-// dòng RIÊNG của loại chuyền. Luật: đúng loại chuyền ⇒ CHUNG ⇒ NGAN. Chỉ Máy / Bàn / Robot cài riêng được —
-// loại khác (Máy tròn, Logo, Ép, Gia công) luôn theo CHUNG. ⚠ Mọi chỗ suy ca PHẢI đi qua hàm này.
+// dòng RIÊNG của loại chuyền. ⚠ Mọi chỗ suy ca PHẢI đi qua `loaiCaCua` / `khoaNhomCa`.
+//   · Máy / Bàn / Robot: riêng của loại ⇒ CHUNG ⇒ NGAN.
+//   · ⚠ (09/10/2026, người dùng chốt) MỌI LOẠI KHÁC (Gia công, Máy tròn, Logo, Ép…) gom nhóm `KHAC`: riêng của
+//     nhóm ⇒ mặc định HÀNH CHÍNH — KHÔNG theo ca chung (lưu "tất cả chuyền" cũng không kéo nhóm này).
+//   · Không biết loại chuyền (null/'') ⇒ CHUNG.
 const LOAI_CHUYEN_CA = ['MAY', 'BAN', 'ROBOT'];
+const NHOM_CA_KHAC = 'KHAC';
+const CA_KHAC_MAC_DINH = 'HANH_CHINH';
+// Mã cài riêng được ở Kế hoạch › Cài đặt (cột `cai_dat_ca_tuan.loai_chuyen`).
+const NHOM_CA_RIENG = [...LOAI_CHUYEN_CA, NHOM_CA_KHAC];
+// Mã loại chuyền (`loai_chuyen.ma_loai`) → khóa nhóm ca: 'MAY'/'BAN'/'ROBOT' · 'KHAC' · '' (không biết ⇒ chung).
+function khoaNhomCa(loaiChuyen) {
+  const lc = String(loaiChuyen || '').trim().toUpperCase();
+  if (!lc) return '';
+  return LOAI_CHUYEN_CA.includes(lc) ? lc : NHOM_CA_KHAC;
+}
 function loaiCaCua(modeMap, khoaTuan, loaiChuyen) {
+  const k = khoaNhomCa(loaiChuyen);
+  if (k === NHOM_CA_KHAC) return (modeMap && modeMap.get(`${khoaTuan}|${NHOM_CA_KHAC}`)) || CA_KHAC_MAC_DINH;
   if (!modeMap) return 'NGAN';
-  const lc = String(loaiChuyen || '').toUpperCase();
-  return (lc && modeMap.get(`${khoaTuan}|${lc}`)) || modeMap.get(khoaTuan) || 'NGAN';
+  return (k && modeMap.get(`${khoaTuan}|${k}`)) || modeMap.get(khoaTuan) || 'NGAN';
 }
 
 // Suy ca từ các giá trị đã EXTRACT ở SQL (giờ/phút/năm/tuần theo VN) + map cấu hình tuần (+ loại chuyền).
@@ -119,5 +133,5 @@ function ngayCaKeHoach(tuGio, ngayKeHoach, modeMap, loaiChuyen = null) {
 
 module.exports = {
   caFromHour, caFromParts, maCa, maNgayCa, ngayTuMaNgayCa, gioBatDauCa, khoaTuanIso, ngayCaKeHoach,
-  loaiCaCua, LOAI_CHUYEN_CA,
+  loaiCaCua, khoaNhomCa, LOAI_CHUYEN_CA, NHOM_CA_RIENG, NHOM_CA_KHAC, CA_KHAC_MAC_DINH,
 };

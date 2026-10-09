@@ -46,6 +46,7 @@ const { capIdMes } = require('../../utils/idMes');
 const { ngayGioErp } = require('../../utils/erpNgayGio');
 const { goiErp, tenDangNhap, catChuoi } = require('../../utils/erpApiChung');
 const { ngayCaKeHoach } = require('../../utils/ca');
+const { chuanMaChuyen } = require('../../utils/maChuyen');
 
 const MA_API = 'ERP_GUI_RELEASE_1';
 const NHAN = 'gui-erp-release-1';
@@ -159,7 +160,7 @@ function taoBody(lo, { idMes, nhanvien, nguon, loaiCa }) {
   return {
     IDMES: idMes,
     nhanvien,
-    banin: catChuoi(d.ma_chuyen, 20),
+    banin: catChuoi(chuanMaChuyen(d.ma_chuyen), 20), // mã ERP (`M1A-1B` → `1A1B`, 09/10/2026)
     Loaichuyen: catChuoi(d.loai_chuyen, 20),
     Ngaykehoach: ngayGioErp(d.ngay_ke_hoach, 'VN'),
     Tugio: ngayGioErp(d.tu_gio, 'VN'),

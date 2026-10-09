@@ -10,7 +10,7 @@
 
 const { query } = require('../../config/db');
 const { dungBaoCaoSanXuat, khoaTuanIso, suyLoaiCaTuTem } = require('../../utils/baoCaoSanXuat');
-const { LOAI_CHUYEN_CA } = require('../../utils/ca');
+const { NHOM_CA_RIENG, NHOM_CA_KHAC, CA_KHAC_MAC_DINH, khoaNhomCa } = require('../../utils/ca');
 
 const daCo = new Map();
 async function coCot(bang, cot) {
@@ -133,7 +133,7 @@ async function loaiCaCuaNgay(ngay) {
     const map = await require('../planning/planning.repository').caModeMap();
     const khoa = khoaTuanIso(ngay);
     const rieng = {};
-    LOAI_CHUYEN_CA.forEach((lc) => { if (map.has(`${khoa}|${lc}`)) rieng[lc] = map.get(`${khoa}|${lc}`); });
+    NHOM_CA_RIENG.forEach((lc) => { if (map.has(`${khoa}|${lc}`)) rieng[lc] = map.get(`${khoa}|${lc}`); });
     return { chung: map.get(khoa) || null, rieng };
   } catch { return { chung: null, rieng: {} }; }
 }
@@ -157,8 +157,13 @@ async function dungMoi(ngay) {
     coTo ? docTo(duyNhat(phieus.map((p) => p.to_in_id))) : [],
   ]) : [[], [], [], [], []];
   const caChung = loaiCa.chung || suyLoaiCaTuTem(tems) || 'NGAN';
-  // Mig 112: chuyền Máy/Bàn/Robot có cài riêng ⇒ chia ca theo cài riêng; loại khác theo CHUNG.
-  const caTheoLoai = (lc) => loaiCa.rieng[String(lc || '').toUpperCase()] || caChung;
+  // Mig 112: chuyền Máy/Bàn/Robot có cài riêng ⇒ chia ca theo cài riêng, không thì CHUNG; loại khác (nhóm KHAC —
+  // Gia công, Máy tròn, Logo, Ép) ⇒ cài riêng của nhóm, mặc định Hành chính (09/10/2026) — gương `utils/ca.js loaiCaCua`.
+  const caTheoLoai = (lc) => {
+    const k = khoaNhomCa(lc);
+    if (k === NHOM_CA_KHAC) return loaiCa.rieng[NHOM_CA_KHAC] || CA_KHAC_MAC_DINH;
+    return (k && loaiCa.rieng[k]) || caChung;
+  };
   const kq = dungBaoCaoSanXuat({ ngay, loaiCa: caTheoLoai, bayGio: Date.now(), phieus, tems, lenhs, pins, chuyens, tos });
   return { ...kq, loai_ca_da_cai: !!loaiCa.chung || Object.keys(loaiCa.rieng).length > 0 };
 }

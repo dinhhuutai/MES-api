@@ -2242,8 +2242,9 @@ async function caModeMap() {
   return map;
 }
 
-// `loaiChuyen` '' = CHUNG. Lưu CHUNG ⇒ các dòng riêng cùng tuần cũng đổi theo (CHUNG = "cả xưởng đi ca này"),
-// không có quyền DELETE nên không xóa dòng riêng được — đổi về cùng giá trị là tương đương.
+// `loaiChuyen` '' = CHUNG. Lưu CHUNG ⇒ các dòng riêng Máy/Bàn/Robot cùng tuần cũng đổi theo (CHUNG = "cả xưởng đi ca
+// này" — không có quyền DELETE nên không xóa dòng riêng được, đổi về cùng giá trị là tương đương). Dòng 'KHAC'
+// (Gia công, Máy tròn, Logo, Ép — mặc định Hành chính, 09/10/2026) KHÔNG đổi theo.
 async function upsertCaTuan({ nam, tuan, loaiCa, ghiChu, loaiChuyen = '' }, actorId) {
   const coLoai = await caTuanCoLoaiChuyen();
   if (!coLoai) {
@@ -2271,7 +2272,7 @@ async function upsertCaTuan({ nam, tuan, loaiCa, ghiChu, loaiChuyen = '' }, acto
     if (!loaiChuyen) {
       await client.query(
         `UPDATE cai_dat_ca_tuan SET loai_ca = $3, updated_by = $4, updated_date = now()
-          WHERE nam = $1 AND tuan = $2 AND loai_chuyen <> '' AND loai_ca <> $3`.replace(/\s+/g, ' '),
+          WHERE nam = $1 AND tuan = $2 AND loai_chuyen NOT IN ('', 'KHAC') AND loai_ca <> $3`.replace(/\s+/g, ' '),
         [nam, tuan, loaiCa, actorId]);
     }
     return rows[0];

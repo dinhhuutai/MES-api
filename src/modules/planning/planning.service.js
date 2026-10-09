@@ -15,7 +15,7 @@ const { kiemCap } = require('../../utils/phuongAnChuyen'); // luật PA in ↔ l
 const { tinhNangBat } = require('../../utils/caiDatTinhNang'); // công tắc bật/tắt luật trên (mig 087)
 const { coCotThoInKh, chuanHoaThoIn } = require('../../utils/thoInKeHoach'); // thợ in kế hoạch (mig 111)
 const { LOAI_TRA_VE_KH } = require('../../utils/traVeKeHoach'); // Test Run trả về Kế hoạch (giữ lệnh)
-const { LOAI_CHUYEN_CA } = require('../../utils/ca'); // loại chuyền cài ca riêng được (mig 112)
+const { NHOM_CA_RIENG } = require('../../utils/ca'); // nhóm cài ca riêng được (mig 112; KHAC = chuyền khác, 09/10/2026)
 const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
 const erpRepo = require('../erpsync/erpsync.repository'); // reopenReadyForPhanIn (mở lại READY)
@@ -2057,8 +2057,9 @@ async function testRunHistory(date) {
 // ----- CÀI ĐẶT CA THEO TUẦN -----
 async function listCaTuan() { return repo.listCaTuan(); }
 
-// `loaiChuyen` (mig 112): mảng mã loại chuyền ('MAY'/'BAN'/'ROBOT') để cài RIÊNG; rỗng/thiếu = CHUNG (cả xưởng
-//   — kéo luôn các dòng riêng của tuần về cùng loại ca, xem `repo.upsertCaTuan`). Chuỗi đơn cũng nhận.
+// `loaiChuyen` (mig 112): mảng mã nhóm ('MAY'/'BAN'/'ROBOT'/'KHAC') để cài RIÊNG; rỗng/thiếu = CHUNG (cả xưởng
+//   — kéo luôn các dòng riêng Máy/Bàn/Robot của tuần về cùng loại ca, KHÔNG kéo 'KHAC' — xem `repo.upsertCaTuan`).
+//   Chuỗi đơn cũng nhận.
 async function upsertCaTuan({ nam, tuan, loaiCa, ghiChu, loaiChuyen }, actorId) {
   const y = Number(nam); const w = Number(tuan);
   if (!Number.isInteger(y) || y < 2000 || y > 2100) throw new AppError('Năm không hợp lệ', { status: 422, errorCode: 'INVALID' });
@@ -2066,9 +2067,9 @@ async function upsertCaTuan({ nam, tuan, loaiCa, ghiChu, loaiChuyen }, actorId) 
   if (!['NGAN', 'DAI', 'HANH_CHINH'].includes(loaiCa)) throw new AppError('Loại ca phải là NGAN, DAI hoặc HANH_CHINH', { status: 422, errorCode: 'INVALID' });
   const ds = [...new Set((Array.isArray(loaiChuyen) ? loaiChuyen : [loaiChuyen])
     .map((x) => String(x || '').trim().toUpperCase()).filter(Boolean))];
-  const sai = ds.filter((x) => !LOAI_CHUYEN_CA.includes(x));
+  const sai = ds.filter((x) => !NHOM_CA_RIENG.includes(x));
   if (sai.length) {
-    throw new AppError(`Chỉ cài ca riêng cho ${LOAI_CHUYEN_CA.join(' / ')} (nhận được: ${sai.join(', ')})`, { status: 422, errorCode: 'INVALID' });
+    throw new AppError(`Chỉ cài ca riêng cho ${NHOM_CA_RIENG.join(' / ')} (nhận được: ${sai.join(', ')})`, { status: 422, errorCode: 'INVALID' });
   }
   if (ds.length && !(await repo.caTuanCoLoaiChuyen())) {
     throw new AppError('Cơ sở dữ liệu chưa chạy migration 112 — chưa cài ca riêng theo loại chuyền được (chỉ cài chung)',

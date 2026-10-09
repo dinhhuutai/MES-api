@@ -6,7 +6,7 @@
 //   đổi tab không gọi lại API và không bao giờ ra 2 con số đá nhau.
 
 const repo = require('./thoigiantram.repository');
-const { slaReadyHan, slaQcReady, slaTestRun } = require('../../utils/slaTheoGio');
+const { slaReadyHan, slaQcReady, slaTestRun, giaHanTestRunLai } = require('../../utils/slaTheoGio');
 
 const LOC_KEYS = ['timKiem', 'khach', 'don', 'maHang', 'codePhan', 'mauVai', 'chuyen',
   'loaiMoc', 'tuNgay', 'denNgay', 'trangThai'];
@@ -42,8 +42,12 @@ async function ganSlaDong(maTram, ds, slaMacDinh) {
   if (maTram === 'READY_QC') return ds.map((r) => ({ ...r, sla_phut: slaQcReady(r.tg_vao, slaMacDinh) }));
   if (maTram === 'TEST_RUN') {
     const bd = await repo.gioSxKeHoach([...new Set(ds.map((r) => r.ma_lenh_san_xuat).filter(Boolean))]);
-    // Luật tắt / thiếu giờ SX / thiếu mốc vào ⇒ `slaTestRun` trả SLA trạm.
-    return ds.map((r) => ({ ...r, sla_phut: slaTestRun(r.tg_vao, bd.get(r.ma_lenh_san_xuat), slaMacDinh) }));
+    // Luật tắt / thiếu giờ SX / thiếu mốc vào ⇒ `slaTestRun` trả SLA trạm. Lệnh xác nhận lại sau khi bị trả về
+    // Kế hoạch ⇒ tối thiểu tính lại từ lúc đó (luật (6), 09/10/2026).
+    return ds.map((r) => {
+      const l = bd.get(r.ma_lenh_san_xuat) || {};
+      return { ...r, sla_phut: giaHanTestRunLai(slaTestRun(r.tg_vao, l.bd, slaMacDinh), r.tg_vao, l.xn_lai) };
+    });
   }
   return ds;
 }

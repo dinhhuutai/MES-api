@@ -96,6 +96,8 @@ router.get('/bao-cao-ngay', rbac('PROD_RUN', 'PROD_MONITOR'), c.baoCaoSanXuat);
 router.get('/bao-cao-dung-chuyen', rbac('PROD_RUN', 'PROD_MONITOR'), c.baoCaoDungChuyen);
 // Báo cáo kết quả kiểm hàng (theo dây chuyền / chuyền / lượt KCS) — trang Sản xuất › Báo cáo kiểm hàng.
 router.get('/bao-cao-kiem-hang', rbac('PROD_RUN', 'PROD_MONITOR', 'KCS', 'PHAN_LOAI_LOI'), c.baoCaoKiemHang);
+// Báo cáo sửa hàng (kết quả sửa · kiểm hàng sửa · tồn sửa · nghẽn theo dây chuyền) — trang Sản xuất › Báo cáo sửa hàng.
+router.get('/bao-cao-sua-hang', rbac('PROD_RUN', 'PROD_MONITOR', 'SUA', 'KCS', 'PHAN_LOAI_LOI'), c.baoCaoSuaHang);
 
 // Xe phơi
 router.get('/xe-phoi', rbac('XEPHOI'), c.xePhoi);

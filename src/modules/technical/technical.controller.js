@@ -109,7 +109,10 @@ const qcConfirmBatch = asyncHandler(async (req, res) => {
 
 const cancelItem = asyncHandler(async (req, res) => {
   const ma = String(req.body.ma || '').toUpperCase();
-  const data = await service.cancelItem(req.params.phanInId, ma, req.user.id);
+  // `dotVaiId` (09/10/2026) — hủy lượt xác nhận THEO ĐỢT VẢI (tab Hủy xác nhận READY), thiếu = mức phần in như cũ.
+  const dotVaiId = req.body.dotVaiId ? String(req.body.dotVaiId) : null;
+  if (dotVaiId && !/^[0-9a-f-]{36}$/i.test(dotVaiId)) throw new AppError('Mã đợt vải không hợp lệ', { status: 422, errorCode: 'INVALID' });
+  const data = await service.cancelItem(req.params.phanInId, ma, req.user.id, dotVaiId);
   return ok(res, data, 'Đã hủy xác nhận');
 });
 

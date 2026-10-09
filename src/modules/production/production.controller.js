@@ -41,6 +41,13 @@ const baoCaoKiemHang = asyncHandler(async (req, res) => {
   return ok(res, await docBaoCaoKiemHang(tu, den));
 });
 
+// Báo cáo sửa hàng (09/10/2026) — cùng quy ước khoảng ngày SX. Luật: `utils/baoCaoSuaHang.js`.
+const { baoCaoSuaHang: docBaoCaoSuaHang } = require('./baoCaoSuaHang');
+const baoCaoSuaHang = asyncHandler(async (req, res) => {
+  const { tu, den } = khoangNgay(req);
+  return ok(res, await docBaoCaoSuaHang(tu, den));
+});
+
 const start = asyncHandler(async (req, res) =>
   ok(res, await service.startProduction(req.params.lenhId, req.user.id, req.body.chuyenId || null), 'Đã xác nhận chạy'));
 
@@ -217,7 +224,7 @@ module.exports = {
   xePhoi, temChoPhoi, themTem, adjustPhoi, drying, confirmDry, redry,
   stopLine, resumeLine, addVaiHuy, savePhanCong, vuotSanXuat,
   lyDoNgungList, lyDoNgungCreate, lyDoNgungUpdate, lyDoNgungToggle,
-  toInList, toInCreate, toInUpdate, toInToggle, baoCaoSanXuat, baoCaoDungChuyen, baoCaoKiemHang,
+  toInList, toInCreate, toInUpdate, toInToggle, baoCaoSanXuat, baoCaoDungChuyen, baoCaoKiemHang, baoCaoSuaHang,
   lyDoBoSungList, lyDoBoSungCreate, lyDoBoSungUpdate, lyDoBoSungToggle, luuLyDoBoSungDotVai,
   cancelableTem, cancelPrintTem,
   temDaInSX: dsTemDaIn(false), temDaInGiaCong: dsTemDaIn(true),

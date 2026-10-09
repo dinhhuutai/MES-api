@@ -22,6 +22,7 @@ const axios = require('axios');
 const env = require('../config/env');
 const { apiBat } = require('./caiDatApi');
 const { ghiLog } = require('./erpApiLog');
+const { chuanMaChuyen } = require('./maChuyen');
 const { taoIdKetNoi } = require('./idKetNoi');
 const { ngayGioErp } = require('./erpNgayGio');
 
@@ -210,7 +211,7 @@ function taoPayload(r, { idMes, soLuong = null, soLuongHuy = 0, soLuongThieu = 0
     dsthoin: r.tho_in,
     // TỔ IN (mig 084) — chưa gán / chưa chạy migration ⇒ `chuanHoa` đổi thành ''.
     Toin: r.ma_to,
-    banin: r.ma_chuyen,
+    banin: chuanMaChuyen(r.ma_chuyen), // mã ERP — `M1A-1B` → `1A1B`, `MRB1` → `RB1` (09/10/2026)
     IDDotNhanvai: r.id_dot_nhan_vai,
     DDHID: r.ddh_id,
     DDHsubID: r.ddh_sub_id,

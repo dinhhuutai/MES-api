@@ -7,11 +7,13 @@ const { query } = require('../../config/db');
 const { mauTim } = require('../../utils/timKiem');
 const { MAN, LOAI_NGAY, O_SI_SO, VN, DV, OPEN_PIN_SQL } = require('../../utils/siSoTram');
 const { DO_SL } = require('../../utils/bangTheoDoi');
-const { slaReadySql, slaQcReadySql, slaTestRunSql, mocDoReadySql, hanBat, gioSxKhSql, TRA_VE_KT_GIA_HAN_PHUT } = require('../../utils/slaTheoGio');
+const { slaReadySql, slaQcReadySql, slaTestRunSql, mocDoReadySql, hanBat, gioSxKhSql, TRA_VE_KT_GIA_HAN_PHUT, giaHanTestRunLaiSql } = require('../../utils/slaTheoGio');
+const { MOC_XAC_NHAN_LAI_KH_SQL } = require('../../utils/traVeKeHoach');
 const {
   hanGiaoReadySql, mocDotMucSql, mocKtXongDotSql, relRoiReadyDotSql, qcMoLaiSql, khongReadyTuDongSql, ktTraVeSql,
 } = require('../../utils/tech');
 const { CHO_GN_SQL } = require('../../utils/traVeGn');
+const { chuanMaChuyen, chuanMaChuyenSql } = require('../../utils/maChuyen');
 const { CHO_KY_THUAT_SQL } = require('../planning/planning.repository');
 
 // ⚠⚠ MỐC KỲ ĐẶT TRONG CTE `ky`, KHÔNG nội suy `$1`/`$2` thẳng vào từng điều kiện.
@@ -68,7 +70,15 @@ function dungLoc(loc = {}, bat = 3) {
       WHERE btrim(tk.v) = ANY($${bat + params.length - 1}::text[]))`);
   };
   themToken(loc.loaiChuyen, 'q.ma_loai_chuyen'); // chip loại chuyền: MAY · BAN · ROBOT · EP …
-  themToken(loc.maChuyen, 'q.ma_chuyen');        // chip khu bàn: FE gửi danh sách mã chuyền của khu
+  // Chip khu bàn: FE gửi danh sách mã chuyền của khu — so MÃ CHUẨN (mã ERP, `utils/maChuyen.js`) cả 2 phía ⇒ đúng
+  // cả trước lẫn sau khi đổi mã chuyền trên DB (09/10/2026).
+  (() => {
+    const ds = String(loc.maChuyen || '').split(',').map((s) => chuanMaChuyen(s)).filter(Boolean);
+    if (!ds.length) return;
+    params.push(ds);
+    dk.push(`EXISTS (SELECT 1 FROM unnest(string_to_array(q.ma_chuyen, ',')) tk(v)
+      WHERE ${chuanMaChuyenSql('tk.v')} = ANY($${bat + params.length - 1}::text[]))`);
+  })();
 
   // ─── Ô TÍCH của trang (dải "Theo dõi" bám luôn ô tích — 18/08/2026) ────────
   // ⚠ 3 khóa dưới đây là BOOLEAN/CHUỖI gửi từ FE, chỉ áp khi trang thật sự bật ô tích đó. Trang
@@ -347,9 +357,11 @@ const NGHEN_CON = {
       FROM dot_vai_ve zr WHERE zr.ma_dot_vai = x.ma_dot_vai) + ${phut(s)})`),
   // Test Run — theo giờ SX kế hoạch của CHÍNH lệnh (`slaTestRunSql`, luật tắt ⇒ SLA trạm); lệnh đang chờ kỹ
   //   thuật làm lại (`planning.CHO_KY_THUAT_SQL`, QA không test được) không tính "chưa xác nhận".
+  //   Lệnh bị trả về Kế hoạch rồi xác nhận lại ⇒ tối thiểu tính lại từ lúc xác nhận lại (luật (6), 09/10/2026) —
+  //   mốc lấy 1 lần ở LATERAL `zx` (nhắc 3 lần trong CASE).
   TEST_RUN: (s) => tuDv(DV.TEST_RUN,
-    `(SELECT x.tg_vao + ${phut(slaTestRunSql('x.tg_vao', gioSxKhSql('zl.tg_bd_kh', 'zl.ngay_ke_hoach'), s))}
-      FROM lenh_san_xuat zl WHERE ${LENH_X})`,
+    `(SELECT x.tg_vao + ${phut(giaHanTestRunLaiSql(slaTestRunSql('x.tg_vao', gioSxKhSql('zl.tg_bd_kh', 'zl.ngay_ke_hoach'), s), 'x.tg_vao', 'zx.xn_lai'))}
+      FROM lenh_san_xuat zl CROSS JOIN LATERAL (SELECT ${MOC_XAC_NHAN_LAI_KH_SQL('zl.id')} AS xn_lai) zx WHERE ${LENH_X})`,
     `COALESCE((SELECT zl.trang_thai = 'RELEASE_1' AND NOT EXISTS (SELECT 1 FROM phieu_san_xuat zp WHERE zp.lenh_san_xuat_id = zl.id)
       AND ${CHO_KY_THUAT_SQL('zl.id')} FROM lenh_san_xuat zl WHERE ${LENH_X}), false)`),
   RELEASE_2: (s) => tuDv(DV.RELEASE_2, `(x.tg_vao + ${phut(s)})`),

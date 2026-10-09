@@ -24,6 +24,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 const { PHUONG_AN_IN } = require('./hskt');
+const { chuanMaChuyen } = require('./maChuyen');
 
 // Loại chuyền → phương án in bắt buộc.
 const LOAI_CHUYEN_TO_PAIN = { BAN: 1, MAY: 2, ROBOT: 3 };
@@ -43,13 +44,14 @@ const LOAI_MIEN = ['EP', 'LOGO', 'GIA_CONG'];
 //   rời là dữ liệu cũ ĐÃ NGỪNG hoạt động — cố ý không đưa vào danh sách.)
 // ⚠ Thêm/bớt chuyền miễn thì sửa ĐÚNG mảng này — không cần migration, không đụng repository
 //   (`getPainVsChuyen` vốn đã trả `cs.ma_chuyen`).
-const MA_CHUYEN_MIEN = ['M1A-1B', 'M2A-2B', 'M3A-3B'];
+// ⚠ (09/10/2026) Viết theo MÃ ERP và so qua `chuanMaChuyen` ⇒ khớp cả mã cũ `M1A-1B` lẫn mã mới `1A1B`.
+const MA_CHUYEN_MIEN = ['1A1B', '2A2B', '3A3B'];
 
 const chuan = (v) => String(v || '').trim().toUpperCase();
 
 const laLoaiMien = (maLoai) => LOAI_MIEN.includes(chuan(maLoai));
 
-const laChuyenMien = (maChuyen) => MA_CHUYEN_MIEN.includes(chuan(maChuyen));
+const laChuyenMien = (maChuyen) => MA_CHUYEN_MIEN.includes(chuanMaChuyen(maChuyen));
 
 const tenLoaiChuyen = (maLoai) => ({
   BAN: 'Bàn', MAY: 'Máy', ROBOT: 'Robot', EP: 'Ép', LOGO: 'Logo', GIA_CONG: 'Gia công', MAY_TRON: 'Máy tròn',

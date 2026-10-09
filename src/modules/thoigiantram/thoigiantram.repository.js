@@ -10,6 +10,7 @@
 
 const { query } = require('../../config/db');
 const { gioSxKhSql } = require('../../utils/slaTheoGio');
+const { MOC_XAC_NHAN_LAI_KH_SQL } = require('../../utils/traVeKeHoach');
 const { mauTim } = require('../../utils/timKiem');
 const { DV, VN } = require('../../utils/siSoTram');
 const { mocDotMucSql, khongReadyTuDongSql, KHUON_OPT_SQL_LIST } = require('../../utils/tech');
@@ -242,14 +243,17 @@ async function donViTaiTram(tram, loc = {}, maChecklist = null) {
 }
 
 // Giờ SX kế hoạch (`tg_bd_kh`) theo mã lệnh — cho SLA Test Run (`utils/slaTheoGio.js`). Query nhẹ theo khóa.
+// Trả Map mã lệnh → { bd, xn_lai } — `xn_lai` = lúc Kế hoạch xác nhận lại sau khi Test Run trả về (luật (6)).
 async function gioSxKeHoach(maLenhs = []) {
   if (!maLenhs.length) return new Map();
   const { rows } = await query(
-    `SELECT ma_lenh_san_xuat, ${gioSxKhSql('tg_bd_kh', 'ngay_ke_hoach')} AS tg_bd_kh FROM lenh_san_xuat
-      WHERE ma_lenh_san_xuat = ANY($1::text[]) AND (tg_bd_kh IS NOT NULL OR ngay_ke_hoach IS NOT NULL)`.replace(/\s+/g, ' '),
+    `SELECT ls.ma_lenh_san_xuat, ${gioSxKhSql('ls.tg_bd_kh', 'ls.ngay_ke_hoach')} AS tg_bd_kh,
+            ${MOC_XAC_NHAN_LAI_KH_SQL('ls.id')} AS xn_lai
+       FROM lenh_san_xuat ls
+      WHERE ls.ma_lenh_san_xuat = ANY($1::text[]) AND (ls.tg_bd_kh IS NOT NULL OR ls.ngay_ke_hoach IS NOT NULL)`.replace(/\s+/g, ' '),
     [maLenhs]
   );
-  return new Map(rows.map((r) => [r.ma_lenh_san_xuat, r.tg_bd_kh]));
+  return new Map(rows.map((r) => [r.ma_lenh_san_xuat, { bd: r.tg_bd_kh, xn_lai: r.xn_lai }]));
 }
 
 module.exports = { TRAM_TG, TRAN_DONG, dsSla, dsChecklist, donViTaiTram, gioSxKeHoach };

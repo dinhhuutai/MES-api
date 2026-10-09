@@ -22,6 +22,7 @@
 //       chốt): sla_phut = MAX(toi_thieu, phút tới hạn) ⇒ lệnh release sát/qua giờ SX vẫn có 2 giờ rồi mới nghẽn
 //       (đo prod 08/10: 17/108 lệnh chờ test đỏ NGAY lúc vào trạm vì hạn đã qua trước khi lệnh được tạo).
 //       Mốc vào = `lenh_san_xuat.created_date` (bản đồ nghẽn + `siSoTram.DV.TEST_RUN`). 0 = không gia hạn.
+//     · Lệnh bị Test Run trả về Kế hoạch rồi xác nhận lại ⇒ tối thiểu tính LẠI từ lúc xác nhận lại — luật (6).
 //
 // (3) QC READY (checklist QC_XAC_NHAN) — theo GIỜ KỸ THUẬT XÁC NHẬN XONG (mốc vào hàng đợi QC, giờ VN):
 //     · 16:30 ≤ giờ < 24:00 ⇒ 16 giờ (960 phút) — KT xong cuối ca thì QC làm sáng hôm sau
@@ -264,8 +265,34 @@ const giaHanTraVeKtSql = (slaSql, tgVaoCol, traVeCol) => `(CASE WHEN ${traVeCol}
     AND ${traVeCol} >= ${tgVaoCol} THEN GREATEST(${slaSql}, ceil(EXTRACT(EPOCH FROM (${traVeCol} + interval '${TRA_VE_KT_GIA_HAN_PHUT} minutes' - ${tgVaoCol})) / 60)::int)
     ELSE ${slaSql} END)`;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// (6) TEST RUN — XÁC NHẬN LẠI SAU KHI BỊ TRẢ VỀ KẾ HOẠCH (09/10/2026, người dùng chốt): lệnh bị Test Run trả về
+//     Kế hoạch rồi Kế hoạch "Xác nhận Release 1" lại (mốc `traVeKeHoach.MOC_XAC_NHAN_LAI_KH_SQL`) thì tối thiểu
+//     `toi_thieu_phut` của luật (2) tính LẠI từ lúc xác nhận lại — hạn đỏ = MUỘN HƠN giữa (hạn luật (2), lúc xác
+//     nhận lại + tối thiểu). Không có thì lệnh quay về Test Run đỏ NGAY (2 giờ tính từ lúc tạo lệnh đã hết).
+//   · Mốc VÀO trạm giữ `created_date` ⇒ dải Theo dõi / "nghẽn từ" / Thời gian trạm không đổi số đo thời gian ở.
+//   · Luật (2) tắt hoặc tối thiểu = 0 ⇒ không gia hạn. Chỉ áp khi lần xác nhận lại nằm sau mốc vào.
+// ─────────────────────────────────────────────────────────────────────────────
+const toiThieuGoc = () => (testBat() ? Math.max(0, Number(cfg.TEST_RUN_THEO_GIO_SX.gia_tri.toi_thieu_phut) || 0) : 0);
+// JS: `sla` = phút (tính từ `tgVao`) theo luật (2); trả số phút đã gia hạn.
+function giaHanTestRunLai(sla, tgVao, xnLai) {
+  const toiThieu = toiThieuGoc();
+  const vao = msOf(tgVao); const xn = msOf(xnLai);
+  if (!toiThieu || sla == null || Number.isNaN(vao) || Number.isNaN(xn) || xn < vao) return sla;
+  return Math.max(sla, Math.ceil((xn + toiThieu * 60000 - vao) / 60000));
+}
+// SQL: cùng luật trên biểu thức `slaSql`; `xnLaiCol` = mốc xác nhận lại (có thể NULL) — nên là CỘT đã tính sẵn
+// (được nhắc 3 lần), đừng truyền subquery thô.
+function giaHanTestRunLaiSql(slaSql, tgVaoCol, xnLaiCol) {
+  const toiThieu = toiThieuGoc();
+  if (!toiThieu) return slaSql;
+  return `(CASE WHEN ${xnLaiCol} IS NOT NULL AND ${tgVaoCol} IS NOT NULL AND ${xnLaiCol} >= ${tgVaoCol}
+    THEN GREATEST(${slaSql}, ceil(EXTRACT(EPOCH FROM (${xnLaiCol} + interval '${Number(toiThieu)} minutes' - ${tgVaoCol})) / 60)::int)
+    ELSE ${slaSql} END)`;
+}
+
 module.exports = {
-  TRA_VE_KT_GIA_HAN_PHUT, giaHanTraVeKt, giaHanTraVeKtSql,
+  TRA_VE_KT_GIA_HAN_PHUT, giaHanTraVeKt, giaHanTraVeKtSql, giaHanTestRunLai, giaHanTestRunLaiSql,
   // cấu hình (mig 109)
   MAC_DINH, MA_SLA, chuanHoa, apDung, napCauHinh, batDauNapDinhKy, layCauHinh,
   hanBat, testRunTruocSxPhut, gioSxKhSql,

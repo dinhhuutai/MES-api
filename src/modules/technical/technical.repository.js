@@ -8,7 +8,7 @@ const { dkTrang } = require('../../utils/phuongAnIn');
 //   `listConfirmHistory` / `doneByDate`. Luật loại-khỏi-số-liệu vẫn còn hiệu lực ở sĩ số + báo cáo.
 // ⚠ `conDotChoQcSql` KHÔNG import ở đây nữa (23/09/2026): màn QC dùng chung vị từ với màn Kỹ thuật —
 //   xem ghi chú ở `OUTER_WHERE`. Helper đó nay chỉ còn phục vụ dải "Theo dõi" (`utils/siSoTram.js`).
-const { techDoneSql, KHUON_OPT_SQL_LIST, nguoiXacNhanSql, conDotChuaReadySql, qcDotSql, qcMoLaiSql, hanGiaoReadySql, qcXacNhanPhanInSql, ktTraVeSql } = require('../../utils/tech');
+const { techDoneSql, KHUON_OPT_SQL_LIST, nguoiXacNhanSql, conDotChuaReadySql, qcDotSql, qcMoLaiSql, hanGiaoReadySql, hanGiaoReadyTaiMocSql, qcXacNhanPhanInSql, ktTraVeSql } = require('../../utils/tech');
 const { slaReadySql, slaQcReadySql, slaReadyHanSql, canhBaoReadyHanSql, giaHanTraVeKtSql } = require('../../utils/slaTheoGio');
 // Phần in đang được trả về GIAO NHẬN sửa thông tin ⇒ rời màn READY cho tới khi GN xác nhận lại.
 const { CHO_GN_SQL } = require('../../utils/traVeGn');
@@ -291,26 +291,54 @@ async function historyByDate(date, maList) {
 //   đó là chỗ đo KHỐI LƯỢNG VIỆC của tổ kỹ thuật, tính vào là thổi phồng. ⇒ **sidebar sẽ nhiều hơn ô
 //   "Làm được trong kỳ"**; đây là CỐ Ý, cùng họ với chênh lệch đã ghi ở §6 (Đã hoàn thành đếm theo
 //   lượt xác nhận, dải Theo dõi đếm phần in rời trạm). Đừng "sửa cho khớp".
+// ⚠⚠ (09/10/2026) + LƯỢT XÁC NHẬN THEO ĐỢT VẢI (`ready_xac_nhan_dot`, mig 098): phần in đã Ready từ đợt cũ thì xác
+//   nhận đợt MỚI chỉ ghi dòng theo đợt — dòng tổng giữ ngày cũ ⇒ bản cũ (chỉ đọc dòng tổng) không tìm ra lượt
+//   xác nhận của ngày đó (ca thật: 3 phần in DK-2609-013/014, Khuôn/Film đợt 2 ngày 09/10, dòng tổng 24/09).
+//   Chỉ lấy dòng theo đợt ĐANG HIỆU LỰC và KHÔNG bị dòng tổng phủ (= nhánh (b) của `tech.dotMucDatSql`) ⇒ đợt
+//   đã nằm trong dòng tổng không hiện 2 lần. `dot_vai_ve_id` có giá trị ⇒ nút Hủy chỉ hủy đúng đợt đó.
 async function listConfirmHistory({ date, search = '' }) {
+  const timKiem = `($2 = '' OR pin.ma_phan ~* $2 OR mh.ma_hang ~* $2
+           OR kh.ten_khach_hang ~* $2 OR dh.ma_don_hang ~* $2
+           OR pin.mau_vai ~* $2 OR pin.kich_vai ~* $2 OR pin.kich_phim ~* $2)`;
+  const noi = `JOIN phan_in pin ON pin.id = X.phan_in_id
+    JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+    JOIN don_hang dh ON dh.id = mh.don_hang_id
+    JOIN khach_hang kh ON kh.id = dh.khach_hang_id`;
   const sql = `
-    SELECT kq.id AS ket_qua_id, kq.phan_in_id, cp.ma_checkpoint, cp.ten_checkpoint,
+    SELECT kq.id::text AS ket_qua_id, kq.phan_in_id, cp.ma_checkpoint, cp.ten_checkpoint,
            kq.gia_tri_text, kq.tg_xac_nhan, ${nguoiXacNhanSql('nx', 'kq')} AS nguoi_xac_nhan, kq.ghi_chu,
            pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim,
-           mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang
+           mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
+           NULL::uuid AS dot_vai_ve_id, NULL::text AS dot_label
     FROM ket_qua_checkpoint kq
     JOIN checkpoint cp ON cp.id = kq.checkpoint_id
     JOIN tram t ON t.id = cp.tram_id
-    JOIN phan_in pin ON pin.id = kq.phan_in_id
-    JOIN ma_hang mh ON mh.id = pin.ma_hang_id
-    JOIN don_hang dh ON dh.id = mh.don_hang_id
-    JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+    ${noi.replace(/X\./g, 'kq.')}
     LEFT JOIN nguoi_dung nx ON nx.id = kq.nguoi_xac_nhan_id
     WHERE t.ma_tram = 'READY' AND kq.trang_thai = 'DAT'
       AND (kq.tg_xac_nhan AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
-      AND ($2 = '' OR pin.ma_phan ~* $2 OR mh.ma_hang ~* $2
-           OR kh.ten_khach_hang ~* $2 OR dh.ma_don_hang ~* $2
-           OR pin.mau_vai ~* $2 OR pin.kich_vai ~* $2 OR pin.kich_phim ~* $2)
-    ORDER BY kq.tg_xac_nhan DESC NULLS LAST`;
+      AND ${timKiem}
+    UNION ALL
+    SELECT 'D' || x.id::text, x.phan_in_id, cp.ma_checkpoint, cp.ten_checkpoint,
+           NULL::text, x.tg_xac_nhan, ${nguoiXacNhanSql('nx', 'x')}, NULL::text,
+           pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim,
+           mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
+           x.dot_vai_ve_id, COALESCE(dv.barcode, dv.ma_dot_vai)
+    FROM ready_xac_nhan_dot x
+    JOIN checkpoint cp ON cp.id = x.checkpoint_id
+    JOIN tram t ON t.id = cp.tram_id
+    JOIN dot_vai_ve dv ON dv.id = x.dot_vai_ve_id AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY')
+    ${noi.replace(/X\./g, 'x.')}
+    LEFT JOIN nguoi_dung nx ON nx.id = x.nguoi_xac_nhan_id
+    WHERE t.ma_tram = 'READY' AND x.trang_thai = 'DAT'
+      AND (x.tg_xac_nhan AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
+      AND NOT EXISTS (SELECT 1 FROM ket_qua_checkpoint k2 WHERE k2.phan_in_id = x.phan_in_id
+                      AND k2.checkpoint_id = x.checkpoint_id AND k2.trang_thai = 'DAT'
+                      AND COALESCE(k2.tg_xac_nhan, k2.updated_date) >= COALESCE(dv.tg_chuyen_ready, dv.created_date))
+      AND NOT EXISTS (SELECT 1 FROM ket_qua_checkpoint k3 WHERE k3.phan_in_id = x.phan_in_id
+                      AND k3.checkpoint_id = x.checkpoint_id AND k3.trang_thai = 'HUY' AND k3.updated_date > x.updated_date)
+      AND ${timKiem}
+    ORDER BY 6 DESC NULLS LAST`;
   const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [date, mauTim(search)]);
   return rows;
 }
@@ -320,19 +348,22 @@ async function listConfirmHistory({ date, search = '' }) {
 //  scope='qc':   phần in đã QC_XAC_NHAN = DAT trong ngày.
 // ⚠⚠ HIỆN CẢ PHẦN IN ĐI THẲNG PKH (không qua PKT) từ 10/09/2026 — lý do + đánh đổi ghi đầy đủ ở
 //   `listConfirmHistory` ngay trên. Cột "Người" của nhóm này là **"Hệ thống (tự động)"**.
+// ⚠ Hạn giao mức phần in = luật màn READY/QC neo theo MỐC hoàn thành (`tech.hanGiaoReadyTaiMocSql`, 09/10/2026 — đợt
+//   đang chờ lúc xác nhận); bản cũ lấy min MỌI đợt ⇒ phần in có đợt mới về hiện hạn của đợt cũ đã release. Dòng QC
+//   theo đợt dùng hạn của CHÍNH đợt đó.
 async function doneByDate(date, scope = 'tech') {
-  const info = `pin.ma_phan AS ma, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.so_luong_don_hang AS so_luong,
+  const info = (hanSql) => `pin.ma_phan AS ma, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.so_luong_don_hang AS so_luong,
                 pin.tinh_chat_in, mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
                 (SELECT h.phuong_an_in FROM hskt_phan_in hp JOIN ho_so_ky_thuat h ON h.id = hp.hskt_id
                   WHERE hp.phan_in_id = pin.id AND hp.dang_hoat_dong AND h.dang_hoat_dong LIMIT 1) AS phuong_an_in,
-                (SELECT min(dv.han_giao_hang) FROM dot_vai_ve dv WHERE dv.phan_in_id = pin.id AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY')) AS han_giao_hang`;
+                ${hanSql} AS han_giao_hang`;
   const joins = `JOIN ma_hang mh ON mh.id = pin.ma_hang_id
                  JOIN don_hang dh ON dh.id = mh.don_hang_id
                  JOIN khach_hang kh ON kh.id = dh.khach_hang_id`;
   let sql;
   if (scope === 'qc') {
     sql = `
-      SELECT kq.tg_xac_nhan AS tg, ${nguoiXacNhanSql('nx', 'kq')} AS nguoi, kq.ghi_chu, ${info}
+      SELECT kq.tg_xac_nhan AS tg, ${nguoiXacNhanSql('nx', 'kq')} AS nguoi, kq.ghi_chu, ${info(hanGiaoReadyTaiMocSql('pin.id', 'kq.tg_xac_nhan'))}
       FROM ket_qua_checkpoint kq
       JOIN checkpoint cp ON cp.id = kq.checkpoint_id
       JOIN tram t ON t.id = cp.tram_id
@@ -343,7 +374,7 @@ async function doneByDate(date, scope = 'tech') {
         AND (kq.tg_xac_nhan AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
       UNION ALL
       SELECT x.tg_xac_nhan AS tg, ${nguoiXacNhanSql('nx', 'x')} AS nguoi,
-             'QC theo đợt vải ' || COALESCE(dvx.barcode, dvx.ma_dot_vai) AS ghi_chu, ${info}
+             'QC theo đợt vải ' || COALESCE(dvx.barcode, dvx.ma_dot_vai) AS ghi_chu, ${info(`COALESCE(dvx.han_giao_hang, ${hanGiaoReadyTaiMocSql('pin.id', 'x.tg_xac_nhan')})`)}
       FROM ready_xac_nhan_dot x
       JOIN checkpoint cp ON cp.id = x.checkpoint_id AND cp.ma_checkpoint = 'QC_XAC_NHAN'
       JOIN dot_vai_ve dvx ON dvx.id = x.dot_vai_ve_id
@@ -367,7 +398,7 @@ async function doneByDate(date, scope = 'tech') {
                bool_or(ma_checkpoint='KHUON') AS hk, bool_or(ma_checkpoint='FILM') AS hf, bool_or(ma_checkpoint='MUC') AS hm
         FROM tech GROUP BY phan_in_id
       )
-      SELECT a.tg_done AS tg, ${nguoiXacNhanSql('nx', 'last')} AS nguoi, last.ghi_chu, ${info}
+      SELECT a.tg_done AS tg, ${nguoiXacNhanSql('nx', 'last')} AS nguoi, last.ghi_chu, ${info(hanGiaoReadyTaiMocSql('pin.id', 'a.tg_done'))}
       FROM agg a
       JOIN phan_in pin ON pin.id = a.phan_in_id
       ${joins}
@@ -596,13 +627,36 @@ async function cancelResult(client, phanInId, checkpointId, actorId) {
   return rowCount > 0;
 }
 
-// Ghi audit hủy xác nhận.
-async function logCancel(phanInId, maList, actorId) {
+// Ghi audit hủy xác nhận. `them` (09/10/2026) = thông tin thêm, vd hủy THEO ĐỢT `{ dot_vai_ve_id, ma_dot_vai }`.
+async function logCancel(phanInId, maList, actorId, them = {}) {
   await query(
     `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
      VALUES ('ket_qua_checkpoint', $1, 'HUY_XAC_NHAN', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`,
-    [String(phanInId), JSON.stringify({ ma: maList }), actorId]
+    [String(phanInId), JSON.stringify({ ma: maList, ...them }), actorId]
   );
+}
+
+// Trạng thái xác nhận mục `checkpointId` của 1 ĐỢT VẢI (cho hủy theo đợt — `technical.service.cancelItem`):
+//   `x_dat` dòng theo đợt đang DAT · `phu_boi_tong` dòng TỔNG đang DAT phủ đợt (nhánh (a) của `tech.dotMucDatSql`)
+//   · `hieu_luc` dòng theo đợt chưa bị lần hủy dòng tổng sau nó vô hiệu · `da_release` đợt nằm trong lệnh ≠ HUY.
+async function trangThaiXacNhanDot(dotVaiId, checkpointId) {
+  const { rows } = await query(
+    `SELECT dv.id, dv.phan_in_id, dv.ma_dot_vai, COALESCE(dv.barcode, dv.ma_dot_vai) AS dot_label,
+            dv.trang_thai NOT IN ('DA_GOP','DA_HUY') AS song,
+            EXISTS (SELECT 1 FROM lenh_sx_dot_vai l JOIN lenh_san_xuat ls ON ls.id = l.lenh_san_xuat_id
+                     WHERE l.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY') AS da_release,
+            (x.trang_thai = 'DAT') AS x_dat,
+            EXISTS (SELECT 1 FROM ket_qua_checkpoint k WHERE k.phan_in_id = dv.phan_in_id AND k.checkpoint_id = $2
+                     AND k.trang_thai = 'DAT'
+                     AND COALESCE(k.tg_xac_nhan, k.updated_date) >= COALESCE(dv.tg_chuyen_ready, dv.created_date)) AS phu_boi_tong,
+            NOT EXISTS (SELECT 1 FROM ket_qua_checkpoint k WHERE k.phan_in_id = dv.phan_in_id AND k.checkpoint_id = $2
+                     AND k.trang_thai = 'HUY' AND x.updated_date IS NOT NULL AND k.updated_date > x.updated_date) AS hieu_luc
+       FROM dot_vai_ve dv
+       LEFT JOIN ready_xac_nhan_dot x ON x.dot_vai_ve_id = dv.id AND x.checkpoint_id = $2
+      WHERE dv.id = $1`.replace(/\s+/g, ' '),
+    [dotVaiId, checkpointId]
+  );
+  return rows[0] || null;
 }
 
 async function insertStatusLog(client, { ketQuaId, trangThaiMoiId, nguoiId, lyDo }) {
@@ -825,7 +879,7 @@ async function logQcTheoDot(phanInId, dotVaiIds, actorId) {
 module.exports = {
   logQcTheoDot,
   coBangXacNhanDot, dsDotChoReady, conDotChuaReady, ketQuaTong, xacNhanDotRows, ghiXacNhanDot, boiHieuLucDot,
-  loadReadyConfig, listCandidates, countReadyItems, confirmInfoByPins, historyByDate, doneByDate, listConfirmHistory, isPhanInReleased, readyCancelState, traCuuMaQuet, getPhanInBasic, getResults, getBulkStates,
+  loadReadyConfig, listCandidates, countReadyItems, confirmInfoByPins, historyByDate, doneByDate, listConfirmHistory, trangThaiXacNhanDot, isPhanInReleased, readyCancelState, traCuuMaQuet, getPhanInBasic, getResults, getBulkStates,
   getReadyEntryTime, findResultId, upsertResult, cancelResult, logCancel, insertStatusLog,
   listReopenCandidates, reopenReadyResults, flagUnreleasedDotLamLai, logReopenReady,
   isPhanInProducing, reopenReadyFull, lenhChoKyThuatByPhanIn,

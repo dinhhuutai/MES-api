@@ -30,7 +30,7 @@ const DANH_MUC_TINH_NANG = [
     ten: 'Chỉ cho Release 1 khi phương án in khớp loại chuyền',
     mo_ta: 'Bàn ↔ PA Bàn · Máy ↔ PA Máy · Robot ↔ PA Robot. Lệch thì không xác nhận Release 1 được, '
       + 'phải đổi phương án in trước. Ép · Logo · Gia công và 3 chuyền dùng chung '
-      + '(M1A-1B Canh hàng · M2A-2B Bổ sung MTĐ · M3A-3B Mẫu) luôn được miễn, bật hay tắt cũng vậy.',
+      + '(1A1B Canh hàng · 2A2B Bổ sung MTĐ · 3A3B Mẫu) luôn được miễn, bật hay tắt cũng vậy.',
     khi_tat: 'Release 1 lên chuyền nào cũng được, không kiểm phương án in.',
     canh_bao: 'Tắt thì hàng phương án in Bàn vẫn xếp được lên chuyền Máy mà không ai được cảnh báo.',
     macDinh: true,

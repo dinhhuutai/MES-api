@@ -46,10 +46,11 @@ async function list({ search = '', active = null, offset = 0, limit = 20 }) {
   // Tổ (mig 104) — dò bảng trước, thiếu migration thì cột ra NULL (không 42703).
   const coTo = await require('../phongban/phongban.service').coBangTo();
   const toSql = coTo ? '(SELECT t.ten_to FROM to_phong_ban t WHERE t.id = u.to_phong_ban_id)' : 'NULL::text';
+  const toIdSql = coTo ? 'u.to_phong_ban_id' : 'NULL::uuid';
   const dataSql = `
     SELECT u.id, u.ma_user, u.ten_dang_nhap, u.ho_ten, u.email, u.so_dien_thoai, u.chuc_vu,
            u.gioi_tinh, u.avatar_url, u.trang_thai, u.dang_hoat_dong, u.phong_ban_id, pb.ten_phong_ban,
-           ${toSql} AS ten_to,
+           ${toSql} AS ten_to, ${toIdSql} AS to_phong_ban_id,
            COALESCE(array_agg(r.ma_role) FILTER (WHERE r.id IS NOT NULL), '{}') AS roles
     FROM nguoi_dung u
     LEFT JOIN phong_ban pb ON pb.id = u.phong_ban_id
@@ -69,9 +70,11 @@ async function list({ search = '', active = null, offset = 0, limit = 20 }) {
 }
 
 async function findById(id) {
+  const coTo = await require('../phongban/phongban.service').coBangTo();
   const sql = `
     SELECT u.id, u.ma_user, u.ten_dang_nhap, u.ho_ten, u.email, u.so_dien_thoai, u.chuc_vu,
            u.gioi_tinh, u.avatar_url, u.trang_thai, u.dang_hoat_dong, u.phong_ban_id, pb.ten_phong_ban,
+           ${coTo ? 'u.to_phong_ban_id' : 'NULL::uuid AS to_phong_ban_id'},
            COALESCE(array_agg(DISTINCT r.id) FILTER (WHERE r.id IS NOT NULL), '{}') AS role_ids
     FROM nguoi_dung u
     LEFT JOIN phong_ban pb ON pb.id = u.phong_ban_id
@@ -132,6 +135,16 @@ async function update(id, data, actorId) {
   ]);
 }
 
+// Tổ (mig 104) — người gọi đã dò cột (`phongban.coBangTo`). Ghi riêng để UPDATE chính không đụng cột có thể chưa có.
+async function setTo(id, toPhongBanId, actorId) {
+  await query('UPDATE nguoi_dung SET to_phong_ban_id = $2, updated_by = $3, updated_date = CURRENT_TIMESTAMP WHERE id = $1',
+    [id, toPhongBanId || null, actorId]);
+}
+async function findTo(toId) {
+  const { rows } = await query('SELECT id, phong_ban_id, ten_to FROM to_phong_ban WHERE id = $1', [toId]);
+  return rows[0] || null;
+}
+
 async function setActive(id, active, actorId) {
   await query(
     'UPDATE nguoi_dung SET dang_hoat_dong = $2, updated_by = $3, updated_date = CURRENT_TIMESTAMP WHERE id = $1',
@@ -160,5 +173,5 @@ async function setRoles(userId, roleIds, actorId) {
 }
 
 module.exports = {
-  list, listOptions, findById, existsUsername, nextMaUser, create, update, setActive, setPassword, setRoles,
+  list, listOptions, findById, existsUsername, nextMaUser, create, update, setTo, findTo, setActive, setPassword, setRoles,
 };

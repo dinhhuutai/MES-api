@@ -26,4 +26,8 @@ const LENH_CHO_KH_SQL = (lenhCol) => `EXISTS (SELECT 1 FROM qc_tra_ve zkh WHERE 
 // Mốc bị trả về gần nhất còn hiệu lực (NULL nếu không) — mốc vào lại Release 1 cho đồng hồ nghẽn.
 const MOC_TRA_VE_KH_SQL = (lenhCol) => `(SELECT max(zkm.created_date) FROM qc_tra_ve zkm WHERE zkm.lenh_san_xuat_id = ${lenhCol} AND zkm.loai = '${LOAI_TRA_VE_KH}' AND zkm.da_xu_ly = false)`;
 
-module.exports = { LOAI_TRA_VE_KH, LENH_CHO_KH_SQL, MOC_TRA_VE_KH_SQL };
+// Lúc Kế hoạch "Xác nhận Release 1" lại GẦN NHẤT (NULL nếu lệnh chưa từng bị trả về Kế hoạch) — `resolveReturns`
+// đặt `da_xu_ly` + `updated_date` đúng lúc xác nhận. Dùng cho SLA Test Run tối thiểu tính lại (`slaTheoGio` luật (6)).
+const MOC_XAC_NHAN_LAI_KH_SQL = (lenhCol) => `(SELECT max(zkx.updated_date) FROM qc_tra_ve zkx WHERE zkx.lenh_san_xuat_id = ${lenhCol} AND zkx.loai = '${LOAI_TRA_VE_KH}' AND zkx.da_xu_ly = true)`;
+
+module.exports = { LOAI_TRA_VE_KH, LENH_CHO_KH_SQL, MOC_TRA_VE_KH_SQL, MOC_XAC_NHAN_LAI_KH_SQL };

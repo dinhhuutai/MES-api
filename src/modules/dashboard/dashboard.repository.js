@@ -4,8 +4,8 @@ const { query } = require('../../config/db');
 const ordersRepo = require('../orders/orders.repository');
 const { dotStageCase, readyFallback, ORDER_SQL_ARRAY } = require('../../utils/stage');
 const { techDoneSql, mocDotMucSql, qcDotSql, ktTraVeSql } = require('../../utils/tech');
-const { slaReadyHanSql, canhBaoReadyHanSql, slaQcReadySql, slaTestRunSql, canhBaoTestRunSql, gioSxKhSql, giaHanTraVeKtSql } = require('../../utils/slaTheoGio');
-const { LENH_CHO_KH_SQL, MOC_TRA_VE_KH_SQL } = require('../../utils/traVeKeHoach');
+const { slaReadyHanSql, canhBaoReadyHanSql, slaQcReadySql, slaTestRunSql, canhBaoTestRunSql, gioSxKhSql, giaHanTraVeKtSql, giaHanTestRunLaiSql } = require('../../utils/slaTheoGio');
+const { LENH_CHO_KH_SQL, MOC_TRA_VE_KH_SQL, LOAI_TRA_VE_KH } = require('../../utils/traVeKeHoach');
 // Hiển thị theo PHƯƠNG ÁN IN — cấu hình động từng trang (mig 067), mặc định BẬT HẾT = không lọc.
 const { dkTrang } = require('../../utils/phuongAnIn');
 const { maTemUngVien } = require('../../utils/temPrefix');
@@ -654,6 +654,8 @@ async function tinhTrangDetail(phanInId) {
 //   hỏi "phần in có QC chưa" ⇒ đợt mới về sau lần QC cũ (đang Chờ Ready) bị đo như hàng chờ release.
 // ⚠ 07/10/2026: lệnh bị Test Run trả về Kế hoạch (giữ lệnh, `utils/traVeKeHoach.js`) ⇒ RELEASE_1, đồng hồ từ lúc bị
 //   trả về (gương `dotStageCase`) · READY Kỹ thuật bị trạm khác trả về ⇒ gia hạn 1 giờ (`slaTheoGio.giaHanTraVeKtSql`).
+// ⚠ 09/10/2026: lệnh đó được Kế hoạch xác nhận lại ⇒ SLA Test Run tối thiểu tính lại từ lúc xác nhận lại (CTE `xkh`,
+//   `slaTheoGio.giaHanTestRunLaiSql` luật (6)).
 async function flowRows(tramMa = '') {
   const dkPain = await dkTrang('DB_NGHEN', 'pin', 'b.phan_in_id');
   const sql = `
@@ -734,6 +736,11 @@ async function flowRows(tramMa = '') {
       LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
       LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
     ),
+    xkh AS (
+      SELECT lenh_san_xuat_id AS lenh_id, max(updated_date) AS xn_lai FROM qc_tra_ve
+      WHERE loai = '${LOAI_TRA_VE_KH}' AND da_xu_ly = true AND lenh_san_xuat_id IS NOT NULL
+      GROUP BY lenh_san_xuat_id
+    ),
     qcp AS (
       SELECT c.thoi_gian_quy_dinh_phut AS sla, c.canh_bao_truoc_phut AS cb
       FROM checkpoint c JOIN tram t ON t.id = c.tram_id
@@ -748,7 +755,7 @@ async function flowRows(tramMa = '') {
            CASE WHEN cur.ma_tram='OQC' AND COALESCE(gc.is_gia_cong,false) THEN 0
                 WHEN cur.ma_tram='READY' AND ${KT_DONE_FLOW} THEN ${slaQcReadySql('kt.kt_tg', 'qcp.sla')}
                 WHEN cur.ma_tram='READY' THEN ${giaHanTraVeKtSql(slaReadyHanSql('tv.tg_vao', 'b.han_giao_hang', 'b.dv_tg', 'tr.thoi_gian_quy_dinh_phut'), 'tv.tg_vao', ktTraVeSql('b.phan_in_id'))}
-                WHEN cur.ma_tram='TEST_RUN' THEN ${slaTestRunSql('tv.tg_vao', 'lk.lenh_bd_kh', 'tr.thoi_gian_quy_dinh_phut')}
+                WHEN cur.ma_tram='TEST_RUN' THEN ${giaHanTestRunLaiSql(slaTestRunSql('tv.tg_vao', 'lk.lenh_bd_kh', 'tr.thoi_gian_quy_dinh_phut'), 'tv.tg_vao', 'xkh.xn_lai')}
                 WHEN cur.ma_tram='CHO_KHO' THEN tr.thoi_gian_quy_dinh_phut + COALESCE(b.cho_kho_phut, 60)
                 ELSE tr.thoi_gian_quy_dinh_phut END AS sla_phut,
            CASE WHEN cur.ma_tram='READY' AND ${KT_DONE_FLOW} THEN qcp.cb
@@ -767,6 +774,7 @@ async function flowRows(tramMa = '') {
     LEFT JOIN kt ON kt.phan_in_id = b.phan_in_id
     LEFT JOIN gc ON gc.dot_vai_ve_id = b.dot_vai_ve_id
     LEFT JOIN qa ON qa.lenh_id = lk.lenh_id
+    LEFT JOIN xkh ON xkh.lenh_id = lk.lenh_id
     CROSS JOIN qcp
     CROSS JOIN LATERAL (SELECT (CASE
         WHEN lk.lenh_id IS NULL THEN (CASE WHEN EXISTS (SELECT 1 FROM dot_vai_ve zqd

@@ -31,7 +31,7 @@ router.get('/loai-checkpoint', asyncHandler(async (req, res) => {
 
 router.get('/chuyen', asyncHandler(async (req, res) => {
   const { rows } = await query(
-    `SELECT cs.id, cs.ma_chuyen, cs.ten_chuyen, lc.ten_loai AS loai_chuyen
+    `SELECT cs.id, cs.ma_chuyen, cs.ten_chuyen, lc.ten_loai AS loai_chuyen, lc.ma_loai AS ma_loai_chuyen
      FROM chuyen_san_xuat cs
      LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
      WHERE cs.dang_hoat_dong = true ORDER BY cs.ma_chuyen`
