@@ -48,6 +48,13 @@ const baoCaoSuaHang = asyncHandler(async (req, res) => {
   return ok(res, await docBaoCaoSuaHang(tu, den));
 });
 
+// Báo cáo phân loại lỗi (11/10/2026) — cùng quy ước khoảng ngày SX. Luật: `utils/baoCaoPhanLoaiLoi.js`.
+const { baoCaoPhanLoaiLoi: docBaoCaoPhanLoaiLoi } = require('./baoCaoPhanLoaiLoi');
+const baoCaoPhanLoaiLoi = asyncHandler(async (req, res) => {
+  const { tu, den } = khoangNgay(req);
+  return ok(res, await docBaoCaoPhanLoaiLoi(tu, den));
+});
+
 const start = asyncHandler(async (req, res) =>
   ok(res, await service.startProduction(req.params.lenhId, req.user.id, req.body.chuyenId || null), 'Đã xác nhận chạy'));
 
@@ -225,6 +232,7 @@ module.exports = {
   stopLine, resumeLine, addVaiHuy, savePhanCong, vuotSanXuat,
   lyDoNgungList, lyDoNgungCreate, lyDoNgungUpdate, lyDoNgungToggle,
   toInList, toInCreate, toInUpdate, toInToggle, baoCaoSanXuat, baoCaoDungChuyen, baoCaoKiemHang, baoCaoSuaHang,
+  baoCaoPhanLoaiLoi,
   lyDoBoSungList, lyDoBoSungCreate, lyDoBoSungUpdate, lyDoBoSungToggle, luuLyDoBoSungDotVai,
   cancelableTem, cancelPrintTem,
   temDaInSX: dsTemDaIn(false), temDaInGiaCong: dsTemDaIn(true),

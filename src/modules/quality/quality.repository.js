@@ -328,6 +328,94 @@ async function reduceKcsDat(client, temId, qty, actorId) {
     [temId, qty, actorId]
   );
 }
+// ─── OQC TRẢ VỀ KCS ⇒ ĐIỀU CHỈNH CÁC LƯỢT KCS CŨ (11/10/2026) ────────────────────────────────
+// Lỗi "tem bị đúp 2 lần" (ca thật 09/10/2026, tem `152608073848`: KCS 218 đạt → OQC trả về → KCS lại 218 đạt):
+// trả về chỉ đảo SỔ CÁI tem (`sl_kcs_dat`), còn LƯỢT `kcs` cũ vẫn "còn hiệu lực" ⇒ tem có 2 lượt kiểm cho cùng
+// một lô hàng: sidebar Đã hoàn thành KCS hiện 2 dòng, Báo cáo kiểm hàng đếm 436 cho tem 218, ERP nhận 2 phiếu
+// kiểm phẩm (2 IDMES). Nay phần hàng quay lại "chưa kiểm" được TRỪ khỏi chính các lượt KCS đã ghi nó (mới nhất
+// trước): `dat` trừ `so_luong_dat`, `hu` (tem sửa tự hủy, quay về KCS) trừ `so_luong_loi`; cả 2 trừ
+// `so_luong_kiem`. Lượt về 0 pcs ⇒ đánh dấu HỦY XÁC NHẬN (`HUY_XAC_NHAN`, `nguon: 'OQC_TRA_VE_KCS'`) ⇒ mọi câu
+// đọc lọc `notCancelledQc` (lịch sử, đã hoàn thành, báo cáo, hành trình) tự bỏ nó. Số cũ giữ ở audit
+// `OQC_TRA_VE_KCS` (`gia_tri_cu`). Chạy TRONG transaction của lần trả về.
+// Trả [{ id, da_huy, so_luong_dat, so_luong_loi, so_luong_chenh_lech, tra_dat, tra_hu }].
+async function dieuChinhKcsSauTraVe(client, temId, { dat = 0, hu = 0, maTem = null, lyDo = null } = {}, actorId) {
+  let conDat = Math.max(0, Number(dat) || 0);
+  let conHu = Math.max(0, Number(hu) || 0);
+  if (conDat <= 0 && conHu <= 0) return [];
+  const { rows } = await client.query(
+    `SELECT x.id, x.so_luong_kiem, x.so_luong_dat, x.so_luong_loi, x.so_luong_huy, x.so_luong_chenh_lech
+       FROM kcs x WHERE x.tem_id = $1 AND ${notCancelledQc('x', 'kcs')}
+      ORDER BY x.created_date DESC, x.id DESC FOR UPDATE OF x`.replace(/\s+/g, ' '), [temId]);
+  const out = [];
+  for (const r of rows) {
+    if (conDat <= 0 && conHu <= 0) break;
+    const n = (v) => Number(v) || 0;
+    // Phần HƯ của lượt đang nằm ở "chờ sửa" = kiểm − đạt − hủy tại KCS (cùng công thức `cancelKcs`).
+    const suaLuot = Math.max(0, n(r.so_luong_kiem) - n(r.so_luong_dat) - n(r.so_luong_huy));
+    const x = Math.min(conDat, n(r.so_luong_dat));
+    const y = Math.min(conHu, suaLuot, n(r.so_luong_loi));
+    if (x + y <= 0) continue;
+    conDat -= x; conHu -= y;
+    const moi = {
+      so_luong_kiem: n(r.so_luong_kiem) - x - y, so_luong_dat: n(r.so_luong_dat) - x, so_luong_loi: n(r.so_luong_loi) - y,
+    };
+    const daHuy = moi.so_luong_kiem <= 0;
+    // eslint-disable-next-line no-await-in-loop
+    await client.query(
+      `UPDATE kcs SET so_luong_kiem = $2, so_luong_dat = $3, so_luong_loi = $4,
+              ket_qua = CASE WHEN $4 > 0 OR so_luong_huy > 0 THEN 'CO_LOI' ELSE 'DAT' END,
+              updated_by = $5, updated_date = CURRENT_TIMESTAMP WHERE id = $1`.replace(/\s+/g, ' '),
+      [r.id, moi.so_luong_kiem, moi.so_luong_dat, moi.so_luong_loi, actorId]);
+    // eslint-disable-next-line no-await-in-loop
+    await client.query(
+      `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_cu, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+       VALUES ('kcs', $1, 'OQC_TRA_VE_KCS', $2::jsonb, $3::jsonb, $4, CURRENT_TIMESTAMP, $4)`.replace(/\s+/g, ' '),
+      [String(r.id),
+        JSON.stringify({ so_luong_kiem: n(r.so_luong_kiem), so_luong_dat: n(r.so_luong_dat), so_luong_loi: n(r.so_luong_loi) }),
+        JSON.stringify({ ...moi, tem_id: temId, ma_tem: maTem, tra_dat: x, tra_hu: y, ly_do: lyDo || null, huy_luot: daHuy }), actorId]);
+    if (daHuy) {
+      // eslint-disable-next-line no-await-in-loop
+      await client.query(
+        `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+         VALUES ('kcs', $1, 'HUY_XAC_NHAN', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`.replace(/\s+/g, ' '),
+        [String(r.id), JSON.stringify({
+          tem_id: temId, ma_tem: maTem, nguon: 'OQC_TRA_VE_KCS', tu_dong: true,
+          ly_do: `OQC trả về KCS — kiểm lại${lyDo ? `: ${lyDo}` : ''}`,
+        }), actorId]);
+    }
+    out.push({ id: r.id, da_huy: daHuy, ...moi, so_luong_chenh_lech: n(r.so_luong_chenh_lech), tra_dat: x, tra_hu: y });
+  }
+  return out;
+}
+
+// IDMES đã gửi ERP (kiểm phẩm) của 1 LƯỢT KCS ĐÃ HỦY gần nhất thuộc tem, mà KHÔNG lượt CÒN HIỆU LỰC nào đang mang
+// (tem bị trả về nhiều vòng thì các lượt đã hủy cùng chung 1 IDMES — vẫn dùng lại tiếp) —
+// lượt KCS mới của tem gửi kèm IDMES này để proc `MES_spr_MES2Sh6` XÓA phiếu cũ cùng `Soctcu` rồi tạo lại
+// (không đẻ phiếu thứ hai bên ERP). Không có ⇒ null (cấp IDMES mới như thường).
+async function idMesKcsDaHuy(temId, kcsIdMoi) {
+  const HD = "('ERP_GUI_KIEM_PHAM','ERP_GUI_KIEM_PHAM_LOI')";
+  const { rows } = await query(
+    `SELECT a.gia_tri_moi->>'id_mes' AS id_mes
+       FROM kcs x JOIN audit_log a ON a.ten_bang = 'kcs' AND a.id_ban_ghi = x.id::text AND a.hanh_dong IN ${HD}
+      WHERE x.tem_id = $1 AND x.id <> $2 AND ${cancelledQc('x', 'kcs')}
+        AND (a.gia_tri_moi->>'id_mes') ~ '^[0-9]+$'
+        AND NOT EXISTS (SELECT 1 FROM audit_log b JOIN kcs y ON y.id::text = b.id_ban_ghi
+                         WHERE b.ten_bang = 'kcs' AND b.hanh_dong IN ${HD}
+                           AND b.gia_tri_moi->>'id_mes' = a.gia_tri_moi->>'id_mes'
+                           AND y.id <> $2 AND ${notCancelledQc('y', 'kcs')})
+      ORDER BY a.thoi_gian DESC LIMIT 1`.replace(/\s+/g, ' '), [temId, kcsIdMoi]);
+  const v = rows[0] && rows[0].id_mes;
+  return v != null && /^[0-9]+$/.test(String(v)) ? Number(v) : null;
+}
+
+// IDMES của lần gửi kiểm phẩm THÀNH CÔNG gần nhất của CHÍNH lượt KCS (để gửi lại số đã điều chỉnh).
+async function idMesKcsDaGui(kcsId) {
+  const { rows } = await query(
+    "SELECT a.gia_tri_moi->>'id_mes' AS id_mes FROM audit_log a WHERE a.ten_bang = 'kcs' AND a.id_ban_ghi = $1 AND a.hanh_dong = 'ERP_GUI_KIEM_PHAM' AND (a.gia_tri_moi->>'id_mes') ~ '^[0-9]+$' ORDER BY a.thoi_gian DESC LIMIT 1",
+    [String(kcsId)]);
+  return rows[0] ? Number(rows[0].id_mes) : null;
+}
+
 // OQC trả về SỬA: đưa phần chờ OQC (đã sửa — tem 17-) quay lại "chờ sửa" (giảm sl_sua_dat → tăng con_sua).
 async function reduceSuaDat(client, temId, qty, actorId) {
   await client.query(
@@ -1210,7 +1298,7 @@ module.exports = {
   conKcsSql,
   // Hành trình gia công (`orders.repository.giaCongHanhTrinhData`) đọc sổ cái tem bằng CHÍNH 2 biểu thức
   // này (alias `t.`) + luật bỏ lượt OQC đã hủy xác nhận — không viết lại công thức ở module khác.
-  CON_OQC, CON_GIAO, notCancelledQc,
+  CON_OQC, CON_GIAO, notCancelledQc, dieuChinhKcsSauTraVe, idMesKcsDaHuy, idMesKcsDaGui,
   insertQcTraVe, activeReturnsMap, resolveReturns, resolveReturnsMany, listQcTraVe, listTraVeChiTiet,
   listTemSua, listTemSuaDaHuy, getTemSuaRow, getTemSuaRows, applyTemSuaLedgerMany, logTemSuaMany,
   getTemsForMerge, addTemSoLuong, logGopTem,

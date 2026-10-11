@@ -10,6 +10,8 @@
 
 const { query } = require('../../config/db');
 const { dungBaoCaoKiemHang } = require('../../utils/baoCaoKiemHang');
+const { thoInPhieuSql } = require('../../utils/thoIn');
+const { coCotThoInKh } = require('../../utils/thoInKeHoach');
 
 const VN = "AT TIME ZONE 'Asia/Ho_Chi_Minh'";
 const W0 = `(($1::date + time '06:00') ${VN})`;
@@ -29,6 +31,8 @@ async function coPhanLoaiLoi() {
 }
 
 async function docLuot(tuNgay, denNgay) {
+  // 11/10/2026: thợ in của phiếu in ra tem (bảng "Theo thợ in" — luật ở `utils/thoIn.js`) + kích vải/kích phim.
+  const colThoKh = (await coCotThoInKh()) ? 'ls.tho_in_kh' : 'NULL::text';
   const pllSql = (await coPhanLoaiLoi())
     ? `LEFT JOIN LATERAL (SELECT sum(c.so_luong_sua)::int AS pll_sua, sum(c.so_luong_huy)::int AS pll_huy
       FROM phan_loai_loi p JOIN phan_loai_loi_ct c ON c.phan_loai_loi_id = p.id WHERE p.tem_id = k.tem_id) pll ON true`
@@ -39,7 +43,8 @@ async function docLuot(tuNgay, denNgay) {
       to_char(((k.created_date ${VN}) - interval '6 hours')::date, 'YYYY-MM-DD') AS ngay_sx,
       t.ma_tem, ls.ma_lenh_san_xuat, cs.ma_chuyen, cs.ten_chuyen, lc.ma_loai AS ma_loai_chuyen,
       nd.ho_ten AS nguoi_kiem, pll.pll_sua, pll.pll_huy,
-      pi.ma_phan, pi.khach, pi.po, pi.ma_hang, pi.mau_vai
+      pi.ma_phan, pi.khach, pi.po, pi.ma_hang, pi.mau_vai, pi.kich_vai, pi.kich_phim,
+      ps.chuyen_truong, ${thoInPhieuSql('ps.id')} AS tho_in, ${colThoKh} AS tho_in_kh
     FROM kcs k JOIN tk ON tk.tem_id = k.tem_id
     JOIN tem t ON t.id = k.tem_id AND t.trang_thai <> 'HUY'
     LEFT JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
@@ -50,7 +55,8 @@ async function docLuot(tuNgay, denNgay) {
     ${pllSql}
     LEFT JOIN LATERAL (SELECT string_agg(DISTINCT pin.ma_phan, ', ') AS ma_phan,
         string_agg(DISTINCT kh.ten_khach_hang, ', ') AS khach, string_agg(DISTINCT dh.ma_don_hang, ', ') AS po,
-        string_agg(DISTINCT mh.ma_hang, ', ') AS ma_hang, string_agg(DISTINCT pin.mau_vai, ', ') AS mau_vai
+        string_agg(DISTINCT mh.ma_hang, ', ') AS ma_hang, string_agg(DISTINCT pin.mau_vai, ', ') AS mau_vai,
+        string_agg(DISTINCT pin.kich_vai, ', ') AS kich_vai, string_agg(DISTINCT pin.kich_phim, ', ') AS kich_phim
       FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id JOIN phan_in pin ON pin.id = dv.phan_in_id
       LEFT JOIN ma_hang mh ON mh.id = pin.ma_hang_id LEFT JOIN don_hang dh ON dh.id = mh.don_hang_id
       LEFT JOIN khach_hang kh ON kh.id = dh.khach_hang_id
@@ -77,4 +83,5 @@ async function baoCaoKiemHang(tuNgay, denNgay) {
   return hua;
 }
 
-module.exports = { baoCaoKiemHang, coPhanLoaiLoi };
+// `docLuot` dùng lại ở Báo cáo phân loại lỗi (`./baoCaoPhanLoaiLoi.js`) — cùng tập tem + cùng SL kiểm.
+module.exports = { baoCaoKiemHang, coPhanLoaiLoi, docLuot };

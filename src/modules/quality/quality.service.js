@@ -151,6 +151,7 @@ async function returnOqcToKcs(temId, body, actorId) {
   // bộ phận Sửa không làm nữa, KCS kiểm lại sẽ quyết định lại phần hư. Trả về nguồn SỬA thì KHÔNG hủy —
   // chính phần sửa đó mới là thứ cần làm lại. Chạy CÙNG transaction để sổ cái không áp dụng nửa vời.
   let temSuaHuy = null;
+  let kcsDieuChinh = [];
   await withTransaction(async (client) => {
     if (nguon === 'SUA') await repo.reduceSuaDat(client, temId, con, actorId); // chờ OQC → về chờ sửa
     else await repo.reduceKcsDat(client, temId, con, actorId);                 // chờ OQC → về chưa kiểm
@@ -164,9 +165,21 @@ async function returnOqcToKcs(temId, body, actorId) {
         await applyHuyTemSua(client, plans, `Tự động: OQC trả tem về KCS — ${lyDo}`, actorId, true);
         temSuaHuy = temSuaResult(plans).items[0];
       }
+      // ⚠⚠ 11/10/2026 — LƯỢT KCS CŨ phải trừ đúng phần vừa quay lại "chưa kiểm" (đạt trả về + phần hư của tem
+      //   sửa tự hủy mà KHÔNG dồn sang hủy), không thì KCS kiểm lại ra lượt thứ hai cho CÙNG lô hàng ⇒ tem bị
+      //   "đúp" ở lịch sử / báo cáo kiểm hàng / ERP. Xem `repo.dieuChinhKcsSauTraVe`.
+      const huVeKcs = temSuaHuy && !temSuaHuy.da_cong_huy ? Number(temSuaHuy.sl) || 0 : 0;
+      kcsDieuChinh = await repo.dieuChinhKcsSauTraVe(client, temId,
+        { dat: con, hu: huVeKcs, maTem: tem.ma_tem, lyDo }, actorId);
     }
     await repo.recomputeTemStageMany(client, [temId], actorId);
   });
+  // Lượt KCS cũ còn hiệu lực nhưng ĐÃ ĐỔI SỐ (vd phần hư đã sửa xong, chỉ phần đạt quay lại) ⇒ gửi lại ERP số
+  //   mới với CHÍNH IDMES cũ (proc xóa phiếu cùng Soctcu rồi tạo lại). Lượt đã hủy hẳn thì lượt KCS kế tiếp
+  //   của tem sẽ dùng lại IDMES của nó (`kiemPhamErp.guiKiemPham`). Chạy ngầm, không chặn thao tác.
+  for (const k of kcsDieuChinh) {
+    if (!k.da_huy) kiemPhamErp.guiLaiSauDieuChinhNgam(k, temId, actorId);
+  }
   // loai 'OQC_SUA' → badge/lý do hiện ở màn Sửa; 'OQC' → màn KCS (như cũ).
   await repo.insertQcTraVe({ loai: nguon === 'SUA' ? 'OQC_SUA' : 'OQC', temId, lyDo }, actorId);
   await tracking.moveByTem(temId, nguon === 'SUA' ? 'SUA' : 'KIEM', actorId);
@@ -174,7 +187,10 @@ async function returnOqcToKcs(temId, body, actorId) {
   const next = nguon === 'SUA' ? 'TRA_VE_SUA' : 'TRA_VE_KCS';
   sockets.emit('quality:updated', { temId, stage: 'OQC', next });
   sockets.emit('dashboard:refresh', {});
-  return { tem_id: temId, nguon, so_luong: con, next, tem_sua_huy: temSuaHuy };
+  return {
+    tem_id: temId, nguon, so_luong: con, next, tem_sua_huy: temSuaHuy,
+    kcs_dieu_chinh: kcsDieuChinh.map((k) => ({ id: k.id, da_huy: k.da_huy, tra_dat: k.tra_dat, tra_hu: k.tra_hu })),
+  };
 }
 
 // Lịch sử QC trả về theo loại + ngày (cho trang toggle 3 loại).

@@ -14,6 +14,8 @@ const { query } = require('../../config/db');
 const { dungBaoCaoSuaHang } = require('../../utils/baoCaoSuaHang');
 const { MOC_VAO_TEM } = require('../../utils/siSoTram');
 const { coPhanLoaiLoi } = require('./baoCaoKiemHang');
+const { thoInPhieuSql } = require('../../utils/thoIn');
+const { coCotThoInKh } = require('../../utils/thoInKeHoach');
 
 const VN = "AT TIME ZONE 'Asia/Ho_Chi_Minh'";
 const W0 = `(($1::date + time '06:00') ${VN})`;
@@ -21,8 +23,18 @@ const W1 = `(($2::date + 1 + time '06:00') ${VN})`;
 const chuaHuy = (bang, a) => `NOT EXISTS (SELECT 1 FROM audit_log zh WHERE zh.ten_bang = '${bang}'
   AND zh.hanh_dong = 'HUY_XAC_NHAN' AND zh.id_ban_ghi = ${a}.id::text)`;
 const TEM_SUA_AUDIT = "('HUY_TEM_SUA','MO_TEM_SUA')";
+// ⚠ 11/10/2026 — OQC trả về KCS nay TRỪ phần hàng quay lại "chưa kiểm" khỏi lượt KCS cũ (`quality.repository
+//   dieuChinhKcsSauTraVe`): phần HƯ của tem sửa tự hủy bị trừ khỏi `so_luong_loi` (lượt về 0 thì hủy luôn). Nhưng
+//   dòng thời gian "chờ sửa" vẫn có sự kiện `HUY_TEM_SUA` (−SL) của chính lần trả về đó ⇒ phải cộng lại phần hư ĐÃ
+//   TỪNG vào chờ sửa (`tra_hu` ở audit `OQC_TRA_VE_KCS`) và giữ cả lượt bị hủy DO OQC trả về, không thì lệch sổ.
+const TRA_HU_KCS = `COALESCE((SELECT sum((zt.gia_tri_moi->>'tra_hu')::int) FROM audit_log zt WHERE zt.ten_bang = 'kcs'
+  AND zt.id_ban_ghi = k.id::text AND zt.hanh_dong = 'OQC_TRA_VE_KCS'), 0)`;
+const HUY_DO_OQC_TRA_VE = `EXISTS (SELECT 1 FROM audit_log zo WHERE zo.ten_bang = 'kcs' AND zo.hanh_dong = 'HUY_XAC_NHAN'
+  AND zo.id_ban_ghi = k.id::text AND zo.gia_tri_moi->>'nguon' = 'OQC_TRA_VE_KCS')`;
 
 async function docTem(tuNgay, denNgay) {
+  // 11/10/2026: thợ in của phiếu in ra tem (bảng "Theo thợ in" — `utils/thoIn.js`) + kích vải/kích phim.
+  const colThoKh = (await coCotThoInKh()) ? 'ls.tho_in_kh' : 'NULL::text';
   const pllSql = (await coPhanLoaiLoi())
     ? `LEFT JOIN LATERAL (SELECT sum(c.so_luong_sua)::int AS pll_sua, sum(c.so_luong_huy)::int AS pll_huy
       FROM phan_loai_loi p JOIN phan_loai_loi_ct c ON c.phan_loai_loi_id = p.id WHERE p.tem_id = t.id) pll ON true`
@@ -31,9 +43,11 @@ async function docTem(tuNgay, denNgay) {
       UNION SELECT s.tem_id FROM sua s WHERE s.created_date < ${W1})
     SELECT t.id AS tem_id, t.ma_tem, t.sl_kcs_sua, t.sl_sua_dat, t.sl_sua_huy, ${MOC_VAO_TEM.SUA('t')} AS tg_vao,
       ls.ma_lenh_san_xuat, cs.ma_chuyen, cs.ten_chuyen, lc.ma_loai AS ma_loai_chuyen,
-      pi.phan_in_ids, pi.ma_phan, pi.khach, pi.po, pi.ma_hang, pi.mau_vai, pll.pll_sua, pll.pll_huy,
-      (SELECT json_agg(json_build_object('tg', k.created_date, 'hu', k.so_luong_loi) ORDER BY k.created_date)
-        FROM kcs k WHERE k.tem_id = t.id AND COALESCE(k.so_luong_loi,0) > 0 AND ${chuaHuy('kcs', 'k')}) AS kcs,
+      pi.phan_in_ids, pi.ma_phan, pi.khach, pi.po, pi.ma_hang, pi.mau_vai, pi.kich_vai, pi.kich_phim, pll.pll_sua, pll.pll_huy,
+      ps.chuyen_truong, ${thoInPhieuSql('ps.id')} AS tho_in, ${colThoKh} AS tho_in_kh,
+      (SELECT json_agg(json_build_object('tg', k.created_date, 'hu', kx.hu) ORDER BY k.created_date)
+        FROM kcs k CROSS JOIN LATERAL (SELECT COALESCE(k.so_luong_loi,0) + ${TRA_HU_KCS} AS hu) kx
+        WHERE k.tem_id = t.id AND kx.hu > 0 AND (${chuaHuy('kcs', 'k')} OR ${HUY_DO_OQC_TRA_VE})) AS kcs,
       (SELECT json_agg(json_build_object('id', s.id, 'tg', s.created_date, 'dat', s.so_luong_sua_dat,
           'huy', s.so_luong_sua_huy, 'ghi_chu', s.ghi_chu, 'nguoi_sua', s.nguoi_sua, 'nguoi', nd.ho_ten) ORDER BY s.created_date)
         FROM sua s LEFT JOIN nguoi_dung nd ON nd.id = s.created_by WHERE s.tem_id = t.id AND ${chuaHuy('sua', 's')}) AS sua,
@@ -50,7 +64,8 @@ async function docTem(tuNgay, denNgay) {
     ${pllSql}
     LEFT JOIN LATERAL (SELECT array_agg(DISTINCT pin.id::text) AS phan_in_ids, string_agg(DISTINCT pin.ma_phan, ', ') AS ma_phan,
         string_agg(DISTINCT kh.ten_khach_hang, ', ') AS khach, string_agg(DISTINCT dh.ma_don_hang, ', ') AS po,
-        string_agg(DISTINCT mh.ma_hang, ', ') AS ma_hang, string_agg(DISTINCT pin.mau_vai, ', ') AS mau_vai
+        string_agg(DISTINCT mh.ma_hang, ', ') AS ma_hang, string_agg(DISTINCT pin.mau_vai, ', ') AS mau_vai,
+        string_agg(DISTINCT pin.kich_vai, ', ') AS kich_vai, string_agg(DISTINCT pin.kich_phim, ', ') AS kich_phim
       FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id JOIN phan_in pin ON pin.id = dv.phan_in_id
       LEFT JOIN ma_hang mh ON mh.id = pin.ma_hang_id LEFT JOIN don_hang dh ON dh.id = mh.don_hang_id
       LEFT JOIN khach_hang kh ON kh.id = dh.khach_hang_id

@@ -362,8 +362,19 @@ async function doneByDate(date, scope = 'tech') {
                  JOIN khach_hang kh ON kh.id = dh.khach_hang_id`;
   let sql;
   if (scope === 'qc') {
+    // LOẠI ĐỢT VẢI (11/10/2026 — người dùng yêu cầu cho sidebar QC): dòng TỔNG ⇒ loại của các đợt đang chờ TẠI mốc
+    //   xác nhận (đã lên MES, chưa release trước mốc — cùng tập đợt với `hanGiaoReadyTaiMocSql`), không có thì mọi
+    //   đợt sống của phần in; dòng THEO ĐỢT ⇒ loại của chính đợt đó.
+    const loaiTaiMoc = (mocCol) => `COALESCE(
+      (SELECT string_agg(DISTINCT ldm.ten_loai, ', ') FROM dot_vai_ve dvm JOIN loai_dot_vai ldm ON ldm.id = dvm.loai_dot_vai_id
+        WHERE dvm.phan_in_id = pin.id AND dvm.trang_thai NOT IN ('DA_GOP','DA_HUY') AND dvm.created_date <= ${mocCol}
+          AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsq JOIN lenh_san_xuat lq ON lq.id = lsq.lenh_san_xuat_id
+                           WHERE lsq.dot_vai_ve_id = dvm.id AND lq.trang_thai <> 'HUY' AND lq.created_date < ${mocCol})),
+      (SELECT string_agg(DISTINCT ldn.ten_loai, ', ') FROM dot_vai_ve dvn JOIN loai_dot_vai ldn ON ldn.id = dvn.loai_dot_vai_id
+        WHERE dvn.phan_in_id = pin.id AND dvn.trang_thai NOT IN ('DA_GOP','DA_HUY')))`;
     sql = `
-      SELECT kq.tg_xac_nhan AS tg, ${nguoiXacNhanSql('nx', 'kq')} AS nguoi, kq.ghi_chu, ${info(hanGiaoReadyTaiMocSql('pin.id', 'kq.tg_xac_nhan'))}
+      SELECT kq.tg_xac_nhan AS tg, ${nguoiXacNhanSql('nx', 'kq')} AS nguoi, kq.ghi_chu, ${info(hanGiaoReadyTaiMocSql('pin.id', 'kq.tg_xac_nhan'))},
+             ${loaiTaiMoc('kq.tg_xac_nhan')} AS loai_dot_vai
       FROM ket_qua_checkpoint kq
       JOIN checkpoint cp ON cp.id = kq.checkpoint_id
       JOIN tram t ON t.id = cp.tram_id
@@ -374,7 +385,8 @@ async function doneByDate(date, scope = 'tech') {
         AND (kq.tg_xac_nhan AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
       UNION ALL
       SELECT x.tg_xac_nhan AS tg, ${nguoiXacNhanSql('nx', 'x')} AS nguoi,
-             'QC theo đợt vải ' || COALESCE(dvx.barcode, dvx.ma_dot_vai) AS ghi_chu, ${info(`COALESCE(dvx.han_giao_hang, ${hanGiaoReadyTaiMocSql('pin.id', 'x.tg_xac_nhan')})`)}
+             'QC theo đợt vải ' || COALESCE(dvx.barcode, dvx.ma_dot_vai) AS ghi_chu, ${info(`COALESCE(dvx.han_giao_hang, ${hanGiaoReadyTaiMocSql('pin.id', 'x.tg_xac_nhan')})`)},
+             (SELECT ldx.ten_loai FROM loai_dot_vai ldx WHERE ldx.id = dvx.loai_dot_vai_id) AS loai_dot_vai
       FROM ready_xac_nhan_dot x
       JOIN checkpoint cp ON cp.id = x.checkpoint_id AND cp.ma_checkpoint = 'QC_XAC_NHAN'
       JOIN dot_vai_ve dvx ON dvx.id = x.dot_vai_ve_id

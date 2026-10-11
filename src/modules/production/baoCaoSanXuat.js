@@ -11,6 +11,8 @@
 const { query } = require('../../config/db');
 const { dungBaoCaoSanXuat, khoaTuanIso, suyLoaiCaTuTem } = require('../../utils/baoCaoSanXuat');
 const { NHOM_CA_RIENG, NHOM_CA_KHAC, CA_KHAC_MAC_DINH, khoaNhomCa } = require('../../utils/ca');
+const { thoInPhieuSql } = require('../../utils/thoIn');
+const { coCotThoInKh } = require('../../utils/thoInKeHoach');
 
 const daCo = new Map();
 async function coCot(bang, cot) {
@@ -39,9 +41,12 @@ const TEM_CUA_NGAY = (coNgayCa) => (coNgayCa
 
 // Phiếu có HOẠT ĐỘNG trong ngày: bấm chạy / bấm hoàn tất trong ngày, hoặc có tem của ngày. Phiếu treo
 // `DANG_CHAY` từ hôm trước mà hôm nay không in gì ⇒ không lấy (xem `utils/baoCaoSanXuat.js`).
-async function docPhieu(ngay, { coTo, coNgayCa }) {
+// 11/10/2026: kèm THỢ IN của phiếu (bảng "Theo thợ in") — phân công lúc chạy · thợ in kế hoạch của lệnh (mig 111)
+//   · chuyền trưởng; luật chọn (chuyền Máy lấy chuyền trưởng, lấy người ĐẦU làm phụ trách) ở `utils/thoIn.js`.
+async function docPhieu(ngay, { coTo, coNgayCa, coThoKh = false }) {
   const sql = `SELECT ps.id, ps.lenh_san_xuat_id AS lenh_id, COALESCE(ps.chuyen_id, ls.chuyen_id) AS chuyen_id,
-      ps.tg_bd, ps.tg_kt, ${coTo ? 'ps.to_in_id' : 'NULL::uuid'} AS to_in_id
+      ps.tg_bd, ps.tg_kt, ${coTo ? 'ps.to_in_id' : 'NULL::uuid'} AS to_in_id,
+      ps.chuyen_truong, ${thoInPhieuSql('ps.id')} AS tho_in, ${coThoKh ? 'ls.tho_in_kh' : 'NULL::text'} AS tho_in_kh
     FROM phieu_san_xuat ps
     JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
     WHERE ps.trang_thai <> 'HUY' AND ls.trang_thai <> 'HUY' AND ${PHIEU_THAT}
@@ -147,7 +152,8 @@ async function dungMoi(ngay) {
   const [coTo, coNgayCa, coDot, coGoc] = await Promise.all([
     coCot('phieu_san_xuat', 'to_in_id'), coCot('tem', 'ngay_ca'), coCot('tem', 'dot_vai_ve_id'), coCot('tem', 'tem_goc_id'),
   ]);
-  const [phieus, loaiCa] = await Promise.all([docPhieu(ngay, { coTo, coNgayCa }), loaiCaCuaNgay(ngay)]);
+  const coThoKh = await coCotThoInKh();
+  const [phieus, loaiCa] = await Promise.all([docPhieu(ngay, { coTo, coNgayCa, coThoKh }), loaiCaCuaNgay(ngay)]);
   const lenhIds = duyNhat(phieus.map((p) => p.lenh_id));
   const [tems, lenhs, pins, chuyens, tos] = phieus.length ? await Promise.all([
     docTem(ngay, phieus.map((p) => p.id), { coNgayCa, coDot, coGoc }),

@@ -4,7 +4,11 @@
 // Hàm THUẦN — dữ liệu thô lấy ở `modules/production/baoCaoSanXuat.js`. Dựng 2 bảng từ CÙNG một lượt dữ
 // liệu (FE bật/tắt bảng không phải gọi lại API):
 //   · Bảng 1 `theo_nhom`: nhóm chuyền (MTD · Banin · RB · MT · LG · MEP) cả xưởng — không tách tổ (07/10/2026).
-//   · Bảng 2 `chi_tiet` : 1 dòng / (chuyền × phần in).
+//   · Bảng 2 `chi_tiet` : 1 dòng / (chuyền × phần in × THỢ PHỤ TRÁCH) — 11/10/2026 thêm chiều thợ để FE gom được
+//     mọi bảng (khu chuyền · chuyền · khách · thợ in) theo bộ chọn chuyền. THỢ PHỤ TRÁCH = người ĐẦU trong danh
+//     sách thợ in của phiếu (chuyền Máy lấy chuyền trưởng — `utils/thoIn.js`; cùng quy ước ô "Phụ trách" của tờ
+//     Lệnh sản xuất 07/10/2026) ⇒ mỗi lượt chạy thuộc đúng 1 người, Σ các thợ = Tổng cộng. `tho_ds` = cả nhóm thợ.
+//   · `theo_tho` / `theo_chuyen`: cùng đơn vị (phiếu × phần in) ⇒ Σ = Tổng cộng.
 // Mỗi ô = 5 cột-nhóm Tổng · HC · CA1 · CA2 · CA3, mỗi cột-nhóm 4 số: kh (SL kế hoạch) · tt (SL in thực
 // tế) · gk (số giờ KH) · gt (số giờ TT). FE tự tính % = tt/kh và C.lệch giờ = gt − gk.
 //
@@ -41,6 +45,7 @@
 //     phiếu `ghi_chu` mở đầu `[HỆ THỐNG` (4.626 phiếu) + tem `HT-…` (4.657 tem) — không phải sản xuất thật.
 
 const { caFromHour, khoaTuanIso, khoaNhomCa } = require('./ca');
+const { dsThoCuaDong } = require('./thoIn');
 
 const CA = ['HC', 'CA1', 'CA2', 'CA3'];
 const NHOM = [
@@ -299,28 +304,46 @@ function dungBaoCaoSanXuat({
     });
   });
 
-  // 4. Bảng 2 — gom (chuyền × phần in).
+  // Thợ của phiếu: [phụ trách, …cả nhóm] theo luật `utils/thoIn.js` (chuyền Máy ⇒ chuyền trưởng).
+  const thoCuaPhieu = new Map();
+  const thoPhieu = (phieu) => {
+    const k = String(phieu.id);
+    if (!thoCuaPhieu.has(k)) {
+      const c = chuyenById.get(String(phieu.chuyen_id)) || {};
+      thoCuaPhieu.set(k, dsThoCuaDong({
+        ma_loai_chuyen: c.ma_loai, tho_in: phieu.tho_in, tho_in_kh: phieu.tho_in_kh, chuyen_truong: phieu.chuyen_truong,
+      }));
+    }
+    return thoCuaPhieu.get(k);
+  };
+
+  // 4. Bảng 2 — gom (chuyền × phần in × thợ phụ trách).
   const dong2 = new Map();
   donVi.forEach(({ phieu, pin, bo }) => {
-    const k = `${phieu.chuyen_id}|${pin.phan_in_id}`;
+    const ds = thoPhieu(phieu);
+    const k = `${phieu.chuyen_id}|${pin.phan_in_id}|${ds[0]}`;
     if (!dong2.has(k)) {
       const c = chuyenById.get(String(phieu.chuyen_id)) || {};
       dong2.set(k, {
         ma_chuyen: c.ma_chuyen || '—', ten_chuyen: c.ten_chuyen || null, nhom: nhomCuaLoai(c.ma_loai),
         ma_phan: pin.ma_phan, khach: pin.ten_khach_hang || null, po: pin.ma_don_hang || null,
         ma_hang: pin.ma_hang || null, mau_vai: pin.mau_vai || null, kich_vai: pin.kich_vai || null,
-        kich_phim: pin.kich_phim || null, to: new Set(), bo: boRong(),
+        kich_phim: pin.kich_phim || null, tho: ds[0], thoDs: new Set(), to: new Set(), bo: boRong(),
       });
     }
     const r = dong2.get(k);
     congBo(r.bo, bo);
+    ds.forEach((t) => r.thoDs.add(t));
     const t = toById.get(String(phieu.to_in_id));
     if (t) r.to.add(t.ma_to);
   });
   const chiTiet = [...dong2.values()].filter((r) => coSo(r.bo))
     .sort((x, y) => soTuNhien(x.ma_chuyen, y.ma_chuyen) || soTuNhien(x.khach, y.khach)
-      || soTuNhien(x.po, y.po) || soTuNhien(x.ma_phan, y.ma_phan))
-    .map((r) => ({ ...r, to: [...r.to].sort(soTuNhien).join(', ') || null, m: xuatBo(r.bo), bo: undefined }));
+      || soTuNhien(x.po, y.po) || soTuNhien(x.ma_phan, y.ma_phan) || soTuNhien(x.tho, y.tho))
+    .map((r) => ({
+      ...r, to: [...r.to].sort(soTuNhien).join(', ') || null, tho_ds: [...r.thoDs].join(', '), thoDs: undefined,
+      m: xuatBo(r.bo), bo: undefined,
+    }));
 
   // 5. Bảng 1 — gom theo nhóm chuyền cho cả xưởng (07/10/2026 người dùng bỏ cột Tổ — trước đó tổ × nhóm).
   const theoNhom = new Map();
@@ -347,6 +370,24 @@ function dungBaoCaoSanXuat({
     .sort((x, y) => soTuNhien(x[0], y[0]))
     .map(([ten, bo]) => ({ key: ten, label: ten, m: xuatBo(bo) }));
 
+  // 7. Bảng theo THỢ IN (phụ trách) + theo TỪNG CHUYỀN (11/10/2026) — cùng đơn vị ⇒ Σ = Tổng cộng.
+  const theoTho = new Map();
+  const theoChuyen = new Map();
+  donVi.forEach(({ phieu, bo }) => {
+    const tho = thoPhieu(phieu)[0];
+    if (!theoTho.has(tho)) theoTho.set(tho, boRong());
+    congBo(theoTho.get(tho), bo);
+    const c = chuyenById.get(String(phieu.chuyen_id)) || {};
+    const kc = c.ma_chuyen || '—';
+    if (!theoChuyen.has(kc)) theoChuyen.set(kc, { ten: c.ten_chuyen || null, nhom: nhomCuaLoai(c.ma_loai), bo: boRong() });
+    congBo(theoChuyen.get(kc).bo, bo);
+  });
+  const bangTho = [...theoTho.entries()].filter(([, bo]) => coSo(bo))
+    .sort((x, y) => soTuNhien(x[0], y[0])).map(([ten, bo]) => ({ key: ten, label: ten, m: xuatBo(bo) }));
+  const bangChuyen = [...theoChuyen.entries()].filter(([, v]) => coSo(v.bo))
+    .sort((x, y) => soTuNhien(x[0], y[0]))
+    .map(([ma, v]) => ({ key: ma, label: ma, ten_chuyen: v.ten, nhom: v.nhom, m: xuatBo(v.bo) }));
+
   // `loai_ca` = loại ca CHUNG; `loai_ca_rieng` = loại chuyền cài khác chung (mig 112) để FE ghi rõ.
   const chung = loaiCaCuaLoai(null);
   const rieng = {};
@@ -355,7 +396,8 @@ function dungBaoCaoSanXuat({
   ['MAY', 'BAN', 'ROBOT', ...(coKhac ? ['KHAC'] : [])].forEach((lc) => { const v = loaiCaCuaLoai(lc); if (v !== chung) rieng[lc] = v; });
   return {
     ngay, loai_ca: chung, loai_ca_rieng: rieng, ca: CA,
-    theo_nhom: bang1, theo_khach: bangKhach, tong: xuatBo(tongCong), chi_tiet: chiTiet,
+    theo_nhom: bang1, theo_khach: bangKhach, theo_tho: bangTho, theo_chuyen: bangChuyen,
+    tong: xuatBo(tongCong), chi_tiet: chiTiet,
   };
 }
 

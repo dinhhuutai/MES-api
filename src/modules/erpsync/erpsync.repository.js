@@ -4,6 +4,7 @@ const { query, withTransaction } = require('../../config/db');
 // Số cuối `barcode_hskt` = phương án in (mig 064) — dùng chung với trang Hồ sơ kỹ thuật.
 const { applyPainToBarcode } = require('../../utils/hskt');
 const { tachDsMa, soMaVuaCot, NGAN_CACH } = require('../../utils/maPhanIn');
+const { coCotGia, TEN_COT: TEN_COT_GIA } = require('../../utils/giaPhanIn');
 
 // ----- Log đồng bộ -----
 async function createSyncLog({ nguon, fromDate, tuDong }, actorId) {
@@ -272,6 +273,24 @@ async function setPhanInDryMin(phanInId, phut) {
     await query('UPDATE phan_in SET thoi_gian_cho_kho_phut = $2, updated_date = CURRENT_TIMESTAMP WHERE id = $1',
       [phanInId, phut]);
   } catch (e) { /* migration 038 chưa chạy — bỏ qua */ }
+}
+
+// Thông tin PHỤ của phần in đi kèm dòng ERP — thời gian chờ khô (`tgphoi`) + 4 GIÁ (mig 113: `GiaIn` · `Giaep` ·
+// `giainkieng` · `Dongia`, đọc bằng `utils/giaPhanIn.docGiaErp`) — ghi CHUNG 1 câu (mỗi dòng ERP đã tốn 1
+// round-trip cho chờ khô, thêm giá không tốn thêm). BEST-EFFORT, ngoài transaction chính: lỗi chỉ cảnh báo.
+// Giá null (ERP không gửi / không phải số) ⇒ GIỮ giá đang lưu; thiếu cột (chưa chạy mig 113) ⇒ bỏ phần giá.
+async function capNhatPhanInPhu(phanInId, { choKhoPhut = null, gia = null } = {}) {
+  const set = []; const val = [phanInId];
+  if (choKhoPhut != null) { val.push(choKhoPhut); set.push(`thoi_gian_cho_kho_phut = $${val.length}`); }
+  if (gia && await coCotGia()) {
+    for (const c of TEN_COT_GIA) {
+      if (gia[c] != null) { val.push(gia[c]); set.push(`${c} = $${val.length}`); }
+    }
+  }
+  if (!set.length) return;
+  try {
+    await query(`UPDATE phan_in SET ${set.join(', ')}, updated_date = CURRENT_TIMESTAMP WHERE id = $1`, val);
+  } catch (e) { console.warn(`[erp] ⚠ Ghi chờ khô / đơn giá phần in lỗi: ${e.message}`); }
 }
 
 // Tra id loại đợt vải CHUẨN theo ma_loai (SO_LUONG/BO_SUNG/MAU — đã seed). KHÔNG tạo mới loại rác từ mã ERP.
@@ -942,7 +961,7 @@ async function openSetByGhiChu(ghiChu) {
 
 module.exports = {
   createSyncLog, finishSyncLog, listSyncHistory, insertRawBatch, saveSyncRaw, getSyncRaw,
-  upsertKhachHang, upsertDonHang, upsertMaHang, upsertPhanIn, setPhanInDryMin, getLoaiDotVaiId, upsertDotVai,
+  upsertKhachHang, upsertDonHang, upsertMaHang, upsertPhanIn, setPhanInDryMin, capNhatPhanInPhu, getLoaiDotVaiId, upsertDotVai,
   findPhanInIdByMaPhan, promotePhanInToReady,
   anhChupPhanInTheoMa, dotVaiDaCo, ganLaiPhanIn,
   readyCheckpointIds, simulateReadyDone, isPhanInReleased, canLamLaiReady, flagLamLaiReady,

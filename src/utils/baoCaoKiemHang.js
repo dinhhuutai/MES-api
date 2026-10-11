@@ -16,8 +16,12 @@
 //     phần lẻ dồn vào lượt CUỐI ⇒ Σ các lượt = đúng số của tem, kỳ nào chứa lượt nào thì nhận đúng phần đó.
 //   · Dây chuyền = nhóm loại chuyền của chuyền chạy phiếu (MTD · Banin · RB · MT · LG · MEP — `nhomCuaLoai`
 //     của Báo cáo sản xuất); không rõ loại ⇒ "Khác".
+//   · 11/10/2026 — thêm chiều xem KHÁCH HÀNG · THỢ IN · TỪNG CHUYỀN (`theo_khach` / `theo_tho` / `theo_chuyen`, cùng
+//     8 cột số; FE còn tự gom lại từ `chi_tiet` khi người dùng chọn chuyền). Mỗi lượt mang `tho` = THỢ PHỤ TRÁCH của
+//     phiếu in ra tem (người ĐẦU trong danh sách thợ; chuyền Máy lấy chuyền trưởng — `utils/thoIn.js`) + `tho_ds`.
 
 const { nhomCuaLoai, NHOM } = require('./baoCaoSanXuat');
+const { dsThoCuaDong } = require('./thoIn');
 
 const NHAN_NHOM = Object.fromEntries([...NHOM, { key: 'KHAC', label: 'Khác' }].map((n) => [n.key, n.label]));
 const so = (v) => Math.max(0, Math.round(Number(v) || 0));
@@ -87,7 +91,8 @@ function dungBaoCaoKiemHang({ tuNgay, denNgay, rows = [] }) {
         ma_chuyen: r.ma_chuyen || null, ten_chuyen: r.ten_chuyen || null,
         nhom: nhomCuaLoai(r.ma_loai_chuyen), ma_lenh_san_xuat: r.ma_lenh_san_xuat || null,
         ma_phan: r.ma_phan || null, khach: r.khach || null, po: r.po || null, ma_hang: r.ma_hang || null, mau_vai: r.mau_vai || null,
-        nguoi_kiem: r.nguoi_kiem || null,
+        kich_vai: r.kich_vai || null, kich_phim: r.kich_phim || null,
+        nguoi_kiem: r.nguoi_kiem || null, ...thoCuaDong(r),
         sl_dat: so(r.so_luong_dat), sl_hu: hu,
         sl_sua: hu - huyPl, sl_huy: huyPl + huyTaiKcs,
         chua_phan_loai: hu > 0 && !coPhanLoai,
@@ -131,8 +136,30 @@ function dungBaoCaoKiemHang({ tuNgay, denNgay, rows = [] }) {
     tong: chot({ ...tong, so_tem: temTong.size }),
     chua_phan_loai: luot.filter((l) => l.chua_phan_loai).length,
     theo_day_chuyen: theoDayChuyen,
+    theo_khach: gomTheo(luot, (l) => l.khach || '(Chưa rõ khách)'),
+    theo_tho: gomTheo(luot, (l) => l.tho),
+    theo_chuyen: gomTheo(luot, (l) => l.ma_chuyen || '—'),
     chi_tiet: luot,
   };
 }
 
-module.exports = { dungBaoCaoKiemHang, chiaHuyTheoLuot };
+// Thợ phụ trách + cả nhóm thợ của phiếu in ra tem (luật chuyền Máy ⇒ chuyền trưởng ở `utils/thoIn.js`).
+function thoCuaDong(r) {
+  const ds = dsThoCuaDong(r);
+  return { tho: ds[0], tho_ds: ds.join(', ') };
+}
+
+// Gom các lượt theo 1 khóa bất kỳ ⇒ [{ key, ten, sl_kiem, sl_dat, sl_sua, sl_huy, so_luot, so_tem, tỷ lệ… }] xếp theo tên.
+function gomTheo(luot, khoa) {
+  const m = new Map();
+  luot.forEach((l) => {
+    const k = khoa(l);
+    if (!m.has(k)) m.set(k, { ...tongRong(), tem: new Set() });
+    const x = m.get(k);
+    cong(x, l); x.tem.add(l.tem_id);
+  });
+  return [...m.entries()].map(([key, { tem, ...x }]) => ({ key, ten: key, ...chot({ ...x, so_tem: tem.size }) }))
+    .sort((a, b) => String(a.ten).localeCompare(String(b.ten), 'vi', { numeric: true, sensitivity: 'base' }));
+}
+
+module.exports = { dungBaoCaoKiemHang, chiaHuyTheoLuot, gomTheo };

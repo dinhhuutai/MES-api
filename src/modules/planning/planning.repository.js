@@ -22,6 +22,7 @@ const { CHO_GN_SQL, LENH_CHO_GN_SQL } = require('../../utils/traVeGn');
 // để "Danh sách release" và các màn khác không bao giờ ra 2 con số đá nhau.
 const { dominantStageScalar, STAGE_LABEL, lenhStageCase } = require('../../utils/stage');
 const { coCotThoInKh } = require('../../utils/thoInKeHoach');
+const { cotGiaSql } = require('../../utils/giaPhanIn');
 const { LOAI_TRA_VE_KH, LENH_CHO_KH_SQL } = require('../../utils/traVeKeHoach');
 
 // SL vải đã ĐƯA VÀO đợt SX của 1 đợt vải = Σ lenh_sx_dot_vai.so_luong các lệnh non-HUY gắn đợt đó
@@ -2317,10 +2318,12 @@ async function releaseListByDate(date, mode = 'KE_HOACH') {
     : 'ls.ngay_ke_hoach = $1::date';
   // `tho_in_kh` (mig 111) = thợ in KẾ HOẠCH chọn lúc Release 1; cột "Thợ in" hiện phân công thật trước, chưa có thì kế hoạch.
   const colTho = (await coCotThoInKh()) ? 'ls.tho_in_kh' : 'NULL::text AS tho_in_kh';
+  // 4 giá của phần in (mig 113, ERP `GiaIn`/`Giaep`/`giainkieng`/`Dongia`) — cột "Đơn giá"; thiếu cột ⇒ NULL.
+  const colGia = await cotGiaSql('pin');
   const sql = `
     SELECT ls.id AS lenh_id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.ngay_ke_hoach, ls.created_date,
            ls.tg_bd_kh, ls.tg_kt_kh, ls.giai_doan, ls.trang_thai AS lenh_trang_thai, ${colTho},
-           pin.id AS phan_in_id,
+           pin.id AS phan_in_id, ${colGia},
            ${dominantStageScalar('pin.id')} AS giai_doan_hien_tai,
            cs.ma_chuyen, cs.ten_chuyen, cs.dinh_muc_gio, lc.ma_loai AS ma_loai_chuyen, lc.ten_loai AS ten_loai_chuyen,
            pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.so_luong_don_hang, pin.tinh_chat_in,

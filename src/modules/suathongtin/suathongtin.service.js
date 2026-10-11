@@ -5,6 +5,9 @@ const repo = require('./suathongtin.repository');
 // Sửa trường phần in / đợt vải: TÁI DÙNG đúng đường ghi của *Quản trị phần in* (whitelist cột cứng,
 // guard hạ SL vải dưới SL đã in, tính lại phương án in khi đổi loại/SL, audit). ⚠ Đừng viết UPDATE riêng.
 const phanInAdmin = require('../phaninadmin/phaninadmin.service');
+// "Hủy vải không in" = XÓA MỀM ĐỢT: gọi lại CHÍNH hàm của tab Hủy đợt vải (dọn tồn trạm / gom set / ẩn phần in
+// hết đợt + audit `HUY_DOT_VAI` để "Mở đợt vải" khôi phục được).
+const ordersService = require('../orders/orders.service');
 const { THONG_TIN_GN, TEN_THEO_MA, NGUON_TRA_VE_GN, dsManQuayVe } = require('../../utils/traVeGn');
 const AppError = require('../../utils/AppError');
 const sockets = require('../../sockets');
@@ -34,6 +37,90 @@ async function danhSach(q) {
   return rows.map((r) => ({ ...r, co_ly_do_huy: coLyDoHuy([r]) }));
 }
 
+// ─── "HỦY VẢI KHÔNG IN" = XÓA MỀM ĐỢT VẢI (11/10/2026, người dùng chốt) ─────────────────────────
+// Trả về GN mà tích mục `HUY_VAI` ⇒ KHÔNG nằm chờ ở trang *Phần in chờ sửa thông tin* nữa: các đợt trong phạm
+// vi trả về bị xóa mềm ngay (`orders.softDeleteDotVai` — hết đợt sống thì phần in ẩn theo), lượt đóng luôn
+// (audit `GN_HUY_DOT_VAI`). Đợt đang nằm trong lệnh CHƯA CHẠY (trả về từ Test Run / Release 2 / Chờ chạy) ⇒ hủy
+// lệnh trước bằng `planning.rollbackLenh` đích Release 1 (lệnh chứa phần in KHÁC — gom set cũ — thì không tự
+// hủy: báo lỗi, lượt nằm chờ để xử lý tay). ERP vẫn được báo hủy đợt READY (`gnErp.huyBenErp`, chạy ngầm).
+// ERP về sau gửi đợt MỚI của code phần đó ⇒ đi đường đợt mới bình thường (phần in tự hiện lại).
+const LY_DO_HUY_VAI = 'Trả về GN — hủy vải không in';
+async function huyVaiTheoPhamVi({ phanInId, maPhan, phamVi }, actorId) {
+  const loi = []; const lenhHuy = []; const chan = new Set();
+  const coLenh = phamVi.filter((d) => d.lenh_ids.length);
+  if (coLenh.length) {
+    const planning = require('../planning/planning.service'); // lazy — tránh vòng require
+    const daHuy = new Set();
+    for (const d of coLenh) {
+      if (!d.lenh_rieng) {
+        chan.add(d.id);
+        loi.push({ id: d.id, ma: d.ma_dot_vai, ly_do: 'Đợt nằm trong lệnh có phần in khác — hủy lệnh ở Hủy lệnh xác nhận trước' });
+        continue;
+      }
+      for (const lid of d.lenh_ids) {
+        if (daHuy.has(lid)) continue;
+        try {
+          await planning.rollbackLenh(lid, { target: 'RELEASE_1', lyDo: `${LY_DO_HUY_VAI} (${maPhan})` }, actorId);
+          daHuy.add(lid); lenhHuy.push(lid);
+        } catch (e) {
+          chan.add(d.id);
+          loi.push({ id: d.id, ma: d.ma_dot_vai, ly_do: `Không hủy được lệnh: ${e.message}` });
+        }
+      }
+    }
+  }
+  const ids = phamVi.filter((d) => !chan.has(d.id)).map((d) => d.id);
+  let daHuyDot = [];
+  if (ids.length) {
+    const r = await ordersService.softDeleteDotVai(ids, LY_DO_HUY_VAI, actorId);
+    daHuyDot = r.items || [];
+    loi.push(...(r.loi || []));
+  }
+  if (!phamVi.length) loi.push({ ly_do: 'Không có đợt vải nào chưa vào sản xuất để hủy' });
+  // Đóng lượt khi đã hủy được ít nhất 1 đợt và không còn đợt nào bị chặn.
+  let daDong = false;
+  if (daHuyDot.length && !loi.length) {
+    await withTransaction(async (client) => {
+      const xs = await repo.xuLyHet(client, phanInId, actorId);
+      for (const id of xs) {
+        await repo.ghiAudit(client, id, 'GN_HUY_DOT_VAI', {
+          phan_in_id: phanInId, ma_phan: maPhan, xoa_mem: true,
+          ghi_chu: `Hủy vải không in — đã xóa mềm ${daHuyDot.length} đợt vải${lenhHuy.length ? `, hủy ${lenhHuy.length} lệnh chưa chạy` : ''}`,
+          dot_vai: daHuyDot.map((d) => ({ id: d.id, ma_dot_vai: d.ma })), lenh_huy: lenhHuy,
+          phan_in_an: daHuyDot.some((d) => d.phan_in_da_huy),
+        }, actorId);
+      }
+      daDong = xs.length > 0;
+    });
+  }
+  return {
+    ok: daDong, so_dot: daHuyDot.length, so_lenh_huy: lenhHuy.length, loi,
+    phan_in_an: daHuyDot.some((d) => d.phan_in_da_huy),
+  };
+}
+
+// Lượt ĐANG CHỜ mang đề nghị hủy vải (trả về trước 11/10/2026, hoặc lần hủy trước bị chặn) ⇒ xóa mềm đợt + đóng.
+async function huyVaiDangCho(phanInId, actorId) {
+  const pin = await repo.getPhanInCoBan(phanInId);
+  if (!pin) throw new AppError('Phần in không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  const cho = await repo.dangCho(phanInId);
+  if (!cho.length) throw new AppError('Phần in không còn chờ Giao nhận sửa', { status: 409, errorCode: 'KHONG_O_GN' });
+  if (!coLyDoHuy(cho)) {
+    throw new AppError('Lượt trả về này không có mục "Hủy vải không in"', { status: 409, errorCode: 'KHONG_HUY_VAI' });
+  }
+  const pv = await repo.phamViCuaLuot(cho[0].id);
+  const phamVi = await repo.dotPhamVi(phanInId, { dotVaiIds: pv });
+  const kq = await huyVaiTheoPhamVi({ phanInId, maPhan: pin.ma_phan, phamVi }, actorId);
+  if (!kq.ok) {
+    throw new AppError(`Chưa hủy được vải của ${pin.ma_phan}: ${kq.loi.map((x) => x.ly_do).join(' · ') || 'không rõ lý do'}`,
+      { status: 409, errorCode: 'HUY_VAI_LOI', details: kq });
+  }
+  baoCacMan({ phanInId, gn_huy_vai: true });
+  sockets.emit('gn:updated', { phanInId });
+  sockets.emit('dashboard:refresh', {});
+  return { phan_in_id: phanInId, ma_phan: pin.ma_phan, ...kq };
+}
+
 async function chiTiet(phanInId) {
   const [ct, dangCho, lichSu] = await Promise.all([
     phanInAdmin.chiTiet(phanInId), repo.dangCho(phanInId), repo.lichSu(phanInId),
@@ -52,7 +139,7 @@ function coLyDoHuy(dsTraVe = []) {
 //   (`nguon` ∈ `NGUON_TRA_VE_GN`; lệnh giữ nguyên — xem `utils/traVeGn.js`). `lenhId` (tùy chọn) chỉ để ghi vết.
 // ⚠ Guard chạy TRƯỚC khi ghi: phần in phải còn hoạt động, chưa đang ở GN, và phải chọn ÍT NHẤT 1 mục
 //   (hoặc gõ ô "Khác") — lý do rỗng thì GN không biết phải sửa gì.
-async function traVe({ phanInId, thongTin, khac, nguon, lenhId }, actorId) {
+async function traVe({ phanInId, thongTin, khac, nguon, lenhId, dotVaiIds }, actorId) {
   const pin = await repo.getPhanInCoBan(phanInId);
   if (!pin) throw new AppError('Phần in không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   if (!pin.dang_hoat_dong) throw new AppError('Phần in đã bị hủy', { status: 409, errorCode: 'DA_HUY' });
@@ -77,19 +164,36 @@ async function traVe({ phanInId, thongTin, khac, nguon, lenhId }, actorId) {
     tenSai.length ? `Sai thông tin: ${tenSai.join(' · ')}` : null,
   ].filter(Boolean).join(' · ');
 
+  // PHẠM VI ĐỢT bị trả về (11/10/2026): dòng đợt của màn READY / QC / Release 1 (`dotVaiIds`), đợt trong lệnh
+  //   (`lenhId`), không có ⇒ mọi đợt chưa vào sản xuất. Ghi vào vết để (1) "hủy vải" xóa mềm đúng đợt,
+  //   (2) báo ERP hủy đúng đợt, (3) ERP gửi đợt mới thì thay đúng đợt cũ (`gnErp.thayDotCu`).
+  const phamVi = await repo.dotPhamVi(phanInId, { dotVaiIds, lenhId });
   const kq = await withTransaction(async (client) => {
     const r = await repo.insertTraVe(client, { phanInId, checklistList: ten.join(', '), lyDo }, actorId);
     await repo.ghiAudit(client, r.id, 'TRA_VE_GN',
       { phan_in_id: phanInId, ma_phan: pin.ma_phan, nguon: nguonSach, nguon_ten: NGUON_HOP_LE[nguonSach],
-        lenh_id: lenhId || null, thong_tin: ma, khac: khacSach || null }, actorId);
+        lenh_id: lenhId || null, thong_tin: ma, khac: khacSach || null,
+        dot_vai_ids: phamVi.map((d) => d.id) }, actorId);
     return r;
   });
+  // Cặp `code phần, IDDotReady` chốt TRƯỚC khi xóa mềm (đợt đã hủy thì không còn trong câu đọc đợt sống).
+  const cap = phamVi.map((d) => ({ dot_vai_ve_id: d.id, ma_dot_vai: d.ma_dot_vai, id_dot_ready: d.id_dot_ready }));
+  let huyVai = null;
+  if (ma.includes('HUY_VAI')) {
+    try {
+      huyVai = await huyVaiTheoPhamVi({ phanInId, maPhan: pin.ma_phan, phamVi }, actorId);
+    } catch (e) {
+      // Xóa mềm hỏng ⇒ lượt vẫn nằm chờ như một lần trả về thường (không mất yêu cầu), báo rõ cho người bấm.
+      huyVai = { ok: false, so_dot: 0, so_lenh_huy: 0, loi: [{ ly_do: e.message }] };
+    }
+  }
   baoCacMan({ phanInId, tra_ve_gn: true });
   sockets.emit('gn:updated', { phanInId });
+  if (huyVai && huyVai.ok) sockets.emit('dashboard:refresh', {});
   // 07/10/2026: HỦY ĐỢT READY bên ERP ngay (chạy NGẦM sau commit — ERP chậm/lỗi không giữ người bấm; kết
   //   quả hiện ở cột ERP của trang chờ sửa thông tin). Xem `gnErp.js`.
-  gnErp.huyBenErp(kq.id, { phanInId, maPhan: pin.ma_phan }, actorId).catch(() => {});
-  return { id: kq.id, phan_in_id: phanInId, ma_phan: pin.ma_phan, ly_do: lyDo };
+  gnErp.huyBenErp(kq.id, { phanInId, maPhan: pin.ma_phan, cap }, actorId).catch(() => {});
+  return { id: kq.id, phan_in_id: phanInId, ma_phan: pin.ma_phan, ly_do: lyDo, huy_vai: huyVai };
 }
 
 async function kiemDangO(phanInId) {
@@ -178,4 +282,6 @@ async function guiHuyErp(phanInId, actorId) {
   return { phan_in_id: phanInId, ma_phan: pin.ma_phan, ...kq };
 }
 
-module.exports = { danhMuc, danhSach, chiTiet, traVe, suaPhanIn, suaDotVai, xacNhanLai, xacNhanTuDong, guiHuyErp };
+module.exports = {
+  danhMuc, danhSach, chiTiet, traVe, suaPhanIn, suaDotVai, xacNhanLai, xacNhanTuDong, guiHuyErp, huyVaiDangCho,
+};

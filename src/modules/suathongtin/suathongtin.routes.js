@@ -31,5 +31,8 @@ router.get('/:phanInId', rbac(...BEN_XEM), c.chiTiet);
 router.post('/:phanInId/gui-huy-erp', rbac(...BEN_SUA), c.guiHuyErp);
 // Dự phòng: chỉ khi lệnh hủy CHƯA tới được ERP (ERP đã nhận ⇒ 409 CHO_ERP).
 router.post('/:phanInId/xac-nhan', rbac(...BEN_SUA), c.xacNhanLai);
+// "Hủy vải không in" = xóa mềm đợt (11/10/2026) — lượt ĐANG CHỜ mang đề nghị hủy vải (trả về trước 11/10, hoặc
+// lần hủy lúc trả về bị chặn). Bên trả về lẫn GN đều bấm được (tương đương chính thao tác trả về).
+router.post('/:phanInId/huy-vai', rbac(...BEN_SUA, ...BEN_TRA), c.huyVai);
 
 module.exports = router;

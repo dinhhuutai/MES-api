@@ -172,7 +172,10 @@ const laTruongHopLe = (ma) => TRUONG_TEM.some((t) => t.ma === ma);
 //           //   THAY  { tu, thanh }                 thay mọi lần xuất hiện của `tu`
 //           //   VITRI { vi_tri, so_kt, thanh }      thay `so_kt` ký tự kể từ ký tự thứ `vi_tri` (từ 1); so_kt=0 = chèn
 //           //   DAU   { thanh } · CUOI { thanh }    thêm vào đầu / cuối chuỗi
-//           thay: [{ kieu: 'THAY', tu: 'Chuyền M', thanh: '' }] }
+//           thay: [{ kieu: 'THAY', tu: 'Chuyền M', thanh: '' }],
+//           // TRƯỜNG DỰ PHÒNG (11/10/2026): trường chính KHÔNG có dữ liệu (null / rỗng / toàn khoảng trắng) ⇒ lấy
+//           //   trường đầu tiên CÓ dữ liệu trong danh sách, định dạng theo `kieu` của chính nó. Luật `thay` chạy sau.
+//           du_phong: [{ ma: 'chuyen_truong', kieu: 'chu' }] }
 //       ],
 //       cs: 3, rs: 1,                            // colspan/rowspan (mặc định 1)
 //       dam: true, nghieng: false, gach_chan: false,
@@ -186,6 +189,7 @@ const laTruongHopLe = (ma) => TRUONG_TEM.some((t) => t.ma === ma);
 //       xoay: 90,                                // 0 ngang · 90 dọc đọc từ trên xuống · 270 từ dưới lên
 //       vien: { tren: true, duoi: true, trai: true, phai: true },
 //       ma_qr: 'ma_tem',                         // kieu qr/barcode: lấy giá trị từ trường nào
+//       du_phong: [{ ma: 'ma_lenh_san_xuat' }],  // ô mã: trường mã hóa thay thế khi `ma_qr` không có dữ liệu
 //       thay: [{ kieu: 'VITRI', vi_tri: 1, so_kt: 2, thanh: '17' }],  // luật ở MỨC Ô, chỉ cho ô mã
 //       // ⚠⚠ Khác `phan[].thay` (chỉ đổi CHỮ hiện ra): luật ở ô mã đổi LUÔN nội dung được MÃ HÓA vào
 //       //   QR/vạch ⇒ máy quét đọc ra chuỗi mới. Cắt bớt ký tự mã tem là quét không ra tem nữa.
@@ -233,12 +237,20 @@ function kiemBoCuc(boCuc) {
           chiem.add(kk);
         }
       }
+      // Trường dự phòng (mảnh trường + ô mã) cũng phải là trường có thật — sai là ô in RỖNG mà không báo gì.
+      const kiemDuPhong = (ds) => {
+        for (const d of (Array.isArray(ds) ? ds : [])) {
+          if (!d || !laTruongHopLe(d.ma)) loi.push(`${ten}: ô "${key}" có trường dự phòng không có thật "${d && d.ma}"`);
+        }
+      };
       for (const p of (Array.isArray(val.phan) ? val.phan : [])) {
         if (p && p.loai === 'truong' && !laTruongHopLe(p.ma)) loi.push(`${ten}: ô "${key}" dùng trường không có thật "${p.ma}"`);
+        if (p && p.loai === 'truong') kiemDuPhong(p.du_phong);
       }
       if ((val.kieu === 'qr' || val.kieu === 'barcode') && val.ma_qr && !laTruongHopLe(val.ma_qr)) {
         loi.push(`${ten}: ô "${key}" mã ${val.kieu} trỏ tới trường không có thật "${val.ma_qr}"`);
       }
+      if (val.kieu === 'qr' || val.kieu === 'barcode') kiemDuPhong(val.du_phong);
     }
   };
   kiemKhung(boCuc.trai, 'Khung trái');

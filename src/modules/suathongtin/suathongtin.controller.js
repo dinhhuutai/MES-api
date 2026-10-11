@@ -7,8 +7,17 @@ const service = require('./suathongtin.service');
 const danhMuc = asyncHandler(async (req, res) => ok(res, service.danhMuc()));
 const danhSach = asyncHandler(async (req, res) => ok(res, await service.danhSach(req.query)));
 const chiTiet = asyncHandler(async (req, res) => ok(res, await service.chiTiet(req.params.phanInId)));
-const traVe = asyncHandler(async (req, res) =>
-  ok(res, await service.traVe(req.body || {}, req.user.id), 'Đã trả phần in về Giao nhận — đang báo ERP hủy đợt READY'));
+const traVe = asyncHandler(async (req, res) => {
+  const kq = await service.traVe(req.body || {}, req.user.id);
+  const hv = kq.huy_vai;
+  ok(res, kq, hv && hv.ok ? `Đã hủy vải — xóa mềm ${hv.so_dot} đợt vải (không sang trang chờ sửa thông tin)`
+    : 'Đã trả phần in về Giao nhận — đang báo ERP hủy đợt READY');
+});
+// Lượt đang chờ mang đề nghị "Hủy vải không in" ⇒ xóa mềm đợt + đóng lượt (11/10/2026).
+const huyVai = asyncHandler(async (req, res) => {
+  const kq = await service.huyVaiDangCho(req.params.phanInId, req.user.id);
+  ok(res, kq, `Đã hủy vải — xóa mềm ${kq.so_dot} đợt vải`);
+});
 const suaPhanIn = asyncHandler(async (req, res) =>
   ok(res, await service.suaPhanIn(req.params.id, req.body || {}, req.user.id), 'Đã lưu thông tin phần in'));
 const suaDotVai = asyncHandler(async (req, res) =>
@@ -21,4 +30,4 @@ const guiHuyErp = asyncHandler(async (req, res) => {
   ok(res, kq, kq.ok ? 'ERP đã nhận lệnh hủy đợt READY' : 'Chưa gửi được lệnh hủy sang ERP');
 });
 
-module.exports = { danhMuc, danhSach, chiTiet, traVe, suaPhanIn, suaDotVai, xacNhanLai, guiHuyErp };
+module.exports = { danhMuc, danhSach, chiTiet, traVe, suaPhanIn, suaDotVai, xacNhanLai, guiHuyErp, huyVai };

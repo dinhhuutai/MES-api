@@ -98,6 +98,8 @@ router.get('/bao-cao-dung-chuyen', rbac('PROD_RUN', 'PROD_MONITOR'), c.baoCaoDun
 router.get('/bao-cao-kiem-hang', rbac('PROD_RUN', 'PROD_MONITOR', 'KCS', 'PHAN_LOAI_LOI'), c.baoCaoKiemHang);
 // Báo cáo sửa hàng (kết quả sửa · kiểm hàng sửa · tồn sửa · nghẽn theo dây chuyền) — trang Sản xuất › Báo cáo sửa hàng.
 router.get('/bao-cao-sua-hang', rbac('PROD_RUN', 'PROD_MONITOR', 'SUA', 'KCS', 'PHAN_LOAI_LOI'), c.baoCaoSuaHang);
+// Báo cáo phân loại lỗi (11/10/2026): mã lỗi × dây chuyền / chuyền / thợ in / khách hàng — sửa · hủy · % lỗi.
+router.get('/bao-cao-phan-loai-loi', rbac('PROD_RUN', 'PROD_MONITOR', 'KCS', 'SUA', 'PHAN_LOAI_LOI'), c.baoCaoPhanLoaiLoi);
 
 // Xe phơi
 router.get('/xe-phoi', rbac('XEPHOI'), c.xePhoi);

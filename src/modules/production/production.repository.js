@@ -52,7 +52,7 @@ const PHAN_INFO_LATERAL = `
     SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, dh.bo_phan_bh,
            pin.id AS phan_in_id,
            pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.ma_phan, pin.so_luong_don_hang,
-           pin.tinh_chat_in,
+           pin.tinh_chat_in, pin.mau_in, pin.do_in,
            dv.han_giao_hang, dv.so_luong_vai_ve, dv.nha_gia_cong
     FROM lenh_sx_dot_vai lsd
     JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
@@ -1095,8 +1095,15 @@ async function finishPhieu(phieuId, actorId) {
 }
 
 // ----- THEO DÕI CHUYỀN -----
+// ⚠ 11/10/2026 — thêm cột cho Excel "Đang sản xuất" theo mẫu sổ xưởng (người dùng gửi ảnh tiêu đề vàng):
+//   Màu in / Độ in / Tính chất in (phần in đại diện) · SLVH (`sl_vai_huy` = Σ vải HỦY của phiếu, không gồm vải
+//   thiếu) · Phút (`phut_in` = Σ giờ SX nhập ở ô In tem — mỗi khoảng (ngày ca, từ giờ, đến giờ) tính 1 LẦN vì in
+//   nhiều tem một lượt mang chung khoảng giờ; qua nửa đêm +1 ngày; chưa tem nào có giờ ⇒
+//   FE lùi về số phút từ lúc xác nhận chạy trừ thời gian ngừng) · Tổ in · Thợ (phân công; chuyền MÁY lấy chuyền
+//   trưởng — `thoInHienThi` ở FE) · ca + ngày ca (mã ngày ca của tem). Chỉ là cột đọc thêm, không đổi luật nào.
 async function monitorRunning() {
   const dkPain = await dkTrang('SX_DANG_CHAY', 'lenh', 'ls.id');
+  const colThoKh = (await coCotThoInKh()) ? 'ls.tho_in_kh' : 'NULL::text AS tho_in_kh';
   const { rows } = await query(
     `SELECT ps.id AS phieu_id, ls.id AS lenh_id, cs.id AS chuyen_id, cs.ma_chuyen, cs.ten_chuyen,
             lc.ma_loai AS ma_loai_chuyen, lc.ten_loai AS ten_loai_chuyen,
@@ -1105,8 +1112,17 @@ async function monitorRunning() {
             (SELECT count(*) FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id)::int AS so_dot_vai,
             (SELECT count(DISTINCT dv2.phan_in_id) FROM lenh_sx_dot_vai lsd2 JOIN dot_vai_ve dv2 ON dv2.id = lsd2.dot_vai_ve_id WHERE lsd2.lenh_san_xuat_id = ls.id)::int AS so_phan_in,
             info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan, info.mau_vai, info.kich_vai, info.kich_phim,
+            info.tinh_chat_in, info.mau_in, info.do_in,
             info.han_giao_hang, ${NGC_LENH('ls.id')} AS nha_gia_cong, ${MA_QUET_LENH('ls.id')} AS ma_quet,
             ${MA_VACH_PIN_LENH('ls.id')} AS ma_vach_pin,
+            ps.chuyen_truong, ${colThoKh},
+            (SELECT nd.ho_ten FROM nguoi_dung nd WHERE nd.id = ps.ca_truong_id) AS ca_truong,
+            (SELECT ti.ma_to FROM to_in ti WHERE ti.id = ps.to_in_id) AS to_in,
+            (SELECT string_agg(DISTINCT pc.tho_in, ', ') FROM phan_cong_san_xuat pc
+              WHERE pc.phieu_san_xuat_id = ps.id AND COALESCE(pc.tho_in,'') <> '') AS tho_in,
+            (SELECT COALESCE(SUM(vh.so_luong),0)::int FROM vai_huy vh
+              WHERE vh.phieu_san_xuat_id = ps.id AND COALESCE(vh.loai,'HUY') = 'HUY') AS sl_vai_huy,
+            tm.phut_in, tm.ca, tm.ngay_ca, tm.tg_in_cuoi,
             (SELECT COALESCE(SUM(t.so_luong),0)::int FROM tem t WHERE t.phieu_san_xuat_id=ps.id AND t.trang_thai <> 'HUY') AS printed,
             (SELECT count(*) FROM tem t WHERE t.phieu_san_xuat_id=ps.id AND t.trang_thai <> 'HUY')::int AS so_tem,
             EXISTS (SELECT 1 FROM ngung_chuyen n WHERE n.phieu_san_xuat_id=ps.id AND n.trang_thai='DANG_NGUNG') AS dang_ngung,
@@ -1119,6 +1135,16 @@ async function monitorRunning() {
      JOIN chuyen_san_xuat cs ON cs.id = ps.chuyen_id
      LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
      ${PHAN_INFO_LATERAL}
+     LEFT JOIN LATERAL (
+       SELECT (SELECT COALESCE(SUM(kg.phut), 0)::int FROM (
+                 SELECT DISTINCT ty.ngay_ca, ty.gio_sx_bd, ty.gio_sx_kt,
+                        (EXTRACT(EPOCH FROM (ty.gio_sx_kt - ty.gio_sx_bd)) / 60)::int
+                          + CASE WHEN ty.gio_sx_kt < ty.gio_sx_bd THEN 1440 ELSE 0 END AS phut
+                   FROM tem ty WHERE ty.phieu_san_xuat_id = ps.id AND ty.trang_thai <> 'HUY' AND ty.tem_goc_id IS NULL
+                    AND ty.gio_sx_bd IS NOT NULL AND ty.gio_sx_kt IS NOT NULL) kg) AS phut_in,
+              string_agg(DISTINCT NULLIF(regexp_replace(COALESCE(tx.ma_ngay_ca, ''), '^[0-9]{6}', ''), ''), ', ') AS ca,
+              max(tx.ngay_ca) AS ngay_ca, max(tx.created_date) AS tg_in_cuoi
+         FROM tem tx WHERE tx.phieu_san_xuat_id = ps.id AND tx.trang_thai <> 'HUY' AND tx.tem_goc_id IS NULL) tm ON true
      WHERE ps.trang_thai='DANG_CHAY' AND ${dkPain}
      ORDER BY cs.ma_chuyen`
   );

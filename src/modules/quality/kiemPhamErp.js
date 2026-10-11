@@ -20,6 +20,8 @@ const { ghiLog } = require('../../utils/erpApiLog');
 const { capIdMes } = require('../../utils/idMes');
 const prodRepo = require('../production/production.repository');
 const { maNgayCaHomNay } = require('./suaDatErp');
+// Lazy: quality.repository ← quality.service ← file này (tránh vòng require lúc nạp).
+const qaRepo = () => require('./quality.repository');
 
 const MA_API = 'ERP_GUI_KIEM_PHAM';
 
@@ -60,7 +62,16 @@ async function guiKiemPham(kcsId, temId, { dat = 0, hu = 0, thieu = 0 } = {}, ac
   if (!laMaTemErp(r.ma_tem)) return ghiChuaCoMaErp(MA_API, { idBanGhi: kcsId, maTem: r.ma_tem, actorId });
 
   // ⚠ Cấp IDMES SAU mọi guard — mỗi lần cấp là tiêu 1 số của dãy dùng chung.
-  const idMes = opts.idMes != null ? opts.idMes : await capIdMes('gui-erp-kiem-pham');
+  // ⚠⚠ 11/10/2026 — tem ĐÃ có lượt KCS bị hủy (OQC trả về KCS / Hủy xác nhận KCS) từng gửi ERP ⇒ lượt kiểm LẠI
+  //   này dùng LẠI IDMES của lượt đã hủy đó: proc `MES_spr_MES2Sh6` xóa phiếu SH6 cùng `Soctcu` rồi tạo lại
+  //   ⇒ ERP chỉ còn 1 phiếu cho lô hàng (trước đây mỗi lần kiểm lại đẻ thêm 1 phiếu — tem "đúp" bên ERP).
+  let idMes = opts.idMes != null ? opts.idMes : null;
+  let dungLaiIdMes = false;
+  if (idMes == null) {
+    try { idMes = await qaRepo().idMesKcsDaHuy(temId, kcsId); } catch { idMes = null; }
+    dungLaiIdMes = idMes != null;
+  }
+  if (idMes == null) idMes = await capIdMes('gui-erp-kiem-pham');
   if (idMes == null) return { ok: false, error: 'Không cấp được IDMES' };
 
   const payload = taoPayload(r, { idMes, soLuong: Number(dat) || 0, soLuongHuy: Number(hu) || 0, soLuongThieu: Number(thieu) || 0 });
@@ -92,7 +103,22 @@ async function guiKiemPham(kcsId, temId, { dat = 0, hu = 0, thieu = 0 } = {}, ac
     loi: kq.error || null,
     actorId,
   });
-  return kq.ok ? { ok: true, id_mes: idMes } : { ok: false, error: kq.error };
+  return kq.ok ? { ok: true, id_mes: idMes, dung_lai_id_mes: dungLaiIdMes } : { ok: false, error: kq.error };
+}
+
+// Lượt KCS còn hiệu lực nhưng vừa bị OQC trả bớt hàng về (số đạt/hư đã đổi) ⇒ gửi lại ERP số MỚI với IDMES
+// của lần gửi thành công trước đó. Chưa từng gửi thành công ⇒ thôi (nút "Gửi lại ERP" ở Cài đặt API đọc số
+// hiện tại của lượt nên vẫn ra số đúng). Không ném lỗi.
+function guiLaiSauDieuChinhNgam(k, temId, actorId) {
+  (async () => {
+    const idMes = await qaRepo().idMesKcsDaGui(k.id);
+    if (idMes == null) return;
+    await guiKiemPham(k.id, temId,
+      { dat: k.so_luong_dat, hu: k.so_luong_loi, thieu: Math.max(0, -(Number(k.so_luong_chenh_lech) || 0)) },
+      actorId, { guiLai: true, idMes });
+  })().catch((e) => {
+    console.error(`[gui-kiem-pham] ✗ Gửi lại sau khi OQC trả về lỗi (lượt kiểm ${k.id}): ${e.message}`);
+  });
 }
 
 function guiNgam(kcsId, temId, sl, actorId) {
@@ -101,4 +127,4 @@ function guiNgam(kcsId, temId, sl, actorId) {
   });
 }
 
-module.exports = { guiKiemPham, guiNgam, daGuiThanhCong, MA_API };
+module.exports = { guiKiemPham, guiNgam, guiLaiSauDieuChinhNgam, daGuiThanhCong, MA_API };

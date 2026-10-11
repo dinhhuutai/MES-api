@@ -2137,8 +2137,24 @@ async function releaseList(date, mode = 'KE_HOACH') {
       tong_ma: uniq('ma_hang'),
       tong_phan: uniq('ma_phan'),
       sl_release: items.reduce((s, r) => s + (Number(r.sl_release_phan) || 0), 0),
+      ...tongGiaRelease(items),
     },
   };
+}
+
+// Tổng theo ĐƠN GIÁ phần in (mig 113) của danh sách release — gương FE `cotChecklistRelease.tongGiaRelease`
+// (FE tính lại trên tập đang lọc). `tong_don_gia` = Σ đơn giá các dòng · `thanh_tien` = Σ (SL release × đơn giá)
+// · `so_thieu_gia` = số dòng chưa có đơn giá (phần in ERP chưa gửi giá) để người xem biết tổng còn thiếu.
+function tongGiaRelease(items) {
+  let tongDonGia = 0; let thanhTien = 0; let thieu = 0;
+  for (const r of items) {
+    if (r.don_gia == null || r.don_gia === '') { thieu += 1; continue; }
+    const gia = Number(r.don_gia) || 0;
+    tongDonGia += gia;
+    thanhTien += gia * (Number(r.sl_release_phan) || 0);
+  }
+  const tron = (n) => Math.round(n * 100) / 100;
+  return { tong_don_gia: tron(tongDonGia), thanh_tien: tron(thanhTien), so_thieu_gia: thieu };
 }
 
 // ----- Danh sách "đã hoàn thành" theo ngày (cho DonePanel bên trái) -----

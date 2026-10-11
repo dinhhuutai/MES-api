@@ -143,4 +143,70 @@ async function dotVaiThuocPhanIn(dotVaiId) {
   return rows[0]?.phan_in_id || null;
 }
 
-module.exports = { danhSach, dangCho, lichSu, getPhanInCoBan, insertTraVe, xuLyHet, ghiAudit, dotVaiThuocPhanIn };
+// ─── ĐỢT TRONG PHẠM VI TRẢ VỀ (11/10/2026) ───────────────────────────────────
+// Đợt SỐNG, CHƯA vào sản xuất của phần in (không thuộc lệnh ≠ HUY nào đã qua Release 2 → SAN_XUAT/GIA_CONG…
+// hoặc đã có phiếu chạy) — đúng phạm vi các màn "tạm rời" khi trả về GN (`utils/traVeGn.js`).
+//   · `dotVaiIds` (màn READY / QC / Release 1 mở từ 1 DÒNG ĐỢT) ⇒ chỉ các đợt đó;
+//   · `lenhId` (Test Run / Release 2 / Chờ chạy) ⇒ chỉ đợt của phần in nằm trong lệnh đó;
+//   · không truyền, hoặc lọc ra rỗng ⇒ MỌI đợt chưa vào sản xuất của phần in (như trước 11/10).
+// `lenh_ids` = lệnh CHƯA CHẠY đang giữ đợt · `lenh_rieng` = mọi lệnh đó chỉ chứa đợt của CHÍNH phần in này
+//   (lệnh gom set cũ chứa phần in khác thì không tự hủy được).
+const SQL_DOT_PHAM_VI = `
+  SELECT dv.id::text AS id, dv.ma_dot_vai, btrim(dv.barcode) AS id_dot_ready, dv.so_luong_vai_ve, dv.ngay_vai_ve,
+         COALESCE(lx.lenh_ids, ARRAY[]::text[]) AS lenh_ids, COALESCE(lx.lenh_rieng, true) AS lenh_rieng
+    FROM dot_vai_ve dv
+    LEFT JOIN LATERAL (
+      SELECT array_agg(DISTINCT ls.id::text) AS lenh_ids,
+             bool_and(NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai l2 JOIN dot_vai_ve d2 ON d2.id = l2.dot_vai_ve_id
+                                   WHERE l2.lenh_san_xuat_id = ls.id AND d2.phan_in_id <> dv.phan_in_id)) AS lenh_rieng
+        FROM lenh_sx_dot_vai l JOIN lenh_san_xuat ls ON ls.id = l.lenh_san_xuat_id
+       WHERE l.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY') lx ON true
+   WHERE dv.phan_in_id = $1 AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY')
+     AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai l JOIN lenh_san_xuat ls ON ls.id = l.lenh_san_xuat_id
+       WHERE l.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY'
+         AND (ls.trang_thai NOT IN ('RELEASE_1','RELEASE_2')
+              OR EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = ls.id AND ps.trang_thai <> 'HUY')))
+   ORDER BY dv.created_date, dv.id`.replace(/\s+/g, ' ').trim();
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+async function dotPhamVi(phanInId, { dotVaiIds = null, lenhId = null } = {}) {
+  const { rows } = await query(SQL_DOT_PHAM_VI, [phanInId]);
+  const chon = new Set((Array.isArray(dotVaiIds) ? dotVaiIds : []).map(String).filter((x) => UUID_RE.test(x)));
+  if (chon.size) {
+    const loc = rows.filter((d) => chon.has(d.id));
+    if (loc.length) return loc;
+  }
+  if (lenhId && UUID_RE.test(String(lenhId))) {
+    const loc = rows.filter((d) => d.lenh_ids.includes(String(lenhId)));
+    if (loc.length) return loc;
+  }
+  return rows;
+}
+
+// Mọi lượt trả về GN ĐANG CHỜ (cả hệ thống — vài chục dòng là nhiều) + phạm vi đợt ghi lúc trả về
+// (`TRA_VE_GN.dot_vai_ids`; lượt trước 11/10/2026 không có ⇒ null = mọi đợt chưa vào sản xuất).
+async function dangChoTatCa() {
+  const sql = `
+    SELECT q.id::text AS luot_id, q.phan_in_id::text AS phan_in_id, pin.ma_phan, q.ly_do, q.checklist_list, q.created_date AS tg_tra_ve,
+           (SELECT a.gia_tri_moi FROM audit_log a WHERE a.ten_bang = 'qc_tra_ve' AND a.id_ban_ghi = q.id::text
+              AND a.hanh_dong = 'TRA_VE_GN' ORDER BY a.thoi_gian DESC LIMIT 1) AS tra_ve
+      FROM qc_tra_ve q JOIN phan_in pin ON pin.id = q.phan_in_id
+     WHERE q.loai = '${LOAI_GN}' AND q.da_xu_ly = false
+     ORDER BY q.created_date`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim());
+  return rows;
+}
+
+// Phạm vi đợt ghi lúc trả về (`TRA_VE_GN.dot_vai_ids`) của 1 lượt → mảng id | null (lượt cũ không ghi).
+async function phamViCuaLuot(luotId) {
+  const { rows } = await query(
+    "SELECT a.gia_tri_moi->'dot_vai_ids' AS ids FROM audit_log a WHERE a.ten_bang = 'qc_tra_ve' AND a.id_ban_ghi = $1 AND a.hanh_dong = 'TRA_VE_GN' ORDER BY a.thoi_gian DESC LIMIT 1",
+    [String(luotId)]);
+  const ids = rows[0] && Array.isArray(rows[0].ids) ? rows[0].ids.map(String) : [];
+  return ids.length ? ids : null;
+}
+
+module.exports = {
+  danhSach, dangCho, lichSu, getPhanInCoBan, insertTraVe, xuLyHet, ghiAudit, dotVaiThuocPhanIn,
+  dotPhamVi, dangChoTatCa, phamViCuaLuot,
+};

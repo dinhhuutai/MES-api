@@ -284,6 +284,9 @@ async function guiLai(gui, { idBanGhi = null, actorId = null } = {}) {
   }
   const maTem = maLenhTuDs(gui.DsRelease);
   const body = { ...gui };
+  // Thân gửi trước 15:04 ngày 09/10/2026 mang mã chuyền MES (`M12B`, `M4A-4B`, `MRB1`…) ⇒ gửi lại đổi sang mã ERP
+  //   (idempotent — mã đã chuẩn giữ nguyên). Chỉ đổi cách ghi mã, không đổi chuyền của lượt.
+  body.banin = catChuoi(chuanMaChuyen(body.banin), 20);
   // Dòng gửi trước 07/10/2026 chưa có `Ngayca` (proc nay bắt buộc `@pNgayca`) ⇒ suy từ CHÍNH giờ/ngày kế hoạch
   //   trong thân cũ — vẫn là kế hoạch của lượt đó, không đọc lại lệnh.
   if (body.Ngayca == null) {

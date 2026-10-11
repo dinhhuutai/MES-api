@@ -9,6 +9,7 @@ const AppError = require('../../utils/AppError');
 const { buildMeta } = require('../../utils/pagination');
 const { apiBat } = require('../../utils/caiDatApi');
 const { chuanHoaDsMa } = require('../../utils/maPhanIn');
+const { docGiaErp } = require('../../utils/giaPhanIn');
 const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
 const gomRepo = require('../gomset/gomset.repository');
@@ -369,7 +370,11 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
         const { inserted, dotVaiId, pinId: pid } = await processRow(p.r, p.maPhan, p.maDotVai, loaiDotVaiId, new Date());
         if (inserted) { soMoi += 1; newDotVaiIds.push(dotVaiId); } else soCapNhat += 1;
         pinId = pid; affectedDotVaiIds = [dotVaiId]; intoReady = true; laDotMoi = !!inserted;
-        if (Number.isFinite(tgPhoi) && tgPhoi > 0) await repo.setPhanInDryMin(pid, Math.round(tgPhoi));
+        // Chờ khô (`tgphoi`) + 4 giá của phần in (`GiaIn` · `Giaep` · `giainkieng` · `Dongia`, mig 113) — 1 câu.
+        await repo.capNhatPhanInPhu(pid, {
+          choKhoPhut: Number.isFinite(tgPhoi) && tgPhoi > 0 ? Math.round(tgPhoi) : null,
+          gia: docGiaErp(p.r),
+        });
         // Dọn dữ liệu CŨ thời 2 API: đợt của phần in này còn kẹt "chờ chuyển" (tg_chuyen_ready NULL)
         // → đưa nốt vào READY. Dữ liệu mới không bao giờ rơi vào nhánh này.
         const promoted = await repo.promotePhanInToReady(pid, {

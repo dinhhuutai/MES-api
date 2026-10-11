@@ -35,10 +35,14 @@
 //     trong kỳ của tem xong, "Thời gian nghẽn" = Σ giờ vượt SLA (mỗi phần in lấy tem vượt lâu nhất).
 //     ⚠ Tem rời Sửa rồi QUAY LẠI (OQC trả về) vẫn đo từ mốc vào ĐẦU — y như màn Sửa (tô đỏ) đang đo.
 //   · Dây chuyền = nhóm loại chuyền của chuyền chạy phiếu (`baoCaoSanXuat.nhomCuaLoai`); không rõ ⇒ "Khác".
+//   · 11/10/2026 — thêm chiều xem KHÁCH HÀNG · THỢ IN · TỪNG CHUYỀN (`theo_khach` / `theo_tho` / `theo_chuyen`, cùng bộ
+//     cột; FE tự gom lại từ `chi_tiet` khi người dùng chọn chuyền — mỗi tem kèm `pin_ids` để đếm "Phần" nghẽn). `tho` =
+//     THỢ PHỤ TRÁCH của phiếu in ra tem (người ĐẦU; chuyền Máy lấy chuyền trưởng — `utils/thoIn.js`), `tho_ds` = cả nhóm.
 
 const { nhomCuaLoai, NHOM } = require('./baoCaoSanXuat');
 const { chiaHuyTheoLuot } = require('./baoCaoKiemHang');
 const { congNgay } = require('./khoangNgay');
+const { dsThoCuaDong } = require('./thoIn');
 
 // Nhãn theo đúng tờ xưởng ("Bàn in" — Báo cáo sản xuất/kiểm hàng ghi "Banin").
 const NHAN_RIENG = { BANIN: 'Bàn in' };
@@ -164,7 +168,8 @@ function dungBaoCaoSuaHang({ tuNgay, denNgay, slaPhut = null, bayGio = Date.now(
       tem_id: r.tem_id, ma_tem: r.ma_tem, ma_lenh_san_xuat: r.ma_lenh_san_xuat || null,
       ma_chuyen: r.ma_chuyen || null, ten_chuyen: r.ten_chuyen || null, nhom: nhomCuaLoai(r.ma_loai_chuyen),
       ma_phan: r.ma_phan || null, khach: r.khach || null, po: r.po || null, ma_hang: r.ma_hang || null,
-      mau_vai: r.mau_vai || null,
+      mau_vai: r.mau_vai || null, kich_vai: r.kich_vai || null, kich_phim: r.kich_phim || null,
+      tho: dsThoCuaDong(r)[0], tho_ds: dsThoCuaDong(r).join(', '),
       ...rongSo(), nhan_kcs: 0, nhan_tra_ve: 0, nhan_khac: 0, huy_thang: 0, so_luot_sua: 0, con_hien_tai: conNay,
     };
     ev.forEach((e) => {
@@ -251,6 +256,7 @@ function dungBaoCaoSuaHang({ tuNgay, denNgay, slaPhut = null, bayGio = Date.now(
     return {
       ...l, ma_tem: t.ma_tem, ma_chuyen: t.ma_chuyen, nhom: t.nhom, ten_nhom: tenNhom[t.nhom] || t.nhom,
       ma_lenh_san_xuat: t.ma_lenh_san_xuat, ma_phan: t.ma_phan, khach: t.khach, po: t.po, ma_hang: t.ma_hang, mau_vai: t.mau_vai,
+      tho: t.tho, tho_ds: t.tho_ds,
     };
   }).sort((a, b) => Date.parse(b.tg) - Date.parse(a.tg));
 
@@ -262,10 +268,25 @@ function dungBaoCaoSuaHang({ tuNgay, denNgay, slaPhut = null, bayGio = Date.now(
     so_tem_lech: soTemLech,
     tong: gomDong(tems),
     theo_day_chuyen: theoDayChuyen,
-    chi_tiet: tems.map(({ _pin, ...t }) => ({ ...t, ten_nhom: tenNhom[t.nhom] || t.nhom }))
+    theo_khach: gomTheo(tems, (t) => t.khach || '(Chưa rõ khách)'),
+    theo_tho: gomTheo(tems, (t) => t.tho),
+    theo_chuyen: gomTheo(tems, (t) => t.ma_chuyen || '—'),
+    chi_tiet: tems.map(({ _pin, ...t }) => ({ ...t, pin_ids: _pin, ten_nhom: tenNhom[t.nhom] || t.nhom }))
       .sort((a, b) => (b.chua_sua - a.chua_sua) || soTuNhien(a.ma_chuyen, b.ma_chuyen) || soTuNhien(a.ma_tem, b.ma_tem)),
     chi_tiet_luot: chiTietLuot,
   };
 }
 
-module.exports = { dungBaoCaoSuaHang, suKienTem, mocKy };
+// Gom các tem theo 1 khóa bất kỳ ⇒ [{ key, ten, …cột của `gomDong` }] xếp theo tên (cùng hàm gom với dây chuyền).
+function gomTheo(tems, khoa) {
+  const m = new Map();
+  tems.forEach((t) => {
+    const k = khoa(t);
+    if (!m.has(k)) m.set(k, []);
+    m.get(k).push(t);
+  });
+  return [...m.entries()].map(([key, ds]) => ({ key, ten: key, ...gomDong(ds) }))
+    .sort((a, b) => soTuNhien(a.ten, b.ten));
+}
+
+module.exports = { dungBaoCaoSuaHang, suKienTem, mocKy, gomDong, gomTheo };
