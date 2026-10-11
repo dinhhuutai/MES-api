@@ -2137,24 +2137,27 @@ async function releaseList(date, mode = 'KE_HOACH') {
       tong_ma: uniq('ma_hang'),
       tong_phan: uniq('ma_phan'),
       sl_release: items.reduce((s, r) => s + (Number(r.sl_release_phan) || 0), 0),
-      ...tongGiaRelease(items),
+      ...tongDoanhThuRelease(items),
     },
   };
 }
 
-// Tổng theo ĐƠN GIÁ phần in (mig 113) của danh sách release — gương FE `cotChecklistRelease.tongGiaRelease`
-// (FE tính lại trên tập đang lọc). `tong_don_gia` = Σ đơn giá các dòng · `thanh_tien` = Σ (SL release × đơn giá)
-// · `so_thieu_gia` = số dòng chưa có đơn giá (phần in ERP chưa gửi giá) để người xem biết tổng còn thiếu.
-function tongGiaRelease(items) {
-  let tongDonGia = 0; let thanhTien = 0; let thieu = 0;
+// Tổng DOANH THU của danh sách release — gương FE `cotChecklistRelease.tongDoanhThuRelease` (FE tính lại trên tập
+// đang lọc). Doanh thu 1 phần in = đơn giá (mig 113) × SLĐH (11/10/2026, người dùng chốt — thay "Tổng đơn giá" +
+// "Thành tiền"). ⚠ MỖI PHẦN IN TÍNH 1 LẦN: SLĐH là của cả phần in, 1 phần in release thành nhiều lệnh trong ngày
+// ra nhiều dòng ⇒ cộng theo dòng là đếm trùng. `so_thieu_gia` = số phần in chưa có giá (ERP chưa gửi) để người
+// xem biết tổng còn thiếu.
+function tongDoanhThuRelease(items) {
+  const theoPhan = new Map();
   for (const r of items) {
-    if (r.don_gia == null || r.don_gia === '') { thieu += 1; continue; }
-    const gia = Number(r.don_gia) || 0;
-    tongDonGia += gia;
-    thanhTien += gia * (Number(r.sl_release_phan) || 0);
+    const k = r.phan_in_id || r.ma_phan || r;
+    if (theoPhan.has(k)) continue;
+    const thieu = r.don_gia == null || r.don_gia === '' || r.so_luong_don_hang == null;
+    theoPhan.set(k, thieu ? null : (Number(r.don_gia) || 0) * (Number(r.so_luong_don_hang) || 0));
   }
-  const tron = (n) => Math.round(n * 100) / 100;
-  return { tong_don_gia: tron(tongDonGia), thanh_tien: tron(thanhTien), so_thieu_gia: thieu };
+  let tong = 0; let thieu = 0;
+  for (const v of theoPhan.values()) { if (v == null) thieu += 1; else tong += v; }
+  return { tong_doanh_thu: Math.round(tong * 100) / 100, so_thieu_gia: thieu };
 }
 
 // ----- Danh sách "đã hoàn thành" theo ngày (cho DonePanel bên trái) -----

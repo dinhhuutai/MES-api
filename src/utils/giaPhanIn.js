@@ -4,7 +4,7 @@
 // ĐƠN GIÁ THEO PHẦN IN (mig 113, 11/10/2026) — ERP gửi kèm mỗi dòng `/phieu-nhan-vai-60`:
 //   `GiaIn` → `phan_in.gia_in` · `Giaep` → `gia_ep` · `giainkieng` → `gia_in_kieng` · `Dongia` → `don_gia`
 //   (đo raw prod: Dongia = GiaIn + Giaep + giainkieng ở mọi dòng; 1 code phần 1 giá).
-// Dùng ở: đồng bộ ERP (ghi) · Kế hoạch › Danh sách release (cột "Đơn giá" + tổng tiền).
+// Dùng ở: đồng bộ ERP (ghi) · Kế hoạch › Danh sách release (cột "Doanh thu" = đơn giá × SLĐH + tổng doanh thu).
 //
 // ⚠ Dò cột trước khi ghi/đọc (khuôn `utils/thoInKeHoach.js`): có cột ⇒ nhớ mãi; CHƯA có ⇒ nhớ 60 s rồi dò lại
 //   ⇒ chạy migration xong tối đa 1 phút là nhận, không cần restart BE. Dò lỗi ⇒ coi như chưa có (fail-open:

@@ -2318,7 +2318,7 @@ async function releaseListByDate(date, mode = 'KE_HOACH') {
     : 'ls.ngay_ke_hoach = $1::date';
   // `tho_in_kh` (mig 111) = thợ in KẾ HOẠCH chọn lúc Release 1; cột "Thợ in" hiện phân công thật trước, chưa có thì kế hoạch.
   const colTho = (await coCotThoInKh()) ? 'ls.tho_in_kh' : 'NULL::text AS tho_in_kh';
-  // 4 giá của phần in (mig 113, ERP `GiaIn`/`Giaep`/`giainkieng`/`Dongia`) — cột "Đơn giá"; thiếu cột ⇒ NULL.
+  // 4 giá của phần in (mig 113, ERP `GiaIn`/`Giaep`/`giainkieng`/`Dongia`) — cột "Doanh thu" = `don_gia` × SLĐH; thiếu cột ⇒ NULL.
   const colGia = await cotGiaSql('pin');
   const sql = `
     SELECT ls.id AS lenh_id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.ngay_ke_hoach, ls.created_date,
