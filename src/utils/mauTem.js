@@ -51,6 +51,10 @@ const VI_TRI_IN = Object.freeze([
 // `kieu`: 'chu' | 'so' | 'ngay' — quyết định ô Định dạng nào hiện ra ở panel thiết kế.
 const TRUONG_TEM = Object.freeze([
   { ma: 'ma_tem', ten: 'Mã tem (đã gắn tiền tố)', kieu: 'chu', nhom: 'Tem' },
+  // MÃ LÔ (mig 114, 13/10/2026) — sinh mỗi lần IN TEM SẢN XUẤT: `L<mã ngày ca>-<năm tháng của mã tem><4 số đếm lại
+  // mỗi ngày>` (`utils/maLo.js`). Có ở tem SX (15|16) + KCS in tem giao; tem Sửa (17) lấy lô của TEM GỐC; tem Gia
+  // công (13) và tem in trước khi có mig 114 thì RỖNG (muốn thay bằng trường khác: dùng "trường dự phòng").
+  { ma: 'ma_lo', ten: 'Mã lô (vd L261013C1-26080001)', kieu: 'chu', nhom: 'Tem' },
   { ma: 'ma_lenh_san_xuat', ten: 'Mã lệnh sản xuất', kieu: 'chu', nhom: 'Tem' },
   { ma: 'trang_thai', ten: 'Trạng thái tem', kieu: 'chu', nhom: 'Tem' },
 

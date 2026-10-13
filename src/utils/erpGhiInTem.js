@@ -16,6 +16,7 @@
 //
 // ⚠ CẮT CHUỖI TRƯỚC KHI GỬI (`chuanHoa`): cột bên ERP là `nvarchar(20)`/`nvarchar(255)`, mà
 //   `nguoi_dung.ho_ten` có 16 người dài hơn 20 ký tự (max 24) ⇒ không cắt thì proc ăn lỗi khó đọc.
+//   (Từ 12/10/2026 3 trường người gửi MÃ SỐ NHÂN VIÊN — 9 ký tự; tên chỉ còn ở nhánh không tra được mã.)
 // ─────────────────────────────────────────────────────────────────────────────
 
 const axios = require('axios');
@@ -25,6 +26,7 @@ const { ghiLog } = require('./erpApiLog');
 const { chuanMaChuyen } = require('./maChuyen');
 const { taoIdKetNoi } = require('./idKetNoi');
 const { ngayGioErp } = require('./erpNgayGio');
+const { boTraMaNhanVien } = require('./maNhanVien');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -95,40 +97,46 @@ const soNguyen = (v) => {
 // ⚠⚠ ĐỊNH DẠNG theo kênh (02/10/2026 — ERP lưu lùi 7 tiếng, "hôm nay thành hôm qua"): xem `utils/erpNgayGio.js`.
 const ngayGio = (v, kieu = 'Z') => ngayGioErp(v, kieu);
 
-// ⚠⚠ CHỈ GỬI **TÊN** LÊN ERP, BỎ HỌ + TÊN LÓT (chốt với người dùng 15/08/2026).
-//   `"PHẠM THỊ HỒNG"` → `HỒNG` · `"NGÔ VĂN NHỚ"` → `NHỚ` · `"VŨ THỊ THANH NHÀN"` → `NHÀN`.
-//   Khớp đúng mẫu ERP gửi kèm (`dsthoin = 'HAI,NAM,THANH'` — toàn tên đơn) và rút `dsthoin` của ca
-//   thật từ **60 ký tự / 73 byte xuống 17 ký tự / 25 byte**, tức tránh xa mọi giới hạn của proc.
-//   Áp cho 3 trường TÊN NGƯỜI: `Chuyentruong` · `Catruong` · từng phần tử của `dsthoin`.
+// ⚠⚠ 3 TRƯỜNG NGƯỜI GỬI **MÃ SỐ NHÂN VIÊN** (= tên đăng nhập MES — 12/10/2026, người dùng chốt "các câu gửi dữ
+//   liệu xuống ERP đều đổi thành mã số nhân viên"): `Chuyentruong` · `Catruong` · từng phần tử của `dsthoin`
+//   (vd `'011800656,021400157'`). Áp cho MỌI kênh trong `KENH` (cùng 20 tham số) và cả nút "Gửi lại ERP".
+//   · Ca trưởng: mã của CHÍNH tài khoản `phieu_san_xuat.ca_truong_id` (`CatruongMsnv` do `taoPayload` gắn).
+//   · Chuyền trưởng + thợ in: MES chỉ lưu HỌ TÊN (ô cho gõ tay) ⇒ tra họ tên → mã qua `utils/maNhanVien.js`.
+//
+// ⚠ KHÔNG TRA ĐƯỢC MÃ (tên gõ tay không có tài khoản · 2 tài khoản trùng họ tên) ⇒ LÙI VỀ CÁCH CŨ: gửi TÊN GỌI,
+//   bỏ họ + tên lót (chốt 15/08/2026: `"PHẠM THỊ HỒNG"` → `HỒNG` · `"VŨ THỊ THANH NHÀN"` → `NHÀN`) — không để
+//   trống, vì bỏ một mục của `dsthoin` là đổi SĨ SỐ của ca. `ghiInTem` ghi cảnh báo ra log các tên như vậy.
+//   Vẫn CỐ Ý KHÔNG khử trùng `dsthoin`. Muốn tên gọi 2 chữ thì đổi `SO_TU_TEN` = 2.
 //
 // ⚠ Chỉ đổi thứ GỬI ĐI — dữ liệu trong MES (`phieu_san_xuat.chuyen_truong`, `ca_truong_id`,
 //   `phan_cong_san_xuat.tho_in`) vẫn giữ HỌ TÊN ĐẦY ĐỦ; mọi màn/tem/Excel của MES không đổi.
-//
-// ⚠⚠ HỆ QUẢ ĐÃ BIẾT — **trùng tên**: 2 người "PHẠM THỊ HỒNG" và "NGUYỄN VĂN HỒNG" cùng ra `HỒNG`.
-//   CỐ Ý **KHÔNG khử trùng** trong `dsthoin`: đó là danh sách thợ in, bỏ bớt một mục là đổi SĨ SỐ
-//   của ca. Muốn phân biệt thì đổi `SO_TU_TEN` = 2 (ra `THANH NHÀN`) — đúng 1 chỗ, không sửa gì thêm.
 const SO_TU_TEN = 1;
 const chiLayTen = (v) => {
   const tu = String(v == null ? '' : v).trim().split(/\s+/).filter(Boolean);
   return tu.length ? tu.slice(-SO_TU_TEN).join(' ') : '';
 };
+// 1 người → mã số nhân viên; `traMa` vắng mặt hoặc không tra được ⇒ tên gọi.
+const maHoacTen = (v, traMa) => (traMa && traMa(v)) || chiLayTen(v);
 
-// 2 trường TÊN NGƯỜI ở mức phiếu (danh sách thợ in xử lý riêng vì ngăn bằng dấu phẩy).
+// 2 trường NGƯỜI ở mức phiếu (danh sách thợ in xử lý riêng vì ngăn bằng dấu phẩy).
 const TRUONG_TEN = new Set(['Chuyentruong', 'Catruong']);
 
 // Chuẩn hóa 1 bản ghi về đúng kiểu + độ dài mà proc nhận. Trường chuỗi thiếu → `''`, số thiếu → `0`,
 // riêng 3 trường ngày giờ thiếu → `null` (xem `ngayGio`).
-function chuanHoa(row = {}, kieuNgay = 'Z') {
+// `traMa` = hàm `(họ tên) → mã số nhân viên | null` (`maNhanVien.boTraMaNhanVien`); không truyền ⇒ gửi tên gọi.
+function chuanHoa(row = {}, kieuNgay = 'Z', traMa = null) {
   const out = {};
   for (const k of THU_TU_TRUONG) {
     let v = row[k];
-    // `dsthoin` là DANH SÁCH tên ngăn bằng dấu phẩy (mẫu ERP: 'HAI,NAM,THANH'). Ô nhập của MES cho
-    // gõ tự do nên dữ liệu thật lẫn cả 2 kiểu: 'THU,RUONL,NGOC' và 'CHAU PHÊNH, THÁI THỊ TUYẾT TRINH'
-    // ⇒ tách theo dấu phẩy, lấy TÊN từng người, rồi ghép lại không có dấu cách thừa.
+    // `dsthoin` là DANH SÁCH người ngăn bằng dấu phẩy. Ô nhập của MES cho gõ tự do nên dữ liệu thật lẫn cả 2
+    // kiểu: 'THU,RUONL,NGOC' và 'CHAU PHÊNH, THÁI THỊ TUYẾT TRINH' ⇒ tách theo dấu phẩy, đổi TỪNG người
+    // sang mã (không được thì tên gọi), rồi ghép lại không có dấu cách thừa.
     if (k === 'dsthoin' && v != null) {
-      v = String(v).split(',').map(chiLayTen).filter(Boolean).join(',');
+      v = String(v).split(',').map((x) => maHoacTen(x, traMa)).filter(Boolean).join(',');
+    } else if (k === 'Catruong' && row.CatruongMsnv) {
+      v = row.CatruongMsnv;
     } else if (TRUONG_TEN.has(k) && v != null) {
-      v = chiLayTen(v);
+      v = maHoacTen(v, traMa);
     }
     // ⚠ Rút gọn tên chạy TRƯỚC `chuoi(v, max)`: cắt cụt trước rồi mới lấy từ cuối sẽ ra tên sai
     // (vd cắt "NGUYỄN THỊ HƯƠNG LAN" ở ký tự 20 rồi lấy từ cuối → "LA").
@@ -206,6 +214,7 @@ function taoPayload(r, { idMes, soLuong = null, soLuongHuy = 0, soLuongThieu = 0
     Ngayca: r.ma_ngay_ca,
     Tugio: r.tu_gio,
     Dengio: r.den_gio,
+    // 3 trường NGƯỜI mang HỌ TÊN tới `chuanHoa`, ở đó mới đổi sang mã số nhân viên (xem `maHoacTen`).
     Chuyentruong: r.chuyen_truong,
     Catruong: r.ca_truong,
     dsthoin: r.tho_in,
@@ -225,6 +234,8 @@ function taoPayload(r, { idMes, soLuong = null, soLuongHuy = 0, soLuongThieu = 0
     GCMauvai: r.gc_mau_vai,
     // Không thuộc 20 trường (`chuanHoa` bỏ đi) — chỉ để kênh `thieuGioLayMocTao` bù Tugio/Dengio.
     MocTao: r.moc_tao || null,
+    // Cũng không thuộc 20 trường: mã số nhân viên của tài khoản ca trưởng ⇒ `chuanHoa` đặt vào `Catruong`.
+    CatruongMsnv: r.ca_truong_msnv || null,
   };
 }
 
@@ -298,7 +309,19 @@ async function ghiInTem(row, { maApi = 'ERP_GHI_IN_TEM' } = {}) {
   const vao = k.thieuGioLayMocTao && row.MocTao
     ? { ...row, Tugio: row.Tugio || row.MocTao, Dengio: row.Dengio || row.MocTao }
     : row;
-  const body = chuanHoa(vao, k.kieuNgay || 'Z');
+  // Tra họ tên → mã số nhân viên; gom các tên KHÔNG tra được để cảnh báo (các tên đó vẫn gửi dạng tên gọi).
+  const tra = await boTraMaNhanVien();
+  const khongCoMa = [];
+  const traMa = (ten) => {
+    const ma = tra(ten);
+    if (!ma && String(ten == null ? '' : ten).trim()) khongCoMa.push(String(ten).trim());
+    return ma;
+  };
+  const body = chuanHoa(vao, k.kieuNgay || 'Z', traMa);
+  if (khongCoMa.length) {
+    console.warn(`[${k.nhan}] ⚠ Không tra được mã số nhân viên của: ${[...new Set(khongCoMa)].join(' · ')}`
+      + ` (tên gõ tay hoặc trùng họ tên) — gửi TÊN GỌI (tem ${body.BarcodeIn})`);
+  }
   if (k.them) Object.assign(body, k.them(body));
   // Tắt ở Hệ thống > Cài đặt API (mig 083); chưa có dòng cấu hình thì lấy mặc định `.env`.
   if (!(await apiBat(maApi))) {

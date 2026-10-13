@@ -2143,21 +2143,19 @@ async function releaseList(date, mode = 'KE_HOACH') {
 }
 
 // Tổng DOANH THU của danh sách release — gương FE `cotChecklistRelease.tongDoanhThuRelease` (FE tính lại trên tập
-// đang lọc). Doanh thu 1 phần in = đơn giá (mig 113) × SLĐH (11/10/2026, người dùng chốt — thay "Tổng đơn giá" +
-// "Thành tiền"). ⚠ MỖI PHẦN IN TÍNH 1 LẦN: SLĐH là của cả phần in, 1 phần in release thành nhiều lệnh trong ngày
-// ra nhiều dòng ⇒ cộng theo dòng là đếm trùng. `so_thieu_gia` = số phần in chưa có giá (ERP chưa gửi) để người
-// xem biết tổng còn thiếu.
+// đang lọc). Doanh thu 1 DÒNG (đợt SX × phần in) = đơn giá (mig 113) × SL RELEASE của dòng đó (`sl_release_phan`)
+// — 13/10/2026, người dùng chốt "nhân với số lượng release chứ không phải số lượng đơn hàng" (bản 11/10 nhân SLĐH
+// rồi phải tính mỗi phần in 1 lần). SL release của từng dòng là số riêng ⇒ CỘNG THẲNG mọi dòng. Giá và từng dòng
+// làm tròn 2 số lẻ như FE (`soGia` · `doanhThu`) để tổng 2 bên khớp tới đồng lẻ. `so_thieu_gia` = số PHẦN IN chưa
+// có giá (ERP chưa gửi) để người xem biết tổng còn thiếu.
 function tongDoanhThuRelease(items) {
-  const theoPhan = new Map();
+  let tong = 0; const thieu = new Set();
   for (const r of items) {
-    const k = r.phan_in_id || r.ma_phan || r;
-    if (theoPhan.has(k)) continue;
-    const thieu = r.don_gia == null || r.don_gia === '' || r.so_luong_don_hang == null;
-    theoPhan.set(k, thieu ? null : (Number(r.don_gia) || 0) * (Number(r.so_luong_don_hang) || 0));
+    const gia = r.don_gia == null || r.don_gia === '' ? NaN : Number(r.don_gia);
+    if (!Number.isFinite(gia)) { thieu.add(r.phan_in_id || r.ma_phan || r); continue; }
+    tong += Math.round(gia * (Number(r.sl_release_phan ?? r.so_luong_release) || 0) * 100) / 100;
   }
-  let tong = 0; let thieu = 0;
-  for (const v of theoPhan.values()) { if (v == null) thieu += 1; else tong += v; }
-  return { tong_doanh_thu: Math.round(tong * 100) / 100, so_thieu_gia: thieu };
+  return { tong_doanh_thu: Math.round(tong * 100) / 100, so_thieu_gia: thieu.size };
 }
 
 // ----- Danh sách "đã hoàn thành" theo ngày (cho DonePanel bên trái) -----

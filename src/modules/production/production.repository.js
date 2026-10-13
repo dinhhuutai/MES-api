@@ -16,6 +16,8 @@ const { capIdMes: capIdMesChung } = require('../../utils/idMes');
 // Lệnh có phần in đang ở Giao nhận (trả về GN) ⇒ tạm rời danh sách Chờ chạy (06/10/2026, `utils/traVeGn.js`).
 const { LENH_CHO_GN_SQL } = require('../../utils/traVeGn');
 const { coCotThoInKh } = require('../../utils/thoInKeHoach');
+// Mã LÔ của tem sản xuất (mig 114) — cấu trúc mã ở `utils/maLo.js`, cấp số ở `capMaLo` bên dưới.
+const { khoaDemLo, dungMaLo } = require('../../utils/maLo');
 
 const PHAN_AGG = `(SELECT string_agg(DISTINCT pin.ma_phan, ', ')
     FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
@@ -575,8 +577,9 @@ async function listTemDaIn({
     ${PHAN_INFO_LATERAL}
     WHERE COALESCE(lc.ma_loai,'') ${laGiaCong ? '=' : '<>'} 'GIA_CONG'
       ${dk.length ? `AND ${dk.join(' AND ')}` : ''}`;
+  const cotMaLo = (await temCoCot('ma_lo')) ? 't.ma_lo' : 'NULL::text AS ma_lo';   // mig 114
   const dataSql = `
-    SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.created_date, t.ma_ngay_ca,
+    SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.created_date, t.ma_ngay_ca, ${cotMaLo},
            to_char(t.gio_sx_bd, 'HH24:MI') AS gio_sx_bd, to_char(t.gio_sx_kt, 'HH24:MI') AS gio_sx_kt,
            t.btp_truoc, t.btp_cuoi, t.gc_mau_vai,
            t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy, t.sl_sua_dat, t.sl_sua_huy,
@@ -766,8 +769,12 @@ async function getTemLabelData(temId, dotVaiId = null) {
   ) info ON true`
     : PHAN_INFO_LATERAL;
   const params = dotVaiId ? [temId, dotVaiId] : [temId];
+  // Mã lô (mig 114): tem 17 (sửa đạt) không có mã riêng ⇒ lấy lô của TEM GỐC để nhãn tem sửa vẫn in được lô.
+  const cotMaLo = (await temCoCot('ma_lo'))
+    ? 'COALESCE(t.ma_lo, (SELECT tg.ma_lo FROM tem tg WHERE tg.id = t.tem_goc_id))'
+    : 'NULL::text';
   const { rows } = await query(
-    `SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.created_date,
+    `SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.created_date, ${cotMaLo} AS ma_lo,
             ls.ma_lenh_san_xuat, cs.ma_chuyen, cs.ten_chuyen, ps.tg_bd AS tg_bd_in,
             info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan,
             info.mau_vai, info.kich_vai, info.kich_phim, info.so_luong_don_hang,
@@ -881,8 +888,47 @@ const temCoCotNgayCa = () => temCoCot('ngay_ca');       // mig 066
 const temCoCotMaNgayCa = () => temCoCot('ma_ngay_ca');  // mig 068
 const temCoCotGcMauVai = () => temCoCot('gc_mau_vai');  // mig 071
 
+// ─── MÃ LÔ của tem sản xuất (mig 114: cột `tem.ma_lo` + bảng đếm `tem_lo_counter`, 13/10/2026) ───────────────
+// Cả cột lẫn bảng đếm cùng 1 migration; chỉ nhớ khi ĐÃ có (chạy mig xong là nhận ngay, không cần restart BE).
+let coBangDemLo = false;
+async function coMaLo() {
+  if (!(await temCoCot('ma_lo'))) return false;
+  if (coBangDemLo) return true;
+  const { rows } = await query(
+    `SELECT 1 FROM information_schema.tables
+      WHERE table_schema='public' AND table_name='tem_lo_counter' LIMIT 1`.replace(/\s+/g, ' ')
+  );
+  coBangDemLo = rows.length > 0;
+  return coBangDemLo;
+}
+
+// Cấp 1 mã lô cho tem SẮP tạo — chạy TRONG transaction in tem (`client`) ⇒ lượt in rollback thì số cũng trả lại
+// (không thủng dãy), 2 máy in cùng lúc xếp hàng trên dòng đếm của ngày đó nên không bao giờ trùng số.
+// ⚠ Tính năng PHỤ — không được chặn in tem: bọc SAVEPOINT (lỗi SQL trong transaction là abort cả transaction),
+//   hỏng thì lùi về savepoint, ghi log và trả null ⇒ tem vẫn in, chỉ thiếu mã lô. Chưa chạy mig 114 ⇒ null.
+async function capMaLo(client, { maNgayCa, maTem }) {
+  if (!(await coMaLo())) return null;
+  const HOM_NAY = "to_char(now() AT TIME ZONE 'Asia/Ho_Chi_Minh', 'YYMMDD')";
+  try {
+    await client.query('SAVEPOINT sp_ma_lo');
+    const { rows } = await client.query(
+      `INSERT INTO tem_lo_counter (khoa, so_thu_tu) VALUES (COALESCE($1::varchar, ${HOM_NAY}), 1)
+       ON CONFLICT (khoa) DO UPDATE SET so_thu_tu = tem_lo_counter.so_thu_tu + 1, updated_date = now()
+       RETURNING khoa, so_thu_tu, ${HOM_NAY} AS ymd`.replace(/\s+/g, ' '),
+      [khoaDemLo(maNgayCa)]
+    );
+    await client.query('RELEASE SAVEPOINT sp_ma_lo');
+    const r = rows[0];
+    return r ? dungMaLo({ maNgayCa, maTem, stt: r.so_thu_tu, khoa: r.khoa, ymd: r.ymd }) : null;
+  } catch (e) {
+    await client.query('ROLLBACK TO SAVEPOINT sp_ma_lo').catch(() => {});
+    console.error(`[ma-lo] ✗ Không cấp được mã lô cho tem ${maTem} (tem vẫn in, không có mã lô): ${e.message}`);
+    return null;
+  }
+}
+
 // Tạo tem + (mig 066) ngày ca · giờ SX từ→đến · cờ BTP trước/cuối + (mig 068) mã ngày ca
-// + (mig 071) GC màu vải — tất cả của LƯỢT IN này.
+// + (mig 071) GC màu vải + (mig 114) mã lô — tất cả của LƯỢT IN này.
 async function createTem(client, { phieuId, maTem, soLuong, ngayCa, maNgayCa, gioBd, gioKt, btpTruoc, btpCuoi, gcMauVai }, actorId) {
   const base = [phieuId, maTem, soLuong, actorId];
   if (await temCoCotNgayCa()) {
@@ -892,6 +938,8 @@ async function createTem(client, { phieuId, maTem, soLuong, ngayCa, maNgayCa, gi
     const cot = []; const val = [];
     if (coMa) { cot.push('ma_ngay_ca'); val.push(maNgayCa || null); }
     if (coGc) { cot.push('gc_mau_vai'); val.push((gcMauVai || '').trim() || null); }
+    const maLo = await capMaLo(client, { maNgayCa, maTem });
+    if (maLo) { cot.push('ma_lo'); val.push(maLo); }
     const themCot = cot.length ? `, ${cot.join(', ')}` : '';
     const themTham = cot.map((_, i) => `,$${10 + i}`).join('');
     const { rows } = await client.query(
@@ -998,7 +1046,7 @@ async function duLieuGhiInTem(capTem = [], ngayCt = null) {
            info.ma_phan,
            ls.ma_lenh_san_xuat, cs.ma_chuyen, lc.ma_loai AS loai_chuyen,
            ${coTo ? 'ti.ma_to' : 'NULL::varchar'} AS ma_to,
-           ps.chuyen_truong, ndct.ho_ten AS ca_truong,
+           ps.chuyen_truong, ndct.ho_ten AS ca_truong, ndct.ten_dang_nhap AS ca_truong_msnv,
            (SELECT string_agg(DISTINCT pc.tho_in, ',') FROM phan_cong_san_xuat pc
              WHERE pc.phieu_san_xuat_id = ps.id AND COALESCE(pc.tho_in,'') <> '') AS tho_in,
            info.barcode AS id_dot_nhan_vai, info.ddh_sub_id, info.ddh_id, info.la_bo_sung,
