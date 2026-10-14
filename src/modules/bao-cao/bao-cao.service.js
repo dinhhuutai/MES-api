@@ -5,6 +5,7 @@ const metrics = require('./metrics');
 const datasets = require('./datasets');
 const { evaluateGrid } = require('./formula');
 const AppError = require('../../utils/AppError');
+const { ngayHomNayVN } = require('../../utils/khoangNgay');
 
 function listMetrics() {
   return metrics.catalog();
@@ -149,7 +150,7 @@ async function renderReport(id, { noiDung, ngay } = {}) {
 }
 
 async function history(id, date) {
-  const d = date || new Date().toISOString().slice(0, 10);
+  const d = date || ngayHomNayVN();
   const rows = await repo.historyByDate(id, d);
   const MAP = { CREATE: 'Tạo báo cáo', UPDATE: 'Lưu chỉnh sửa', HOAN_TAC: 'Hoàn tác', XOA: 'Xóa' };
   return rows.map((r) => ({

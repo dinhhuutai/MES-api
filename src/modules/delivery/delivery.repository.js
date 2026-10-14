@@ -9,6 +9,8 @@ const { mauTim } = require('../../utils/timKiem');
 // Đồng hồ SLA màn Giao đo theo CHÍNH tem (mốc OQC cho qua giao) + SLA trạm FINISH — cùng nguồn dải Theo dõi /
 // bảng theo dõi Dashboard (02/10/2026; bản cũ lấy `ton_tram` của cả lệnh — xem `quality.repository temCtx`).
 const { MOC_VAO_TEM } = require('../../utils/siSoTram');
+// Đơn giá phần in (mig 113) — dò cột, thiếu ⇒ NULL (Excel "BÁO CÁO GIAO HÀNG" để trống cột Giá trị).
+const { coCotGia } = require('../../utils/giaPhanIn');
 // Sổ cái tem là NGUỒN LUẬT DUY NHẤT ở `quality.repository` — không chép biểu thức sang đây.
 const qaRepo = require('../quality/quality.repository');
 
@@ -45,7 +47,10 @@ async function coCotTichGiao() {
 //   (đúng họ lỗi "2 con số trên cùng dòng chảy đá nhau" đã ghi ở §6).
 // ⚠ Cùng áp `dkTrang('GH_TEM')` cho cả 2 chế độ — CỐ Ý: cấu hình *Hiển thị theo phương án in* ẩn
 //   nhóm nào thì ẩn ở cả hai, nếu không bán hàng sẽ tích được thứ mà màn Giao không bao giờ hiện.
-async function listTemGiao({ cheDo = 'SAN_SANG', search = '', filters = {}, ngayTu = '', ngayDen = '' } = {}) {
+// `hanTu`/`hanDen` (14/10/2026) = lọc NGÀY GIAO = HẠN GIAO sớm nhất trong các đợt vải của lệnh (cùng nghĩa "ngày giao"
+//   của dải Theo dõi — `siso` tách theo `han_giao_hang`). Kèm `han_giao_hang` + `don_gia` (mig 113) cho Excel
+//   "BÁO CÁO GIAO HÀNG" (Giá trị = SL × đơn giá).
+async function listTemGiao({ cheDo = 'SAN_SANG', search = '', filters = {}, ngayTu = '', ngayDen = '', hanTu = '', hanDen = '' } = {}) {
   const f = filters || {};
   const params = [];
   // ⚠ LOẠI TEM ĐÃ HỦY (cùng lý do như `quality.repository.listCandByCon`): danh sách lọc theo sổ cái,
@@ -68,6 +73,9 @@ async function listTemGiao({ cheDo = 'SAN_SANG', search = '', filters = {}, ngay
   add(f.kichPhim, 'info.kich_phim');
   if (ngayTu) { params.push(ngayTu); conds.push(`(t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date >= $${params.length}::date`); }
   if (ngayDen) { params.push(ngayDen); conds.push(`(t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date <= $${params.length}::date`); }
+  if (hanTu) { params.push(hanTu); conds.push(`hg.han_giao_hang::date >= $${params.length}::date`); }
+  if (hanDen) { params.push(hanDen); conds.push(`hg.han_giao_hang::date <= $${params.length}::date`); }
+  const cotDonGia = (await coCotGia()) ? 'pin.don_gia' : 'NULL::numeric AS don_gia';
   // Cột "ai tích / lúc nào" chỉ SELECT khi đã có mig 092 — thiếu cột thì 2 khóa này vắng mặt,
   // FE hiện "—" như mọi giá trị rỗng khác.
   const cotTich = (await coCotTichGiao())
@@ -92,17 +100,23 @@ async function listTemGiao({ cheDo = 'SAN_SANG', search = '', filters = {}, ngay
             ${DON_SUB('dh.ma_don_hang', 'don_list')},
             ${DON_SUB('kh.ten_khach_hang', 'khach_list')},
             ${MOC_VAO_TEM.GIAO('t')} AS tg_vao, sla.sla_phut, sla.canh_bao_truoc_phut,
-            info.ma_hang, info.mau_vai, info.kich_vai, info.kich_phim
+            info.ma_hang, info.mau_vai, info.kich_vai, info.kich_phim, info.don_gia,
+            info.ten_khach_hang, info.ma_don_hang, hg.han_giao_hang
      FROM tem t
      JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
      JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
      LEFT JOIN LATERAL (
-       SELECT mh.ma_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim, kh.ten_khach_hang, dh.ma_don_hang
+       SELECT mh.ma_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim, kh.ten_khach_hang, dh.ma_don_hang, ${cotDonGia}
        FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
        JOIN phan_in pin ON pin.id = dv.phan_in_id JOIN ma_hang mh ON mh.id = pin.ma_hang_id
        JOIN don_hang dh ON dh.id = mh.don_hang_id JOIN khach_hang kh ON kh.id = dh.khach_hang_id
        WHERE lsd.lenh_san_xuat_id = ls.id ORDER BY pin.ma_phan, dv.ma_dot_vai LIMIT 1
      ) info ON true
+     LEFT JOIN LATERAL (
+       SELECT min(dvh.han_giao_hang) AS han_giao_hang
+       FROM lenh_sx_dot_vai lsh JOIN dot_vai_ve dvh ON dvh.id = lsh.dot_vai_ve_id
+       WHERE lsh.lenh_san_xuat_id = ls.id
+     ) hg ON true
      LEFT JOIN LATERAL (
        SELECT tr.thoi_gian_quy_dinh_phut AS sla_phut, tr.canh_bao_truoc_phut
        FROM tram tr JOIN workflow_version wv ON wv.id = tr.workflow_version_id AND wv.la_hien_hanh
@@ -112,6 +126,59 @@ async function listTemGiao({ cheDo = 'SAN_SANG', search = '', filters = {}, ngay
      WHERE ${conds.join(' AND ')}
      ORDER BY t.created_date`;
   const { rows } = await query(sql.replace(/\s+/g, ' '), params);
+  return rows;
+}
+
+// ─── TEM TỒN TỪ KCS (14/10/2026, người dùng yêu cầu) — modal ở màn Giao hàng ─────────────────────────────────────
+// "Tem đã xác nhận KIỂM PHẨM nhưng CHƯA GIAO": tem gốc có ≥1 lượt KCS còn hiệu lực + tem 17 của nó, chưa HỦY, còn hàng
+// ở 1 trong 4 chặng sau KCS (sổ cái — cùng biểu thức `quality.repository`, không chép công thức):
+//   · chờ sửa  = CON_SUA (tem gốc; hư chờ sửa)        · chờ OQC = CON_OQC (đạt KCS + sửa đạt chưa qua OQC)
+//   · chờ tích = CON_GIAO khi bán hàng CHƯA tích        · chờ giao = CON_GIAO khi đã tích (đang nằm ở danh sách tem giao)
+// Hủy (KCS hủy / sửa hủy) không phải tồn. Tem gia công (13) không qua KCS ⇒ không có mặt.
+// ⚠ CỐ Ý KHÔNG áp *Hiển thị theo phương án in* (`dkTrang`): đây là con số TỒN — ẩn bớt là báo sai tồn.
+async function listTonKcs() {
+  const coTich = await coCotTichGiao();
+  const cotDonGia = (await coCotGia()) ? 'pin.don_gia' : 'NULL::numeric AS don_gia';
+  const conGiao = `GREATEST(0, ${qaRepo.CON_GIAO})`;
+  const sql = `
+    SELECT x.* FROM (
+      SELECT t.id AS tem_id, t.ma_tem, (t.tem_goc_id IS NOT NULL) AS la_tem_sua, t.so_luong, t.trang_thai,
+             CASE WHEN t.tem_goc_id IS NULL THEN GREATEST(0, ${qaRepo.CON_SUA}) ELSE 0 END AS cho_sua,
+             GREATEST(0, ${qaRepo.CON_OQC}) AS cho_oqc,
+             ${coTich ? `CASE WHEN NOT t.da_tich_giao THEN ${conGiao} ELSE 0 END` : '0'} AS cho_tich,
+             ${coTich ? `CASE WHEN t.da_tich_giao THEN ${conGiao} ELSE 0 END` : conGiao} AS cho_giao,
+             t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy, t.sl_sua_dat, t.sl_sua_huy, t.sl_oqc_dat, t.sl_da_giao,
+             k.tg_kcs, ndk.ho_ten AS nguoi_kcs, ls.ma_lenh_san_xuat, cs.ma_chuyen, cs.ten_chuyen,
+             info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan, info.mau_vai, info.kich_vai,
+             info.kich_phim, info.don_gia, hg.han_giao_hang
+        FROM tem t
+        JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+        JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+        LEFT JOIN chuyen_san_xuat cs ON cs.id = COALESCE(ps.chuyen_id, ls.chuyen_id)
+        JOIN LATERAL (
+          SELECT k.created_date AS tg_kcs, k.created_by FROM kcs k
+           WHERE k.tem_id = COALESCE(t.tem_goc_id, t.id) AND ${qaRepo.notCancelledQc('k', 'kcs')}
+           ORDER BY k.created_date DESC LIMIT 1
+        ) k ON true
+        LEFT JOIN nguoi_dung ndk ON ndk.id = k.created_by
+        LEFT JOIN LATERAL (
+          SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, ${cotDonGia}
+          FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+          JOIN phan_in pin ON pin.id = dv.phan_in_id JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+          JOIN don_hang dh ON dh.id = mh.don_hang_id JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+          WHERE lsd.lenh_san_xuat_id = ls.id ORDER BY pin.ma_phan, dv.ma_dot_vai LIMIT 1
+        ) info ON true
+        LEFT JOIN LATERAL (
+          SELECT min(dvh.han_giao_hang) AS han_giao_hang
+          FROM lenh_sx_dot_vai lsh JOIN dot_vai_ve dvh ON dvh.id = lsh.dot_vai_ve_id
+          WHERE lsh.lenh_san_xuat_id = ls.id
+        ) hg ON true
+       WHERE t.trang_thai <> 'HUY'
+    ) x
+    WHERE (x.cho_sua + x.cho_oqc + x.cho_tich + x.cho_giao) > 0
+    ORDER BY x.tg_kcs, x.ma_tem
+    LIMIT 3000`;
+  const { rows } = await query(sql.replace(/\s+/g, ' '));
   return rows;
 }
 
@@ -426,7 +493,7 @@ async function historyGiaoByDate(date) {
   const VN = "AT TIME ZONE 'Asia/Ho_Chi_Minh'";
   const sql =
     `SELECT * FROM (
-       SELECT gh.id, gh.created_date AS tg, nd.ho_ten AS nguoi, 'Tạo phiếu giao' AS hanh_dong,
+       SELECT gh.id, gh.trang_thai AS trang_thai_phieu, gh.created_date AS tg, nd.ho_ten AS nguoi, 'Tạo phiếu giao' AS hanh_dong,
               gh.ma_phieu_giao AS doi_tuong,
               concat_ws(' · ', kh.ten_khach_hang, dh.ma_don_hang,
                 (SELECT count(*)::text || ' tem' FROM giao_hang_tem gt WHERE gt.giao_hang_id = gh.id)) AS chi_tiet
@@ -436,7 +503,7 @@ async function historyGiaoByDate(date) {
          LEFT JOIN nguoi_dung nd ON nd.id = gh.created_by
         WHERE ((gh.created_date ${VN})::date) = $1::date
        UNION ALL
-       SELECT gh.id, a.thoi_gian, nd.ho_ten,
+       SELECT gh.id, gh.trang_thai, a.thoi_gian, nd.ho_ten,
               CASE a.hanh_dong WHEN 'XAC_NHAN_GIAO' THEN 'Xác nhận giao' ELSE 'Hủy phiếu giao' END,
               gh.ma_phieu_giao,
               COALESCE(a.gia_tri_moi->>'ly_do',
@@ -643,7 +710,7 @@ async function applyGiaoLedger(client, giaoHangId, actorId) {
 }
 
 module.exports = {
-  listTemSanSang, listTemChoTich, donHangIdsForTems, nextMaPhieuGiao, maPhieuGiaoDaDung, doiMaPhieuGiao, createGiaoHang, addTem,
+  listTemSanSang, listTemChoTich, listTonKcs, donHangIdsForTems, nextMaPhieuGiao, maPhieuGiaoDaDung, doiMaPhieuGiao, createGiaoHang, addTem,
   getGiaoHang, listGiaoHang, getGiaoHangTems, markGiaoDone, applyGiaoLedger, insertGiaoAudit,
   coCotTichGiao, coCotGiaoHangTai, cotPhieuThem, setGiaoHangTai,
   tichTem, boTichTem, temDaVaoPhieu, traCuuTemTich, ghiAuditTich,

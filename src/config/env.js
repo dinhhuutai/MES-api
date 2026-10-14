@@ -140,6 +140,13 @@ const env = {
     guiDsHuyVaiTimeoutMs: parseInt(process.env.ERP_GUI_DS_HUY_VAI_TIMEOUT_MS || '10000', 10),
     guiDsHuyVaiRetry: parseInt(process.env.ERP_GUI_DS_HUY_VAI_RETRY || '3', 10),
     guiDsHuyVaiEnabled: String(process.env.ERP_GUI_DS_HUY_VAI_ENABLED || 'true').toLowerCase() === 'true',
+    // BÁO ERP HỦY CHỨNG TỪ THEO IDMES (14/10/2026) — proc `MES_spr_MES2SF0_Huy(@pIDMES, @pNgayHuy, @pNguoiHuy,
+    // @pLydohuy)`. Gọi sau mỗi lần HỦY ở MES một lượt đã gửi ERP (in tem · tem gia công · KCS · Sửa · OQC ·
+    // phân loại lỗi · phiếu giao). Xem `utils/erpHuy.js`.
+    guiHuyIdMesUrl: process.env.ERP_GUI_IDMES_HUY_URL || `${ERP_GOC}/gui-idmes-huy`,
+    guiHuyIdMesTimeoutMs: parseInt(process.env.ERP_GUI_IDMES_HUY_TIMEOUT_MS || '10000', 10),
+    guiHuyIdMesRetry: parseInt(process.env.ERP_GUI_IDMES_HUY_RETRY || '3', 10),
+    guiHuyIdMesEnabled: String(process.env.ERP_GUI_IDMES_HUY_ENABLED || 'true').toLowerCase() === 'true',
     // KÉO danh sách phần in GN đã sửa thông tin bên ERP (25/09/2026) — job 5 phút/lần, chỉ cập nhật phần in
     // đang nằm ở *Đơn hàng › Phần in chờ sửa thông tin*. Xem `modules/suathongtin/erpCapNhat.js`.
     dsSuaThongTinUrl: process.env.ERP_DS_PHAN_IN_SUA_THONG_TIN_URL || `${ERP_GOC}/ds-phan-in-sua-thong-tin`,

@@ -81,6 +81,17 @@ function ngayTuMaNgayCa(ma) {
   return `20${yy}-${mm}-${dd}`;
 }
 
+// ----- LƯỢT CA ĐANG CHẠY (13/10/2026 — khóa "nhập đầu ca" của màn In tem) -----
+// Trả `{ ma, ngay, khoa }`: `ma` = mã ca (C1/C2/C3 · D1/D2 · HC), `ngay` = YYMMDD ngày lượt ca BẮT ĐẦU, `khoa` =
+// `ngay` + `ma` — 2 thời điểm cùng `khoa` ⇔ cùng một lượt ca. Ca đêm (C3 22:00→06:00 · D2 18:00→06:00) qua nửa đêm
+// vẫn là lượt ca của HÔM TRƯỚC ⇒ dùng `ymdSx` (= bây giờ lùi 6 giờ, lấy từ SQL). Hành chính không có ca đêm: mỗi
+// NGÀY LỊCH là một lượt (ngoài giờ vẫn tính hành chính — xem `caFromHour`).
+function caDangChay({ ymd, ymdSx, gio, phut, loaiCa }) {
+  const ma = maCa(gio, phut, loaiCa);
+  const ngay = (ma === 'HC' || !ma) ? (ymd || '') : (ymdSx || ymd || '');
+  return { ma, ngay, khoa: `${ngay}${ma}` };
+}
+
 // GIỜ BẮT ĐẦU của ca chứa (gio, phut) — 'HH:MM'. Dùng làm gợi ý "Từ giờ" khi hôm nay chưa có mốc nào
 // (30/09/2026). Ca 3 / Ca Dài 2 bắt đầu TỐI HÔM TRƯỚC khi giờ hiện tại đã qua nửa đêm — vẫn trả giờ
 // bắt đầu (22:00 / 18:00); luật cộng ngày cho ca đêm ở `production.repository.duLieuGhiInTem`.
@@ -132,6 +143,6 @@ function ngayCaKeHoach(tuGio, ngayKeHoach, modeMap, loaiChuyen = null) {
 }
 
 module.exports = {
-  caFromHour, caFromParts, maCa, maNgayCa, ngayTuMaNgayCa, gioBatDauCa, khoaTuanIso, ngayCaKeHoach,
+  caFromHour, caFromParts, maCa, maNgayCa, ngayTuMaNgayCa, gioBatDauCa, khoaTuanIso, ngayCaKeHoach, caDangChay,
   loaiCaCua, khoaNhomCa, LOAI_CHUYEN_CA, NHOM_CA_RIENG, NHOM_CA_KHAC, CA_KHAC_MAC_DINH,
 };

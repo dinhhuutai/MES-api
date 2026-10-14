@@ -883,6 +883,8 @@ async function listGiaCongHistory(date) {
            a.hanh_dong AS loai,
            COALESCE(a.gia_tri_moi->>'ly_do', a.gia_tri_moi->>'ghi_chu') AS ly_do,
            a.gia_tri_moi->>'ma_tem' AS ma_tem,
+           tg13.id AS tem_id, tg13.trang_thai AS tem_trang_thai,
+           (COALESCE(tg13.sl_oqc_dat, 0) > 0 OR COALESCE(tg13.sl_da_giao, 0) > 0) AS tem_da_xu_ly,
            (a.gia_tri_moi->>'so_luong')::int AS so_luong_lan_nay,
            (a.gia_tri_moi->>'so_luong_huy')::int AS so_luong_huy,
            (a.gia_tri_moi->>'sl_loi_vai')::int AS sl_loi_vai,
@@ -923,6 +925,7 @@ async function listGiaCongHistory(date) {
         LEFT JOIN khach_hang kh ON kh.id = dh.khach_hang_id
        WHERE dv.id = NULLIF(a.gia_tri_moi->>'dot_vai_ve_id','')::uuid
     ) pn ON true
+    LEFT JOIN tem tg13 ON a.hanh_dong = 'GIA_CONG_CHUYEN_OQC' AND tg13.ma_tem = a.gia_tri_moi->>'ma_tem'
     WHERE a.ten_bang = 'lenh_san_xuat'
       AND a.hanh_dong IN ('GIA_CONG_CHUYEN_OQC','OQC_TRA_VE_GIA_CONG','GIA_CONG_TRA_LAI')
       AND (a.thoi_gian AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date

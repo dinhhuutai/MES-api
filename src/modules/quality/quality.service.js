@@ -3,6 +3,7 @@
 const { withTransaction } = require('../../config/db');
 const repo = require('./quality.repository');
 const AppError = require('../../utils/AppError');
+const erpHuy = require('../../utils/erpHuy');
 const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
 const planningRepo = require('../planning/planning.repository');
@@ -599,6 +600,7 @@ async function kcsHistory(date) {
     const cl = q0(r.so_luong_chenh_lech);
     const chenh = cl ? ` · Chênh ${cl > 0 ? '+' + cl : cl}` : '';
     return {
+      id: r.luot_id, tem_id: r.tem_id, // khóa của nút "Hủy" ở panel Lịch sử (14/10/2026)
       tg: r.tg, nguoi: r.nguoi || '—',
       hanh_dong: `KCS${r.ket_qua ? ' · ' + r.ket_qua : ''}`,
       doi_tuong: r.ma_tem || '',
@@ -610,6 +612,7 @@ async function kcsHistory(date) {
 async function suaHistory(date) {
   const rows = await repo.suaHistoryByDate(date);
   return rows.map((r) => ({
+    id: r.luot_id, tem_id: r.tem_id,
     tg: r.tg, nguoi: r.nguoi || '—', hanh_dong: 'Sửa',
     doi_tuong: r.ma_tem || '',
     chi_tiet: `Sửa ${q0(r.so_luong_sua)} · Đạt ${q0(r.so_luong_sua_dat)} · Hủy ${q0(r.so_luong_sua_huy)}`,
@@ -621,6 +624,7 @@ async function oqcHistory(date) {
   const src = (n) => (n === 'SUA' ? 'Sửa' : 'KCS');
   const pre = (n) => (n === 'SUA' ? '17-' : '15-');
   return rows.map((r) => ({
+    id: r.luot_id, tem_id: r.tem_id,
     tg: r.tg, nguoi: r.nguoi || '—',
     hanh_dong: `OQC${r.ket_qua ? ' · ' + r.ket_qua : ''}`,
     doi_tuong: `${pre(r.nguon)}${r.ma_tem || ''}`,
@@ -663,6 +667,8 @@ async function cancelKcs(kcsId, lyDo, actorId) {
     await repo.recomputeTemStage(client, r.tem_id, actorId);
   });
   await repo.logCancelQc('kcs', kcsId, r.tem_id, r.ma_tem, lyDo, actorId);
+  // Báo ERP hủy phiếu kiểm phẩm của lượt này theo IDMES — chạy ngầm (14/10/2026, `utils/erpHuy.js`).
+  erpHuy.baoHuyNgam('KCS', kcsId, { lyDo, actorId, maHien: r.ma_tem });
   await tracking.moveByTem(r.tem_id, 'KIEM', actorId);
   sockets.emit('quality:updated', { temId: r.tem_id, stage: 'KCS', huy: true });
   sockets.emit('dashboard:refresh', {});
@@ -715,6 +721,7 @@ async function cancelSua(suaId, lyDo, actorId) {
     await repo.recomputeTemStageMany(client, [r.tem_id, temCon && temCon.id].filter(Boolean), actorId);
   });
   await repo.logCancelQc('sua', suaId, r.tem_id, r.ma_tem, lyDo, actorId);
+  erpHuy.baoHuyNgam('SUA', suaId, { lyDo, actorId, maHien: r.ma_tem }); // báo ERP hủy phiếu sửa đạt của lượt này
   await tracking.moveByTem(r.tem_id, 'SUA', actorId);
   sockets.emit('quality:updated', { temId: r.tem_id, stage: 'SUA', huy: true });
   sockets.emit('dashboard:refresh', {});
@@ -746,6 +753,7 @@ async function cancelOqc(oqcId, lyDo, actorId) {
     await repo.recomputeTemStage(client, r.tem_id, actorId);
   });
   await repo.logCancelQc('oqc', oqcId, r.tem_id, r.ma_tem, lyDo, actorId);
+  erpHuy.baoHuyNgam('OQC', oqcId, { lyDo, actorId, maHien: r.ma_tem }); // báo ERP hủy phiếu OQC của lượt này
   await tracking.moveByTem(r.tem_id, 'OQC', actorId);
   sockets.emit('quality:updated', { temId: r.tem_id, stage: 'OQC', huy: true });
   sockets.emit('dashboard:refresh', {});
@@ -815,7 +823,18 @@ async function guiLaiErpSua(suaId, actorId) {
   const [msg, status] = LY_DO[kq.ly_do] || [`ERP báo lỗi: ${kq.error || 'không rõ'}`, 502];
   throw new AppError(msg, { status, errorCode: kq.ly_do || 'ERP_LOI' });
 }
-async function oqcDone(date) { return repo.temDoneByDate('oqc', date); }
+// + `day_chuyen` (MTD · Banin · RB · MT · LG · MEP) theo loại chuyền — cùng luật nhóm của Báo cáo sản xuất (`nhomCuaLoai`)
+//   cho cột "Dây chuyền" của Excel "DANH SÁCH KIỂM TRA CHẤT LƯỢNG ĐẦU RA" (14/10/2026).
+async function oqcDone(date) {
+  const rows = await repo.temDoneByDate('oqc', date);
+  const { nhomCuaLoai, NHOM } = require('../../utils/baoCaoSanXuat');
+  const nhan = Object.fromEntries(NHOM.map((n) => [n.key, n.label]));
+  rows.forEach((r) => {
+    const k = nhomCuaLoai(r.ma_loai_chuyen);
+    r.day_chuyen = r.ma_loai_chuyen ? (nhan[k] || 'Khác') : null;
+  });
+  return rows;
+}
 async function inlineDone(date) { return repo.inlineDoneByDate(date); }
 
 // Ghi NGƯỜI SỬA cho các lượt sửa được chọn (nhập ở modal In tem của trang Sửa, mig 080).

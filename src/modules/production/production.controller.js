@@ -4,6 +4,7 @@ const service = require('./production.service');
 const planningService = require('../planning/planning.service'); // dùng chung candidate Test Run
 const asyncHandler = require('../../utils/asyncHandler');
 const { ok } = require('../../utils/response');
+const AppError = require('../../utils/AppError');
 const { getPaging, TRAN_TAI_HET } = require('../../utils/pagination');
 
 const candidates = asyncHandler(async (req, res) => {
@@ -179,6 +180,20 @@ const cancelableTem = asyncHandler(async (req, res) => {
 
 const cancelPrintTem = asyncHandler(async (req, res) =>
   ok(res, await service.cancelPrintTem(req.params.temId, req.body.lyDo, req.user.id), 'Đã hủy lệnh in tem'));
+// Nút "Hủy" ở danh sách Tem đã in (14/10/2026) — lý do bắt buộc.
+const cancelPrintTemLichSu = asyncHandler(async (req, res) => {
+  const lyDo = String((req.body && req.body.lyDo) || '').trim();
+  if (!lyDo) throw new AppError('Phải nhập lý do hủy tem', { status: 422, errorCode: 'NO_LY_DO' });
+  return ok(res, await service.cancelPrintTem(req.params.temId, lyDo, req.user.id), 'Đã hủy tem');
+});
+
+// MỞ LẠI TEM IN ĐÃ HỦY (14/10/2026) — lý do BẮT BUỘC ở cả 2 lối (trang Hủy lệnh xác nhận · "Tem đã in").
+const reopenableTem = asyncHandler(async (req, res) => {
+  const { page, limit, offset } = getPaging(req.query);
+  return ok(res, await service.listReopenableTem({ search: req.query.search || '', page, limit, offset }));
+});
+const reopenPrintTem = asyncHandler(async (req, res) =>
+  ok(res, await service.reopenPrintTem(req.params.temId, (req.body && req.body.lyDo) || '', req.user.id), 'Đã mở lại tem'));
 
 // DANH SÁCH TEM ĐÃ IN (xem thông tin tem, không cần in). `laGiaCong` do ROUTE quyết, không nhận từ
 // query — xem ghi chú ở `service.listTemDaIn`.
@@ -234,7 +249,7 @@ module.exports = {
   toInList, toInCreate, toInUpdate, toInToggle, baoCaoSanXuat, baoCaoDungChuyen, baoCaoKiemHang, baoCaoSuaHang,
   baoCaoPhanLoaiLoi,
   lyDoBoSungList, lyDoBoSungCreate, lyDoBoSungUpdate, lyDoBoSungToggle, luuLyDoBoSungDotVai,
-  cancelableTem, cancelPrintTem,
+  cancelableTem, cancelPrintTem, cancelPrintTemLichSu, reopenableTem, reopenPrintTem,
   temDaInSX: dsTemDaIn(false), temDaInGiaCong: dsTemDaIn(true),
   closeCandidates, closeProduction,
   reopenCandidates, reopenProduction, pauseLenhChay, doiChuyen,

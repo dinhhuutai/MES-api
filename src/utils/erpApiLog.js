@@ -51,6 +51,9 @@ const TEN_BANG = {
   ERP_DS_SUA_THONG_TIN: 'erp_api',
   // GN hủy vải — 1 lượt có thể nhiều phần in nên không gắn 1 bản ghi; ID kết nối sinh mỗi lượt (`HV-…`).
   ERP_GUI_DS_HUY_VAI: 'erp_api',
+  // Báo ERP hủy chứng từ theo IDMES (14/10/2026) — bản ghi bị hủy thuộc nhiều bảng khác nhau (tem · kcs · sua ·
+  //   oqc · giao_hang) nên để `erp_api`; `id_ban_ghi` = id bản ghi bị hủy, kênh nằm ở `gui.Nguon`.
+  ERP_GUI_HUY_IDMES: 'erp_api',
 };
 
 // Cắt bớt phản hồi ERP trước khi lưu — tránh 1 lần lỗi bất thường nhồi cả trang HTML vào audit_log.

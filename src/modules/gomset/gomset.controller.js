@@ -4,6 +4,7 @@ const service = require('./gomset.service');
 const asyncHandler = require('../../utils/asyncHandler');
 const { ok, created } = require('../../utils/response');
 const { getPaging } = require('../../utils/pagination');
+const { ngayHomNayVN } = require('../../utils/khoangNgay');
 
 const candidates = asyncHandler(async (req, res) => {
   const { page, limit, offset } = getPaging(req.query);
@@ -13,12 +14,12 @@ const candidates = asyncHandler(async (req, res) => {
 const list = asyncHandler(async (req, res) => ok(res, await service.listSets({ search: req.query.search || '' })));
 
 const history = asyncHandler(async (req, res) => {
-  const date = req.query.date || new Date().toISOString().slice(0, 10);
+  const date = req.query.date || ngayHomNayVN();
   return ok(res, await service.gomHistory(date));
 });
 
 const done = asyncHandler(async (req, res) => {
-  const date = req.query.date || new Date().toISOString().slice(0, 10);
+  const date = req.query.date || ngayHomNayVN();
   return ok(res, await service.gomDone(date));
 });
 

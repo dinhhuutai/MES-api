@@ -4,6 +4,7 @@ const service = require('./finance.service');
 const asyncHandler = require('../../utils/asyncHandler');
 const { ok } = require('../../utils/response');
 const { getPaging } = require('../../utils/pagination');
+const { ngayHomNayVN } = require('../../utils/khoangNgay');
 
 const list = asyncHandler(async (req, res) => {
   const { page, limit, offset } = getPaging(req.query);
@@ -25,7 +26,7 @@ const confirm = asyncHandler(async (req, res) =>
   ok(res, await service.confirm(req.params.id, req.user.id), 'Đã đóng tài chính (CLOSED_FINANCE)'));
 
 const history = asyncHandler(async (req, res) => {
-  const date = req.query.date || new Date().toISOString().slice(0, 10);
+  const date = req.query.date || ngayHomNayVN();
   return ok(res, await service.history(date));
 });
 

@@ -3,6 +3,7 @@
 const { withTransaction } = require('../../config/db');
 const repo = require('./production.repository');
 const AppError = require('../../utils/AppError');
+const erpHuy = require('../../utils/erpHuy');
 const { buildMeta } = require('../../utils/pagination');
 const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
@@ -12,7 +13,7 @@ const planningService = require('../planning/planning.service'); // rollbackLenh
 const erpsyncRepo = require('../erpsync/erpsync.repository');     // reopenReadyForPhanIn
 const qaRepo = require('../quality/quality.repository');          // qc_tra_ve (badge + lý do ở READY)
 const thongBao = require('../thongbao/thongbao.service');         // chuông Kỹ thuật (mig 085)
-const { caFromParts, maNgayCa, ngayTuMaNgayCa, gioBatDauCa, loaiCaCua } = require('../../utils/ca');
+const { caFromParts, ngayTuMaNgayCa, gioBatDauCa, loaiCaCua, khoaNhomCa, caDangChay } = require('../../utils/ca');
 const { layBarcodeTem, layNhieuBarcodeTem } = require('../../utils/erpTemBarcode');
 const { ghiInTem, taoPayload, laMaTemErp, ghiChuaCoMaErp } = require('../../utils/erpGhiInTem');
 const { apiChoPhepPhanIn } = require('../../utils/caiDatApi');
@@ -65,20 +66,74 @@ async function getRun(lenhId) {
            so_phan_in: soPhanIn, co_gom_set: soPhanIn > 1 };
 }
 
-// Gợi ý sẵn "ngày ca · từ giờ · đến giờ" cho lượt in kế tiếp (FE điền vào ô, người dùng sửa được).
-// Ngày ca = YYMMDD của HÔM NAY + mã ca suy từ GIỜ HIỆN TẠI (lúc mở sidebar Sản xuất) & loại ca của
-// TUẦN ISO đó (`cai_dat_ca_tuan`; tuần chưa cài → ca Ngắn). Lỗi gì cũng trả null — không chặn màn Sản xuất.
+// ─── "NHẬP ĐẦU CA": NGÀY CA + NGÀY CHỨNG TỪ của lượt in tem (13/10/2026, người dùng chốt) ─────────────────────
+// 2 ô này KHÔNG còn tự điền theo giờ / hôm nay: để TRỐNG, thiếu là KHÔNG cho in tem. Người in nhập 1 lần ĐẦU CA;
+// các lượt in sau trong CÙNG LƯỢT CA điền lại đúng giá trị đó; hết ca ⇒ trống lại.
+//   · Lượt ca = `utils/ca.js caDangChay` theo giờ VN hiện tại + loại ca của tuần × nhóm chuyền (Máy / Bàn / Robot /
+//     Khác cài ca riêng ⇒ nhớ RIÊNG từng nhóm; trong 1 nhóm mọi chuyền + mọi máy tính dùng chung giá trị đầu ca).
+//   · Nơi nhớ: `production.repository docDauCa / ghiDauCa` (audit_log, không migration). Sửa giữa ca ⇒ giá trị
+//     MỚI NHẤT thành giá trị nhớ.
+// Lượt ca hiện tại của 1 lệnh. Lỗi ⇒ null (bên gọi tự xử: gợi ý thì bỏ qua, in tem thì vẫn đòi nhập đủ 2 ô).
+async function caInTemHienTai(lenhId, phieuId, gSan = null, modeSan = null) {
+  const [g, modeMap] = gSan ? [gSan, modeSan] : await Promise.all([repo.goiYTemMeta(lenhId, phieuId), planningRepo.caModeMap()]);
+  if (!g) return null;
+  // Loại ca lấy theo tuần của NGÀY SẢN XUẤT (bây giờ lùi 6 giờ) — ca đêm vắt sang thứ Hai vẫn theo tuần nó bắt đầu.
+  const loaiCa = loaiCaCua(modeMap, `${g.nam_sx}-${g.tuan_sx}`, g.loai_chuyen);
+  const ca = caDangChay({ ymd: g.ymd, ymdSx: g.ymd_sx, gio: g.gio, phut: g.phut, loaiCa });
+  if (!ca.ngay) return null;
+  return { khoa: `${khoaNhomCa(g.loai_chuyen) || 'CHUNG'}|${ca.khoa}`, ma_ca: ca.ma, ngay: ca.ngay };
+}
+
+// Gợi ý cho lượt in kế tiếp: "ngày ca" + "ngày chứng từ" = giá trị ĐÃ NHẬP ĐẦU CA của lượt ca hiện tại (chưa ai
+// nhập ⇒ '' — FE để trống, bắt nhập) · "từ giờ / đến giờ" như cũ. Lỗi gì cũng trả null — không chặn màn Sản xuất.
 async function goiYTemMeta(lenhId, phieuId) {
   try {
     const [g, modeMap] = await Promise.all([repo.goiYTemMeta(lenhId, phieuId), planningRepo.caModeMap()]);
     if (!g) return null;
     // Mig 112: tuần cài ca riêng theo loại chuyền (Máy/Bàn/Robot) ⇒ lấy theo loại chuyền của lệnh.
     const mode = loaiCaCua(modeMap, `${g.nam}-${g.tuan}`, g.loai_chuyen);
-    // Hôm nay chưa có mốc nào (tem trước / giờ chạy phiếu) ⇒ "Từ giờ" = giờ bắt đầu CA hiện tại.
-    return { ngay_ca: maNgayCa(g.ymd, g.gio, g.phut, mode), gio_bd: g.gio_bd || gioBatDauCa(g.gio, g.phut, mode), gio_kt: g.gio_kt || '' };
+    const ca = await caInTemHienTai(lenhId, phieuId, g, modeMap);
+    const nho = ca ? await repo.docDauCa(ca.khoa).catch(() => null) : null;
+    return {
+      ngay_ca: (nho && nho.ngay_ca) || '', ngay_ct: (nho && nho.ngay_ct) || '', khoa_ca: ca ? ca.khoa : '',
+      // Hôm nay chưa có mốc nào (tem trước / giờ chạy phiếu) ⇒ "Từ giờ" = giờ bắt đầu CA hiện tại.
+      gio_bd: g.gio_bd || gioBatDauCa(g.gio, g.phut, mode), gio_kt: g.gio_kt || '',
+    };
   } catch (e) {
     return null;
   }
+}
+
+// GUARD của mọi đường in tem (in lẻ · in nhiều tem · gom set · in nhiều lệnh): thiếu Ngày ca / Ngày chứng từ ⇒ 422,
+// không tạo tem (đặt TRƯỚC bước xin mã tem ERP — khỏi tiêu số). `body.khoaCa` = lượt ca mà màn hình đang giữ giá trị
+// (FE gửi kèm): khác lượt ca hiện tại ⇒ 409 `HET_CA` — sidebar mở sẵn từ ca trước không được in bằng ngày ca cũ.
+// Trả lượt ca hiện tại (null nếu không suy được) để in xong thì nhớ lại bằng `nhoDauCa`.
+async function kiemNgayCaChungTu(phieu, body) {
+  const ngayCa = String((body && body.ngayCa) || '').trim();
+  const ngayCt = String((body && body.ngayCt) || '').trim();
+  if (!ngayCa || !ngayCt) {
+    const thieu = [!ngayCa && 'Ngày ca', !ngayCt && 'Ngày chứng từ'].filter(Boolean).join(' và ');
+    throw new AppError(`Chưa nhập ${thieu} — nhập 1 lần đầu ca rồi mới in tem được`, { status: 422, errorCode: 'THIEU_NGAY_CA' });
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(ngayCt) || Number.isNaN(new Date(`${ngayCt}T00:00:00Z`).getTime())) {
+    throw new AppError('Ngày chứng từ không hợp lệ', { status: 422, errorCode: 'NGAY_CT_SAI' });
+  }
+  const ca = await caInTemHienTai(phieu.lenh_san_xuat_id, phieu.id).catch(() => null);
+  const khoaFe = String((body && body.khoaCa) || '').trim();
+  if (ca && khoaFe && khoaFe !== ca.khoa) {
+    throw new AppError('Đã sang ca mới — nhập lại Ngày ca và Ngày chứng từ của ca này rồi in', { status: 409, errorCode: 'HET_CA' });
+  }
+  return ca;
+}
+// In tem xong ⇒ nhớ 2 giá trị cho các lượt in sau của lượt ca (chỉ ghi khi KHÁC giá trị đang nhớ). Phụ — không ném lỗi.
+async function nhoDauCa(ca, body, actorId) {
+  if (!ca) return;
+  try {
+    const ngayCa = String(body.ngayCa).trim(); const ngayCt = String(body.ngayCt).trim();
+    const nho = await repo.docDauCa(ca.khoa);
+    if (nho && nho.ngay_ca === ngayCa && nho.ngay_ct === ngayCt) return;
+    await repo.ghiDauCa(ca.khoa, { ngayCa, ngayCt }, actorId);
+  } catch (e) { console.error(`[dau-ca] ✗ Không nhớ được ngày ca / ngày chứng từ đầu ca (${ca.khoa}): ${e.message}`); }
 }
 
 // Ghi 1 lần vải hủy (= vải hư) hoặc vải THIẾU trong lúc sản xuất, theo đợt vải / phần in của lệnh.
@@ -518,6 +573,7 @@ async function printTem(phieuId, soLuong, actorId, body) {
   if (phieu.trang_thai !== 'DANG_CHAY') {
     throw new AppError('Phiếu không ở trạng thái đang chạy', { status: 409, errorCode: 'WRONG_STAGE' });
   }
+  const caIn = await kiemNgayCaChungTu(phieu, body); // thiếu Ngày ca / Ngày chứng từ ⇒ không in (nhập đầu ca)
 
   // Luật: tổng đã in không vượt quá 110% SL release của lệnh.
   const lenh = await repo.getLenhBasic(phieu.lenh_san_xuat_id);
@@ -550,6 +606,7 @@ async function printTem(phieuId, soLuong, actorId, body) {
     await repo.logTemPrint(client, { temId: newTemId, maTem, actorId });
     await repo.addTemToXe(client, { temId: newTemId, xeId: xe.id, soLuongPhoi: qty, phut: dryMin }, actorId);
   });
+  await nhoDauCa(caIn, body, actorId);
   await tracking.moveByLenh(phieu.lenh_san_xuat_id, 'CHO_KHO', actorId); // in tem → xe phơi → CHỜ KHÔ
   // Báo ERP — CỐ Ý không `await` (xem ghi chú ở `guiGhiInTem`): người in không phải chờ.
   guiGhiInTem([{ temId: newTemId, dotVaiId: null, soLuongHuy: 0, soLuongThieu: 0 }], actorId, body?.ngayCt || null);
@@ -596,6 +653,7 @@ async function printTemBatch(phieuId, items, actorId, body) {
   if (phieu.trang_thai !== 'DANG_CHAY') {
     throw new AppError('Phiếu không ở trạng thái đang chạy', { status: 409, errorCode: 'WRONG_STAGE' });
   }
+  const caIn = await kiemNgayCaChungTu(phieu, body); // thiếu Ngày ca / Ngày chứng từ ⇒ không in (nhập đầu ca)
 
   const dotVaiList = await repo.getLenhDotVaiList(phieu.lenh_san_xuat_id);
   const byId = new Map(dotVaiList.map((d) => [d.dot_vai_ve_id, d]));
@@ -661,6 +719,7 @@ async function printTemBatch(phieuId, items, actorId, body) {
       });
     }
   });
+  await nhoDauCa(caIn, body, actorId);
   // Vải hủy/thiếu ghi SAU transaction in tem (mỗi lượt 1 bản ghi sổ có người + giờ) — best-effort:
   // thiếu mig 063 thì tem vẫn in xong, chỉ không ghi được sổ vải.
   for (const v of vaiList) {
@@ -833,12 +892,92 @@ async function cancelPrintTem(temId, lyDo, actorId) {
   if (daKiem > 0) {
     throw new AppError('Tem đã được kiểm/giao một phần — không thể hủy lệnh in tem', { status: 409, errorCode: 'HAS_LEDGER' });
   }
-  await withTransaction((client) => repo.cancelTem(client, temId, actorId)); // HỦY tem + gỡ khỏi xe phơi
-  await repo.logTemCancel(temId, tem.ma_tem, (lyDo || '').trim() || null, actorId);
+  const go = await withTransaction((client) => repo.cancelTem(client, temId, actorId)); // HỦY tem + gỡ khỏi xe phơi
+  // Ảnh chụp để "Mở lại tem" trả đúng trạng thái + đúng phiên phơi (14/10/2026).
+  await repo.logTemCancel(temId, tem.ma_tem, (lyDo || '').trim() || null, actorId,
+    { trang_thai_cu: tem.trang_thai, xe_phoi_ids: (go && go.xe_phoi_ids) || [] });
+  // Báo ERP hủy phiếu in tem (SF0) theo IDMES của lượt in — chạy ngầm, không chặn (14/10/2026, `utils/erpHuy.js`).
+  erpHuy.baoHuyNgam('IN_TEM', temId, { lyDo, actorId, maHien: tem.ma_tem });
   sockets.emit('production:updated', { lenhId: tem.lenh_san_xuat_id, action: 'huy-tem', temId });
   sockets.emit('drying:updated', { lenhId: tem.lenh_san_xuat_id, action: 'huy-tem' });
   sockets.emit('dashboard:refresh', {});
   return { id: temId, ma_tem: tem.ma_tem, ma_lenh_san_xuat: tem.ma_lenh_san_xuat, so_luong: tem.so_luong };
+}
+
+// ----- MỞ LẠI TEM IN ĐÃ HỦY (14/10/2026, người dùng yêu cầu "mở lại tem in, nếu có hủy") -----
+// Đảo đúng việc `cancelPrintTem` đã làm: tem về trạng thái TRƯỚC khi hủy (IN / DANG_PHOI / DA_KHO) + các phiên phơi bị gỡ
+// về DANG_PHOI (hết giờ phơi thì job tự chuyển DA_KHO) ⇒ SL tem tính lại vào "đã in" của lệnh, tem hiện lại ở Chờ khô/KCS.
+// Báo ERP: GỬI LẠI lượt "ghi in tem" (SF0) với CÙNG IDMES (proc SF0 ghi đè theo IDMES — cùng đường nút "Gửi lại ERP")
+//   ⇒ phiếu in tem bên ERP (đã hủy theo IDMES lúc hủy tem) được tạo lại. Chạy ngầm, lỗi chỉ ghi Lịch sử API.
+// Guard: chỉ tem hủy bằng HUY_IN_TEM, không bị đụng sau lần hủy, lệnh/phiếu còn sống, sổ cái = 0, và cộng lại không vượt
+//   110% SL release (cùng trần với In tem — đã in bù tem khác thì có thể không mở được).
+async function listReopenableTem({ search, page, limit, offset }) {
+  const { rows, total } = await repo.listReopenableTem({ search, offset, limit });
+  return { items: rows, meta: buildMeta(page, limit, total) };
+}
+
+async function reopenPrintTem(temId, lyDo, actorId) {
+  const ly = String(lyDo || '').trim();
+  if (!ly) throw new AppError('Phải nhập lý do mở lại tem', { status: 422, errorCode: 'NO_LY_DO' });
+  const tem = await repo.getTemForReopen(temId);
+  if (!tem) throw new AppError('Tem không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  if (tem.trang_thai !== 'HUY') throw new AppError('Tem đang không bị hủy — không cần mở lại', { status: 409, errorCode: 'CHUA_HUY' });
+  if (tem.tem_goc_id) {
+    throw new AppError('Tem sửa (17) không mở lại ở đây', { status: 409, errorCode: 'TEM_SUA' });
+  }
+  if (tem.su_kien_cuoi !== 'HUY_IN_TEM') {
+    throw new AppError('Tem này bị hủy theo đường khác (hủy phần in / hủy lệnh / gộp tem / gia công) — không mở lại riêng tem được',
+      { status: 409, errorCode: 'KHONG_PHAI_HUY_IN' });
+  }
+  if (tem.phieu_trang_thai === 'HUY' || tem.lenh_trang_thai === 'HUY') {
+    throw new AppError(`Lệnh ${tem.ma_lenh_san_xuat || ''} / phiếu sản xuất của tem đã bị hủy — không mở lại tem được`,
+      { status: 409, errorCode: 'LENH_DA_HUY' });
+  }
+  if (!tem.mo_lai_duoc) {
+    throw new AppError('Tem đã bị thay đổi sau lần hủy in — không mở lại được', { status: 409, errorCode: 'DA_THAY_DOI' });
+  }
+  if (Number(tem.so_da_kiem) > 0) {
+    throw new AppError('Tem đã có số kiểm/giao — không mở lại được', { status: 409, errorCode: 'HAS_LEDGER' });
+  }
+  // Trần 110% SL release — cùng luật In tem (`printTem`): mở lại = cộng SL tem này vào "đã in" của phiếu.
+  const lenh = await repo.getLenhBasic(tem.lenh_san_xuat_id);
+  const target = Number(lenh?.so_luong_release) || 0;
+  if (target > 0) {
+    const printed = await repo.getPrintedTotal(tem.phieu_san_xuat_id);
+    const max = Math.floor(target * 1.1);
+    if (printed + Number(tem.so_luong || 0) > max) {
+      throw new AppError(
+        `Mở lại tem sẽ vượt 110% SL release (tối đa ${max}, đang in ${printed}, tem ${tem.so_luong}) — hủy bớt tem in bù trước`,
+        { status: 422, errorCode: 'OVER_LIMIT' }
+      );
+    }
+  }
+  // Trạng thái trả về: ảnh chụp lúc hủy (từ 14/10/2026) — tem hủy trước đó thì SUY: có phiên phơi bị gỡ cùng lúc hủy
+  //   ⇒ đang phơi · đã phơi xong ⇒ đã khô · còn lại ⇒ mới in.
+  const chup = tem.huy_moi || {};
+  const xeIds = Array.isArray(chup.xe_phoi_ids) ? chup.xe_phoi_ids : (tem.xe_huy_ids || []);
+  let trangThai = ['IN', 'DANG_PHOI', 'DA_KHO'].includes(chup.trang_thai_cu) ? chup.trang_thai_cu : null;
+  if (!trangThai) trangThai = xeIds.length ? 'DANG_PHOI' : (tem.da_phoi_xong ? 'DA_KHO' : 'IN');
+  if (trangThai === 'DANG_PHOI' && !xeIds.length) trangThai = tem.da_phoi_xong ? 'DA_KHO' : 'IN';
+
+  const ok = await withTransaction((client) => repo.reopenTem(client, temId, { trangThai, xePhoiIds: xeIds }, actorId));
+  if (!ok) throw new AppError('Tem vừa được người khác mở lại', { status: 409, errorCode: 'ALREADY' });
+  await repo.logTemReopen(temId, tem.ma_tem, ly, actorId, { trang_thai_moi: trangThai, xe_phoi_ids: xeIds });
+
+  // Gửi lại SF0 cùng IDMES — ngầm, KHÔNG chặn (lỗi ⇒ dòng `ERP_GHI_IN_TEM_LOI`, bấm "Gửi lại" ở Cài đặt API).
+  const dong = await repo.dongGhiInTemCuoi(temId).catch(() => null);
+  if (dong) {
+    const { guiLai } = require('../caidatapi/guiLai');
+    guiLai('ERP_GHI_IN_TEM', dong.id, actorId)
+      .catch((e) => console.warn(`[mo-lai-tem] ⚠ Chưa gửi lại ERP được (tem ${tem.ma_tem}): ${e.message}`));
+  }
+  sockets.emit('production:updated', { lenhId: tem.lenh_san_xuat_id, action: 'mo-lai-tem', temId });
+  sockets.emit('drying:updated', { lenhId: tem.lenh_san_xuat_id, action: 'mo-lai-tem' });
+  sockets.emit('dashboard:refresh', {});
+  return {
+    id: temId, ma_tem: tem.ma_tem, ma_lenh_san_xuat: tem.ma_lenh_san_xuat, so_luong: tem.so_luong,
+    trang_thai: trangThai, gui_lai_erp: !!dong,
+  };
 }
 
 // ----- ĐÓNG LỆNH SẢN XUẤT (= Chạy hoàn tất, cưỡng bức khi lệch SL không bấm được ở màn SX) -----
@@ -1090,7 +1229,7 @@ module.exports = {
   dsLyDoNgung, taoLyDoNgung, suaLyDoNgung, doiTrangThaiLyDoNgung,
   dsToIn, taoToIn, suaToIn, doiTrangThaiToIn,
   dsLyDoBoSung, taoLyDoBoSung, suaLyDoBoSung, doiTrangThaiLyDoBoSung, luuLyDoBoSungDotVai,
-  listCancelableTem, listTemDaIn, cancelPrintTem,
+  listCancelableTem, listTemDaIn, cancelPrintTem, listReopenableTem, reopenPrintTem,
   listCloseCandidates, closeProduction,
   listReopenCandidates, reopenProduction, pauseLenhChay, doiChuyen,
   listUndoStartCandidates, undoStartProduction,

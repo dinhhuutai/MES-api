@@ -25,7 +25,8 @@ const { ghiLog } = require('../../utils/erpApiLog');
 const { capIdMes } = require('../../utils/idMes');
 const prodRepo = require('../production/production.repository');
 const repo = require('./quality.repository');
-const { maNgayCa, loaiCaCua } = require('../../utils/ca');
+const { maNgayCa, loaiCaCua, caDangChay, khoaTuanIso } = require('../../utils/ca');
+const { temCode, laMaErp } = require('../../utils/temPrefix');
 
 const MA_API = 'ERP_GUI_SUA_DAT';
 
@@ -34,6 +35,7 @@ const MA_API = 'ERP_GUI_SUA_DAT';
 //   có mã ngày ca ⇒ người dùng chốt 24/09: **lấy NGÀY HÔM NAY**. Gửi đúng định dạng mã ngày ca mà tem
 //   15 đang gửi (`YYMMDD` + mã ca, vd `260924C1`) — suy từ giờ hiện tại & loại ca của tuần ISO, y
 //   như gợi ý "Ngày ca" ở màn Sản xuất. Lỗi gì cũng lùi về `YYMMDD` trần, không để trống.
+//   ⚠ Từ 14/10/2026 "hôm nay" = NGÀY CỦA LƯỢT SỬA (`maNgayCaTaiMoc`), không phải ngày bấm gửi — xem dưới.
 // `loaiChuyen` (mig 112) = loại chuyền của tem (`duLieuGhiInTem.loai_chuyen`) — tuần cài ca riêng theo loại.
 async function maNgayCaHomNay(loaiChuyen = null) {
   let ymd = null;
@@ -48,6 +50,32 @@ async function maNgayCaHomNay(loaiChuyen = null) {
   if (ymd) return ymd;
   const { rows } = await query(`SELECT to_char(now() AT TIME ZONE 'Asia/Ho_Chi_Minh','YYMMDD') AS ymd`);
   return rows[0].ymd;
+}
+
+// MÃ NGÀY CA TẠI MỐC XÁC NHẬN SỬA của lượt (14/10/2026) — thay cho "hôm nay": nút "Gửi lại ERP" bấm ngày khác
+//   từng gửi `Ngayca`/`Ngayct` của NGÀY BẤM (ca thật: lượt 13/10 gửi lại 14/10 mang `261014C1`).
+// `moc` = 'YYYY/MM/DD HH:mm:ss' giờ VN (`mocXacNhanSua`). Ngày SX 06:00 → 06:00: ca đêm (C3/D2) qua nửa đêm vẫn là
+//   lượt ca của HÔM TRƯỚC (cùng luật `utils/ca.js caDangChay` của In tem); loại ca theo tuần ISO của NGÀY SX.
+// Mốc hỏng ⇒ lùi về cách cũ (`maNgayCaHomNay`). Lỗi đọc cấu hình ca ⇒ `YYMMDD` trần.
+const p2 = (n) => String(n).padStart(2, '0');
+async function maNgayCaTaiMoc(moc, loaiChuyen = null) {
+  const m = /^(\d{4})\/(\d{2})\/(\d{2}) (\d{2}):(\d{2})/.exec(String(moc || ''));
+  if (!m) return maNgayCaHomNay(loaiChuyen);
+  const [, y, mo, d, hh, mi] = m;
+  const gio = Number(hh);
+  const phut = Number(mi);
+  const ymd = `${y.slice(2)}${mo}${d}`;
+  const sx = new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d), gio - 6, phut));
+  const ngaySx = `${sx.getUTCFullYear()}-${p2(sx.getUTCMonth() + 1)}-${p2(sx.getUTCDate())}`;
+  const ymdSx = ngaySx.slice(2).replace(/-/g, '');
+  try {
+    const planningRepo = require('../planning/planning.repository');
+    const loaiCa = loaiCaCua(await planningRepo.caModeMap(), khoaTuanIso(ngaySx), loaiChuyen);
+    const ca = caDangChay({ ymd, ymdSx, gio, phut, loaiCa });
+    return ca.ma ? `${ca.ngay}${ca.ma}` : ymd;
+  } catch {
+    return ymd;
+  }
 }
 
 // Lượt sửa này đã gửi ERP THÀNH CÔNG chưa.
@@ -105,7 +133,10 @@ async function guiSuaDat(suaId, actorId, opts = {}) {
   }
   if (!temConId) return { ok: false, bo_qua: true, ly_do: 'KHONG_TEM_17' };
 
-  const [r] = await prodRepo.duLieuGhiInTem([{ temId: temConId, dotVaiId: null }]);
+  // Mọi mốc ngày của lượt lấy theo LÚC XÁC NHẬN SỬA (không phải lúc gửi) ⇒ "Gửi lại ERP" ngày sau vẫn ra đúng ngày.
+  const moc = await mocXacNhanSua(suaId);
+  const ngayCtLuot = moc ? moc.slice(0, 10).replace(/\//g, '-') : null;
+  const [r] = await prodRepo.duLieuGhiInTem([{ temId: temConId, dotVaiId: null }], ngayCtLuot);
   if (!r) return { ok: false, bo_qua: true, ly_do: 'KHONG_DU_LIEU' };
   // Chờ có mã tem 17 ERP cấp mới gửi (30/09/2026).
   if (!laMaTemErp(r.ma_tem)) return ghiChuaCoMaErp(MA_API, { idBanGhi: suaId, maTem: r.ma_tem, actorId });
@@ -115,14 +146,14 @@ async function guiSuaDat(suaId, actorId, opts = {}) {
   if (idMes == null) return { ok: false, error: 'Không cấp được IDMES' };
 
   const payload = taoPayload(r, { idMes, soLuong: dat, soLuongHuy: Number(s.so_luong_sua_huy) || 0 });
-  if (!payload.Ngayca) payload.Ngayca = await maNgayCaHomNay(r.loai_chuyen);
+  if (!payload.Ngayca) payload.Ngayca = await maNgayCaTaiMoc(moc, r.loai_chuyen);
+  // NHÃN 16 của tem gốc (proc SK6 mới, 14/10/2026: `@pBarcodeSua16`) — chỉ suy được từ mã ERP 12 số; tem gốc mang
+  //   mã MES cũ (`TEM…`) ⇒ để trống (ERP không biết mã đó). `utils/erpGhiInTem` KENH.ERP_GUI_SUA_DAT đưa vào body.
+  payload.BarcodeSua16 = laMaErp(r.ma_tem_goc) ? temCode(r.ma_tem_goc, 16) : '';
   // Tem 17 không có giờ SX ⇒ Tugio/Dengio = MỐC XÁC NHẬN SỬA của lượt (proc SK6 dùng `@pDengio` làm
   //   Ngày/Giờ phiếu chuyển giao — NULL là phiếu mất ngày). Không đọc được ⇒ bây giờ (giờ VN).
-  if (!payload.Tugio || !payload.Dengio) {
-    const moc = await mocXacNhanSua(suaId);
-    if (!payload.Tugio) payload.Tugio = moc;
-    if (!payload.Dengio) payload.Dengio = moc;
-  }
+  if (!payload.Tugio) payload.Tugio = moc;
+  if (!payload.Dengio) payload.Dengio = moc;
   const kq = await ghiInTem(payload, { maApi: MA_API });
   if (kq.bo_qua) return { ok: false, bo_qua: true, ly_do: 'API_DANG_TAT' };
 
@@ -151,4 +182,4 @@ function guiNgam(suaId, actorId) {
   });
 }
 
-module.exports = { guiSuaDat, guiNgam, trangThaiGui, daGuiThanhCong, maNgayCaHomNay, MA_API };
+module.exports = { guiSuaDat, guiNgam, trangThaiGui, daGuiThanhCong, maNgayCaHomNay, maNgayCaTaiMoc, MA_API };

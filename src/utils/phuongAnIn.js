@@ -29,7 +29,7 @@ const TRANG_PAIN = [
   { ma: 'KT_READY', module: 'Chuẩn bị kỹ thuật', ten: 'Xác nhận READY', muc: 'pin' },
   { ma: 'KT_GOM_SET', module: 'Chuẩn bị kỹ thuật', ten: 'Gom set', muc: 'pin' },
 
-  { ma: 'KH_TAO_DOT_SX', module: 'Kế hoạch', ten: 'Tạo đợt sản xuất', muc: 'pin' },
+  { ma: 'KH_TAO_DOT_SX', module: 'Kế hoạch', ten: 'Gom đợt vải', muc: 'pin' },
   { ma: 'KH_RELEASE1', module: 'Kế hoạch', ten: 'Release 1', muc: 'pin' },
   { ma: 'KH_RELEASE2', module: 'Kế hoạch', ten: 'Release 2', muc: 'lenh' },
   { ma: 'KH_GIA_CONG', module: 'Kế hoạch', ten: 'Gia công', muc: 'lenh' },

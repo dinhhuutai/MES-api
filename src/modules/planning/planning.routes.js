@@ -39,7 +39,7 @@ router.post('/release1/tra-ve-ky-thuat', rbac('RELEASE1'), c.release1TraVeKyThua
 router.get('/release1/test-run-tra-ve', rbac('RELEASE1'), c.release1TestRunTraVe);
 router.post('/release1/test-run-tra-ve/:lenhId/xac-nhan', rbac('RELEASE1'), c.release1XacNhanLai);
 
-// Tạo Đợt sản xuất (màn "Tạo đợt sản xuất" — gộp/tách nhiều đợt vải + SL từng đợt)
+// Màn "Gom đợt vải" (tên cũ "Tạo đợt sản xuất") — gộp/tách nhiều đợt vải cùng phần in + SL từng đợt ⇒ 1 đợt SX
 router.post('/dot-san-xuat', rbac('RELEASE1'), c.createDotSanXuat);
 
 // Test Run (CNSP + QA)
@@ -95,6 +95,9 @@ router.get('/gia-cong/tem/danh-sach', rbac('RELEASE1', 'RELEASE2'), prodControll
 router.get('/gia-cong/tem/cancelable', rbac('RELEASE1', 'RELEASE2'), c.giaCongTemCancelable);
 // ⚠ Lệnh ghi của trang Hủy lệnh xác nhận đòi thêm `HUY_XAC_NHAN` (mig 108) — KH chỉ xem.
 router.post('/gia-cong/tem/:temId/huy', rbac('RELEASE1', 'RELEASE2'), rbac.huyXacNhan(), c.giaCongTemHuy);
+// Hủy ngay tại "Lịch sử chuyển" của màn Gia công (14/10/2026): chỉ cần quyền công đoạn; cùng service ở trên
+// (lý do bắt buộc, cùng chốt chặn, cùng báo ERP hủy).
+router.post('/gia-cong/tem/:temId/huy-lich-su', rbac('RELEASE1', 'RELEASE2'), c.giaCongTemHuy);
 router.post('/gia-cong/:lenhId/chuyen-oqc', rbac('RELEASE1', 'RELEASE2'), c.giaCongToOqc);
 // Hàng bị OQC trả về → Kế hoạch mang trả lại nhà gia công (tắt cờ, ghi người + giờ).
 router.post('/gia-cong/:lenhId/tra-lai', rbac('RELEASE1', 'RELEASE2'), c.giaCongTraLai);

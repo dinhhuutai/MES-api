@@ -9,6 +9,8 @@ const router = express.Router();
 router.use(auth);
 
 router.get('/tem-san-sang', rbac('DELIVERY_VIEW', 'DELIVERY_MANAGE'), c.temSanSang);
+// Tem tồn từ KCS (đã kiểm phẩm, chưa giao) — modal ở màn Giao hàng (14/10/2026). Route tĩnh, đặt trước `/:id`.
+router.get('/ton-kcs', rbac('DELIVERY_VIEW', 'DELIVERY_MANAGE'), c.tonKcs);
 
 // ─── Chốt chặn "bán hàng tích tem" (mig 092) — trang ở module Hệ thống ──────────────────────
 // ⚠⚠ 4 route TĨNH này phải đứng TRƯỚC `/:id` (Express khớp theo thứ tự) — đặt sau là `/tich` bị

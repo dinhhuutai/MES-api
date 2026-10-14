@@ -20,6 +20,8 @@ const { maTemUngVien, temCode } = require('../../utils/temPrefix');
 const { guiPhanLoaiLoi, tenDangNhap, dsMaLoi } = require('../../utils/erpApiChung');
 const { capIdMes } = require('../../utils/idMes');
 const { laMaTemErp, ghiChuaCoMaErp } = require('../../utils/erpGhiInTem');
+const erpHuy = require('../../utils/erpHuy');
+const sockets = require('../../sockets');
 const repo = require('./phanloailoi.repository');
 const qualityRepo = require('./quality.repository');
 
@@ -143,6 +145,62 @@ async function guiErpPhanLoaiLoi(temId, { rows }, actorId) {
 // ─── Danh mục biện pháp xử lý ────────────────────────────────────────────────
 const dsBienPhap = (q) => repo.listBienPhap(q);
 
+// ─── HỦY PHÂN LOẠI LỖI (14/10/2026) ─────────────────────────────────────────
+// Đưa tem về "CHƯA phân loại": xóa phiếu + chi tiết, đặt lại phần chia sửa / hủy như TRƯỚC lần phân loại đầu
+// của đợt này (`repo.chiaTruocPhanLoai`; không tra được ⇒ toàn bộ hư về SỬA — đúng trạng thái KCS để lại),
+// rồi báo ERP hủy các phiếu phân loại lỗi đã gửi (`utils/erpHuy.js` — mỗi lần lưu là 1 IDMES).
+// ⚠ Bất biến sổ cái như `luu`: tổng hư không đổi (`con_kcs` giữ nguyên), và phần SỬA sau khi hủy không được
+//   nhỏ hơn phần ĐÃ SỬA XONG (`sl_sua_dat + sl_sua_huy`) — nếu không `con_sua` âm.
+async function huy(temId, lyDo, actorId) {
+  const ly = String(lyDo || '').trim();
+  if (!ly) throw new AppError('Phải nhập lý do hủy phân loại lỗi', { status: 422, errorCode: 'NO_LY_DO' });
+  const sd = await qualityRepo.getTemLedger(temId);
+  if (!sd) throw new AppError('Không tìm thấy tem', { status: 404, errorCode: 'NOT_FOUND' });
+  const phieu = await repo.getPhieuTheoTem(temId);
+  if (!phieu) {
+    throw new AppError('Tem này chưa có phiếu phân loại lỗi — không có gì để hủy', { status: 409, errorCode: 'CHUA_PHAN_LOAI' });
+  }
+
+  const mocTruoc = await repo.mocHuyGanNhat(temId);
+  const slHu = Number(sd.sl_kcs_sua || 0) + Number(sd.sl_kcs_huy || 0);
+  const goc = await repo.chiaTruocPhanLoai(temId, mocTruoc);
+  // Số gốc chỉ dùng được khi TỔNG HƯ chưa đổi từ đó tới giờ (KCS kiểm thêm lượt ⇒ lệch ⇒ dồn hết về SỬA).
+  const dich = goc && goc.sua + goc.huy === slHu ? goc : { sua: slHu, huy: 0 };
+  const daXuLySua = Number(sd.sl_sua_dat || 0) + Number(sd.sl_sua_huy || 0);
+  if (dich.sua < daXuLySua) {
+    throw new AppError(`Đã sửa xong ${daXuLySua} pcs của tem này — không hủy phân loại lỗi được`,
+      { status: 409, errorCode: 'DA_SUA_ROI' });
+  }
+
+  await withTransaction(async (client) => {
+    await repo.xoaPhieuTx(client, phieu.id);
+    await repo.datChiaSuaHuyTx(client, temId, dich, actorId);
+    await qualityRepo.recomputeTemStageMany(client, [temId], actorId);
+    await client.query(
+      `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_cu, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+       VALUES ('tem', $1, 'HUY_PHAN_LOAI_LOI', $2::jsonb, $3::jsonb, $4, CURRENT_TIMESTAMP, $4)`.replace(/\s+/g, ' '),
+      [String(temId),
+        JSON.stringify({
+          sl_kcs_sua: sd.sl_kcs_sua, sl_kcs_huy: sd.sl_kcs_huy, ghi_chu: phieu.ghi_chu || null,
+          dong: (phieu.dong || []).map((d) => ({
+            loai_loi_id: d.loai_loi_id, ma_loi: d.ma_loi, bien_phap_id: d.bien_phap_id || null,
+            so_luong_sua: d.so_luong_sua, so_luong_huy: d.so_luong_huy, ghi_chu: d.ghi_chu || null,
+          })),
+        }),
+        JSON.stringify({ sl_kcs_sua: dich.sua, sl_kcs_huy: dich.huy, sl_hu: slHu, ly_do: ly, ma_tem: sd.ma_tem || null }),
+        actorId]
+    );
+  });
+
+  // Báo ERP hủy MỌI phiếu phân loại lỗi đã gửi của đợt này (chỉ các lượt gửi SAU lần hủy trước) — chạy ngầm.
+  erpHuy.baoHuyNgam('PHAN_LOAI_LOI', temId, {
+    lyDo: ly, actorId, maHien: sd.ma_tem ? temCode(sd.ma_tem, 16) : null, tu: mocTruoc,
+  });
+  sockets.emit('quality:updated', { temId, stage: 'PHAN_LOAI_LOI', huy: true });
+  sockets.emit('dashboard:refresh', {});
+  return { tem_id: temId, ma_tem: sd.ma_tem || null, sl_hu: slHu, sl_kcs_sua: dich.sua, sl_kcs_huy: dich.huy };
+}
+
 async function taoBienPhap(d, actorId) {
   const ma = String(d.maBienPhap || '').trim().toUpperCase();
   if (!ma || !String(d.tenBienPhap || '').trim()) {
@@ -157,7 +215,7 @@ const suaBienPhap = (id, d, actorId) => repo.updateBienPhap(id, d, actorId);
 const doiTrangThaiBienPhap = (id, active, actorId) => repo.setBienPhapActive(id, active, actorId);
 
 module.exports = {
-  danhSach, traTem, chiTiet, luu,
+  danhSach, traTem, chiTiet, luu, huy,
   dsBienPhap, taoBienPhap, suaBienPhap, doiTrangThaiBienPhap,
   guiErpPhanLoaiLoi, // export để kiểm thực payload + gửi lại bằng tay khi ERP lỗi
 };

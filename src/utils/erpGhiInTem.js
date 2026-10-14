@@ -163,9 +163,15 @@ const KENH = {
     url: () => env.erp.guiSuaDatUrl,
     timeoutMs: () => env.erp.guiSuaDatTimeoutMs,
     retry: () => env.erp.guiSuaDatRetry,
-    // ⚠⚠ Cùng proc `MES_spr_MES2SK6` với kiểm phẩm (người dùng xác nhận 26/09/2026) ⇒ mã tem ở `@pBarcodeSua`.
-    //   Ở đây là mã TEM 17 của lượt sửa.
-    them: (b) => ({ BarcodeSua: b.BarcodeIn }),
+    // ⚠⚠ 14/10/2026 proc `MES_spr_MES2SK6` ĐỔI THAM SỐ (người dùng gửi bản ALTER): bỏ `@pBarcodeSua`, thay bằng
+    //   `@pBarcodeSua16` = NHÃN HÀNG LỖI của tem GỐC (`16` + 10 số sau của mã tem 15 — nhãn hàng vào Sửa) ·
+    //   `@pBarcodeSua17` = mã TEM 17 của lượt sửa. `BarcodeSua16` do `suaDatErp` gắn vào payload (`r` = payload
+    //   thô, trước `chuanHoa`). Vẫn gửi kèm `BarcodeSua` (= tem 17) cho router CŨ còn đọc khóa này.
+    them: (b, r = {}) => ({
+      BarcodeSua: b.BarcodeIn,
+      BarcodeSua16: chuoi(r.BarcodeSua16, 20),
+      BarcodeSua17: b.BarcodeIn,
+    }),
   },
   ERP_GUI_KIEM_PHAM: {
     nhan: 'gui-kiem-pham',
@@ -322,7 +328,7 @@ async function ghiInTem(row, { maApi = 'ERP_GHI_IN_TEM' } = {}) {
     console.warn(`[${k.nhan}] ⚠ Không tra được mã số nhân viên của: ${[...new Set(khongCoMa)].join(' · ')}`
       + ` (tên gõ tay hoặc trùng họ tên) — gửi TÊN GỌI (tem ${body.BarcodeIn})`);
   }
-  if (k.them) Object.assign(body, k.them(body));
+  if (k.them) Object.assign(body, k.them(body, vao));
   // Tắt ở Hệ thống > Cài đặt API (mig 083); chưa có dòng cấu hình thì lấy mặc định `.env`.
   if (!(await apiBat(maApi))) {
     console.log(`[${k.nhan}] ⏸ ĐANG TẮT (Hệ thống > Cài đặt API) — bỏ qua tem ${body.BarcodeIn}`);

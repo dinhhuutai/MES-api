@@ -4,6 +4,7 @@ const service = require('./orders.service');
 const asyncHandler = require('../../utils/asyncHandler');
 const { ok } = require('../../utils/response');
 const { getPaging } = require('../../utils/pagination');
+const { ngayHomNayVN } = require('../../utils/khoangNgay');
 
 const list = asyncHandler(async (req, res) => {
   const { page, limit, offset } = getPaging(req.query);
@@ -45,7 +46,7 @@ const setChoKho = asyncHandler(async (req, res) =>
 );
 
 const profitHistory = asyncHandler(async (req, res) => {
-  const date = req.query.date || new Date().toISOString().slice(0, 10);
+  const date = req.query.date || ngayHomNayVN();
   return ok(res, await service.profitHistory(date));
 });
 

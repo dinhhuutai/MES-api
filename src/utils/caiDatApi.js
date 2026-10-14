@@ -102,7 +102,8 @@ const DANH_MUC_API = [
   {
     ma: 'ERP_GUI_SUA_DAT',
     ten: 'Gửi sửa đạt (tem 17) sang ERP',
-    mo_ta: 'Gửi ĐÚNG 1 LẦN mỗi lượt xác nhận SỬA ĐẠT (proc MES_spr_MES2SK6, cùng 20 tham số với "Báo ERP mỗi lần in tem"). '
+    mo_ta: 'Gửi ĐÚNG 1 LẦN mỗi lượt xác nhận SỬA ĐẠT (proc MES_spr_MES2SK6, cùng 20 tham số với "Báo ERP mỗi lần in tem", '
+      + 'mã tem ở BarcodeSua16 = nhãn 16 của tem gốc · BarcodeSua17 = tem 17 của lượt; ngày ca/ngày chứng từ = ngày của lượt sửa). '
       + 'In lại tem 17 KHÔNG gửi lại. Chạy ngầm — TẮT hay lỗi đều KHÔNG chặn việc xác nhận sửa; '
       + 'lượt trượt gửi lại ở sidebar "Đã hoàn thành" của màn Sửa.',
     canh_bao: null,
@@ -164,6 +165,18 @@ const DANH_MUC_API = [
     canh_bao: 'Tắt thì ERP không gỡ đợt ⇒ không có đường tự quay về — GN phải xác nhận tay trên MES.',
     macDinh: () => env.erp.guiDsHuyVaiEnabled,
     url: () => env.erp.guiDsHuyVaiUrl,
+  },
+  // HỦY CHỨNG TỪ BÊN ERP THEO IDMES (14/10/2026) — /gui-idmes-huy → proc MES_spr_MES2SF0_Huy. Luật ở `utils/erpHuy.js`.
+  {
+    ma: 'ERP_GUI_HUY_IDMES',
+    ten: 'Báo ERP hủy chứng từ khi hủy ở MES',
+    mo_ta: 'Mỗi lần HỦY ở MES một lượt đã gửi ERP (hủy in tem · hủy tem gia công · hủy xác nhận KCS / Sửa / OQC · '
+      + 'hủy phân loại lỗi · hủy phiếu giao) ⇒ gửi IDMES của lượt đó kèm ngày hủy, người hủy, lý do '
+      + '(proc MES_spr_MES2SF0_Huy) để ERP hủy chứng từ tương ứng. Chạy ngầm — TẮT hay lỗi đều KHÔNG chặn việc hủy '
+      + 'ở MES; lượt trượt gửi lại ở Lịch sử.',
+    canh_bao: 'Tắt thì hủy ở MES mà chứng từ bên ERP VẪN CÒN — hai bên lệch số.',
+    macDinh: () => env.erp.guiHuyIdMesEnabled,
+    url: () => env.erp.guiHuyIdMesUrl,
   },
   // KÉO phần in đã sửa thông tin bên ERP về trang "Phần in chờ sửa thông tin" (25/09/2026) — NGỪNG 07/10/2026.
   {

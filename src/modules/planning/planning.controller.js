@@ -4,6 +4,7 @@ const service = require('./planning.service');
 const asyncHandler = require('../../utils/asyncHandler');
 const { ok, created } = require('../../utils/response');
 const { getPaging, TRAN_TAI_HET } = require('../../utils/pagination');
+const { ngayHomNayVN } = require('../../utils/khoangNgay');
 
 const release1Candidates = asyncHandler(async (req, res) => {
   const { page, limit, offset } = getPaging(req.query, { tranToiDa: TRAN_TAI_HET });
@@ -25,12 +26,12 @@ const createDotSanXuat = asyncHandler(async (req, res) =>
   created(res, await service.createDotSanXuat(req.body, req.user.id), 'Đã tạo đợt sản xuất'));
 
 const release1History = asyncHandler(async (req, res) => {
-  const date = req.query.date || new Date().toISOString().slice(0, 10);
+  const date = req.query.date || ngayHomNayVN();
   return ok(res, await service.release1History(date));
 });
 
 const releaseList = asyncHandler(async (req, res) => {
-  const date = req.query.date || new Date().toISOString().slice(0, 10);
+  const date = req.query.date || ngayHomNayVN();
   // `mode=RELEASE` → lọc theo ngày TẠO LỆNH (ngày bấm Release 1); mặc định theo ngày kế hoạch.
   const mode = String(req.query.mode || '').toUpperCase() === 'RELEASE' ? 'RELEASE' : 'KE_HOACH';
   return ok(res, await service.releaseList(date, mode));
@@ -104,7 +105,7 @@ const skipTestRun = asyncHandler(async (req, res) =>
   ok(res, await service.skipTestRun(req.params.lenhId, req.user.id), 'Đã bỏ Test Run — đợt sản xuất vào chờ sản xuất'));
 
 const testRunHistory = asyncHandler(async (req, res) => {
-  const date = req.query.date || new Date().toISOString().slice(0, 10);
+  const date = req.query.date || ngayHomNayVN();
   return ok(res, await service.testRunHistory(date));
 });
 
@@ -196,10 +197,10 @@ const keHoachTamDelete = asyncHandler(async (req, res) =>
 
 // Lịch sử thao tác + Đã hoàn thành (đã xác nhận Release 1) của Kế hoạch tạm — theo ngày (giờ VN).
 const keHoachTamHistory = asyncHandler(async (req, res) =>
-  ok(res, await service.keHoachTamHistory(req.query.date || new Date().toISOString().slice(0, 10))));
+  ok(res, await service.keHoachTamHistory(req.query.date || ngayHomNayVN())));
 
 const keHoachTamDone = asyncHandler(async (req, res) =>
-  ok(res, await service.keHoachTamDone(req.query.date || new Date().toISOString().slice(0, 10))));
+  ok(res, await service.keHoachTamDone(req.query.date || ngayHomNayVN())));
 
 const keHoachTamTheoDoi = asyncHandler(async (req, res) =>
   ok(res, await service.keHoachTamTheoDoi(req.query)));
@@ -208,7 +209,7 @@ const replanBatch = asyncHandler(async (req, res) =>
   ok(res, await service.replanBatch(req.body.lenhIds, req.body, req.user.id), 'Lập lại kế hoạch hàng loạt'));
 
 const planHistory = asyncHandler(async (req, res) => {
-  const date = req.query.date || new Date().toISOString().slice(0, 10);
+  const date = req.query.date || ngayHomNayVN();
   return ok(res, await service.planHistory(date));
 });
 
@@ -265,7 +266,7 @@ const release1XacNhanLai = asyncHandler(async (req, res) =>
   ok(res, await service.xacNhanLaiTestRunTraVe(req.params.lenhId, req.body, req.user.id),
     'Đã xác nhận lại Release 1 — lệnh quay về Test Run'));
 
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => ngayHomNayVN();
 const release1Done = asyncHandler(async (req, res) => ok(res, await service.release1Done(req.query.date || today())));
 const release2Done = asyncHandler(async (req, res) => ok(res, await service.release2Done(req.query.date || today())));
 const replanDone = asyncHandler(async (req, res) => ok(res, await service.replanDone(req.query.date || today())));

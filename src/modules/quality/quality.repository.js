@@ -751,7 +751,7 @@ async function temTimeline(temId) {
 
 async function kcsHistoryByDate(date) {
   const { rows } = await query(
-    `SELECT x.created_date AS tg, nd.ho_ten AS nguoi, x.ket_qua,
+    `SELECT x.id AS luot_id, t.id AS tem_id, x.created_date AS tg, nd.ho_ten AS nguoi, x.ket_qua,
             x.so_luong_dat, x.so_luong_loi, x.so_luong_huy, x.so_luong_chenh_lech, t.ma_tem
      FROM kcs x JOIN tem t ON t.id = x.tem_id
      LEFT JOIN nguoi_dung nd ON nd.id = x.created_by
@@ -763,7 +763,7 @@ async function kcsHistoryByDate(date) {
 
 async function suaHistoryByDate(date) {
   const { rows } = await query(
-    `SELECT x.created_date AS tg, nd.ho_ten AS nguoi,
+    `SELECT x.id AS luot_id, t.id AS tem_id, x.created_date AS tg, nd.ho_ten AS nguoi,
             x.so_luong_sua, x.so_luong_sua_dat, x.so_luong_sua_huy, t.ma_tem
      FROM sua x JOIN tem t ON t.id = x.tem_id
      LEFT JOIN nguoi_dung nd ON nd.id = x.created_by
@@ -775,7 +775,7 @@ async function suaHistoryByDate(date) {
 
 async function oqcHistoryByDate(date) {
   const { rows } = await query(
-    `SELECT x.created_date AS tg, nd.ho_ten AS nguoi, x.ket_qua,
+    `SELECT x.id AS luot_id, t.id AS tem_id, x.created_date AS tg, nd.ho_ten AS nguoi, x.ket_qua,
             x.so_luong_dat, x.so_luong_loi, x.so_luong_kiem, x.nguon, x.sl_qua_giao, t.ma_tem
      FROM oqc x JOIN tem t ON t.id = x.tem_id
      LEFT JOIN nguoi_dung nd ON nd.id = x.created_by
@@ -833,6 +833,49 @@ async function setNguoiSua(suaId, { nguoiSuaId, nguoiSua }, actorId) {
   return rowCount > 0;
 }
 
+// Dò 1 cột (cache khi ĐÃ có) — cho các cột phụ của Excel "DANH SÁCH KIỂM TRA CHẤT LƯỢNG ĐẦU RA" (tem.ma_lo mig 114).
+const _coCotBang = {};
+async function coCotBang(bang, cot) {
+  const k = `${bang}.${cot}`;
+  if (_coCotBang[k]) return true;
+  const { rows } = await query(
+    `SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name=$1 AND column_name=$2 LIMIT 1`,
+    [bang, cot]
+  );
+  if (rows.length) _coCotBang[k] = true;
+  return rows.length > 0;
+}
+
+// CỘT THÊM của sidebar "Đã hoàn thành" màn OQC (14/10/2026) — đủ để xuất Excel đúng khuôn tờ xưởng "DANH SÁCH KIỂM TRA
+// CHẤT LƯỢNG ĐẦU RA QCO": IDMES đã gửi ERP (Số CT phía MES = `soctcu` bên ERP) · mẫu lỗi · kết quả · lần kiểm · ghi chú ·
+// SL in / SL lô của tem · mã lô · ngày ca · tổ in · chuyền + loại chuyền · chuyền trưởng · người KCS của tem (tem 17 ⇒
+// KCS của tem gốc) · SLĐH · màu in · độ in. Chỉ đọc — không đổi luật danh sách.
+async function cotOqcThem() {
+  const coLo = await coCotBang('tem', 'ma_lo');
+  const coTo = await coCotBang('phieu_san_xuat', 'to_in_id');
+  return {
+    cot: `, x.id AS luot_id, x.so_luong_loi AS sl_mau_loi, x.ket_qua, x.cho_giao, x.ghi_chu AS ghi_chu_oqc,
+           x.lan_kiem_cua_phan, x.so_luong_dat AS sl_mau_dat,
+           (SELECT COALESCE(a.gia_tri_moi->>'id_mes', a.gia_tri_moi->'gui'->>'IDMES') FROM audit_log a
+             WHERE a.ten_bang = 'oqc' AND a.id_ban_ghi = x.id::text AND a.hanh_dong = 'ERP_GUI_OQC'
+             ORDER BY a.thoi_gian DESC LIMIT 1) AS id_mes,
+           t.so_luong AS sl_in_tem, t.sl_kcs_dat AS sl_kcs_dat_tem, t.ma_ngay_ca, t.ngay_ca, t.created_date AS ngay_in_tem,
+           ${coLo ? 'COALESCE(t.ma_lo, (SELECT tg.ma_lo FROM tem tg WHERE tg.id = t.tem_goc_id))' : 'NULL::text'} AS ma_lo,
+           ${coTo ? '(SELECT ti.ma_to FROM to_in ti WHERE ti.id = psq.to_in_id)' : 'NULL::text'} AS ma_to,
+           psq.chuyen_truong, csq.ma_chuyen, csq.ten_chuyen, lcq.ma_loai AS ma_loai_chuyen,
+           (SELECT ndk.ho_ten FROM kcs k LEFT JOIN nguoi_dung ndk ON ndk.id = k.created_by
+             WHERE k.tem_id = COALESCE(t.tem_goc_id, t.id) AND ${notCancelledQc('k', 'kcs')}
+             ORDER BY k.created_date DESC LIMIT 1) AS nguoi_kcs,
+           (SELECT pin2.so_luong_don_hang FROM phan_in pin2 WHERE pin2.ma_phan = info.ma_phan) AS so_luong_don_hang,
+           (SELECT pin2.mau_in FROM phan_in pin2 WHERE pin2.ma_phan = info.ma_phan) AS mau_in,
+           (SELECT pin2.do_in FROM phan_in pin2 WHERE pin2.ma_phan = info.ma_phan) AS do_in`,
+    join: `LEFT JOIN phieu_san_xuat psq ON psq.id = t.phieu_san_xuat_id
+           LEFT JOIN lenh_san_xuat lsq ON lsq.id = psq.lenh_san_xuat_id
+           LEFT JOIN chuyen_san_xuat csq ON csq.id = COALESCE(psq.chuyen_id, lsq.chuyen_id)
+           LEFT JOIN loai_chuyen lcq ON lcq.id = csq.loai_chuyen_id`,
+  };
+}
+
 // table ∈ 'kcs'|'sua'|'oqc' (nội bộ, không nhận từ user).
 async function temDoneByDate(table, date) {
   const qtyCol = table === 'sua' ? 'so_luong_sua_dat' : 'so_luong_dat';
@@ -840,7 +883,8 @@ async function temDoneByDate(table, date) {
   // OQC: thêm nguồn (KCS/Sửa) + SL chuyền qua giao từ nguồn đó (sl_qua_giao). Sửa: thêm SL sửa hủy.
   // ⚠ `la_tem_sua` (mig 091): tem CON mang số lượng ở `sl_kcs_dat` nên `oqc.nguon` của nó là 'KCS';
   //   chỉ cột này mới phân biệt được để hiện đúng nhãn 17 (đừng suy từ chuỗi `ma_tem`).
-  const oqcCols = table === 'oqc' ? ', x.nguon, x.sl_qua_giao, (t.tem_goc_id IS NOT NULL) AS la_tem_sua' : '';
+  const oqcThem = table === 'oqc' ? await cotOqcThem() : { cot: '', join: '' };
+  const oqcCols = table === 'oqc' ? `, x.nguon, x.sl_qua_giao, (t.tem_goc_id IS NOT NULL) AS la_tem_sua${oqcThem.cot}` : '';
   // Sửa: + SL sửa hủy, + `sua_id` (khóa để ghi người sửa) và NGƯỜI SỬA (mig 080 — thiếu cột thì trả NULL).
   // ⚠⚠ `ma_tem_17` = mã THẬT của tem con (nhãn sửa đạt). Từ 06/09/2026 mã này do ERP cấp riêng
   //   (`/barcode-tem-17`) nên **KHÔNG suy được** bằng `temCode(ma_goc, 17)` ở FE nữa — trang Sửa
@@ -863,6 +907,7 @@ async function temDoneByDate(table, date) {
     FROM ${table} x JOIN tem t ON t.id = x.tem_id
     LEFT JOIN nguoi_dung nd ON nd.id = x.created_by
     ${TEM_INFO_LATERAL}
+    ${oqcThem.join}
     WHERE (x.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
       AND ${notCancelledQc('x', table)}
     ORDER BY x.created_date DESC`;
@@ -1299,6 +1344,8 @@ module.exports = {
   // Hành trình gia công (`orders.repository.giaCongHanhTrinhData`) đọc sổ cái tem bằng CHÍNH 2 biểu thức
   // này (alias `t.`) + luật bỏ lượt OQC đã hủy xác nhận — không viết lại công thức ở module khác.
   CON_OQC, CON_GIAO, notCancelledQc, dieuChinhKcsSauTraVe, idMesKcsDaHuy, idMesKcsDaGui,
+  // "Tem tồn từ KCS" ở màn Giao hàng (`delivery.repository.listTonKcs`, 14/10/2026) đọc chờ sửa bằng chính biểu thức này.
+  CON_SUA,
   insertQcTraVe, activeReturnsMap, resolveReturns, resolveReturnsMany, listQcTraVe, listTraVeChiTiet,
   listTemSua, listTemSuaDaHuy, getTemSuaRow, getTemSuaRows, applyTemSuaLedgerMany, logTemSuaMany,
   getTemsForMerge, addTemSoLuong, logGopTem,

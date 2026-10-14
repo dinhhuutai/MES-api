@@ -179,7 +179,10 @@ const laTruongHopLe = (ma) => TRUONG_TEM.some((t) => t.ma === ma);
 //           thay: [{ kieu: 'THAY', tu: 'Chuyền M', thanh: '' }],
 //           // TRƯỜNG DỰ PHÒNG (11/10/2026): trường chính KHÔNG có dữ liệu (null / rỗng / toàn khoảng trắng) ⇒ lấy
 //           //   trường đầu tiên CÓ dữ liệu trong danh sách, định dạng theo `kieu` của chính nó. Luật `thay` chạy sau.
-//           du_phong: [{ ma: 'chuyen_truong', kieu: 'chu' }] }
+//           du_phong: [{ ma: 'chuyen_truong', kieu: 'chu' }],
+//           // LẤY PHẦN TỬ (14/10/2026): trường là DANH SÁCH (ngăn , ; xuống dòng — vd `tho_in`) ⇒ vắng/0 = toàn bộ ·
+//           //   n ≥ 1 = phần tử thứ n · -1 = phần tử cuối; thiếu phần tử ⇒ rỗng. Chạy sau dự phòng, trước `thay`.
+//           phan_tu: 1 }
 //       ],
 //       cs: 3, rs: 1,                            // colspan/rowspan (mặc định 1)
 //       dam: true, nghieng: false, gach_chan: false,
@@ -194,6 +197,7 @@ const laTruongHopLe = (ma) => TRUONG_TEM.some((t) => t.ma === ma);
 //       vien: { tren: true, duoi: true, trai: true, phai: true },
 //       ma_qr: 'ma_tem',                         // kieu qr/barcode: lấy giá trị từ trường nào
 //       du_phong: [{ ma: 'ma_lenh_san_xuat' }],  // ô mã: trường mã hóa thay thế khi `ma_qr` không có dữ liệu
+//       phan_tu: 1,                              // ô mã: chỉ mã hóa phần tử thứ n của trường danh sách (như mảnh trường)
 //       thay: [{ kieu: 'VITRI', vi_tri: 1, so_kt: 2, thanh: '17' }],  // luật ở MỨC Ô, chỉ cho ô mã
 //       // ⚠⚠ Khác `phan[].thay` (chỉ đổi CHỮ hiện ra): luật ở ô mã đổi LUÔN nội dung được MÃ HÓA vào
 //       //   QR/vạch ⇒ máy quét đọc ra chuỗi mới. Cắt bớt ký tự mã tem là quét không ra tem nữa.
@@ -208,6 +212,7 @@ const laTruongHopLe = (ma) => TRUONG_TEM.some((t) => t.ma === ma);
 // ─────────────────────────────────────────────────────────────────────────────
 
 const BO_CUC_V = 1;
+const PHAN_TU_TOI_DA = 50; // "lấy phần tử thứ n" của trường danh sách — FE chọn 1…10 hoặc cuối
 const khoaO = (r, c) => `${r},${c}`;
 
 // Kiểm tra bố cục hợp lệ TRƯỚC KHI LƯU — chặn dữ liệu rác làm hỏng bản in.
@@ -247,10 +252,19 @@ function kiemBoCuc(boCuc) {
           if (!d || !laTruongHopLe(d.ma)) loi.push(`${ten}: ô "${key}" có trường dự phòng không có thật "${d && d.ma}"`);
         }
       };
+      // `phan_tu` (14/10/2026): vắng/null/0 = toàn bộ · 1…PHAN_TU_TOI_DA · -1 = cuối. Số lạ là lỗi cấu hình — chặn khi lưu.
+      const kiemPhanTu = (v) => {
+        if (v == null || v === '' || Number(v) === 0) return;
+        const n = Number(v);
+        if (!Number.isInteger(n) || n < -1 || n > PHAN_TU_TOI_DA) {
+          loi.push(`${ten}: ô "${key}" có "lấy phần tử" không hợp lệ (${v}) — phải từ 1 tới ${PHAN_TU_TOI_DA} hoặc -1 (cuối)`);
+        }
+      };
       for (const p of (Array.isArray(val.phan) ? val.phan : [])) {
         if (p && p.loai === 'truong' && !laTruongHopLe(p.ma)) loi.push(`${ten}: ô "${key}" dùng trường không có thật "${p.ma}"`);
-        if (p && p.loai === 'truong') kiemDuPhong(p.du_phong);
+        if (p && p.loai === 'truong') { kiemDuPhong(p.du_phong); kiemPhanTu(p.phan_tu); }
       }
+      if (val.kieu === 'qr' || val.kieu === 'barcode') kiemPhanTu(val.phan_tu);
       if ((val.kieu === 'qr' || val.kieu === 'barcode') && val.ma_qr && !laTruongHopLe(val.ma_qr)) {
         loi.push(`${ten}: ô "${key}" mã ${val.kieu} trỏ tới trường không có thật "${val.ma_qr}"`);
       }

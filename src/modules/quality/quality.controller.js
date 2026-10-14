@@ -4,6 +4,8 @@ const service = require('./quality.service');
 const plService = require('./phanloailoi.service');
 const asyncHandler = require('../../utils/asyncHandler');
 const { ok } = require('../../utils/response');
+const AppError = require('../../utils/AppError');
+const { ngayHomNayVN } = require('../../utils/khoangNgay');
 
 // Gom bộ lọc chung cho danh sách tem KCS/Sửa/OQC (có khoảng ngày ngayTu/ngayDen).
 const candFilters = (q) => {
@@ -30,7 +32,7 @@ const oqcReturn = asyncHandler(async (req, res) => {
 });
 
 // Hủy xác nhận KCS / Sửa / OQC (lỡ xác nhận lộn / nhập sai số) — trang Hủy lệnh xác nhận
-const todayD = () => new Date().toISOString().slice(0, 10);
+const todayD = () => ngayHomNayVN();
 const cancelKcsList = asyncHandler(async (req, res) => ok(res, await service.listCancelKcs(req.query.date || todayD())));
 const cancelSuaList = asyncHandler(async (req, res) => ok(res, await service.listCancelSua(req.query.date || todayD())));
 const cancelOqcList = asyncHandler(async (req, res) => ok(res, await service.listCancelOqc(req.query.date || todayD())));
@@ -56,9 +58,9 @@ const temSuaMo = asyncHandler(async (req, res) => {
 // Lịch sử QC trả về (toggle 3 loại)
 const traVeDanhSach = asyncHandler(async (req, res) => ok(res, await service.traVeDanhSach(req.query)));
 const qcTraVeHistory = asyncHandler(async (req, res) =>
-  ok(res, await service.qcTraVeHistory(req.query.loai || 'READY', req.query.date || new Date().toISOString().slice(0, 10))));
+  ok(res, await service.qcTraVeHistory(req.query.loai || 'READY', req.query.date || ngayHomNayVN())));
 
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => ngayHomNayVN();
 const temHanhTrinh = asyncHandler(async (req, res) => ok(res, await service.temHanhTrinh(req.params.temId)));
 const kcsHistory = asyncHandler(async (req, res) => ok(res, await service.kcsHistory(req.query.date || today())));
 const suaHistory = asyncHandler(async (req, res) => ok(res, await service.suaHistory(req.query.date || today())));
@@ -111,6 +113,20 @@ const plList = asyncHandler(async (req, res) => {
 const plTraTem = asyncHandler(async (req, res) => ok(res, await plService.traTem(req.query.code || '')));
 const plChiTiet = asyncHandler(async (req, res) => ok(res, await plService.chiTiet(req.params.temId)));
 const plLuu = asyncHandler(async (req, res) => ok(res, await plService.luu(req.params.temId, req.body, req.user.id), 'Đã lưu phân loại lỗi'));
+const plHuy = asyncHandler(async (req, res) =>
+  ok(res, await plService.huy(req.params.temId, req.body && req.body.lyDo, req.user.id), 'Đã hủy phân loại lỗi — tem về chưa phân loại'));
+// ─── HỦY NGAY TẠI "LỊCH SỬ" CỦA MÀN (14/10/2026) — lý do BẮT BUỘC; cùng service với trang Hủy lệnh xác nhận ───
+const lyDoBatBuoc = (req) => {
+  const ly = String((req.body && req.body.lyDo) || '').trim();
+  if (!ly) throw new AppError('Phải nhập lý do hủy', { status: 422, errorCode: 'NO_LY_DO' });
+  return ly;
+};
+const cancelKcsLichSu = asyncHandler(async (req, res) =>
+  ok(res, await service.cancelKcs(req.params.id, lyDoBatBuoc(req), req.user.id), 'Đã hủy xác nhận KCS'));
+const cancelSuaLichSu = asyncHandler(async (req, res) =>
+  ok(res, await service.cancelSua(req.params.id, lyDoBatBuoc(req), req.user.id), 'Đã hủy xác nhận Sửa'));
+const cancelOqcLichSu = asyncHandler(async (req, res) =>
+  ok(res, await service.cancelOqc(req.params.id, lyDoBatBuoc(req), req.user.id), 'Đã hủy xác nhận OQC'));
 
 const bpList = asyncHandler(async (req, res) => ok(res, await plService.dsBienPhap({ search: req.query.search || '', all: req.query.all === '1' })));
 const bpCreate = asyncHandler(async (req, res) => ok(res, await plService.taoBienPhap(req.body, req.user.id), 'Đã thêm biện pháp'));
@@ -127,5 +143,6 @@ module.exports = {
   giaoDacBietActive, giaoDacBietList, giaoDacBietCreate, giaoDacBietUpdate, giaoDacBietToggle,
   oqcReturn, qcTraVeHistory, traVeDanhSach, temHanhTrinh,
   cancelKcsList, cancelSuaList, cancelOqcList, cancelKcs, cancelSua, cancelOqc,
+  cancelKcsLichSu, cancelSuaLichSu, cancelOqcLichSu, plHuy,
   temSuaList, temSuaDeletedList, temSuaHuy, temSuaMo,
 };

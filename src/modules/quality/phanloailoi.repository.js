@@ -277,7 +277,42 @@ async function chiTietGuiErp(temId, rows = []) {
   };
 }
 
+// ─── HỦY PHÂN LOẠI LỖI (14/10/2026) ─────────────────────────────────────────
+// Mốc lần hủy phân loại GẦN NHẤT của tem (NULL = chưa từng hủy) — ranh giới "đợt phân loại hiện tại".
+async function mocHuyGanNhat(temId) {
+  const { rows } = await query(
+    `SELECT max(thoi_gian) AS tg FROM audit_log
+      WHERE ten_bang = 'tem' AND id_ban_ghi = $1 AND hanh_dong = 'HUY_PHAN_LOAI_LOI'`.replace(/\s+/g, ' '),
+    [String(temId)]
+  );
+  return (rows[0] && rows[0].tg) || null;
+}
+
+// Phần chia sửa / hủy của tem NGAY TRƯỚC lần phân loại đầu tiên của đợt hiện tại = `gia_tri_cu` của dòng
+// audit `PHAN_LOAI_LOI` sớm nhất sau mốc `tu`. Không có dòng nào (phiếu lưu trước khi có audit) ⇒ null.
+async function chiaTruocPhanLoai(temId, tu = null) {
+  const p = [String(temId)];
+  let dk = '';
+  if (tu) { p.push(tu); dk = ' AND thoi_gian > $2'; }
+  const { rows } = await query(
+    `SELECT gia_tri_cu FROM audit_log
+      WHERE ten_bang = 'tem' AND id_ban_ghi = $1 AND hanh_dong = 'PHAN_LOAI_LOI'${dk}
+      ORDER BY thoi_gian LIMIT 1`.replace(/\s+/g, ' '),
+    p
+  );
+  const g = rows[0] && rows[0].gia_tri_cu;
+  if (!g || g.sl_kcs_sua == null) return null;
+  return { sua: Number(g.sl_kcs_sua) || 0, huy: Number(g.sl_kcs_huy) || 0 };
+}
+
+// Xóa phiếu + chi tiết (2 bảng có GRANT DELETE từ mig 075). Nội dung phiếu đã chép vào audit `HUY_PHAN_LOAI_LOI`.
+async function xoaPhieuTx(client, phieuId) {
+  await client.query('DELETE FROM phan_loai_loi_ct WHERE phan_loai_loi_id = $1', [phieuId]);
+  await client.query('DELETE FROM phan_loai_loi WHERE id = $1', [phieuId]);
+}
+
 module.exports = {
+  mocHuyGanNhat, chiaTruocPhanLoai, xoaPhieuTx,
   listTheoNgay, timTemDePhanLoai, getPhieuTheoTem,
   upsertPhieuTx, replaceChiTietTx, datChiaSuaHuyTx, chiTietGuiErp,
   listBienPhap, createBienPhap, updateBienPhap, setBienPhapActive, existsMaBienPhap,

@@ -7,6 +7,7 @@ const productionRepo = require('../production/production.repository'); // phiế
 const chuyenRepo = require('../chuyen/chuyen.repository');
 const wf = require('../workflow/workflow.repository');
 const AppError = require('../../utils/AppError');
+const erpHuy = require('../../utils/erpHuy');
 const wfCache = require('../../utils/wfCache');
 const { buildMeta } = require('../../utils/pagination');
 const { layBarcodeTem, layBarcodeTem13 } = require('../../utils/erpTemBarcode');
@@ -26,6 +27,7 @@ const thongBao = require('../thongbao/thongbao.service');
 const release1Erp = require('./release1Erp');
 // Khách gia công (II/AD) miễn Khuôn — nhãn cột Khuôn của Danh sách release.
 const { isKhuonOptional } = require('../../utils/tech');
+const { ngayHomNayVN } = require('../../utils/khoangNgay');
 
 const TEST_TRAM = 'TEST_RUN';
 const CNSP_CP = 'TEST_CNSP';
@@ -139,7 +141,7 @@ async function gopDotVai({ dotDichId, nguon }, actorId) {
 }
 
 async function gopHistory(date) {
-  const rows = await repo.gopHistoryByDate(date || new Date().toISOString().slice(0, 10));
+  const rows = await repo.gopHistoryByDate(date || ngayHomNayVN());
   return rows.map((r) => ({
     tg: r.tg,
     nguoi: r.nguoi || '—',
@@ -496,10 +498,14 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
   };
 }
 
-// ----- TẠO ĐỢT SẢN XUẤT (mig 052) — gộp/tách nhiều đợt vải vào 1 đợt SX với SL TỪNG đợt -----
-// items: [{ dotVaiId, soLuong }]. Tạo 1 lenh_san_xuat + N junction (so_luong). Chỉ gộp CÙNG MÀU.
-async function createDotSanXuat({ items, chuyenId, ngayKeHoach, tgBdKh, tgKtKh }, actorId) {
+// ----- GOM ĐỢT VẢI (màn "Gom đợt vải" — tên cũ "Tạo đợt sản xuất", mig 052) — gộp/tách nhiều đợt vải vào 1 đợt SX
+// với SL TỪNG đợt. items: [{ dotVaiId, soLuong }]. Tạo 1 lenh_san_xuat + N junction (so_luong). Chỉ gộp CÙNG PHẦN IN.
+// `thoIn` (13/10/2026, mig 111): thợ in KẾ HOẠCH — cùng nghĩa + cùng cách ghi với `createRelease1` (lệnh tạo ra /
+//   lệnh gia công / kế hoạch tạm khi phần in chưa Ready; không chọn ⇒ NULL; thiếu cột ⇒ vẫn tạo, trả `tho_in_chua_luu`).
+async function createDotSanXuat({ items, chuyenId, ngayKeHoach, tgBdKh, tgKtKh, thoIn }, actorId) {
   if (!chuyenId) throw new AppError('Chọn chuyền sản xuất', { status: 422, errorCode: 'NO_CHUYEN' });
+  const thoInKh = chuanHoaThoIn(thoIn);
+  const thoInChuaLuu = !!thoInKh && !(await coCotThoInKh());
   const plan = (Array.isArray(items) ? items : [])
     .map((i) => ({ dotVaiId: i.dotVaiId, soLuong: Number(i.soLuong) }))
     .filter((i) => i.dotVaiId && i.soLuong > 0);
@@ -528,11 +534,11 @@ async function createDotSanXuat({ items, chuyenId, ngayKeHoach, tgBdKh, tgKtKh }
     for (const p of plan) {
       await repo.upsertKeHoachTam({
         dotVaiId: p.dotVaiId, phanInId: byId[p.dotVaiId]?.phan_in_id, chuyenId, ngayKeHoach,
-        tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null, soLuong: p.soLuong,
+        tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null, soLuong: p.soLuong, thoInKh,
       }, actorId);
     }
     sockets.emit('dashboard:refresh', {});
-    return { chi_tam: true, ke_hoach_tam_count: plan.length, so_luong_release: 0 };
+    return { chi_tam: true, ke_hoach_tam_count: plan.length, so_luong_release: 0, tho_in_chua_luu: thoInChuaLuu };
   }
 
   const tongSL = plan.reduce((s, p) => s + p.soLuong, 0);
@@ -544,13 +550,13 @@ async function createDotSanXuat({ items, chuyenId, ngayKeHoach, tgBdKh, tgKtKh }
     const version = await wf.getActiveVersion();
     const gc = await withTransaction(async (client) => createGiaCongLenh(client, {
       versionId: version.id, chuyenId, junctions: plan.map((p) => ({ dotVaiId: p.dotVaiId, soLuong: p.soLuong })),
-      tongSL, ngayKeHoach, tgBdKh, tgKtKh,
+      tongSL, ngayKeHoach, tgBdKh, tgKtKh, thoInKh,
     }, actorId));
     await qaRepo.resolveReturnsMany('TEST_RUN', ids);
     await repo.dongSetDaReleaseHet(ids, actorId);
     sockets.emit('workflow:updated', { lenhId: gc.id, stage: 'GIA_CONG', giaCong: true });
     sockets.emit('dashboard:refresh', {});
-    return { ...(await getLenhDetail(gc.id)), gia_cong: true, so_luong_release: tongSL };
+    return { ...(await getLenhDetail(gc.id)), gia_cong: true, so_luong_release: tongSL, tho_in_chua_luu: thoInChuaLuu };
   }
 
   // ĐI TẮT TEST RUN (điểm 5): bỏ Test Run khi
@@ -574,7 +580,7 @@ async function createDotSanXuat({ items, chuyenId, ngayKeHoach, tgBdKh, tgKtKh }
     const maLenh = await repo.nextMaLenhTx(client);
     const id = await repo.createLenh(client, {
       versionId: version.id, maLenh, chuyenId, soLuongRelease: tongSL, ngayKeHoach, trangThai, giaiDoan: 'IN',
-      tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null,
+      tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null, thoInKh,
     }, actorId);
     for (const p of plan) await repo.addLenhDotVai(client, id, p.dotVaiId, actorId, p.soLuong);
     let ep = null;
@@ -595,7 +601,7 @@ async function createDotSanXuat({ items, chuyenId, ngayKeHoach, tgBdKh, tgKtKh }
   await repo.dongSetDaReleaseHet(ids, actorId);
   sockets.emit('workflow:updated', { lenhId, stage: trangThai });
   sockets.emit('dashboard:refresh', {});
-  return { ...(await getLenhDetail(lenhId)), skipped_test: diTat, so_luong_release: tongSL, in_kieng: inKieng, ep_ui_id: epUiId };
+  return { ...(await getLenhDetail(lenhId)), skipped_test: diTat, so_luong_release: tongSL, in_kieng: inKieng, ep_ui_id: epUiId, tho_in_chua_luu: thoInChuaLuu };
 }
 
 // Lịch sử Release 1 = lệnh đã tạo trong ngày + CÁC THAO TÁC KẾ HOẠCH TẠM (lập/sửa/xóa/xác nhận).
@@ -1538,7 +1544,7 @@ async function traLaiNhaGiaCong(lenhId, { ghiChu } = {}, actorId) {
 
 // Lịch sử "hàng về" gia công đã chuyển OQC theo ngày (cho SidePanel + in tem TH VỀ).
 async function giaCongHistory(date) {
-  const d = date || new Date().toISOString().slice(0, 10);
+  const d = date || ngayHomNayVN();
   return repo.listGiaCongHistory(d);
 }
 
@@ -1817,6 +1823,8 @@ async function cancelGiaCongTem(temId, { lyDo } = {}, actorId) {
       }), actorId]
     );
   });
+  // Báo ERP hủy phiếu nhận hàng gia công (JQ6) của tem theo IDMES — chạy ngầm (14/10/2026, `utils/erpHuy.js`).
+  erpHuy.baoHuyNgam('TEM_GIA_CONG', temId, { lyDo: ly, actorId, maHien: t.ma_tem });
   // Lệnh quay lại chờ gia công ⇒ kéo dòng chảy về theo (best-effort, giống lúc tạo lệnh gia công).
   sockets.emit('workflow:updated', { lenhId: t.lenh_id, stage: 'GIA_CONG', giaCong: true });
   sockets.emit('dashboard:refresh', {});

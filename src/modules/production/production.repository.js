@@ -471,8 +471,15 @@ async function getPhieuById(phieuId) {
 async function getTemsByPhieu(phieuId) {
   const { rows } = await query(
     `SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.created_date,
-            (SELECT COALESCE(MAX(lt.so_lan_in),1) FROM log_tem lt WHERE lt.tem_id = t.id)::int AS so_lan_in
-     FROM tem t WHERE t.phieu_san_xuat_id=$1 ORDER BY t.created_date`,
+            (SELECT COALESCE(MAX(lt.so_lan_in),1) FROM log_tem lt WHERE lt.tem_id = t.id)::int AS so_lan_in,
+            (COALESCE(t.sl_kcs_dat,0) + COALESCE(t.sl_kcs_sua,0) + COALESCE(t.sl_kcs_huy,0)
+              + COALESCE(t.sl_oqc_dat,0) + COALESCE(t.sl_da_giao,0)) > 0 AS da_kiem,
+            COALESCE(${MO_LAI_DUOC_SQL}, false) AS mo_lai_duoc
+     FROM tem t
+     JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+     JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+     ${SU_KIEN_CUOI_LATERAL}
+     WHERE t.phieu_san_xuat_id=$1 ORDER BY t.created_date`.replace(/\s+/g, ' '),
     [phieuId]
   );
   return rows;
@@ -490,15 +497,124 @@ async function getTemContext(temId) {
 }
 
 // Hủy tem (khi in lại) — đánh dấu HUY + gỡ khỏi xe phơi đang phơi.
+// Trả `{ xe_phoi_ids }` = các phiên phơi vừa bị gỡ ⇒ "Mở lại tem" (14/10/2026) trả đúng các phiên đó về DANG_PHOI.
 async function cancelTem(client, temId, actorId) {
   await client.query(
     "UPDATE tem SET trang_thai='HUY', updated_by=$2, updated_date=CURRENT_TIMESTAMP WHERE id=$1",
     [temId, actorId]
   );
-  await client.query(
-    "UPDATE tem_xe_phoi SET trang_thai='HUY', updated_by=$2, updated_date=CURRENT_TIMESTAMP WHERE tem_id=$1 AND trang_thai='DANG_PHOI'",
+  const { rows } = await client.query(
+    "UPDATE tem_xe_phoi SET trang_thai='HUY', updated_by=$2, updated_date=CURRENT_TIMESTAMP WHERE tem_id=$1 AND trang_thai='DANG_PHOI' RETURNING id",
     [temId, actorId]
   );
+  return { xe_phoi_ids: rows.map((r) => r.id) };
+}
+
+// ─── MỞ LẠI TEM IN ĐÃ HỦY (14/10/2026, người dùng yêu cầu) ─────────────────────────────────────────────────
+// Chỉ tem SẢN XUẤT bị hủy bằng "Hủy lệnh in tem" / nút Hủy ở "Tem đã in" — sự kiện CUỐI của tem trong audit là
+// `HUY_IN_TEM` (chưa `MO_LAI_TEM_IN`). Tem HỦY theo đường khác (hủy phần in / hủy lệnh tùy chọn / gộp tem KCS / tem
+// gia công) KHÔNG mở ở đây: các đường đó còn đụng lệnh/sổ cái, mở riêng tem là lệch.
+// `SU_KIEN_TEM` = hành động audit mức tem có nghĩa với vòng hủy/mở (bỏ các dòng ERP_*).
+const SU_KIEN_TEM = "('HUY_IN_TEM','MO_LAI_TEM_IN','HUY_TEM_GIA_CONG')";
+const SU_KIEN_CUOI_LATERAL = `LEFT JOIN LATERAL (
+    SELECT a.hanh_dong, a.thoi_gian, a.gia_tri_moi, a.nguoi_thuc_hien_id FROM audit_log a
+     WHERE a.ten_bang = 'tem' AND a.id_ban_ghi = t.id::text AND a.hanh_dong IN ${SU_KIEN_TEM}
+     ORDER BY a.thoi_gian DESC LIMIT 1) h ON true`;
+// Điều kiện "mở lại được" dùng chung danh sách + guard: hủy bằng HUY_IN_TEM, không bị đụng SAU lần hủy (cancelTem ghi
+// `updated_date` trước rồi audit mới ghi ⇒ updated_date ≤ lúc ghi audit), lệnh/phiếu còn sống, tem gốc (không phải 17).
+const MO_LAI_DUOC_SQL = `(t.trang_thai = 'HUY' AND t.tem_goc_id IS NULL AND h.hanh_dong = 'HUY_IN_TEM'
+    AND t.updated_date <= h.thoi_gian + interval '2 seconds'
+    AND ps.trang_thai <> 'HUY' AND ls.trang_thai <> 'HUY')`;
+
+async function listReopenableTem({ search = '', offset = 0, limit = 50 }) {
+  const tim = mauTim(search);
+  const FROM = `
+    FROM tem t
+    JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+    JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+    LEFT JOIN chuyen_san_xuat cs ON cs.id = ps.chuyen_id
+    ${SU_KIEN_CUOI_LATERAL}
+    ${PHAN_INFO_LATERAL}
+    WHERE t.trang_thai = 'HUY' AND ${MO_LAI_DUOC_SQL}
+      AND ($1='' OR t.ma_tem ~* $1 OR ls.ma_lenh_san_xuat ~* $1 OR ${lenhPhanInMatch('ls.id', '$1')})`;
+  const dataSql = `
+    SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.created_date,
+           ls.id AS lenh_id, ls.ma_lenh_san_xuat, ls.trang_thai AS lenh_trang_thai, ps.id AS phieu_id,
+           ps.trang_thai AS phieu_trang_thai, cs.ma_chuyen, cs.ten_chuyen,
+           info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan,
+           info.mau_vai, info.kich_vai, info.kich_phim,
+           h.thoi_gian AS tg_huy, h.gia_tri_moi->>'ly_do' AS ly_do_huy,
+           (SELECT ndh.ho_ten FROM nguoi_dung ndh WHERE ndh.id = h.nguoi_thuc_hien_id) AS nguoi_huy
+    ${FROM}
+    ORDER BY h.thoi_gian DESC
+    LIMIT $2 OFFSET $3`;
+  const countSql = `SELECT count(*)::int AS total ${FROM}`;
+  const [data, count] = await Promise.all([
+    query(dataSql.replace(/\s+/g, ' '), [tim, limit, offset]),
+    query(countSql.replace(/\s+/g, ' '), [tim]),
+  ]);
+  return { rows: data.rows, total: count.rows[0].total };
+}
+
+// Tem + bối cảnh để guard trước khi mở lại. `xe_huy_ids` = phiên phơi bị gỡ CÙNG transaction hủy (cùng
+// `updated_date` với tem) — dùng cho tem hủy TRƯỚC 14/10 (audit chưa có ảnh chụp `xe_phoi_ids`).
+async function getTemForReopen(temId) {
+  const { rows } = await query(
+    `SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.tem_goc_id, t.phieu_san_xuat_id, t.updated_date,
+            ps.lenh_san_xuat_id, ps.trang_thai AS phieu_trang_thai, ls.ma_lenh_san_xuat, ls.trang_thai AS lenh_trang_thai,
+            COALESCE(t.sl_kcs_dat,0) + COALESCE(t.sl_kcs_sua,0) + COALESCE(t.sl_kcs_huy,0)
+              + COALESCE(t.sl_oqc_dat,0) + COALESCE(t.sl_da_giao,0) AS so_da_kiem,
+            h.hanh_dong AS su_kien_cuoi, h.thoi_gian AS tg_huy, h.gia_tri_moi AS huy_moi,
+            ${MO_LAI_DUOC_SQL} AS mo_lai_duoc,
+            (SELECT COALESCE(array_agg(x.id), '{}') FROM tem_xe_phoi x WHERE x.tem_id = t.id AND x.trang_thai = 'HUY'
+               AND abs(EXTRACT(EPOCH FROM (x.updated_date - t.updated_date))) < 1) AS xe_huy_ids,
+            EXISTS (SELECT 1 FROM tem_xe_phoi x WHERE x.tem_id = t.id AND x.trang_thai = 'XONG') AS da_phoi_xong
+       FROM tem t
+       JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+       JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+       ${SU_KIEN_CUOI_LATERAL}
+      WHERE t.id = $1`.replace(/\s+/g, ' '),
+    [temId]
+  );
+  return rows[0] || null;
+}
+
+// Trả tem về trạng thái trước khi hủy + trả các phiên phơi bị gỡ về DANG_PHOI. Guard NGAY TRONG câu UPDATE
+// (`trang_thai='HUY'`) ⇒ 2 người cùng bấm thì người sau `rowCount = 0`.
+async function reopenTem(client, temId, { trangThai, xePhoiIds = [] }, actorId) {
+  const { rowCount } = await client.query(
+    "UPDATE tem SET trang_thai=$2, updated_by=$3, updated_date=CURRENT_TIMESTAMP WHERE id=$1 AND trang_thai='HUY'",
+    [temId, trangThai, actorId]
+  );
+  if (!rowCount) return false;
+  if (xePhoiIds.length) {
+    await client.query(
+      `UPDATE tem_xe_phoi SET trang_thai='DANG_PHOI', updated_by=$3, updated_date=CURRENT_TIMESTAMP
+        WHERE tem_id=$1 AND id = ANY($2::uuid[]) AND trang_thai='HUY'`.replace(/\s+/g, ' '),
+      [temId, xePhoiIds, actorId]
+    );
+  }
+  return true;
+}
+
+async function logTemReopen(temId, maTem, lyDo, actorId, extra = {}) {
+  await query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('tem', $1, 'MO_LAI_TEM_IN', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`.replace(/\s+/g, ' '),
+    [String(temId), JSON.stringify({ ma_tem: maTem, ly_do: lyDo || null, ...extra }), actorId]
+  );
+}
+
+// Dòng lịch sử "Báo ERP mỗi lần in tem" để gửi lại khi mở tem: ưu tiên lần THÀNH CÔNG cuối, không có thì lần lỗi cuối
+// (vẫn mang IDMES). Không có dòng nào ⇒ tem chưa từng gửi ERP (API tắt / mã MES) ⇒ không gửi.
+async function dongGhiInTemCuoi(temId) {
+  const { rows } = await query(
+    `SELECT id, hanh_dong FROM audit_log WHERE ten_bang = 'tem' AND id_ban_ghi = $1
+        AND hanh_dong IN ('ERP_GHI_IN_TEM', 'ERP_GHI_IN_TEM_LOI')
+      ORDER BY (hanh_dong = 'ERP_GHI_IN_TEM') DESC, thoi_gian DESC LIMIT 1`.replace(/\s+/g, ' '),
+    [String(temId)]
+  );
+  return rows[0] || null;
 }
 
 // ----- HỦY LỆNH IN TEM (tem chưa kiểm) -----
@@ -621,11 +737,12 @@ async function getTemForCancel(temId) {
 }
 
 // Ghi audit_log hủy lệnh in tem (forward-only).
-async function logTemCancel(temId, maTem, lyDo, actorId) {
+// `extra` (14/10/2026) = ảnh chụp để "Mở lại tem": `trang_thai_cu` (IN/DANG_PHOI/DA_KHO) + `xe_phoi_ids` vừa gỡ.
+async function logTemCancel(temId, maTem, lyDo, actorId, extra = {}) {
   await query(
     `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
      VALUES ('tem', $1, 'HUY_IN_TEM', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`,
-    [String(temId), JSON.stringify({ ma_tem: maTem, ly_do: lyDo || null }), actorId]
+    [String(temId), JSON.stringify({ ma_tem: maTem, ly_do: lyDo || null, ...extra }), actorId]
   );
 }
 
@@ -987,11 +1104,39 @@ async function goiYTemMeta(lenhId, phieuId) {
            EXTRACT(MINUTE  FROM b.tg)::int    AS phut,
            EXTRACT(ISOYEAR FROM b.ngay)::int  AS nam,
            EXTRACT(WEEK    FROM b.ngay)::int  AS tuan,
+           to_char(b.tg - interval '6 hours','YYMMDD') AS ymd_sx,
+           EXTRACT(ISOYEAR FROM (b.tg - interval '6 hours'))::int AS nam_sx,
+           EXTRACT(WEEK    FROM (b.tg - interval '6 hours'))::int AS tuan_sx,
            COALESCE(t.gio_kt_nhap, t.gio_in, to_char(p.tg_bd ${VN},'HH24:MI')) AS gio_bd,
            to_char(now() ${VN},'HH24:MI') AS gio_kt
       FROM b LEFT JOIN t ON true LEFT JOIN p ON true`;
   const { rows } = await query(sql.replace(/\s+/g, ' '), [lenhId, phieuId || null]);
   return rows[0] || null;
+}
+
+// ─── "NHẬP ĐẦU CA": Ngày ca + Ngày chứng từ của màn In tem (13/10/2026, người dùng chốt) ───────────────────────
+// 2 ô này KHÔNG còn điền sẵn theo giờ: người in nhập 1 LẦN ĐẦU CA, các lượt in sau trong ca điền lại giá trị đó, hết
+// ca thì trống lại. Nơi nhớ = `audit_log` (không migration; có sẵn index `(ten_bang, id_ban_ghi)`):
+//   ten_bang 'ca_in_tem' · id_ban_ghi = KHÓA LƯỢT CA `<nhóm ca>|<YYMMDD><mã ca>` (vd `MAY|261013C2`, nhóm ca =
+//   `utils/ca.js khoaNhomCa` — Máy / Bàn / Robot / Khác cài ca riêng nên nhớ riêng) · hanh_dong 'DAU_CA_IN_TEM' ·
+//   gia_tri_moi { ngay_ca, ngay_ct }. Dòng MỚI NHẤT của khóa là giá trị đang nhớ (sửa giữa ca ⇒ thêm dòng mới).
+const BANG_DAU_CA = 'ca_in_tem';
+async function docDauCa(khoa) {
+  const { rows } = await query(
+    `SELECT a.gia_tri_moi->>'ngay_ca' AS ngay_ca, a.gia_tri_moi->>'ngay_ct' AS ngay_ct, a.thoi_gian, nd.ho_ten AS nguoi
+       FROM audit_log a LEFT JOIN nguoi_dung nd ON nd.id = a.nguoi_thuc_hien_id
+      WHERE a.ten_bang = '${BANG_DAU_CA}' AND a.id_ban_ghi = $1 AND a.hanh_dong = 'DAU_CA_IN_TEM'
+      ORDER BY a.thoi_gian DESC LIMIT 1`.replace(/\s+/g, ' '),
+    [String(khoa)]
+  );
+  return rows[0] || null;
+}
+async function ghiDauCa(khoa, { ngayCa, ngayCt }, actorId) {
+  await query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('${BANG_DAU_CA}', $1, 'DAU_CA_IN_TEM', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`.replace(/\s+/g, ' '),
+    [String(khoa), JSON.stringify({ ngay_ca: ngayCa, ngay_ct: ngayCt }), actorId]
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1037,11 +1182,13 @@ async function duLieuGhiInTem(capTem = [], ngayCt = null) {
   // ⚠ Mọi trường KHÔNG CÓ dữ liệu (ngày ca / giờ SX / chuyền trưởng / tổ in / bàn in… của tem 13,
   //   tem 17) trả về NULL và `chuanHoa` của `utils/erpGhiInTem.js` đổi thành GIÁ TRỊ RỖNG đúng kiểu
   //   (chuỗi `''`, số `0`, ngày `null`) — ĐỂ TRỐNG, không bịa và không chặn lượt gửi.
+  // `ma_tem_goc` (14/10/2026) = mã tem GỐC của tem 17 — proc sửa đạt `MES2SK6` nhận nhãn 16 suy từ mã này.
   // ⚠ KHÔNG đặt comment `--` bên trong chuỗi SQL dưới đây — nó bị `.replace(/\s+/g,' ')` gộp 1 dòng.
   const sql = `
     WITH inp AS (SELECT * FROM unnest($1::uuid[], $2::uuid[]) AS x(tem_id, dot_vai_id))
     SELECT t.id AS tem_id, t.ma_tem, t.ma_ngay_ca, t.gc_mau_vai,
            (t.tem_goc_id IS NOT NULL) AS la_tem_sua,
+           (SELECT tg.ma_tem FROM tem tg WHERE tg.id = t.tem_goc_id) AS ma_tem_goc,
            CASE WHEN t.tem_goc_id IS NOT NULL THEN t.sl_kcs_dat ELSE t.so_luong END AS so_luong,
            info.ma_phan,
            ls.ma_lenh_san_xuat, cs.ma_chuyen, lc.ma_loai AS loai_chuyen,
@@ -1798,8 +1945,9 @@ module.exports = {
   listProductionCandidates, getPrintedTotal, getDefaultXePhoi, nextMaPhieu, createPhieu, setLenhChuyen, setLenhTrangThai, getLenhBasic,
   setPhieuChuyen, getChuyenById, logDoiChuyen,
   getLenhDotVaiList, phanInRowsByLenh, insertVaiHuy, listVaiHuyByLenh,
-  getActivePhieu, getPhieuById, getTemsByPhieu, getTemContext, cancelTem, getTemLabelData, caPartsForTem,
+  getActivePhieu, getPhieuById, getTemsByPhieu, getTemContext, cancelTem, getTemLabelData, caPartsForTem, docDauCa, ghiDauCa,
   listCancelableTem, listTemDaIn, getTemForCancel, logTemCancel, logCloseProduction,
+  listReopenableTem, getTemForReopen, reopenTem, logTemReopen, dongGhiInTemCuoi,
   listReopenCandidates, getPhieuFull, reopenPhieuTx, logReopenProduction, logPauseLenhChay,
   cancelPhieuStart, logUndoStart, logChayDacBiet,
   listTemLogByPhieu, nextReprint, logReprint,

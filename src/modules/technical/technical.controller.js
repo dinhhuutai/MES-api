@@ -5,6 +5,7 @@ const asyncHandler = require('../../utils/asyncHandler');
 const AppError = require('../../utils/AppError');
 const { ok } = require('../../utils/response');
 const { getPaging, TRAN_TAI_HET } = require('../../utils/pagination');
+const { ngayHomNayVN } = require('../../utils/khoangNgay');
 
 // Map mục kỹ thuật → quyền tương ứng (xác nhận theo từng bộ phận).
 const ITEM_PERM = { KHUON: 'READY_KHUON', FILM: 'READY_FILM', MUC: 'READY_MUC', HSKT: 'READY_HSKT' };
@@ -39,13 +40,13 @@ const detail = asyncHandler(async (req, res) => ok(res,
   await service.getDetail(req.params.phanInId, dsDot(req.query.dotVaiIds))));
 
 const history = asyncHandler(async (req, res) => {
-  const date = req.query.date || new Date().toISOString().slice(0, 10);
+  const date = req.query.date || ngayHomNayVN();
   const scope = req.query.scope === 'qc' ? 'qc' : 'tech';
   return ok(res, await service.history(date, scope));
 });
 
 const done = asyncHandler(async (req, res) => {
-  const date = req.query.date || new Date().toISOString().slice(0, 10);
+  const date = req.query.date || ngayHomNayVN();
   const scope = req.query.scope === 'qc' ? 'qc' : 'tech';
   return ok(res, await service.done(date, scope));
 });
@@ -124,7 +125,7 @@ const uncheckItem = asyncHandler(async (req, res) => {
 });
 
 const confirmHistory = asyncHandler(async (req, res) => {
-  const date = req.query.date || new Date().toISOString().slice(0, 10);
+  const date = req.query.date || ngayHomNayVN();
   return ok(res, await service.confirmHistory(date, req.query.search || ''));
 });
 

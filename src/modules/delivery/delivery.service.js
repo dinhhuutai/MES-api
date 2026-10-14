@@ -8,19 +8,24 @@ const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
 // 2 API ERP của phiếu giao (04/09/2026) — helper KHÔNG BAO GIỜ ném lỗi, xem `utils/erpApiChung.js`.
 const erp = require('../../utils/erpApiChung');
+const erpHuy = require('../../utils/erpHuy');
 const env = require('../../config/env');
 const { ghiLog } = require('../../utils/erpApiLog');
 const { capIdMes } = require('../../utils/idMes');
 const { taoIdKetNoi } = require('../../utils/idKetNoi');
+const { ngayHomNayVN } = require('../../utils/khoangNgay');
 
 // Dùng chung 2 màn (xem `repo.listTemGiao`): `SAN_SANG` = Giao hàng · `CHO_TICH` = Tích tem giao hàng.
 async function dsTemGiao(q = {}, cheDo) {
-  const { search, ngayTu, ngayDen, tem, khach, don, maHang, mauVai, kichVai, kichPhim } = q;
+  const { search, ngayTu, ngayDen, hanTu, hanDen, tem, khach, don, maHang, mauVai, kichVai, kichPhim } = q;
   const nap = cheDo === 'CHO_TICH' ? repo.listTemChoTich : repo.listTemSanSang;
+  const ngay = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : '');
   const rows = await nap({
     search: search || '',
     filters: { tem, khach, don, maHang, mauVai, kichVai, kichPhim },
     ngayTu: ngayTu || '', ngayDen: ngayDen || '',
+    // "Ngày giao" (= hạn giao) — 14/10/2026. Chỉ nhận đúng 'YYYY-MM-DD' (chuỗi lạ ⇒ bỏ lọc, không lỗi 500).
+    hanTu: ngay(hanTu), hanDen: ngay(hanDen),
   });
   // Gắn "người xác nhận trạm trước" (Giao ← OQC) — query nhẹ theo tem_id.
   const pc = await qualityRepo.prevConfirmerByTems(rows.map((r) => r.tem_id));
@@ -30,6 +35,9 @@ async function dsTemGiao(q = {}, cheDo) {
 }
 
 const listTemSanSang = (q = {}) => dsTemGiao(q, 'SAN_SANG');
+
+// Tem tồn từ KCS (đã kiểm phẩm, chưa giao) — modal ở màn Giao hàng (14/10/2026). Xem `repo.listTonKcs`.
+const listTonKcs = () => repo.listTonKcs();
 
 // ─── CHỐT CHẶN "BÁN HÀNG TÍCH TEM" (mig 092) ─────────────────────────────────────────────────
 // Một endpoint phục vụ 2 tab của trang *Tích tem giao hàng*: `daTich` = tab "Đã tích" (để BỎ tích
@@ -176,8 +184,8 @@ async function listGiaoHang(q = {}) {
   });
 }
 
-const historyGiao = (date) => repo.historyGiaoByDate(date || new Date().toISOString().slice(0, 10));
-const doneGiao = (date) => repo.doneGiaoByDate(date || new Date().toISOString().slice(0, 10));
+const historyGiao = (date) => repo.historyGiaoByDate(date || ngayHomNayVN());
+const doneGiao = (date) => repo.doneGiaoByDate(date || ngayHomNayVN());
 
 // ─── HỦY PHIẾU GIAO ───────────────────────────────────────────────────────────────────────────
 // Đảo sổ cái đã giao ⇒ tem quay lại màn *Danh sách tem giao* (vẫn giữ cờ `da_tich_giao`, không bắt
@@ -185,8 +193,8 @@ const doneGiao = (date) => repo.doneGiaoByDate(date || new Date().toISOString().
 // kiểm "tem đã vào phiếu" đều bỏ qua phiếu HỦY.
 //
 // ⚠ LÝ DO BẮT BUỘC (khuôn chung của mọi thao tác hủy trong hệ — §10).
-// ⚠⚠ KHÔNG báo ngược cho ERP: `gui-erp-phieu-giao` chưa có hợp đồng "hủy phiếu" từ ERP. Vết hủy nằm
-//   ở `audit_log` `HUY_PHIEU_GIAO`; khi ERP chốt API hủy thì nối THÊM ở đây.
+// ⚠ Từ 14/10/2026 hủy xong thì BÁO ERP hủy phiếu theo IDMES đã gửi (`utils/erpHuy.js`, chạy ngầm — phiếu chưa
+//   từng gửi ERP thì không gọi). Vết hủy của MES vẫn nằm ở `audit_log` `HUY_PHIEU_GIAO`.
 async function huyPhieuGiao(giaoHangId, lyDo, actorId) {
   const ly = String(lyDo || '').trim();
   if (!ly) throw new AppError('Phải nhập lý do hủy phiếu giao', { status: 422, errorCode: 'NO_LY_DO' });
@@ -219,6 +227,7 @@ async function huyPhieuGiao(giaoHangId, lyDo, actorId) {
   });
 
   try { await repo.insertHuyPhieuAudit(giaoHangId, gh, ly, actorId); } catch (e) { /* best-effort */ }
+  erpHuy.baoHuyNgam('PHIEU_GIAO', giaoHangId, { lyDo: ly, actorId, maHien: gh.ma_phieu_giao });
   sockets.emit('delivery:updated', { giaoHangId, stage: 'HUY' });
   sockets.emit('dashboard:refresh', {});
   return getDetail(giaoHangId);
@@ -407,7 +416,7 @@ function ngayErp(v) {
 }
 
 module.exports = {
-  listTemSanSang, getDetail, createGiaoHang, listGiaoHang, confirmGiao,
+  listTemSanSang, listTonKcs, getDetail, createGiaoHang, listGiaoHang, confirmGiao,
   listTemChoTich, tichTem, boTichTem, traCuuTemTich,
   historyGiao, doneGiao, huyPhieuGiao, listPhieuGiaoCancelable,
   guiErpPhieuGiao, // export để kiểm thực payload + gửi lại bằng tay khi ERP lỗi

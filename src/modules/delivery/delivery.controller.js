@@ -5,6 +5,8 @@ const asyncHandler = require('../../utils/asyncHandler');
 const { ok, created } = require('../../utils/response');
 
 const temSanSang = asyncHandler(async (req, res) => ok(res, await service.listTemSanSang(req.query)));
+// Tem tồn từ KCS — đã kiểm phẩm, chưa giao (modal màn Giao hàng, 14/10/2026).
+const tonKcs = asyncHandler(async (req, res) => ok(res, await service.listTonKcs()));
 const list = asyncHandler(async (req, res) => ok(res, await service.listGiaoHang(req.query)));
 
 // Sidebar Lịch sử / Đã hoàn thành của màn *Danh sách tem giao* (khuôn chung các màn xác nhận).
@@ -44,6 +46,6 @@ const datGiaoHangTai = asyncHandler(async (req, res) => ok(res,
   'Đã cập nhật nơi giao hàng'));
 
 module.exports = {
-  temSanSang, list, detail, create, confirm, temChoTich, tich, boTich, traCuuTich,
+  temSanSang, tonKcs, list, detail, create, confirm, temChoTich, tich, boTich, traCuuTich,
   history, done, cancelable, huy, guiLaiErp, datGiaoHangTai, datKlg,
 };
