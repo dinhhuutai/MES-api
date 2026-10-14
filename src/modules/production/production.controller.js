@@ -202,6 +202,10 @@ const dsTemDaIn = (laGiaCong) => asyncHandler(async (req, res) => {
   const q = req.query;
   return ok(res, await service.listTemDaIn({
     search: q.search || '', ngayTu: q.ngayTu || '', ngayDen: q.ngayDen || '',
+    // Lọc NGÀY CA (14/10/2026): khoảng `tem.ngay_ca` + chuỗi mã ngày ca. Ngày sai định dạng ⇒ bỏ (không lỗi 500).
+    ngayCaTu: /^\d{4}-\d{2}-\d{2}$/.test(q.ngayCaTu || '') ? q.ngayCaTu : '',
+    ngayCaDen: /^\d{4}-\d{2}-\d{2}$/.test(q.ngayCaDen || '') ? q.ngayCaDen : '',
+    maNgayCa: String(q.maNgayCa || '').trim().slice(0, 20),
     khach: q.khach || '', don: q.don || '', maHang: q.maHang || '', codePhan: q.codePhan || '',
     maTem: q.maTem || '', chuyen: q.chuyen || '', page, limit, offset,
   }, laGiaCong));

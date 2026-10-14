@@ -522,11 +522,33 @@ async function historyGiaoByDate(date) {
 // Đã hoàn thành = phiếu ĐÃ XÁC NHẬN GIAO trong ngày. 1 dòng = 1 PHIẾU (đơn vị điều hành của màn này).
 // ⚠ Mốc `tg` ưu tiên audit `XAC_NHAN_GIAO`; phiếu cũ chưa có audit thì lùi về `updated_date`.
 // ⚠ `ma` = mã phiếu (DonePanel dùng khóa `ma` làm cột mã + ô tìm kiếm).
+// `dong` (14/10/2026, người dùng yêu cầu "thêm cột chi tiết màu vải, kích vải, kích phim…") = mỗi dòng của phiếu
+//   (tem × nguồn): mã tem + nguồn (FE ghép nhãn 15/17) · SL giao · code phần · mã hàng · màu · kích vải/phim · tính chất
+//   in · hạn giao — phần in quy về phần in ĐẦU của lệnh của tem (cùng khuôn `listTemGiao`). FE tách 1 dòng / tem.
 async function doneGiaoByDate(date) {
   const VN = "AT TIME ZONE 'Asia/Ho_Chi_Minh'";
   const sql =
     `SELECT gh.id, gh.ma_phieu_giao AS ma, gh.ma_phieu_giao, gh.ngay_giao, gh.ghi_chu,
             dh.ma_don_hang, kh.ten_khach_hang,
+            (SELECT COALESCE(json_agg(json_build_object(
+                      'ma_tem', t.ma_tem, 'la_tem_sua', (t.tem_goc_id IS NOT NULL), 'nguon', gt.nguon,
+                      'so_luong_giao', gt.so_luong_giao, 'ma_phan', i.ma_phan, 'ma_hang', i.ma_hang,
+                      'mau_vai', i.mau_vai, 'kich_vai', i.kich_vai, 'kich_phim', i.kich_phim,
+                      'tinh_chat_in', i.tinh_chat_in, 'han_giao_hang', i.han_giao_hang, 'ma_lenh_san_xuat', i.ma_lenh_san_xuat)
+                    ORDER BY i.ma_phan, t.ma_tem), '[]'::json)
+               FROM giao_hang_tem gt
+               JOIN tem t ON t.id = gt.tem_id
+               LEFT JOIN LATERAL (
+                 SELECT pin.ma_phan, mh.ma_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
+                        dv.han_giao_hang, ls.ma_lenh_san_xuat
+                   FROM phieu_san_xuat ps JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+                   JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
+                   JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+                   JOIN phan_in pin ON pin.id = dv.phan_in_id
+                   JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+                  WHERE ps.id = t.phieu_san_xuat_id ORDER BY pin.ma_phan, dv.ma_dot_vai LIMIT 1
+               ) i ON true
+              WHERE gt.giao_hang_id = gh.id) AS dong,
             (SELECT count(*) FROM giao_hang_tem gt WHERE gt.giao_hang_id = gh.id)::int AS so_tem,
             (SELECT COALESCE(SUM(gt.so_luong_giao),0)::int FROM giao_hang_tem gt WHERE gt.giao_hang_id = gh.id) AS so_luong,
             COALESCE(a.thoi_gian, gh.updated_date, gh.created_date) AS tg,

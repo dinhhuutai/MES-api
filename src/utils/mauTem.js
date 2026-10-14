@@ -84,6 +84,10 @@ const TRUONG_TEM = Object.freeze([
   { ma: 'ca_truong', ten: 'Ca trưởng', kieu: 'chu', nhom: 'Phân công' },
   { ma: 'chuyen_truong', ten: 'Chuyền trưởng', kieu: 'chu', nhom: 'Phân công' },
   { ma: 'tho_in', ten: 'Thợ in trên chuyền', kieu: 'chu', nhom: 'Phân công' },
+  // TỔ IN (14/10/2026, người dùng yêu cầu "lấy mã tổ") = `to_in.ma_to` của PHIẾU (chọn ở Phân công, vd C1 / C2CTV).
+  // Có ở tem SX / KCS in tem giao / Sửa (tem 17 cùng phiếu tem gốc) qua `production.getTemLabelData`; tem Gia công
+  // (13) không có tổ in ⇒ RỖNG (dùng "trường dự phòng" nếu cần).
+  { ma: 'ma_to', ten: 'Tổ in (mã tổ, vd C1)', kieu: 'chu', nhom: 'Phân công' },
   // ─── NHÓM "SỬA" — CHỈ CÓ GIÁ TRỊ Ở VỊ TRÍ IN `SUA_IN_TEM_OQC` (tem 17 của trang Sửa) ─────────
   // ⚠⚠ 2 loại nguồn KHÁC NHAU, đừng lẫn:
   //   · `nguoi_sua` được NHẬP TAY ngay lúc in (modal In tem) rồi ghép vào dữ liệu nhãn phía trình

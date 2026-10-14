@@ -661,8 +661,11 @@ async function listCancelableTem({ search = '', offset = 0, limit = 50 }) {
 //   query gọn, IPS-safe) — đúng bài học ở `quality.listCandByCon`.
 // ⚠ MÃ TEM tìm bằng `timTem()`: người dùng gõ mã trên nhãn (`16…`/`17…`) mà DB lưu mã gốc `15…`.
 // ⚠ KHÔNG viết comment `--` trong 2 chuỗi SQL bên dưới (chúng bị gộp 1 dòng).
+// 14/10/2026 (người dùng yêu cầu): lọc NGÀY CA (`ngayCaTu`/`ngayCaDen` trên `tem.ngay_ca` — ngày SX nhập lúc in, khác
+//   ngày in tem khi in bù / ca đêm) + `maNgayCa` (chuỗi trong `tem.ma_ngay_ca`, vd `261013D2` / `D2`); mỗi dòng trả thêm
+//   `da_kiem` + `mo_lai_duoc` (cùng luật nút Hủy / Mở lại ở "Tem đã in" — `getTemsByPhieu`) cho nút Hủy / Mở lại ở bảng.
 async function listTemDaIn({
-  laGiaCong = false, search = '', ngayTu = '', ngayDen = '',
+  laGiaCong = false, search = '', ngayTu = '', ngayDen = '', ngayCaTu = '', ngayCaDen = '', maNgayCa = '',
   khach = '', don = '', maHang = '', codePhan = '', maTem = '', chuyen = '',
   offset = 0, limit = 20,
 }) {
@@ -683,19 +686,31 @@ async function listTemDaIn({
   const VN2 = "AT TIME ZONE 'Asia/Ho_Chi_Minh'";
   if (ngayTu) { p.push(ngayTu); dk.push(`((t.created_date ${VN2})::date) >= $${p.length}::date`); }
   if (ngayDen) { p.push(ngayDen); dk.push(`((t.created_date ${VN2})::date) <= $${p.length}::date`); }
+  // Ngày ca (mig 066 `tem.ngay_ca` DATE) + mã ngày ca (mig 068) — dò cột, thiếu thì bỏ lọc (không lỗi).
+  if ((ngayCaTu || ngayCaDen) && await temCoCotNgayCa()) {
+    if (ngayCaTu) { p.push(ngayCaTu); dk.push(`t.ngay_ca >= $${p.length}::date`); }
+    if (ngayCaDen) { p.push(ngayCaDen); dk.push(`t.ngay_ca <= $${p.length}::date`); }
+  }
+  if (maNgayCa && await temCoCotMaNgayCa()) { p.push(mauTim(maNgayCa)); dk.push(`t.ma_ngay_ca ~* $${p.length}`); }
 
-  const FROM = `
+  // `JOIN_GOC` + `WHERE_GOC` tách riêng để câu ĐẾM không phải chạy LATERAL sự kiện hủy (chỉ dòng của trang cần).
+  const JOIN_GOC = `
     FROM tem t
     JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
     JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
     LEFT JOIN chuyen_san_xuat cs ON cs.id = COALESCE(ps.chuyen_id, ls.chuyen_id)
     LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
-    ${PHAN_INFO_LATERAL}
+    ${PHAN_INFO_LATERAL}`;
+  const WHERE_GOC = `
     WHERE COALESCE(lc.ma_loai,'') ${laGiaCong ? '=' : '<>'} 'GIA_CONG'
       ${dk.length ? `AND ${dk.join(' AND ')}` : ''}`;
+  const FROM = `${JOIN_GOC} ${WHERE_GOC}`;
   const cotMaLo = (await temCoCot('ma_lo')) ? 't.ma_lo' : 'NULL::text AS ma_lo';   // mig 114
   const dataSql = `
-    SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.created_date, t.ma_ngay_ca, ${cotMaLo},
+    SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.created_date, t.ma_ngay_ca, t.ngay_ca, ${cotMaLo},
+           (COALESCE(t.sl_kcs_dat,0) + COALESCE(t.sl_kcs_sua,0) + COALESCE(t.sl_kcs_huy,0)
+             + COALESCE(t.sl_oqc_dat,0) + COALESCE(t.sl_da_giao,0)) > 0 AS da_kiem,
+           COALESCE(${MO_LAI_DUOC_SQL}, false) AS mo_lai_duoc,
            to_char(t.gio_sx_bd, 'HH24:MI') AS gio_sx_bd, to_char(t.gio_sx_kt, 'HH24:MI') AS gio_sx_kt,
            t.btp_truoc, t.btp_cuoi, t.gc_mau_vai,
            t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy, t.sl_sua_dat, t.sl_sua_huy,
@@ -708,7 +723,9 @@ async function listTemDaIn({
            (SELECT nd.ho_ten FROM log_tem lt LEFT JOIN nguoi_dung nd ON nd.id = lt.nguoi_in_id
              WHERE lt.tem_id = t.id ORDER BY lt.tg_in LIMIT 1) AS nguoi_in,
            (SELECT count(*) FROM log_tem lt2 WHERE lt2.tem_id = t.id)::int AS so_lan_in
-    ${FROM}
+    ${JOIN_GOC}
+    ${SU_KIEN_CUOI_LATERAL}
+    ${WHERE_GOC}
     ORDER BY t.created_date DESC
     LIMIT $${p.length + 1} OFFSET $${p.length + 2}`;
   const countSql = `SELECT count(*)::int AS total ${FROM}`;
@@ -890,8 +907,12 @@ async function getTemLabelData(temId, dotVaiId = null) {
   const cotMaLo = (await temCoCot('ma_lo'))
     ? 'COALESCE(t.ma_lo, (SELECT tg.ma_lo FROM tem tg WHERE tg.id = t.tem_goc_id))'
     : 'NULL::text';
+  // Mã TỔ IN của phiếu (mig 084, trường tem `ma_to` — 14/10/2026). Dò cột: chưa có ⇒ NULL (ô tem in trống).
+  const cotMaTo = (await phieuCoCotToIn())
+    ? '(SELECT ti.ma_to FROM to_in ti WHERE ti.id = ps.to_in_id)'
+    : 'NULL::text';
   const { rows } = await query(
-    `SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.created_date, ${cotMaLo} AS ma_lo,
+    `SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.created_date, ${cotMaLo} AS ma_lo, ${cotMaTo} AS ma_to,
             ls.ma_lenh_san_xuat, cs.ma_chuyen, cs.ten_chuyen, ps.tg_bd AS tg_bd_in,
             info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan,
             info.mau_vai, info.kich_vai, info.kich_phim, info.so_luong_don_hang,
