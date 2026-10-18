@@ -178,6 +178,21 @@ const DANH_MUC_API = [
     macDinh: () => env.erp.guiHuyIdMesEnabled,
     url: () => env.erp.guiHuyIdMesUrl,
   },
+  // HỦY KẾ HOẠCH LỆNH bên ERP trước khi Lập lại kế hoạch (18/10/2026) — /gui-erp-release-1-huy → proc
+  //   MES_spr_MES21X0_Huy. Luật ở `planning/release1Erp.js huyKeHoachCu`.
+  {
+    ma: 'ERP_GUI_HUY_RELEASE_1',
+    ten: 'Hủy kế hoạch lệnh bên ERP trước khi lập lại kế hoạch',
+    mo_ta: 'Mỗi lần Lập lại kế hoạch (kể cả Xác nhận Release 1 lệnh Test Run trả về) ⇒ TRƯỚC khi gửi kế hoạch mới '
+      + '(API Release 1), gửi IDMES của lượt kế hoạch cũ đã gửi ERP (proc MES_spr_MES21X0_Huy) để ERP hủy kế hoạch đó. '
+      + 'Mỗi lần HỦY LỆNH SẢN XUẤT (Hủy lệnh xác nhận › Hủy lệnh sản xuất, hủy tùy chọn, Test Run đổi phương án in…) '
+      + 'cũng báo ERP hủy kế hoạch của lệnh. '
+      + 'Lượt cũ có nhiều lệnh (inset) thì các lệnh còn lại được gửi lại cùng. Chạy ngầm — TẮT hay lỗi đều KHÔNG chặn '
+      + 'việc lập lại kế hoạch; kế hoạch mới vẫn gửi; lượt trượt gửi lại ở Lịch sử.',
+    canh_bao: 'Tắt thì ERP giữ cả kế hoạch cũ lẫn kế hoạch mới của lệnh.',
+    macDinh: () => env.erp.guiHuyRelease1Enabled,
+    url: () => env.erp.guiHuyRelease1Url,
+  },
   // KÉO phần in đã sửa thông tin bên ERP về trang "Phần in chờ sửa thông tin" (25/09/2026) — NGỪNG 07/10/2026.
   {
     ma: 'ERP_DS_SUA_THONG_TIN',

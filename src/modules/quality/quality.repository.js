@@ -205,6 +205,27 @@ async function prevConfirmerByTems(temIds) {
   return rows;
 }
 
+// "NGÀY KIỂM" của tem chờ OQC (18/10/2026 — ô lọc + cột ở màn OQC): lúc hàng của nguồn được kiểm xong ở trạm trước.
+//   · `tg_kcs` = nguồn KCS: lượt KCS (chưa hủy) gần nhất của tem; TEM 17 (tem con) = lượt Sửa đã sinh ra nó
+//     (`sua.tem_con_id`, dòng cũ chưa neo ⇒ lượt sửa gần nhất của tem gốc); tem gia công 13 (không qua KCS) =
+//     lúc nhận hàng (tạo tem).
+//   · `tg_sua` = nguồn SỬA (dữ liệu cũ chưa tách tem 17): lượt Sửa gần nhất của chính tem.
+async function tgKiemByTems(temIds) {
+  if (!temIds || temIds.length === 0) return [];
+  const sql = `
+    SELECT t.id AS tem_id,
+      COALESCE(
+        CASE WHEN t.tem_goc_id IS NOT NULL THEN COALESCE(
+          (SELECT max(s.created_date) FROM sua s WHERE s.tem_con_id = t.id AND ${notCancelledQc('s', 'sua')}),
+          (SELECT max(s.created_date) FROM sua s WHERE s.tem_id = t.tem_goc_id AND ${notCancelledQc('s', 'sua')})) END,
+        (SELECT max(k.created_date) FROM kcs k WHERE k.tem_id = t.id AND ${notCancelledQc('k', 'kcs')}),
+        t.created_date) AS tg_kcs,
+      (SELECT max(s.created_date) FROM sua s WHERE s.tem_id = t.id AND ${notCancelledQc('s', 'sua')}) AS tg_sua
+    FROM tem t WHERE t.id = ANY($1::uuid[])`;
+  const { rows } = await query(sql.replace(/\s+/g, ' '), [temIds]);
+  return rows;
+}
+
 // ----- SỔ CÁI SỐ LƯỢNG (migration 043) -----
 // Đọc ledger + SL còn lại từng công đoạn (để service validate số nhập ≤ còn lại).
 async function getTemLedger(temId) {
@@ -1350,7 +1371,7 @@ module.exports = {
   listTemSua, listTemSuaDaHuy, getTemSuaRow, getTemSuaRows, applyTemSuaLedgerMany, logTemSuaMany,
   getTemsForMerge, addTemSoLuong, logGopTem,
   listCancelKcs, listCancelSua, listCancelOqc, getCancelKcsRow, getCancelSuaRow, getCancelOqcRow, logCancelQc,
-  listKcsCand, listSuaCand, listOqcCand, caPartsForTems, prevConfirmerByTems, getTemBasic, setTemTrangThai, setTemStatusQty,
+  listKcsCand, listSuaCand, listOqcCand, caPartsForTems, prevConfirmerByTems, tgKiemByTems, getTemBasic, setTemTrangThai, setTemStatusQty,
   getTemLedger, addKcsLedger, addSuaLedger, addOqcLedger, addGiaoLedger, reduceKcsDat, reduceSuaDat,
   getTemConCuaGoc, getTemConById, coCotSuaTemCon, taoTemCon, congSlTemCon, congSuaTach, huyTemConNeuRong,
   recomputeTemStage, recomputeTemStageMany,

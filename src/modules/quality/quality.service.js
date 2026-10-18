@@ -524,6 +524,11 @@ async function moTemSua(temIds, lyDo, actorId) {
 async function listOqcCandidates({ search, filters }) {
   const rows = await repo.listOqcCand({ search, filters });
   await attachPrevConfirmer(rows, 'nguoi_kcs_sua'); // trạm trước của OQC = KCS hoặc Sửa (mới nhất)
+  // "Ngày kiểm" theo nguồn (18/10/2026) — FE lọc khoảng ngày + hiện cột; xem `repo.tgKiemByTems`.
+  if (rows.length) {
+    const tg = new Map((await repo.tgKiemByTems(rows.map((r) => r.tem_id))).map((x) => [x.tem_id, x]));
+    rows.forEach((r) => { const x = tg.get(r.tem_id) || {}; r.tg_kiem_kcs = x.tg_kcs || null; r.tg_kiem_sua = x.tg_sua || null; });
+  }
   return rows;
 }
 

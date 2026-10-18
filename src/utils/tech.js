@@ -243,6 +243,17 @@ const hanGiaoReadyTaiMocSql = (pinCol, mocCol) => `COALESCE(
       AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsm JOIN lenh_san_xuat lm ON lm.id = lsm.lenh_san_xuat_id
                       WHERE lsm.dot_vai_ve_id = dv8.id AND lm.trang_thai <> 'HUY' AND lm.created_date < ${mocCol})),
   ${hanGiaoReadySql(pinCol)})`;
+// "Giờ lên MES" neo theo mốc (18/10/2026 — cột mới sidebar "Đã hoàn thành" READY KT): CÙNG tập đợt với
+// `hanGiaoReadyTaiMocSql` (đợt đã lên MES, chưa release tại mốc), lấy mốc lên READY MUỘN NHẤT (đợt kéo phần in vào
+// chu kỳ READY này — cùng quy ước engine sĩ số READY KT); không có ⇒ đợt sống muộn nhất.
+const gioLenMesTaiMocSql = (pinCol, mocCol) => `COALESCE(
+  (SELECT max(COALESCE(dv9.tg_chuyen_ready, dv9.created_date)) FROM dot_vai_ve dv9
+    WHERE dv9.phan_in_id = ${pinCol} AND dv9.trang_thai NOT IN ('DA_GOP','DA_HUY')
+      AND dv9.created_date <= ${mocCol}
+      AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsg JOIN lenh_san_xuat lg ON lg.id = lsg.lenh_san_xuat_id
+                      WHERE lsg.dot_vai_ve_id = dv9.id AND lg.trang_thai <> 'HUY' AND lg.created_date < ${mocCol})),
+  (SELECT max(COALESCE(dva.tg_chuyen_ready, dva.created_date)) FROM dot_vai_ve dva
+    WHERE dva.phan_in_id = ${pinCol} AND dva.trang_thai NOT IN ('DA_GOP','DA_HUY')))`;
 
 // Điều kiện WHERE "đợt `alias` đang chờ ở READY mà KỸ THUẬT CHƯA xong" (việc của màn KT) — tách riêng
 // (01/10/2026) để bảng theo dõi Dashboard lấy được HẠN GIAO / MỐC LÊN READY của đúng các đợt này mà
@@ -298,5 +309,5 @@ module.exports = {
   readyTuDongSql, khongReadyTuDongSql,
   dotMucDatSql, mocDotMucSql, mocKtXongDotSql, relRoiReadyDotSql,
   qcDotSql, ktDotXongSql, conDotChuaReadySql, conDotChoQcSql, conDotChuaKtSql,
-  dotChuaKtDk, hanGiaoReadySql, hanGiaoReadyTaiMocSql,
+  dotChuaKtDk, hanGiaoReadySql, hanGiaoReadyTaiMocSql, gioLenMesTaiMocSql,
 };

@@ -62,9 +62,26 @@ async function idMesDaGui(tenKenh, idBanGhi, { tu = null } = {}) {
   return rows.map((r) => r.id_mes).filter(laIdMes).map(Number);
 }
 
-// 1 lượt gọi /gui-idmes-huy. KHÔNG ném lỗi (đi qua `goiErp`: đọc công tắc · retry · ghi Lịch sử).
-// `idBanGhi` = bản ghi bị hủy · `maHien` = mã hiện ở cột "Mã" của Lịch sử (mã tem / số phiếu).
-async function guiHuyIdMes(payload, { idBanGhi = null, maHien = null, actorId = null } = {}) {
+// API HỦY dùng CÙNG khuôn body {IDMES, NgayHuy, NguoiHuy, Lydohuy, Nguon}: mỗi API 1 router/proc riêng.
+//   · ERP_GUI_HUY_IDMES     — /gui-idmes-huy → MES_spr_MES2SF0_Huy (chứng từ tem/KCS/Sửa/OQC/PLL/phiếu giao)
+//   · ERP_GUI_HUY_RELEASE_1 — /gui-erp-release-1-huy → MES_spr_MES21X0_Huy (18/10/2026: kế hoạch lệnh đã gửi
+//     `MES_spr_MES21X0`, hủy TRƯỚC khi Lập lại kế hoạch gửi lại — `planning/release1Erp.huyKeHoachCu`)
+const API_HUY = {
+  ERP_GUI_HUY_IDMES: {
+    nhan: 'gui-idmes-huy', url: () => env.erp.guiHuyIdMesUrl,
+    timeoutMs: () => env.erp.guiHuyIdMesTimeoutMs, retry: () => env.erp.guiHuyIdMesRetry,
+  },
+  ERP_GUI_HUY_RELEASE_1: {
+    nhan: 'gui-erp-release-1-huy', url: () => env.erp.guiHuyRelease1Url,
+    timeoutMs: () => env.erp.guiHuyRelease1TimeoutMs, retry: () => env.erp.guiHuyRelease1Retry,
+  },
+};
+
+// 1 lượt gọi API hủy theo IDMES. KHÔNG ném lỗi (đi qua `goiErp`: đọc công tắc · retry · ghi Lịch sử).
+// `idBanGhi` = bản ghi bị hủy · `maHien` = mã hiện ở cột "Mã" của Lịch sử (mã tem / số phiếu / mã lệnh).
+// `maApi` mặc định kênh chứng từ (`ERP_GUI_HUY_IDMES`).
+async function guiHuyIdMes(payload, { idBanGhi = null, maHien = null, actorId = null, maApi = MA_API } = {}) {
+  const api = API_HUY[maApi] || API_HUY[MA_API];
   const body = {
     IDMES: Number(payload.IDMES),
     NgayHuy: ngayGio(payload.NgayHuy || new Date()),
@@ -73,13 +90,13 @@ async function guiHuyIdMes(payload, { idBanGhi = null, maHien = null, actorId = 
     Nguon: catChuoi(payload.Nguon, 30),
   };
   if (!laIdMes(body.IDMES)) return { ok: false, bo_qua: true, ly_do: 'THIEU_DU_LIEU' };
-  return goiErp(MA_API, {
-    nhan: 'gui-idmes-huy',
-    url: env.erp.guiHuyIdMesUrl,
+  return goiErp(API_HUY[maApi] ? maApi : MA_API, {
+    nhan: api.nhan,
+    url: api.url(),
     method: 'POST',
     body,
-    timeoutMs: env.erp.guiHuyIdMesTimeoutMs,
-    retry: env.erp.guiHuyIdMesRetry,
+    timeoutMs: api.timeoutMs(),
+    retry: api.retry(),
     idBanGhi,
     maTem: maHien,
     moTa: `IDMES ${body.IDMES}${body.Nguon ? ` (${body.Nguon})` : ''}`,
@@ -129,4 +146,4 @@ function baoHuyNgam(tenKenh, idBanGhi, o = {}) {
   baoHuy(tenKenh, idBanGhi, o).catch((e) => console.error(`[gui-idmes-huy] ✗ ${tenKenh} ${idBanGhi}: ${e.message}`));
 }
 
-module.exports = { MA_API, KENH, LY_DO_TOI_DA, idMesDaGui, guiHuyIdMes, baoHuy, baoHuyNgam };
+module.exports = { MA_API, API_HUY, KENH, LY_DO_TOI_DA, laIdMes, idMesDaGui, guiHuyIdMes, baoHuy, baoHuyNgam };

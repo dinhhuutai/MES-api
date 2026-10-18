@@ -147,6 +147,12 @@ const env = {
     guiHuyIdMesTimeoutMs: parseInt(process.env.ERP_GUI_IDMES_HUY_TIMEOUT_MS || '10000', 10),
     guiHuyIdMesRetry: parseInt(process.env.ERP_GUI_IDMES_HUY_RETRY || '3', 10),
     guiHuyIdMesEnabled: String(process.env.ERP_GUI_IDMES_HUY_ENABLED || 'true').toLowerCase() === 'true',
+    // HỦY KẾ HOẠCH LỆNH (Release 1) bên ERP theo IDMES (18/10/2026) — proc `MES_spr_MES21X0_Huy(@pIDMES, @pNgayHuy,
+    // @pNguoiHuy, @pLydohuy)`. Gọi TRƯỚC khi Lập lại kế hoạch gửi lại kế hoạch mới (`planning/release1Erp.js`).
+    guiHuyRelease1Url: process.env.ERP_GUI_RELEASE_1_HUY_URL || `${ERP_GOC}/gui-erp-release-1-huy`,
+    guiHuyRelease1TimeoutMs: parseInt(process.env.ERP_GUI_RELEASE_1_HUY_TIMEOUT_MS || '10000', 10),
+    guiHuyRelease1Retry: parseInt(process.env.ERP_GUI_RELEASE_1_HUY_RETRY || '3', 10),
+    guiHuyRelease1Enabled: String(process.env.ERP_GUI_RELEASE_1_HUY_ENABLED || 'true').toLowerCase() === 'true',
     // KÉO danh sách phần in GN đã sửa thông tin bên ERP (25/09/2026) — job 5 phút/lần, chỉ cập nhật phần in
     // đang nằm ở *Đơn hàng › Phần in chờ sửa thông tin*. Xem `modules/suathongtin/erpCapNhat.js`.
     dsSuaThongTinUrl: process.env.ERP_DS_PHAN_IN_SUA_THONG_TIN_URL || `${ERP_GOC}/ds-phan-in-sua-thong-tin`,

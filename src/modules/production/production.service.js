@@ -125,6 +125,18 @@ async function kiemNgayCaChungTu(phieu, body) {
   }
   return ca;
 }
+// GUARD (18/10/2026, người dùng chốt "in tem 15,16 khóa lại nếu phân công chưa có thợ in"): phiếu chưa LƯU phân công
+// có thợ in (`phan_cong_san_xuat.tho_in`) ⇒ 422, không tạo tem. Thợ in KẾ HOẠCH (`tho_in_kh`, chỉ điền sẵn ô) không
+// tính — phải bấm Lưu ở khối Phân công. Áp mọi đường in tem sản xuất (`printTem` · `printTemBatch` ⇒ in lẻ · Số tem ·
+// gom set · in nhiều lệnh); FE khóa nút cùng luật (`RunPanel coThoInPhanCong`).
+async function kiemThoInPhanCong(phieu) {
+  const pc = await repo.getPhanCongByPhieu(phieu.id);
+  if (!String((pc && pc.tho_in) || '').trim()) {
+    throw new AppError(`Phiếu ${phieu.ma_phieu_san_xuat || ''} chưa phân công thợ in — chọn thợ in ở khối Phân công rồi bấm Lưu trước khi in tem`
+      .replace(/\s+/g, ' '), { status: 422, errorCode: 'CHUA_PHAN_CONG_THO_IN' });
+  }
+}
+
 // In tem xong ⇒ nhớ 2 giá trị cho các lượt in sau của lượt ca (chỉ ghi khi KHÁC giá trị đang nhớ). Phụ — không ném lỗi.
 async function nhoDauCa(ca, body, actorId) {
   if (!ca) return;
@@ -573,6 +585,7 @@ async function printTem(phieuId, soLuong, actorId, body) {
   if (phieu.trang_thai !== 'DANG_CHAY') {
     throw new AppError('Phiếu không ở trạng thái đang chạy', { status: 409, errorCode: 'WRONG_STAGE' });
   }
+  await kiemThoInPhanCong(phieu); // chưa phân công thợ in ⇒ không in
   const caIn = await kiemNgayCaChungTu(phieu, body); // thiếu Ngày ca / Ngày chứng từ ⇒ không in (nhập đầu ca)
 
   // Luật: tổng đã in không vượt quá 110% SL release của lệnh.
@@ -653,6 +666,7 @@ async function printTemBatch(phieuId, items, actorId, body) {
   if (phieu.trang_thai !== 'DANG_CHAY') {
     throw new AppError('Phiếu không ở trạng thái đang chạy', { status: 409, errorCode: 'WRONG_STAGE' });
   }
+  await kiemThoInPhanCong(phieu); // chưa phân công thợ in ⇒ không in
   const caIn = await kiemNgayCaChungTu(phieu, body); // thiếu Ngày ca / Ngày chứng từ ⇒ không in (nhập đầu ca)
 
   const dotVaiList = await repo.getLenhDotVaiList(phieu.lenh_san_xuat_id);

@@ -31,6 +31,7 @@ const erp = require('../../utils/erpApiChung');
 const MA_GUI_LAI = new Set([
   'ERP_GHI_IN_TEM', 'ERP_GUI_PHIEU_GIAO', 'ERP_GUI_PHAN_LOAI_LOI', 'ERP_GUI_SUA_DAT', 'ERP_GUI_KIEM_PHAM',
   'ERP_GUI_TEM_GIA_CONG', 'ERP_GUI_DS_HUY_VAI', 'ERP_GUI_OQC', 'ERP_GUI_RELEASE_1', 'ERP_GUI_HUY_IDMES',
+  'ERP_GUI_HUY_RELEASE_1',
 ]);
 
 const soHoacNull = (v) => { const n = Number(v); return v == null || v === '' || !Number.isFinite(n) ? null : n; };
@@ -85,14 +86,15 @@ async function guiLai(ma, auditId, actorId) {
   }
   // Báo ERP hủy chứng từ theo IDMES (14/10/2026) — gửi lại ĐÚNG thân đã gửi (IDMES · ngày hủy · người hủy · lý do):
   //   việc hủy ở MES đã xong từ lúc đó, đây chỉ là báo lại cho ERP. Xem `utils/erpHuy.js`.
-  if (ma === 'ERP_GUI_HUY_IDMES') {
+  //   18/10/2026: cùng khuôn cho hủy kế hoạch lệnh (`ERP_GUI_HUY_RELEASE_1`).
+  if (ma === 'ERP_GUI_HUY_IDMES' || ma === 'ERP_GUI_HUY_RELEASE_1') {
     const gui = g.gui || {};
     if (gui.IDMES == null) throw new AppError('Dòng lịch sử không có IDMES — không gửi lại được', { status: 409, errorCode: 'THIEU_DU_LIEU' });
     const erpHuy = require('../../utils/erpHuy');
     const kq = await erpHuy.guiHuyIdMes(gui, {
-      idBanGhi: d.id_ban_ghi && d.id_ban_ghi !== '-' ? d.id_ban_ghi : null, maHien: g.ma_tem || null, actorId,
+      idBanGhi: d.id_ban_ghi && d.id_ban_ghi !== '-' ? d.id_ban_ghi : null, maHien: g.ma_tem || null, actorId, maApi: ma,
     });
-    loiNeu(kq, 'Báo ERP hủy chứng từ');
+    loiNeu(kq, ma === 'ERP_GUI_HUY_RELEASE_1' ? 'Báo ERP hủy kế hoạch lệnh' : 'Báo ERP hủy chứng từ');
     return { ok: true };
   }
   // Release 1 / kế hoạch lệnh (04/10/2026) — gửi lại ĐÚNG thân đã gửi (IDMES + DsRelease cũ), xem

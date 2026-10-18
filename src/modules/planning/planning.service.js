@@ -339,6 +339,19 @@ async function kiemPainVsChuyen(dotVaiIds, chuyenId) {
   );
 }
 
+// Chia `tong` cho các đợt theo thứ tự `ids`, mỗi đợt tối đa phần còn (`conMap`). Trả Map dvId → SL (đợt không nhận
+// gì thì vắng). Dùng cho SL nhập tay khi 1 dòng Release 1 gom nhiều đợt cùng code phần (18/10/2026).
+function chiaSlTheoDot(ids, conMap, tong) {
+  const out = new Map();
+  let conLai = Math.max(0, Number(tong) || 0);
+  for (const id of ids) {
+    if (conLai <= 0) break;
+    const lay = Math.min(Math.max(0, Number(conMap[id]) || 0), conLai);
+    if (lay > 0) { out.set(id, lay); conLai -= lay; }
+  }
+  return out;
+}
+
 // `opts.nguonErp` = nhãn thao tác gửi kèm lượt báo ERP (`release1Erp`): mặc định RELEASE_1; Xác nhận kế
 //   hoạch tạm truyền KE_HOACH_TAM.
 // `thoIn` (mig 111, 07/10/2026) = danh sách thợ in KẾ HOẠCH (chuỗi tên ngăn dấu phẩy, hoặc mảng) — ghi vào
@@ -377,11 +390,25 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
   const waitIds = dotVaiIds.filter((id) => !qcMap[id]?.qc_done);
   const remainAll = await repo.getDotVaiRemaining(dotVaiIds);
   const conAll = Object.fromEntries(remainAll.map((r) => [r.id, r.con_release]));
+  // SL NHẬP TAY (panel lẻ) áp được khi MỌI đợt cùng 1 phần in (18/10/2026 — Release 1 gom nhiều đợt cùng code phần
+  //   thành 1 dòng): chia lần lượt cho các đợt theo THỨ TỰ gửi lên, mỗi đợt tối đa phần còn lại của nó.
+  const motPhanIn = new Set(dotVaiIds.map((id) => qcMap[id]?.phan_in_id)).size === 1;
+  const nhapSl = soLuongRelease != null && motPhanIn;
+  let chiaNhap = null; // dvId → SL (chỉ khi nhập tay) — chia 1 lần cho đợt Ready trước rồi tới đợt chờ Ready
+  if (nhapSl) {
+    const qty = Number(soLuongRelease);
+    const tongCon = dotVaiIds.reduce((s, id) => s + (Number(conAll[id]) || 0), 0);
+    if (!(qty > 0)) throw new AppError('Số lượng release phải > 0', { status: 422, errorCode: 'INVALID_QTY' });
+    if (qty > tongCon) throw new AppError(`SL release (${qty}) vượt SL còn lại (${tongCon})`, { status: 422, errorCode: 'OVER' });
+    chiaNhap = chiaSlTheoDot([...readyIds, ...waitIds], conAll, qty);
+  }
+  const slTam = chiaNhap;
   let tamCount = 0;
   for (const dvId of waitIds) {
     const con = Number(conAll[dvId]) || 0;
     if (con <= 0) continue;
-    const qty = (dotVaiIds.length === 1 && soLuongRelease != null) ? Math.min(Number(soLuongRelease) || con, con) : con;
+    const qty = slTam ? (slTam.get(dvId) || 0) : con;
+    if (qty <= 0) continue;
     await repo.upsertKeHoachTam({
       dotVaiId: dvId, phanInId: qcMap[dvId]?.phan_in_id, chuyenId, ngayKeHoach,
       tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null, soLuong: qty, thoInKh,
@@ -397,25 +424,42 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
   // SL nhập (≤ còn lại); đợt Ở LẠI pool tới khi release đủ ⇒ 1 đợt có thể có NHIỀU lệnh.
   const remain = await repo.getDotVaiRemaining(readyIds);
   const conMap = Object.fromEntries(remain.map((r) => [r.id, r.con_release]));
-  const single = readyIds.length === 1;
 
-  // Xác định SL release từng đợt + validate. Single có nhập SL → dùng SL nhập; còn lại → release hết phần còn.
+  // Xác định SL release từng đợt + validate. Có nhập SL (mọi đợt cùng 1 phần in) → chia SL nhập cho các đợt; còn lại
+  // → release hết phần còn của từng đợt.
   const plan = [];
-  for (const dvId of readyIds) {
-    const con = Number(conMap[dvId]) || 0;
-    if (single && soLuongRelease != null) {
-      const qty = Number(soLuongRelease);
-      if (!(qty > 0)) throw new AppError('Số lượng release phải > 0', { status: 422, errorCode: 'INVALID_QTY' });
-      if (qty > con) throw new AppError(`SL release (${qty}) vượt SL còn lại (${con})`, { status: 422, errorCode: 'OVER' });
-      plan.push({ dvId, qty });
-    } else if (con > 0) {
-      plan.push({ dvId, qty: con }); // batch: release hết phần còn lại; bỏ qua đợt đã release đủ
+  if (chiaNhap) {
+    readyIds.forEach((dvId) => {
+      const qty = Math.min(chiaNhap.get(dvId) || 0, Number(conMap[dvId]) || 0);
+      if (qty > 0) plan.push({ dvId, qty });
+    });
+  } else {
+    for (const dvId of readyIds) {
+      const con = Number(conMap[dvId]) || 0;
+      if (con > 0) plan.push({ dvId, qty: con }); // batch: release hết phần còn lại; bỏ qua đợt đã release đủ
     }
   }
   if (plan.length === 0) {
     if (tamCount > 0) { sockets.emit('dashboard:refresh', {}); return { created_count: 0, created_summary: [], ke_hoach_tam_count: tamCount, chi_tam: true, tho_in_chua_luu: thoInChuaLuu }; }
     throw new AppError('Các đợt vải đã release đủ số lượng', { status: 409, errorCode: 'ALL_RELEASED' });
   }
+
+  // ⚠⚠ GOM ĐỢT CÙNG CODE PHẦN VÀO 1 LỆNH (18/10/2026, người dùng: "1 code phần mà có nhiều đợt vải ở Release 1 thì tự
+  //   động gom số lượng lại"): các đợt Ready của CÙNG phần in trong 1 lượt release ⇒ 1 lệnh, SL = tổng, mỗi đợt 1 dòng
+  //   `lenh_sx_dot_vai` (đúng luật "gộp đợt vào 1 lệnh chỉ khi cùng phần in" — §10, như Gom đợt vải). Trước đó mỗi đợt
+  //   1 lệnh riêng.
+  // ⚠ Tách nhóm theo luật BỎ TEST RUN THEO LOẠI (`boTestTheoLoai`): đợt bổ sung (5I) / mẫu SL (6I) KHÔNG gộp chung với
+  //   đợt thường — gộp vào là kéo cả đợt bổ sung qua Test Run (phá luật "bổ sung bỏ Test Run tuyệt đối").
+  const compose = await repo.getDotVaiForCompose(plan.map((p) => p.dvId));
+  const cById = Object.fromEntries(compose.map((r) => [r.id, r]));
+  const nhomMap = new Map();
+  for (const p of plan) {
+    const dv = cById[p.dvId];
+    const k = `${dv?.phan_in_id || p.dvId}|${boTestTheoLoai(dv) ? 'BO_TEST' : 'TEST'}`;
+    if (!nhomMap.has(k)) nhomMap.set(k, []);
+    nhomMap.get(k).push(p);
+  }
+  const nhomLenh = [...nhomMap.values()];
 
   // GIA CÔNG (chuyền loại GIA_CONG): mỗi đợt → 1 lệnh ĐẬU Ở MÀN "GIA CÔNG" (trang_thai='GIA_CONG'),
   // chưa qua OQC. Kế hoạch bấm "Chuyển OQC" mới tạo tem + sang OQC (bỏ Test Run/Release 2/Sản xuất/KCS/Sửa).
@@ -425,19 +469,21 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
     if (!version) throw new AppError('Chưa cấu hình workflow', { status: 500, errorCode: 'NO_WORKFLOW' });
     const created = await withTransaction(async (client) => {
       const out = [];
-      for (const { dvId, qty } of plan) {
+      for (const nhom of nhomLenh) {
         const c = await createGiaCongLenh(client, {
           // ⚠ Phải truyền giờ BD/KT: `createGiaCongLenh` nhận sẵn 2 tham số này nhưng caller quên
           //   ⇒ lệnh gia công release từ màn Release 1 mất giờ kế hoạch (fix 2026-08-12).
-          versionId: version.id, chuyenId, junctions: [{ dotVaiId: dvId, soLuong: qty }], tongSL: qty, ngayKeHoach,
+          versionId: version.id, chuyenId, junctions: nhom.map((p) => ({ dotVaiId: p.dvId, soLuong: p.qty })),
+          tongSL: nhom.reduce((s, p) => s + p.qty, 0), ngayKeHoach,
           tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null, thoInKh,
         }, actorId);
-        out.push({ ...c, dot_vai_id: dvId });
+        out.push({ ...c, dot_vai_id: nhom[0].dvId, dot_vai_ids: nhom.map((p) => p.dvId), so_dot_vai: nhom.length });
       }
       return out;
     });
-    await qaRepo.resolveReturnsMany('TEST_RUN', created.map((c) => c.dot_vai_id));
-    await repo.dongSetDaReleaseHet(created.map((c) => c.dot_vai_id), actorId);
+    const dotDaTao = created.flatMap((c) => c.dot_vai_ids);
+    await qaRepo.resolveReturnsMany('TEST_RUN', dotDaTao);
+    await repo.dongSetDaReleaseHet(dotDaTao, actorId);
     created.forEach((c) => sockets.emit('workflow:updated', { lenhId: c.id, stage: 'GIA_CONG', giaCong: true }));
     sockets.emit('dashboard:refresh', {});
     release1Erp.xepHang(created.map((c) => c.id), actorId, opts.nguonErp || 'RELEASE_1');
@@ -454,35 +500,38 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
   //       TRỪ đợt bật cờ LÀM LẠI (can_lam_lai_ready → ép full flow).
   // KHÔNG còn bỏ Test Run chỉ vì "cùng phần in đã test xong ở đợt trước" — đợt MỚI vẫn phải Test Run.
   const { version } = await loadTestConfig();
-  const compose = await repo.getDotVaiForCompose(plan.map((p) => p.dvId));
-  const cById = Object.fromEntries(compose.map((r) => [r.id, r]));
   const dangChaySet = new Set(await repo.phanInDangChay([...new Set(compose.map((r) => r.phan_in_id))]));
 
   const created = await withTransaction(async (client) => {
     const out = [];
-    for (const { dvId, qty } of plan) {
-      const dv = cById[dvId];
-      const dangChay = dv ? dangChaySet.has(dv.phan_in_id) : false;
-      const diTat = boTestTheoLoai(dv) || ((dangChay || qty < SL_NHO_BO_TEST) && !dv?.can_lam_lai_ready);
+    for (const nhom of nhomLenh) {
+      const dvs = nhom.map((p) => cById[p.dvId]);
+      const tong = nhom.reduce((s, p) => s + p.qty, 0);
+      const dangChay = dvs[0] ? dangChaySet.has(dvs[0].phan_in_id) : false;
+      // Nhóm đồng nhất theo loại bỏ test (xem `nhomLenh`) ⇒ `every` = luật của Gom đợt vải; SL nhỏ xét TỔNG lệnh.
+      const lamLai = dvs.some((dv) => dv?.can_lam_lai_ready);
+      const diTat = dvs.every((dv) => boTestTheoLoai(dv)) || ((dangChay || tong < SL_NHO_BO_TEST) && !lamLai);
       const trangThai = diTat ? 'RELEASE_2' : 'RELEASE_1';
       const maLenh = await repo.nextMaLenhTx(client);
       const id = await repo.createLenh(client, {
-        versionId: version.id, maLenh, chuyenId, soLuongRelease: qty, ngayKeHoach, trangThai,
+        versionId: version.id, maLenh, chuyenId, soLuongRelease: tong, ngayKeHoach, trangThai,
         tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null, thoInKh,
       }, actorId);
-      await repo.addLenhDotVai(client, id, dvId, actorId, qty);
-      out.push({ id, ma_lenh_san_xuat: maLenh, trang_thai: trangThai, so_dot_vai: 1, dot_vai_id: dvId });
+      for (const p of nhom) await repo.addLenhDotVai(client, id, p.dvId, actorId, p.qty);
+      out.push({ id, ma_lenh_san_xuat: maLenh, trang_thai: trangThai, so_dot_vai: nhom.length,
+        dot_vai_id: nhom[0].dvId, dot_vai_ids: nhom.map((p) => p.dvId) });
     }
     return out;
   });
 
   // Theo dõi dòng chảy: mỗi lệnh → trạm tương ứng (đợt đã test xong vào thẳng RELEASE_2).
   for (const c of created) {
-    await tracking.moveDotVaiTo([c.dot_vai_id], c.trang_thai === 'RELEASE_2' ? 'RELEASE_2' : 'RELEASE_1', actorId);
+    await tracking.moveDotVaiTo(c.dot_vai_ids, c.trang_thai === 'RELEASE_2' ? 'RELEASE_2' : 'RELEASE_1', actorId);
   }
-  await qaRepo.resolveReturnsMany('TEST_RUN', created.map((c) => c.dot_vai_id)); // release lại → tắt cờ "bị Test Run trả về"
+  const dotDaTao = created.flatMap((c) => c.dot_vai_ids);
+  await qaRepo.resolveReturnsMany('TEST_RUN', dotDaTao); // release lại → tắt cờ "bị Test Run trả về"
   // Đợt vải thuộc gom set nay release LẺ được ⇒ set tự đóng khi member cuối cùng đã release.
-  await repo.dongSetDaReleaseHet(created.map((c) => c.dot_vai_id), actorId);
+  await repo.dongSetDaReleaseHet(dotDaTao, actorId);
   created.forEach((c) => sockets.emit('workflow:updated', { lenhId: c.id, stage: c.trang_thai }));
   sockets.emit('dashboard:refresh', {});
   release1Erp.xepHang(created.map((c) => c.id), actorId, opts.nguonErp || 'RELEASE_1');
@@ -492,6 +541,7 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
     ...detail,
     created_summary: created,
     created_count: created.length,
+    so_dot_vai: dotDaTao.length,
     ke_hoach_tam_count: tamCount,
     skipped_test_count: created.filter((c) => c.trang_thai === 'RELEASE_2').length,
     tho_in_chua_luu: thoInChuaLuu,
@@ -784,16 +834,28 @@ async function listOwnerChoIn() {
   return repo.usersByUsernames(OWNER_CHO_IN_USERNAMES);
 }
 
-// Kiểm dữ liệu "In không đạt": phải có ≥1 owner và CHỈ được là owner trong danh sách; lý do tùy chọn.
+// Kiểm dữ liệu "In không đạt": owner CHỈ được là owner trong danh sách; lý do tùy chọn.
+// Ô tích "KHÁC" (18/10/2026, người dùng yêu cầu): `nguoiKhac` = người khác cho IN (chuỗi tên ngăn dấu phẩy — chọn tài
+//   khoản hoặc gõ tên ngoài danh sách) · `lyDoKhac` = lý do khác. Phải có ≥1 trong: owner · người khác · lý do khác.
+//   Người khác ghi chung vào `owner_ten` (hiện "… cho IN" như owner); lý do khác nối vào lý do ("Khác: …").
+const TOI_DA_KHAC = 300;
 async function chuanHoaInKhongDat(raw = {}) {
   const ids = [...new Set((Array.isArray(raw.ownerIds) ? raw.ownerIds : []).map(String).filter(Boolean))];
-  if (!ids.length) throw new AppError('Chọn ít nhất 1 owner cho IN', { status: 422, errorCode: 'NO_OWNER_CHO_IN' });
-  const hopLe = await listOwnerChoIn();
+  const nguoiKhac = [...new Set(String(raw.nguoiKhac || '').split(',').map((s) => s.trim()).filter(Boolean))];
+  const lyDoKhac = String(raw.lyDoKhac || '').trim();
+  if (nguoiKhac.join(', ').length > TOI_DA_KHAC || lyDoKhac.length > TOI_DA_KHAC) {
+    throw new AppError(`Người khác / lý do khác tối đa ${TOI_DA_KHAC} ký tự`, { status: 422, errorCode: 'KHAC_QUA_DAI' });
+  }
+  if (!ids.length && !nguoiKhac.length && !lyDoKhac) {
+    throw new AppError('Chọn ít nhất 1 owner cho IN, hoặc tích "Khác" để nhập người khác / lý do khác', { status: 422, errorCode: 'NO_OWNER_CHO_IN' });
+  }
+  const hopLe = ids.length ? await listOwnerChoIn() : [];
   const owners = hopLe.filter((u) => ids.includes(String(u.id)));
   if (owners.length !== ids.length) {
     throw new AppError('Owner cho IN không hợp lệ', { status: 422, errorCode: 'OWNER_CHO_IN_KHONG_HOP_LE' });
   }
-  return { owners, lyDo: (raw.lyDo || '').toString().trim() || null };
+  const lyDo = [String(raw.lyDo || '').trim(), lyDoKhac ? `Khác: ${lyDoKhac}` : ''].filter(Boolean).join(' · ') || null;
+  return { owners, nguoiKhac, lyDoKhac: lyDoKhac || null, lyDo, ten: [...owners.map((o) => o.ho_ten), ...nguoiKhac] };
 }
 
 async function recordTestRun(lenhId, body, actorId) {
@@ -828,7 +890,7 @@ async function confirmTest(lenhId, which, actorId, extra = {}) {
     const ikd = extra.inKhongDat ? await chuanHoaInKhongDat(extra.inKhongDat) : null;
     if (ikd && st.qa_done) throw new AppError('QA đã xác nhận lệnh này', { status: 409, errorCode: 'ALREADY' });
     if (ikd) {
-      const tomTat = `In không đạt — ${ikd.owners.map((o) => o.ho_ten).join(', ')} cho IN${ikd.lyDo ? `: ${ikd.lyDo}` : ''}`;
+      const tomTat = `In không đạt — ${ikd.ten.length ? `${ikd.ten.join(', ')} ` : ''}cho IN${ikd.lyDo ? `: ${ikd.lyDo}` : ''}`;
       ghiChu = ghiChu ? `${tomTat} · ${ghiChu}` : tomTat;
     }
     await withTransaction(async (client) => {
@@ -849,8 +911,9 @@ async function confirmTest(lenhId, which, actorId, extra = {}) {
         await repo.logInKhongDatTx(client, tr.id, {
           lenh_san_xuat_id: lenhId, lan_test: tr.lan_test, ly_do: ikd.lyDo,
           owner_ids: ikd.owners.map((o) => o.id),
-          owner_ten: ikd.owners.map((o) => o.ho_ten),
+          owner_ten: ikd.ten,
           owner_username: ikd.owners.map((o) => o.ten_dang_nhap),
+          nguoi_khac: ikd.nguoiKhac, ly_do_khac: ikd.lyDoKhac,
         }, actorId);
       } else if (recordPass) {
         await repo.insertTestRunTx(client, lenhId, { soLuong: extra.soLuong ?? null, ketQua: 'DAT', ghiChu }, actorId);
@@ -1074,6 +1137,8 @@ async function rollbackLenh(lenhId, { target, lyDo, force = false, boTestRunIds 
     : `[${TARGET}] ${lyDo || ''}`.trim();
   await repo.logLenhCancel(lenhId, lenh.ma_lenh_san_xuat, ghiChu, actorId);
   await tracking.revertToReady(dotVaiIds, actorId);
+  // Báo ERP hủy kế hoạch lệnh đã gửi (`MES_spr_MES21X0_Huy`, 18/10/2026) — NGẦM, không chặn việc hủy.
+  release1Erp.baoHuyLenhNgam([lenhId], actorId, lyDo);
   sockets.emit('workflow:updated', { lenhId, stage: 'HUY' });
   sockets.emit('dashboard:refresh', {});
   return {
@@ -1189,6 +1254,8 @@ async function returnTestRunToReady(lenhId, { checklists, lyDo, loai }, actorId)
     // ⚠ `cancelLenhOrder` cũng lo luôn việc mở lại gom set nếu đợt vải thuộc set đã đóng.
     if (doiPaIn) await repo.cancelLenhOrder(client, lenhId, actorId);
   });
+  // Đổi phương án in đã HỦY lệnh ⇒ báo ERP hủy kế hoạch lệnh (18/10/2026, ngầm).
+  if (doiPaIn) release1Erp.baoHuyLenhNgam([lenhId], actorId, reason);
 
   const checklistList = chosen.join(',');
   // 2 loại: TEST_RUN_KT (mức phần in) → badge ở READY/QC READY · TEST_RUN (mức đợt vải) → Lịch sử QC trả về

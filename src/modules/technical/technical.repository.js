@@ -8,7 +8,7 @@ const { dkTrang } = require('../../utils/phuongAnIn');
 //   `listConfirmHistory` / `doneByDate`. Luật loại-khỏi-số-liệu vẫn còn hiệu lực ở sĩ số + báo cáo.
 // ⚠ `conDotChoQcSql` KHÔNG import ở đây nữa (23/09/2026): màn QC dùng chung vị từ với màn Kỹ thuật —
 //   xem ghi chú ở `OUTER_WHERE`. Helper đó nay chỉ còn phục vụ dải "Theo dõi" (`utils/siSoTram.js`).
-const { techDoneSql, KHUON_OPT_SQL_LIST, nguoiXacNhanSql, conDotChuaReadySql, qcDotSql, qcMoLaiSql, hanGiaoReadySql, hanGiaoReadyTaiMocSql, qcXacNhanPhanInSql, ktTraVeSql } = require('../../utils/tech');
+const { techDoneSql, KHUON_OPT_SQL_LIST, nguoiXacNhanSql, conDotChuaReadySql, qcDotSql, qcMoLaiSql, hanGiaoReadySql, hanGiaoReadyTaiMocSql, gioLenMesTaiMocSql, qcXacNhanPhanInSql, ktTraVeSql } = require('../../utils/tech');
 const { slaReadySql, slaQcReadySql, slaReadyHanSql, canhBaoReadyHanSql, giaHanTraVeKtSql } = require('../../utils/slaTheoGio');
 // Phần in đang được trả về GIAO NHẬN sửa thông tin ⇒ rời màn READY cho tới khi GN xác nhận lại.
 const { CHO_GN_SQL } = require('../../utils/traVeGn');
@@ -410,7 +410,8 @@ async function doneByDate(date, scope = 'tech') {
                bool_or(ma_checkpoint='KHUON') AS hk, bool_or(ma_checkpoint='FILM') AS hf, bool_or(ma_checkpoint='MUC') AS hm
         FROM tech GROUP BY phan_in_id
       )
-      SELECT a.tg_done AS tg, ${nguoiXacNhanSql('nx', 'last')} AS nguoi, last.ghi_chu, ${info(hanGiaoReadyTaiMocSql('pin.id', 'a.tg_done'))}
+      SELECT a.tg_done AS tg, ${nguoiXacNhanSql('nx', 'last')} AS nguoi, last.ghi_chu, ${info(hanGiaoReadyTaiMocSql('pin.id', 'a.tg_done'))},
+             ${gioLenMesTaiMocSql('pin.id', 'a.tg_done')} AS tg_len_mes
       FROM agg a
       JOIN phan_in pin ON pin.id = a.phan_in_id
       ${joins}

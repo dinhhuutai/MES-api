@@ -189,6 +189,114 @@ function goi(body, { idBanGhi, maTem, actorId, moTa }) {
   });
 }
 
+// ─── HỦY KẾ HOẠCH CŨ TRƯỚC KHI LẬP LẠI (18/10/2026, người dùng yêu cầu) ──────
+// Lập lại kế hoạch gửi lượt MỚI (IDMES mới) ⇒ trước đó ERP giữ cả kế hoạch cũ. Nay: TRƯỚC khi gửi, gọi
+// `/gui-erp-release-1-huy` → proc `MES_spr_MES21X0_Huy(@pIDMES, @pNgayHuy, @pNguoiHuy, @pLydohuy)` cho mọi lượt
+// cũ còn hiệu lực bên ERP chứa lệnh được lập lại. Router ERP soạn sẵn: `docs/erp-router/gui-erp-release-1-huy.js`.
+//   · "Lượt cũ" = dòng lịch sử gửi THÀNH CÔNG `ERP_GUI_RELEASE_1` (cột `ma_tem` = danh sách mã lệnh của lượt, mỗi
+//     IDMES 1 lượt — "Gửi lại" giữ IDMES) mà CHƯA có dòng hủy thành công `ERP_GUI_HUY_RELEASE_1` cùng IDMES.
+//   · ⚠ 1 lượt có thể chứa NHIỀU lệnh (inset nối chung) — hủy cả lượt là ERP mất kế hoạch của các lệnh kia ⇒
+//     lệnh khác trong lượt bị hủy mà lượt đó đang là lượt MỚI NHẤT của nó thì được GỬI LẠI cùng (kế hoạch hiện tại,
+//     lệnh HUY tự bị `SQL_DONG` loại). Lệnh có lượt mới hơn ở nơi khác thì không cần.
+//   · Hủy hỏng (ERP lỗi) ⇒ VẪN gửi kế hoạch mới (dòng hủy lỗi có nút "Gửi lại" ở Lịch sử). API hủy tắt ⇒ bỏ qua.
+// Trả { themIds: lệnh cần gửi thêm, huy: [{ id_mes, ok, … }] }. Không ném lỗi.
+const MA_API_HUY = 'ERP_GUI_HUY_RELEASE_1';
+const LY_DO_HUY = 'Lập lại kế hoạch';
+
+const SQL_LUOT = `
+  SELECT a.gia_tri_moi->>'id_mes' AS id_mes, max(a.thoi_gian) AS tg,
+         (array_agg(a.gia_tri_moi->>'ma_tem' ORDER BY a.thoi_gian DESC))[1] AS ma_tem,
+         (array_agg(a.id_ban_ghi ORDER BY a.thoi_gian DESC))[1] AS id_ban_ghi
+    FROM audit_log a
+   WHERE a.ten_bang = 'lenh_san_xuat' AND a.hanh_dong = $2
+     AND string_to_array(replace(COALESCE(a.gia_tri_moi->>'ma_tem', ''), ' ', ''), ',') && $1::text[]
+     AND NOT EXISTS (SELECT 1 FROM audit_log h WHERE h.ten_bang = 'lenh_san_xuat' AND h.hanh_dong = $3
+                      AND h.gia_tri_moi->>'id_mes' = a.gia_tri_moi->>'id_mes')
+   GROUP BY 1`.replace(/\s+/g, ' ').trim();
+
+const tachMa = (s) => String(s || '').split(',').map((x) => x.trim()).filter(Boolean);
+
+async function luotChuaHuy(dsMa) {
+  if (!dsMa.length) return [];
+  const { rows } = await query(SQL_LUOT, [dsMa, MA_API, MA_API_HUY]);
+  return rows.filter((r) => /^\d+$/.test(String(r.id_mes || ''))).map((r) => ({ ...r, ds: tachMa(r.ma_tem) }));
+}
+
+// Lượt MỚI NHẤT (chưa hủy) chứa từng mã lệnh.
+function luotMoiNhat(luot) {
+  const m = new Map();
+  for (const l of luot) {
+    for (const ma of l.ds) {
+      const cu = m.get(ma);
+      if (!cu || new Date(l.tg) > new Date(cu.tg)) m.set(ma, l);
+    }
+  }
+  return m;
+}
+
+// `opts.lyDo` / `opts.nguon` — mặc định cho Lập lại kế hoạch; Hủy lệnh SX truyền lý do người hủy + `HUY_LENH`.
+async function huyKeHoachCu(ids, actorId = null, { lyDo = LY_DO_HUY, nguon = 'REPLAN' } = {}) {
+  try {
+    const { rows: lenh } = await query(
+      'SELECT id::text AS id, ma_lenh_san_xuat AS ma FROM lenh_san_xuat WHERE id = ANY($1::uuid[])', [ids]);
+    const dsMa = lenh.map((l) => l.ma).filter(Boolean);
+    const luot = await luotChuaHuy(dsMa);
+    if (!luot.length) return { themIds: [], huy: [] };
+
+    // Lệnh KHÁC nằm chung lượt bị hủy: gửi lại nếu lượt bị hủy đang là lượt mới nhất của nó.
+    const idmesHuy = new Set(luot.map((l) => l.id_mes));
+    const maKhac = [...new Set(luot.flatMap((l) => l.ds))].filter((ma) => !dsMa.includes(ma));
+    let themMa = [];
+    if (maKhac.length) {
+      const moiNhat = luotMoiNhat(await luotChuaHuy(maKhac));
+      themMa = maKhac.filter((ma) => moiNhat.has(ma) && idmesHuy.has(moiNhat.get(ma).id_mes));
+    }
+    let themIds = [];
+    if (themMa.length) {
+      const { rows } = await query(
+        `SELECT id::text AS id FROM lenh_san_xuat WHERE ma_lenh_san_xuat = ANY($1::text[]) AND trang_thai <> 'HUY'`, [themMa]);
+      themIds = rows.map((r) => r.id);
+    }
+
+    const erpHuy = require('../../utils/erpHuy');
+    const NguoiHuy = await tenDangNhap(actorId);
+    const NgayHuy = new Date();
+    const huy = [];
+    for (const l of luot.sort((a, b) => new Date(a.tg) - new Date(b.tg))) {
+      // eslint-disable-next-line no-await-in-loop
+      const kq = await erpHuy.guiHuyIdMes(
+        { IDMES: Number(l.id_mes), NgayHuy, NguoiHuy, Lydohuy: String(lyDo || '').trim() || LY_DO_HUY, Nguon: nguon },
+        { idBanGhi: l.id_ban_ghi && l.id_ban_ghi !== '-' ? l.id_ban_ghi : null, maHien: l.ma_tem, actorId, maApi: MA_API_HUY });
+      huy.push({ ...kq, id_mes: Number(l.id_mes), ma_lenh: l.ma_tem });
+      if (kq.bo_qua) break; // API hủy đang tắt — các lượt sau cũng vậy
+    }
+    // API hủy TẮT ⇒ không hủy gì ⇒ không cần gửi kèm lệnh khác (kế hoạch cũ của chúng vẫn nguyên bên ERP).
+    if (huy.some((k) => k.bo_qua)) return { themIds: [], huy };
+    return { themIds, huy };
+  } catch (e) {
+    console.error(`[${NHAN}] ✗ Không hủy được kế hoạch cũ bên ERP: ${e.message}`);
+    return { themIds: [], huy: [], error: e.message };
+  }
+}
+
+// ─── HỦY LỆNH SẢN XUẤT ⇒ BÁO ERP HỦY KẾ HOẠCH (18/10/2026, người dùng yêu cầu) ─────────────────────
+// Gọi SAU khi lệnh đã `HUY` (transaction đã commit): `rollbackLenh` (tab *Hủy lệnh xác nhận › Hủy lệnh sản xuất*, cả
+// hủy tùy chọn — và mọi đường gọi lại nó: Quản trị phần in · Trả về KT ở Sản xuất · GN "Hủy vải không in") + Test Run
+// "Đổi phương án in". Hủy mọi lượt kế hoạch còn hiệu lực bên ERP chứa lệnh (cùng luật `huyKeHoachCu`), rồi GỬI LẠI
+// kế hoạch hiện tại của các lệnh KHÁC nằm chung lượt bị hủy (inset) — `Nguon` `GUI_LAI_SAU_HUY`.
+// Lệnh chưa từng gửi ERP thành công ⇒ không gọi gì. CHẠY NGẦM, KHÔNG NÉM LỖI — hủy ở MES đã xong.
+// `Lydohuy` = lý do người hủy (router cắt 20 ký tự), trống ⇒ "Hủy lệnh sản xuất".
+async function baoHuyLenh(lenhIds, actorId = null, lyDo = '') {
+  const ids = [...new Set((lenhIds || []).filter(Boolean).map(String))];
+  if (!ids.length) return { themIds: [], huy: [] };
+  const kq = await huyKeHoachCu(ids, actorId, { lyDo: String(lyDo || '').trim() || 'Hủy lệnh sản xuất', nguon: 'HUY_LENH' });
+  if (kq.themIds.length) kq.gui_lai = await guiTheoLenh(kq.themIds, actorId, 'GUI_LAI_SAU_HUY');
+  return kq;
+}
+function baoHuyLenhNgam(lenhIds, actorId = null, lyDo = '') {
+  baoHuyLenh(lenhIds, actorId, lyDo).catch((e) => console.error(`[${NHAN}-huy] ✗ Báo ERP hủy kế hoạch lệnh lỗi: ${e.message}`));
+}
+
 /**
  * Đọc dữ liệu các lệnh, chia nhóm rồi gửi. Không ném lỗi. Trả { ok, bo_qua?, ly_do?, luot: [...] }.
  * @param {string[]} lenhIds
@@ -196,15 +304,21 @@ function goi(body, { idBanGhi, maTem, actorId, moTa }) {
  * @param {'RELEASE_1'|'KE_HOACH_TAM'|'REPLAN'} nguon
  */
 async function guiTheoLenh(lenhIds, actorId = null, nguon = 'RELEASE_1') {
-  const ids = [...new Set((lenhIds || []).filter(Boolean).map(String))];
+  let ids = [...new Set((lenhIds || []).filter(Boolean).map(String))];
   if (!ids.length) return { ok: false, bo_qua: true, ly_do: 'THIEU_DU_LIEU', luot: [] };
   // ⚠ Kiểm bật/tắt TRƯỚC khi cấp IDMES — mỗi lần cấp là tiêu 1 số của dãy dùng chung.
   if (!(await apiBat(MA_API))) {
     console.log(`[${NHAN}] ⏸ ĐANG TẮT (Hệ thống > Cài đặt API) — bỏ qua ${ids.length} lệnh`);
     return { ok: false, bo_qua: true, ly_do: 'API_DANG_TAT', luot: [] };
   }
+  // Lập lại kế hoạch ⇒ HỦY kế hoạch cũ bên ERP TRƯỚC (xem `huyKeHoachCu`), gửi kèm lệnh chung lượt bị hủy.
+  let huy = null;
+  if (nguon === 'REPLAN') {
+    huy = await huyKeHoachCu(ids, actorId);
+    if (huy.themIds.length) ids = [...new Set([...ids, ...huy.themIds])];
+  }
   const { rows } = await query(SQL_DONG, [ids]);
-  if (!rows.length) return { ok: false, bo_qua: true, ly_do: 'KHONG_DU_LIEU', luot: [] };
+  if (!rows.length) return { ok: false, bo_qua: true, ly_do: 'KHONG_DU_LIEU', luot: [], huy };
 
   const [nhanvien, loaiCa] = await Promise.all([tenDangNhap(actorId), napLoaiCa()]);
   const luot = [];
@@ -225,7 +339,7 @@ async function guiTheoLenh(lenhIds, actorId = null, nguon = 'RELEASE_1') {
       luot.push({ ...kq, ma_lenh: maTem, id_mes: idMes, so_ban_ghi: lo.length });
     }
   }
-  return { ok: luot.length > 0 && luot.every((k) => k.ok), luot };
+  return { ok: luot.length > 0 && luot.every((k) => k.ok), luot, huy };
 }
 
 // ─── HÀNG CHỜ GOM (xem ghi chú đầu file) ─────────────────────────────────────
@@ -296,7 +410,7 @@ async function guiLai(gui, { idBanGhi = null, actorId = null } = {}) {
 }
 
 module.exports = {
-  xepHang, xaHet, guiTheoLenh, guiLai, MA_API,
+  xepHang, xaHet, guiTheoLenh, guiLai, huyKeHoachCu, baoHuyLenh, baoHuyLenhNgam, MA_API, MA_API_HUY,
   // export để kiểm thực
   _banGhi: banGhi, _chiaNhom: chiaNhom, _chiaLo: chiaLo, _maLenhTuDs: maLenhTuDs,
 };

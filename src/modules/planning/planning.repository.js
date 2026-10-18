@@ -82,7 +82,7 @@ async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
     SELECT dv.id AS dot_vai_id, dv.ma_dot_vai, dv.so_luong_vai_ve, dv.ngay_vai_ve, dv.han_giao_hang,
            pin.id AS phan_in_id, pin.ma_phan, dv.barcode, pin.barcode AS barcode_phan_in, dv.nha_gia_cong,
            pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
-           pin.so_luong_don_hang, ldv.ten_loai AS loai_dot_vai,
+           pin.so_luong_don_hang, ldv.ten_loai AS loai_dot_vai, ldv.ma_loai AS ma_loai_dot_vai,
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
            ${qcDotSql('dv', 'pin.id')} AS qc_done,
            ${DA_REL}::int AS da_release,

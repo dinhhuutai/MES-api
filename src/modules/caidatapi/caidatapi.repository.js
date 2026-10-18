@@ -44,7 +44,14 @@ async function thongTinSua() {
 //     đúng cái cột quan trọng nhất để đối soát với ERP.
 // ⚠ + `IDPhieuGiao` (30/09/2026): ID kết nối của phiếu giao nay là IDMES ⇒ mã phiếu hiện ở cột này để
 //   vẫn tìm được theo mã phiếu ERP.
-const MA_TEM = `COALESCE(a.gia_tri_moi->>'ma_tem', a.gia_tri_moi->'gui'->>'BarcodeIn', a.gia_tri_moi->'payload'->>'BarcodeIn', a.gia_tri_moi->'gui'->>'IDPhieuGiao')`;
+// ⚠ + `Maquet` (phân loại lỗi — nhãn 16…) · `BarcodeSua17`/`BarcodeSua` (sửa đạt, OQC) — 18/10/2026: trước đó dòng
+//   phân loại lỗi không có mã tem nào ở cột này ⇒ ô tìm theo mã tem không ra (người dùng báo).
+const MA_TEM = `COALESCE(a.gia_tri_moi->>'ma_tem', a.gia_tri_moi->'gui'->>'BarcodeIn', a.gia_tri_moi->'payload'->>'BarcodeIn',
+  a.gia_tri_moi->'gui'->>'Maquet', a.gia_tri_moi->'gui'->>'BarcodeSua17', a.gia_tri_moi->'gui'->>'BarcodeSua',
+  a.gia_tri_moi->'gui'->>'IDPhieuGiao')`;
+// Mã tem ERP 12 số: 2 số đầu là tiền tố công đoạn (15 in · 16 nhãn lỗi · 17 sửa) — người tra hay cầm nhãn khác với
+// mã đã gửi (gửi `16…`, quét tem `15…`) ⇒ gõ đủ 12 số thì so thêm 10 số sau, bất kể tiền tố.
+const duoiMaTem = (s) => (/^\d{12}$/.test(String(s || '').trim()) ? String(s).trim().slice(2) : '');
 // ⚠⚠ "ID KẾT NỐI" (27/09/2026) — dòng MỚI luôn có `id_mes`. Dòng CŨ của 3 API qua `goiErp` (phiếu giao ·
 //   phân loại lỗi · lấy ID phiếu giao) và 3 API mã tem KHÔNG ghi `id_mes` ⇒ moi lại từ payload/phản hồi:
 //   `IDMes` (phân loại lỗi, viết thường) · `IDPhieuGiao` (phiếu giao) · `ma_tem` (mã tem ERP cấp — chỉ
@@ -81,8 +88,9 @@ async function lichSu({ ma, date = '', search = '', offset = 0, limit = 20 }) {
     LEFT JOIN nguoi_dung nd ON nd.id = a.nguoi_thuc_hien_id
     WHERE a.hanh_dong IN ($1, $2)
       AND ($3 = '' OR (a.thoi_gian AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $3::date)
-      AND ($4 = '' OR ${ID_MES} ~* $4 OR ${MA_TEM} ~* $4)`;
-  const args = [ma, `${ma}_LOI`, date || '', mauTim(search)];
+      AND ($4 = '' OR ${ID_MES} ~* $4 OR ${MA_TEM} ~* $4
+           OR ($5 <> '' AND substr(${MA_TEM}, 3) = $5))`;
+  const args = [ma, `${ma}_LOI`, date || '', mauTim(search), duoiMaTem(search)];
 
   const dataSql = `
     SELECT a.id, a.thoi_gian, a.hanh_dong, a.id_ban_ghi,
@@ -99,7 +107,7 @@ async function lichSu({ ma, date = '', search = '', offset = 0, limit = 20 }) {
            nd.ho_ten AS nguoi
     ${FROM}
     ORDER BY a.thoi_gian DESC
-    LIMIT $5 OFFSET $6`;
+    LIMIT $6 OFFSET $7`;
   const countSql = `SELECT count(*)::int AS total ${FROM}`;
 
   const [data, count] = await Promise.all([

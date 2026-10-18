@@ -54,6 +54,9 @@ const TEN_BANG = {
   // Báo ERP hủy chứng từ theo IDMES (14/10/2026) — bản ghi bị hủy thuộc nhiều bảng khác nhau (tem · kcs · sua ·
   //   oqc · giao_hang) nên để `erp_api`; `id_ban_ghi` = id bản ghi bị hủy, kênh nằm ở `gui.Nguon`.
   ERP_GUI_HUY_IDMES: 'erp_api',
+  // Hủy kế hoạch lệnh theo IDMES (18/10/2026) — `id_ban_ghi` = lệnh ĐẦU của lượt bị hủy, `ma_tem` = danh sách mã
+  //   lệnh của lượt đó, `id_mes` = IDMES bị hủy (khóa "đã hủy rồi" ở `release1Erp.huyKeHoachCu`).
+  ERP_GUI_HUY_RELEASE_1: 'lenh_san_xuat',
 };
 
 // Cắt bớt phản hồi ERP trước khi lưu — tránh 1 lần lỗi bất thường nhồi cả trang HTML vào audit_log.
