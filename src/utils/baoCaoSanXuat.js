@@ -28,12 +28,13 @@
 //     Lý do (đo prod 02/10/2026): ~40 phiếu TREO `DANG_CHAY` từ tháng 8–9 (không ai bấm Chạy hoàn tất, có
 //     chuyền treo >10 phiếu cùng lúc) — tính thô "bắt đầu → bây giờ" là mỗi phiếu treo 24 giờ/ngày, mãi mãi.
 //     Phiếu treo không in gì trong ngày ⇒ KHÔNG lên báo cáo ngày đó.
-//   · SL KH / Số giờ KH = khoảng kế hoạch của lệnh (`tg_bd_kh` → `tg_kt_kh`) cắt theo ca của ngày D; SL chia
-//     theo tỷ lệ giờ (kế hoạch nhiều ngày ⇒ ngày D chỉ nhận phần của D). Lệnh không có giờ KH mà ngày SX KH = D
-//     ⇒ trọn SL vào ca chạy nhiều giờ nhất, giờ KH = 0.
+//   · ⚠⚠ (19/10/2026 người dùng chốt — ca thật LM-2610-001-A18-F05-C01: KH 17/10 22:00→06:00, bấm chạy 19/10
+//     09:24 ⇒ bản cũ cắt khoảng KH theo ngày nên ngày chạy SL KH = 0) KẾ HOẠCH THEO NGÀY BẤM XÁC NHẬN CHẠY: SL KH
+//     = trọn SL release của phần in trong lệnh (gom nhiều đợt ⇒ tổng đã gom), tính vào NGÀY + CA của lần bấm
+//     Xác nhận chạy ĐẦU TIÊN của lệnh (`tg_chay_dau`; chạy lại sau "Ngừng lệnh chạy" không đếm lại), gắn cho phiếu
+//     bấm lúc đó. Số giờ KH = độ dài khoảng `tg_bd_kh` → `tg_kt_kh` (không có ⇒ 0), cùng ngày + ca đó.
 //   · Lệnh nhiều phần in (gom set cũ): giờ chia ĐỀU cho các phần in; SL KH theo `lenh_sx_dot_vai` của từng
 //     phần in; tem SX không lưu đợt vải ⇒ quy về phần in đầu (giới hạn đã biết, DATABASE.md §4).
-//   · Kế hoạch của lệnh tính cho PHIẾU chạy nhiều giờ nhất trong ngày (lệnh đổi tổ giữa ngày không đếm đôi).
 //   · ⚠⚠ (08/10/2026) GIỜ (KH lẫn TT) LÀ GIỜ CỦA CHUYỀN: nhiều lệnh chạy CÙNG LÚC trên 1 chuyền (lệnh in set
 //     inset, xác nhận chạy nhiều lệnh một lượt — đo prod 08/10: 6 lệnh cùng M2, cùng khung KH 14:00→01:00) ⇒
 //     mỗi khoảnh khắc chia ĐỀU cho các lệnh đang chạy (`chiaGioCungLuc`) ⇒ Σ giờ của chuyền = giờ đồng hồ (hợp
@@ -79,7 +80,6 @@ function khungCa(ngay, loaiCa) {
 
 // `khoaTuanIso` (tuần ISO → khóa `nam-tuan` của `cai_dat_ca_tuan`) nay ở `utils/ca.js`, export lại bên dưới.
 
-const chongLan = (a0, a1, b0, b1) => Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
 const ms = (v) => (v == null ? null : new Date(v).getTime());
 
 // Chia giờ THEO THỜI ĐIỂM trong khung [wa, wb): `ds` = [{ k, a, b }] các khoảng chạy trên CÙNG 1 chuyền. Tại mỗi
@@ -231,7 +231,6 @@ function dungBaoCaoSanXuat({
     b = Math.min(b, W1);
     return b > a ? [a, b] : null;
   };
-  const gioPhieu = new Map(); // phiếu → giờ RIÊNG của phiếu trong ngày (chỉ để chọn phiếu "chính" của lệnh)
   const phieuTheoLenh = new Map();
   const phieuTheoChuyen = new Map();
   const phieuById = new Map(phieus.map((p) => [String(p.id), p]));
@@ -243,7 +242,6 @@ function dungBaoCaoSanXuat({
     if (!phieuTheoChuyen.has(c)) phieuTheoChuyen.set(c, []);
     const kc = khoangChay(p);
     if (kc) phieuTheoChuyen.get(c).push({ k: String(p.id), a: kc[0], b: kc[1], p });
-    gioPhieu.set(String(p.id), kc ? (kc[1] - kc[0]) / GIO : 0);
     dsPin(p.lenh_id).forEach((pin) => dv(p, pin)); // phiếu chỉ có tem (giờ chạy ngoài ngày) vẫn có dòng
   });
   // Giờ TT theo CHUYỀN: các phiếu chạy cùng lúc trên 1 chuyền chia nhau giờ đồng hồ; trong phiếu chia đều phần in.
@@ -267,40 +265,36 @@ function dungBaoCaoSanXuat({
     dv(p, pin).bo[caCuaTem(t.ca_hint, t.gio, loaiCaPhieu(p))].tt += Number(t.so_luong) || 0;
   });
 
-  // 3. Kế hoạch của lệnh → phiếu chạy nhiều giờ nhất trong ngày. SL KH chia theo tỷ lệ giờ của CHÍNH lệnh;
-  //    giờ KH gom theo chuyền rồi chia theo thời điểm như giờ TT (các lệnh in set chung 1 khung kế hoạch).
+  // 3. Kế hoạch của lệnh (19/10/2026 người dùng chốt) → NGÀY + CA bấm Xác nhận chạy ĐẦU TIÊN (`tg_chay_dau`),
+  //    gắn vào phiếu bấm lúc đó. SL KH = trọn SL release của phần in trong CHÍNH lệnh (lệnh gom nhiều đợt ⇒ tổng
+  //    đã gom) — không còn cắt theo khoảng giờ KH. Giờ KH = độ dài khoảng KH của lệnh, các lệnh cùng chuyền có
+  //    khoảng KH chồng nhau chia đều theo thời điểm (giờ của chuyền, như giờ TT), cũng vào ca bấm chạy.
   const khTheoChuyen = new Map();
   phieuTheoLenh.forEach((dsPhieu, lenhId) => {
     const l = lenhById.get(lenhId);
     if (!l) return;
-    const chinh = [...dsPhieu].sort((x, y) => (gioPhieu.get(String(y.id)) - gioPhieu.get(String(x.id)))
-      || (ms(y.tg_bd) - ms(x.tg_bd)))[0];
+    const dau = ms(l.tg_chay_dau);
+    if (!trongNgay(dau)) return; // bấm chạy lần đầu ngày khác ⇒ kế hoạch thuộc ngày đó
+    const chinh = dsPhieu.find((p) => ms(p.tg_bd) === dau)
+      || [...dsPhieu].sort((x, y) => (ms(x.tg_bd) || 0) - (ms(y.tg_bd) || 0))[0];
+    const kp = khungPhieu(chinh);
+    const caChon = (kp.find((w) => dau >= w.a && dau < w.b) || kp[0]).ca;
     const ds = dsPin(lenhId);
     const slPin = (pin) => (Number(pin.sl) || (ds.length === 1 ? Number(l.so_luong_release) || 0 : 0));
+    ds.forEach((pin) => { dv(chinh, pin).bo[caChon].kh += slPin(pin); });
     const kk = khoangKeHoach(l);
     if (kk) {
-      const [a, b] = kk;
-      khungPhieu(chinh).forEach((w) => {
-        const ov = chongLan(a, b, w.a, w.b);
-        if (!ov) return;
-        ds.forEach((pin) => { dv(chinh, pin).bo[w.ca].kh += slPin(pin) * (ov / (b - a)); });
-      });
       const c = String(chinh.chuyen_id);
       if (!khTheoChuyen.has(c)) khTheoChuyen.set(c, []);
-      khTheoChuyen.get(c).push({ k: lenhId, a, b, chinh, ds });
-    } else if (l.ngay_kh === ngay) {
-      // Không có giờ KH: trọn SL vào ca chạy nhiều giờ nhất của phiếu chính (không có giờ chạy ⇒ ca đầu).
-      const bo = dv(chinh, ds[0]).bo;
-      const caChon = khungPhieu(chinh).map((w) => w.ca).sort((x, y) => bo[y].gt - bo[x].gt)[0];
-      ds.forEach((pin) => { dv(chinh, pin).bo[caChon].kh += slPin(pin); });
+      khTheoChuyen.get(c).push({ k: lenhId, a: kk[0], b: kk[1], chinh, ds, ca: caChon });
     }
   });
   khTheoChuyen.forEach((ds) => {
-    khungPhieu(ds[0].chinh).forEach((w) => {
-      chiaGioCungLuc(ds, w.a, w.b).forEach((h, lenhId) => {
-        const x = ds.find((y) => y.k === lenhId);
-        x.ds.forEach((pin) => { dv(x.chinh, pin).bo[w.ca].gk += h / x.ds.length; });
-      });
+    const wa = Math.min(...ds.map((x) => x.a));
+    const wb = Math.max(...ds.map((x) => x.b));
+    chiaGioCungLuc(ds, wa, wb).forEach((h, lenhId) => {
+      const x = ds.find((y) => y.k === lenhId);
+      x.ds.forEach((pin) => { dv(x.chinh, pin).bo[x.ca].gk += h / x.ds.length; });
     });
   });
 

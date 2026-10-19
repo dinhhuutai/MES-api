@@ -83,10 +83,16 @@ async function docTem(ngay, phieuIds, { coNgayCa, coDot, coGoc }) {
   return rows;
 }
 
+// `tg_chay_dau` = lần bấm Xác nhận chạy ĐẦU TIÊN của lệnh (phiếu chưa hủy, không tính phiếu script hệ thống) —
+// kế hoạch của lệnh tính vào ngày đó (19/10/2026, xem `utils/baoCaoSanXuat.js`). Lệnh chạy lại sau "Ngừng lệnh
+// chạy" vẫn giữ mốc đầu ⇒ không đếm kế hoạch 2 lần.
 async function docLenh(lenhIds) {
   const { rows } = await query(
-    `SELECT id, ma_lenh_san_xuat, tg_bd_kh, tg_kt_kh, to_char(ngay_ke_hoach, 'YYYY-MM-DD') AS ngay_kh, so_luong_release
-       FROM lenh_san_xuat WHERE id = ANY($1::uuid[])`.replace(/\s+/g, ' '),
+    `SELECT ls.id, ls.ma_lenh_san_xuat, ls.tg_bd_kh, ls.tg_kt_kh, to_char(ls.ngay_ke_hoach, 'YYYY-MM-DD') AS ngay_kh,
+            ls.so_luong_release,
+            (SELECT min(ps.tg_bd) FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = ls.id AND ps.trang_thai <> 'HUY'
+               AND ${PHIEU_THAT}) AS tg_chay_dau
+       FROM lenh_san_xuat ls WHERE ls.id = ANY($1::uuid[])`.replace(/\s+/g, ' '),
     [lenhIds]
   );
   return rows;
