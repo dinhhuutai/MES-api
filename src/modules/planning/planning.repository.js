@@ -1185,7 +1185,9 @@ async function keHoachTamHistoryByDate(date) {
            pin.ma_phan, pin.mau_vai, dv.ma_dot_vai, cs.ten_chuyen,
            (a.gia_tri_moi->>'so_luong') AS so_luong,
            (a.gia_tri_moi->>'ngay_ke_hoach') AS ngay_ke_hoach,
-           (a.gia_tri_moi->>'ma_lenh') AS ma_lenh
+           (a.gia_tri_moi->>'ma_lenh') AS ma_lenh,
+           (a.gia_tri_moi->>'gio_bd') AS gio_bd, (a.gia_tri_moi->>'gio_kt') AS gio_kt,
+           (a.gia_tri_moi->>'tho_in') AS tho_in, (a.gia_tri_moi->>'ly_do') AS ly_do
     ${KHT_HISTORY_FROM}
     ORDER BY a.thoi_gian DESC`;
   const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [date]);
@@ -1293,8 +1295,10 @@ async function keHoachTamTheoDoi({ search = '', tuNgay = '', denNgay = '', loaiN
   return rows;
 }
 
-async function listKeHoachTamRows({ search = '', offset = 0, limit = 200 }) {
-  const dkPain = await dkTrang('KH_TAM', 'pin', 'pin.id');
+// `locPain` = false ⇒ bỏ cấu hình *Hiển thị theo PA in* (tab "Hủy kế hoạch tạm" ở *Hủy lệnh xác nhận* — trang
+//   đó cố ý không lọc, §5.7, để không có dòng nào bị ẩn khỏi chỗ hủy).
+async function listKeHoachTamRows({ search = '', offset = 0, limit = 200, locPain = true }) {
+  const dkPain = locPain ? await dkTrang('KH_TAM', 'pin', 'pin.id') : 'TRUE';
   const SEARCH = `($1 = '' OR pin.ma_phan ~* $1 OR kh.ten_khach_hang ~* $1
                   OR mh.ma_hang ~* $1 OR pin.mau_vai ~* $1 OR dv.ma_dot_vai ~* $1)`;
   const FROM = `
@@ -1306,12 +1310,15 @@ async function listKeHoachTamRows({ search = '', offset = 0, limit = 200 }) {
     JOIN khach_hang kh ON kh.id = dh.khach_hang_id
     LEFT JOIN chuyen_san_xuat cs ON cs.id = kt.chuyen_id
     LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id
+    LEFT JOIN nguoi_dung ndl ON ndl.id = COALESCE(kt.updated_by, kt.created_by)
     WHERE kt.trang_thai = 'CHO' AND pin.dang_hoat_dong AND dv.trang_thai <> 'DA_HUY'
       AND ${dkPain} AND ${SEARCH}`;
   const colTho = (await coCotThoInKh()) ? 'kt.tho_in_kh' : 'NULL::text AS tho_in_kh';
   const dataSql = `
     SELECT kt.id, kt.dot_vai_ve_id, kt.phan_in_id, kt.chuyen_id, kt.ngay_ke_hoach, kt.tg_bd_kh, kt.tg_kt_kh, kt.so_luong,
-           ${colTho}, dv.ma_dot_vai, dv.han_giao_hang, dv.so_luong_vai_ve, cs.ten_chuyen, ldv.ten_loai AS loai_dot_vai,
+           COALESCE(kt.updated_date, kt.created_date) AS tg_lap, ndl.ho_ten AS nguoi_lap,
+           ${colTho}, dv.ma_dot_vai, dv.han_giao_hang, dv.so_luong_vai_ve, dv.ngay_vai_ve, cs.ten_chuyen, ldv.ten_loai AS loai_dot_vai,
+           pin.so_luong_don_hang,
            pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in, dv.barcode, pin.barcode AS barcode_phan_in, dv.nha_gia_cong,
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
            ${hsktCols('pin.id')},
@@ -1357,14 +1364,27 @@ async function getKeHoachTam(id) {
   return rows[0] || null;
 }
 
-// Cập nhật bản kế hoạch tạm (chuyền / SL release / ngày kế hoạch). Giữ nguyên giờ BD/KT.
-async function updateKeHoachTam(id, { chuyenId, ngayKeHoach, soLuong }, actorId) {
+// Cập nhật bản kế hoạch tạm (chuyền / SL release / ngày kế hoạch + giờ BĐ/KT + thợ in — 19/10/2026, như panel
+//   Release 1). `tgBdKh`/`tgKtKh`/`thoInKh` = undefined ⇒ GIỮ giá trị cũ (bên gọi cũ không gửi); null ⇒ xóa.
+//   Giờ KT đi qua `KT_QUA_DEM` như mọi câu ghi `tg_kt_kh`. Thợ in chỉ ghi khi đã có cột (mig 111).
+async function updateKeHoachTam(id, { chuyenId, ngayKeHoach, soLuong, tgBdKh, tgKtKh, thoInKh }, actorId) {
+  const params = [id, chuyenId || null, ngayKeHoach || null, soLuong != null ? soLuong : null, actorId];
+  const set = ['chuyen_id = $2', 'ngay_ke_hoach = $3', 'so_luong = $4'];
+  if (tgBdKh !== undefined || tgKtKh !== undefined) {
+    params.push(tgBdKh || null, tgKtKh || null);
+    const bd = `$${params.length - 1}`; const kt = `$${params.length}`;
+    set.push(`tg_bd_kh = ${bd}::timestamptz`, `tg_kt_kh = ${KT_QUA_DEM(bd, kt)}`);
+  }
+  if (thoInKh !== undefined && (await coCotThoInKh())) {
+    params.push(thoInKh || null);
+    set.push(`tho_in_kh = $${params.length}`);
+  }
   const { rows } = await query(
     `UPDATE ke_hoach_tam
-        SET chuyen_id = $2, ngay_ke_hoach = $3, so_luong = $4, updated_by = $5, updated_date = now()
+        SET ${set.join(', ')}, updated_by = $5, updated_date = now()
       WHERE id = $1 AND trang_thai = 'CHO'
       RETURNING id`.replace(/\s+/g, ' '),
-    [id, chuyenId || null, ngayKeHoach || null, soLuong != null ? soLuong : null, actorId]
+    params
   );
   return rows[0] || null;
 }

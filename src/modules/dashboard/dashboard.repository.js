@@ -927,8 +927,13 @@ async function tinhTrangGraph(phanInId) {
        ORDER BY ls.created_date, ls.ma_lenh_san_xuat`.replace(/\s+/g, ' '),
       [phanInId]
     ),
+    // ⚠ 19/10/2026: lấy CẢ tem 17 (tem con, `tem_goc_id` ≠ NULL — mig 091) rồi gắn vào tem gốc ở JS (`tem_con`).
+    //   Từ mig 091 hàng SỬA ĐẠT đi OQC / tích / giao trên CHÍNH dòng tem 17 (OQC ghi `nguon='KCS'` vào tem 17), còn
+    //   `sl_oqc_dat_sua` / OQC `nguon='SUA'` của tem gốc đứng ở 0 ⇒ bản cũ (chỉ tem gốc) vẽ nhánh Sửa dừng ở OQC = 0
+    //   (ca thật LM-2609-003-A01-F04-C01). `da_tich_giao` (mig 092) đọc qua to_jsonb ⇒ thiếu cột thì NULL, không lỗi.
     query(
-      `SELECT DISTINCT ON (t.id) ps.lenh_san_xuat_id, t.id AS tem_id, t.ma_tem, t.so_luong, t.trang_thai,
+      `SELECT DISTINCT ON (t.id) ps.lenh_san_xuat_id, t.id AS tem_id, t.tem_goc_id, t.ma_tem, t.so_luong, t.trang_thai,
+              t.created_date AS tg_tao, (to_jsonb(t)->>'da_tich_giao')::boolean AS da_tich_giao,
               t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy, t.sl_sua_dat, t.sl_sua_huy,
               t.sl_oqc_dat, t.sl_oqc_dat_sua, t.sl_da_giao, t.sl_da_giao_sua,
               cs.ten_chuyen,
@@ -941,7 +946,7 @@ async function tinhTrangGraph(phanInId) {
        JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
        JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id AND dv.phan_in_id = $1
        JOIN phieu_san_xuat ps ON ps.lenh_san_xuat_id = ls.id
-       JOIN tem t ON t.phieu_san_xuat_id = ps.id AND t.trang_thai <> 'HUY' AND t.tem_goc_id IS NULL
+       JOIN tem t ON t.phieu_san_xuat_id = ps.id AND t.trang_thai <> 'HUY'
        LEFT JOIN chuyen_san_xuat cs ON cs.id = ps.chuyen_id
        LEFT JOIN LATERAL (SELECT txp.tg_bd_phoi, txp.tg_kt_phoi FROM tem_xe_phoi txp WHERE txp.tem_id=t.id ORDER BY txp.tg_bd_phoi DESC NULLS LAST LIMIT 1) phoi ON true
        LEFT JOIN LATERAL (SELECT ku.ho_ten AS nguoi, kk.created_date AS tg FROM kcs kk LEFT JOIN nguoi_dung ku ON ku.id=kk.created_by WHERE kk.tem_id=t.id ORDER BY kk.created_date DESC LIMIT 1) k ON true
@@ -1058,8 +1063,15 @@ async function tinhTrangGraph(phanInId) {
     t.giao_records = giaoByTem.get(t.tem_id) || [];
     t.kcs_records = kcsByTem.get(t.tem_id) || [];
     t.tra_ve = traVeByTem.get(t.tem_id) || [];
-    const g = lenhMap.get(t.lenh_san_xuat_id); if (g) g.tems.push(t);
   });
+  // Tem 17 (sửa đạt) gắn vào tem gốc theo thứ tự tạo (mỗi lượt sửa 1 tem) — FE vẽ OQC / chờ giao / giao của nhánh Sửa
+  // từ đây. Tem con mồ côi (tem gốc đã hủy / không thuộc lệnh này) thì bỏ — không có chỗ để vẽ.
+  const gocById = new Map(tems.rows.filter((t) => !t.tem_goc_id).map((t) => [t.tem_id, t]));
+  tems.rows.filter((t) => t.tem_goc_id).sort((a, b) => new Date(a.tg_tao) - new Date(b.tg_tao)).forEach((c) => {
+    const goc = gocById.get(c.tem_goc_id);
+    if (goc) (goc.tem_con = goc.tem_con || []).push(c);
+  });
+  gocById.forEach((t) => { const g = lenhMap.get(t.lenh_san_xuat_id); if (g) g.tems.push(t); });
 
   // Test Run người/giờ theo lệnh (CNSP/QA).
   testCp.rows.forEach((r) => {

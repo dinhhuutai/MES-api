@@ -205,6 +205,14 @@ const keHoachTamDone = asyncHandler(async (req, res) =>
 const keHoachTamTheoDoi = asyncHandler(async (req, res) =>
   ok(res, await service.keHoachTamTheoDoi(req.query)));
 
+// Tab "Hủy kế hoạch tạm" ở *Hủy lệnh xác nhận* (19/10/2026).
+const keHoachTamHuyCandidates = asyncHandler(async (req, res) => {
+  const { page, limit, offset } = getPaging(req.query, { tranToiDa: TRAN_TAI_HET });
+  return ok(res, await service.listKeHoachTamHuy({ search: req.query.search || '', page, limit, offset }));
+});
+const keHoachTamHuy = asyncHandler(async (req, res) =>
+  ok(res, await service.huyKeHoachTam(req.params.id, req.body, req.user.id), 'Đã hủy kế hoạch tạm — đợt vải về lại Release 1'));
+
 const replanBatch = asyncHandler(async (req, res) =>
   ok(res, await service.replanBatch(req.body.lenhIds, req.body, req.user.id), 'Lập lại kế hoạch hàng loạt'));
 
@@ -287,6 +295,7 @@ module.exports = {
   replanCandidates, replanIds, replanMaQuet, replan, replanDetail, replanBatch, planHistory,
   giaCongList, giaCongToOqc, giaCongHistory, giaCongTemCancelable, giaCongTemHuy, giaCongTraLai,
   keHoachTamList, keHoachTamSet, keHoachTamConfirm, keHoachTamUpdate, keHoachTamDelete, keHoachTamHistory, keHoachTamDone, keHoachTamTheoDoi,
+  keHoachTamHuyCandidates, keHoachTamHuy,
   cancelableLenh, cancelLenh, lanTestChoHuy, lanTestCancelable, huyLanTest, returnTestRunToReady,
   testRunTraVeKeHoach, release1TestRunTraVe, release1XacNhanLai,
   release1Done, release2Done, replanDone, testCnspDone, testQaDone,

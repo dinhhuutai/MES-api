@@ -61,9 +61,28 @@ async function getRun(lenhId) {
     });
   });
   return { lenh, phieu, tems, printed, ngung_list: ngungList, ngung_active: ngungActive,
-           dot_vai: dotVai, vai_huy: vaiHuy, phan_cong: phanCong,
+           dot_vai: dotVai, vai_huy: vaiHuy, phan_cong: phieu ? await phanCongHienThi(lenh, phieu, phanCong) : phanCong,
            goi_y_tem: await goiYTemMeta(lenhId, phieu?.id),
            so_phan_in: soPhanIn, co_gom_set: soPhanIn > 1 };
+}
+
+// Phân công HIỆN cho sidebar (19/10/2026 — xem `phanCongCaHienTai`): chuyền ĐÃ phân công trong lượt ca hiện tại ⇒
+//   trả phân công đang nhớ (`tu_dau_ca`, kèm `dau_ca` = mã ngày ca + người + lúc lưu) — in tem sẽ tự áp vào phiếu,
+//   không phải Lưu lại ở từng lệnh. CHƯA ⇒ trả phân công cũ của phiếu (để đổ sẵn ô) + `can_phan_cong_lai` ⇒ FE mở ô
+//   nhập, khóa In tem tới khi Lưu. Không suy được ca ⇒ y như trước. Hàm ĐỌC — không ghi gì vào phiếu.
+async function phanCongHienThi(lenh, phieu, pc) {
+  const pcCa = await phanCongCaHienTai(lenh, phieu.id);
+  if (!pcCa) return pc;
+  const dauCa = { ma_ngay_ca: pcCa.ma_ngay_ca, nguoi: pcCa.nho ? pcCa.nho.nguoi : null, tg: pcCa.nho ? pcCa.nho.thoi_gian : null };
+  if (!pcCa.nho) return { ...pc, can_phan_cong_lai: true, dau_ca: dauCa };
+  const n = pcCa.nho;
+  return {
+    ...pc,
+    ca_truong_id: n.ca_truong_id || null, ca_truong_ten: n.ca_truong_ten || null, chuyen_truong: n.chuyen_truong || null,
+    tho_in: n.tho_in || null,
+    ...(n.co_to_in ? { to_in_id: n.to_in_id || null, ma_to: n.ma_to || null, ten_to: n.ten_to || null } : {}),
+    tu_dau_ca: true, dau_ca: dauCa,
+  };
 }
 
 // ─── "NHẬP ĐẦU CA": NGÀY CA + NGÀY CHỨNG TỪ của lượt in tem (13/10/2026, người dùng chốt) ─────────────────────
@@ -129,12 +148,66 @@ async function kiemNgayCaChungTu(phieu, body) {
 // có thợ in (`phan_cong_san_xuat.tho_in`) ⇒ 422, không tạo tem. Thợ in KẾ HOẠCH (`tho_in_kh`, chỉ điền sẵn ô) không
 // tính — phải bấm Lưu ở khối Phân công. Áp mọi đường in tem sản xuất (`printTem` · `printTemBatch` ⇒ in lẻ · Số tem ·
 // gom set · in nhiều lệnh); FE khóa nút cùng luật (`RunPanel coThoInPhanCong`).
-async function kiemThoInPhanCong(phieu) {
+// ⚠ 19/10/2026 — PHÂN CÔNG ĐẦU CA THEO CHUYỀN (`phanCongCaHienTai`): suy được lượt ca ⇒ phân công hợp lệ là phân công
+//   ĐÃ LƯU cho CHUYỀN trong LƯỢT CA HIỆN TẠI (lưu ở bất kỳ lệnh nào của chuyền). Có ⇒ áp vào phiếu này (nếu khác) rồi
+//   cho in — ERP `dsthoin` đọc phân công của phiếu nên phải áp TRƯỚC khi tạo tem. Chưa có ⇒ 422 (sang ca mới phải
+//   phân công lại). Không suy được ca / đọc trí nhớ lỗi ⇒ lùi về luật cũ (phân công của chính phiếu).
+async function kiemThoInPhanCong(phieu, actorId = null) {
+  const lenh = await repo.getLenhBasic(phieu.lenh_san_xuat_id);
+  const pcCa = lenh ? await phanCongCaHienTai(lenh, phieu.id) : null;
+  if (pcCa) {
+    if (!String((pcCa.nho && pcCa.nho.tho_in) || '').trim()) {
+      throw new AppError(`Ca ${pcCa.ma_ngay_ca} chưa phân công thợ in cho chuyền ${lenh.ma_chuyen || lenh.ten_chuyen || ''} — `
+        + 'chọn thợ in ở khối Phân công rồi bấm Lưu (mỗi đầu ca phân công 1 lần cho chuyền)', { status: 422, errorCode: 'CHUA_PHAN_CONG_THO_IN' });
+    }
+    await apPhanCongDauCa(phieu, pcCa.nho, actorId);
+    return;
+  }
   const pc = await repo.getPhanCongByPhieu(phieu.id);
   if (!String((pc && pc.tho_in) || '').trim()) {
     throw new AppError(`Phiếu ${phieu.ma_phieu_san_xuat || ''} chưa phân công thợ in — chọn thợ in ở khối Phân công rồi bấm Lưu trước khi in tem`
       .replace(/\s+/g, ' '), { status: 422, errorCode: 'CHUA_PHAN_CONG_THO_IN' });
   }
+}
+
+// ─── PHÂN CÔNG ĐẦU CA THEO CHUYỀN (19/10/2026, người dùng chốt) ─────────────────────────────────────────────────
+// "Phân công đầu ca, máy nào thì nhớ phân công của máy đó, chuyển qua ca khác thì mới phân công lại".
+//   · Khóa nhớ = CHUYỀN của lệnh (chuyền thực tế — `batDauChay` / Đổi chuyền ghi vào `lenh_san_xuat.chuyen_id`) ×
+//     LƯỢT CA hiện tại (`caInTemHienTai`, cùng luật nhập đầu ca của Ngày ca) — nơi nhớ `repo.docPhanCongDauCa`.
+//   · Lưu phân công ở 1 lệnh ⇒ nhớ cho chuyền trong ca + áp ngay cho MỌI phiếu đang chạy của chuyền đó; lệnh bắt đầu
+//     chạy sau trong ca tự nhận (`batDauChay`); in tem luôn áp lại trước khi tạo tem (`kiemThoInPhanCong`).
+//   · Sang ca mới ⇒ khóa mới chưa có ⇒ màn hiện ô phân công để nhập lại (đổ sẵn người cũ), chưa Lưu thì không in.
+//   · Phụ trợ, FAIL-OPEN: lỗi suy ca / đọc trí nhớ ⇒ trả null, mọi chỗ lùi về phân công của chính phiếu như trước.
+async function phanCongCaHienTai(lenh, phieuId) {
+  try {
+    if (!lenh || !lenh.chuyen_id) return null;
+    const ca = await caInTemHienTai(lenh.id, phieuId);
+    if (!ca) return null;
+    const khoa = `${lenh.chuyen_id}|${ca.khoa}`;
+    // `ca.khoa` = `<nhóm ca>|<YYMMDD><mã ca>` ⇒ phần sau dấu | cuối là mã ngày ca (vd 261019C1) để hiện cho người dùng.
+    return { khoa, ma_ngay_ca: ca.khoa.split('|').pop(), nho: await repo.docPhanCongDauCa(khoa) };
+  } catch (e) {
+    console.error(`[phan-cong-dau-ca] ✗ Không đọc được phân công đầu ca (lệnh ${lenh && lenh.id}): ${e.message}`);
+    return null;
+  }
+}
+// Phân công đang nhớ ⇒ body của `ghiPhanCongPhieu`. Tổ in chỉ gửi khi lúc nhớ đã có cột (mig 084).
+const bodyTuNho = (nho) => ({
+  caTruongId: nho.ca_truong_id || null, chuyenTruong: nho.chuyen_truong || '', thoIn: nho.tho_in || '',
+  ...(nho.co_to_in ? { toInId: nho.to_in_id || null } : {}),
+});
+// Phân công của phiếu đã TRÙNG phân công đang nhớ chưa (khỏi ghi lại mỗi lần in).
+function trungNho(pc, nho) {
+  const s = (v) => String(v == null ? '' : v).trim();
+  return s(pc && pc.ca_truong_id) === s(nho.ca_truong_id) && s(pc && pc.chuyen_truong) === s(nho.chuyen_truong)
+    && s(pc && pc.tho_in) === s(nho.tho_in) && (!nho.co_to_in || s(pc && pc.to_in_id) === s(nho.to_in_id));
+}
+// Áp phân công đầu ca vào 1 phiếu nếu phiếu đang khác. Trả true nếu có ghi.
+async function apPhanCongDauCa(phieu, nho, actorId) {
+  const pc = await repo.getPhanCongByPhieu(phieu.id);
+  if (trungNho(pc, nho)) return false;
+  await ghiPhanCongPhieu(phieu, bodyTuNho(nho), actorId);
+  return true;
 }
 
 // In tem xong ⇒ nhớ 2 giá trị cho các lượt in sau của lượt ca (chỉ ghi khi KHÁC giá trị đang nhớ). Phụ — không ném lỗi.
@@ -184,9 +257,48 @@ async function addVaiHuy(phieuId, { dotVaiId, soLuong, lyDo, loai }, actorId) {
 // body gửi `thoIn` (chuỗi) → ghi CÙNG chuỗi đó cho MỌI đợt vải của phiếu, vì `phan_cong_san_xuat`
 // khóa theo (phiếu, đợt vải). Giữ nguyên bảng để sau này muốn tách lại theo từng phần in vẫn được;
 // `items` (mỗi đợt vải 1 thợ) vẫn nhận được nếu có — dùng khi cần phân công lẻ.
-async function savePhanCong(phieuId, { caTruongId, chuyenTruong, thoIn, toInId, items }, actorId) {
+// 19/10/2026: lưu xong ⇒ NHỚ làm phân công đầu ca của CHUYỀN (lượt ca hiện tại) + áp cho mọi phiếu đang chạy cùng
+//   chuyền (xem `phanCongCaHienTai`). Phần nhớ/áp là phụ trợ — lỗi chỉ ghi log, phân công của phiếu này vẫn đã lưu.
+async function savePhanCong(phieuId, body, actorId) {
   const phieu = await repo.getPhieuById(phieuId);
   if (!phieu) throw new AppError('Phiếu sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  await ghiPhanCongPhieu(phieu, body || {}, actorId);
+  const lenhKhac = await nhoPhanCongDauCa(phieu, actorId);
+  sockets.emit('production:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'phan-cong' });
+  lenhKhac.forEach((lenhId) => sockets.emit('production:updated', { lenhId, action: 'phan-cong' }));
+  return getRun(phieu.lenh_san_xuat_id);
+}
+
+// Nhớ phân công VỪA LƯU của phiếu làm phân công đầu ca của chuyền + áp cho phiếu đang chạy khác cùng chuyền.
+// Trả danh sách lệnh khác vừa được áp (để bắn socket).
+async function nhoPhanCongDauCa(phieu, actorId) {
+  const daAp = [];
+  try {
+    const lenh = await repo.getLenhBasic(phieu.lenh_san_xuat_id);
+    const pcCa = await phanCongCaHienTai(lenh, phieu.id);
+    if (!pcCa) return daAp;
+    const pc = await repo.getPhanCongByPhieu(phieu.id);
+    const coToIn = Object.prototype.hasOwnProperty.call(pc || {}, 'to_in_id');
+    const nho = {
+      ca_truong_id: pc.ca_truong_id || null, ca_truong_ten: pc.ca_truong_ten || null,
+      chuyen_truong: pc.chuyen_truong || '', tho_in: pc.tho_in || '',
+      co_to_in: coToIn, to_in_id: coToIn ? (pc.to_in_id || null) : null,
+      ma_to: pc.ma_to || null, ten_to: pc.ten_to || null,
+    };
+    if (!pcCa.nho || !trungNho(pcCa.nho, nho)) await repo.ghiPhanCongDauCa(pcCa.khoa, nho, actorId);
+    for (const p of await repo.phieuDangChayCuaChuyen(lenh.chuyen_id)) {
+      if (p.id === phieu.id) continue;
+      if (await apPhanCongDauCa(p, nho, actorId)) daAp.push(p.lenh_san_xuat_id);
+    }
+  } catch (e) {
+    console.error(`[phan-cong-dau-ca] ✗ Không nhớ / áp được phân công đầu ca (phiếu ${phieu.id}): ${e.message}`);
+  }
+  return daAp;
+}
+
+// Ghi phân công cho ĐÚNG 1 phiếu (lõi cũ của `savePhanCong`, không nhớ đầu ca, không bắn socket).
+async function ghiPhanCongPhieu(phieu, { caTruongId, chuyenTruong, thoIn, toInId, items }, actorId) {
+  const phieuId = phieu.id;
   const dotVaiList = await repo.getLenhDotVaiList(phieu.lenh_san_xuat_id);
   const byId = new Map(dotVaiList.map((d) => [d.dot_vai_ve_id, d]));
   const rows = Array.isArray(items) && items.length
@@ -214,8 +326,6 @@ async function savePhanCong(phieuId, { caTruongId, chuyenTruong, thoIn, toInId, 
     throw new AppError('Chưa lưu được phân công (kiểm tra migration 063_vai_thieu_phan_cong)',
       { status: 500, errorCode: 'PHAN_CONG_FAILED' });
   }
-  sockets.emit('production:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'phan-cong' });
-  return getRun(phieu.lenh_san_xuat_id);
 }
 
 // Ngừng chuyền (đang sản xuất) — kèm lý do; cho ngừng nhiều lần/phiếu.
@@ -414,6 +524,12 @@ async function batDauChay(lenhId, actorId, chuyenId = null) {
     await repo.setLenhTrangThai(client, lenhId, 'SAN_XUAT', actorId);
   });
   await tracking.moveByLenh(lenhId, 'SAN_XUAT', actorId); // theo dõi dòng chảy
+  // Chuyền đã phân công trong ca này ⇒ phiếu mới nhận luôn (cột Thợ / Excel Đang chạy có ngay). Phụ trợ — không ném lỗi.
+  try {
+    const phieu = await repo.getActivePhieu(lenhId);
+    const pcCa = phieu ? await phanCongCaHienTai({ ...lenh, chuyen_id: chuyenThucTe }, phieu.id) : null;
+    if (pcCa && pcCa.nho) await apPhanCongDauCa({ ...phieu, lenh_san_xuat_id: lenhId }, pcCa.nho, actorId);
+  } catch (e) { console.error(`[phan-cong-dau-ca] ✗ Không áp được phân công đầu ca cho lệnh vừa chạy ${lenhId}: ${e.message}`); }
   return lenh;
 }
 
@@ -585,7 +701,7 @@ async function printTem(phieuId, soLuong, actorId, body) {
   if (phieu.trang_thai !== 'DANG_CHAY') {
     throw new AppError('Phiếu không ở trạng thái đang chạy', { status: 409, errorCode: 'WRONG_STAGE' });
   }
-  await kiemThoInPhanCong(phieu); // chưa phân công thợ in ⇒ không in
+  await kiemThoInPhanCong(phieu, actorId); // chưa phân công thợ in (ca này) ⇒ không in; có ⇒ áp phân công đầu ca
   const caIn = await kiemNgayCaChungTu(phieu, body); // thiếu Ngày ca / Ngày chứng từ ⇒ không in (nhập đầu ca)
 
   // Luật: tổng đã in không vượt quá 110% SL release của lệnh.
@@ -666,7 +782,7 @@ async function printTemBatch(phieuId, items, actorId, body) {
   if (phieu.trang_thai !== 'DANG_CHAY') {
     throw new AppError('Phiếu không ở trạng thái đang chạy', { status: 409, errorCode: 'WRONG_STAGE' });
   }
-  await kiemThoInPhanCong(phieu); // chưa phân công thợ in ⇒ không in
+  await kiemThoInPhanCong(phieu, actorId); // chưa phân công thợ in (ca này) ⇒ không in; có ⇒ áp phân công đầu ca
   const caIn = await kiemNgayCaChungTu(phieu, body); // thiếu Ngày ca / Ngày chứng từ ⇒ không in (nhập đầu ca)
 
   const dotVaiList = await repo.getLenhDotVaiList(phieu.lenh_san_xuat_id);
@@ -875,6 +991,7 @@ async function confirmDry(temId, actorId) {
   }
   await withTransaction((client) => repo.confirmDry(client, temId, actorId));
   sockets.emit('drying:updated', { temId, dried: true });
+  sockets.emit('quality:updated', { temId, dried: true }); // tem vào hàng đợi KCS ngay
   sockets.emit('dashboard:refresh', {});
   return { ma_tem: tem.ma_tem };
 }

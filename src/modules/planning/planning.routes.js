@@ -109,6 +109,10 @@ router.get('/ke-hoach-tam/history', rbac('RELEASE1', 'RELEASE2'), c.keHoachTamHi
 router.get('/ke-hoach-tam/done', rbac('RELEASE1', 'RELEASE2'), c.keHoachTamDone);
 // Danh sach ke hoach tam (da release 1 that su / chua release vi chua Ready). Route TINH -> dat truoc '/:id'.
 router.get('/ke-hoach-tam/danh-sach', rbac('RELEASE1', 'RELEASE2'), c.keHoachTamTheoDoi);
+// Tab "Hủy kế hoạch tạm" ở *Hủy lệnh xác nhận* (19/10/2026) — route TĨNH đặt trước '/:id'; ghi đòi thêm `HUY_XAC_NHAN`
+//   (mig 108) như mọi lệnh ghi của trang đó. Nút thùng rác ở chính màn Kế hoạch tạm vẫn dùng `DELETE /:id` (không đòi).
+router.get('/ke-hoach-tam/huy/candidates', rbac('RELEASE1', 'RELEASE2'), c.keHoachTamHuyCandidates);
+router.post('/ke-hoach-tam/:id/huy', rbac('RELEASE1', 'RELEASE2'), rbac.huyXacNhan(), c.keHoachTamHuy);
 // Lập kế hoạch tạm cho CẢ GOM SET chưa đủ Ready (đặt trước ':id' để 'set' không bị hiểu thành id).
 router.post('/ke-hoach-tam/set/:setId', rbac('RELEASE1', 'RELEASE2'), c.keHoachTamSet);
 router.post('/ke-hoach-tam/:id/xac-nhan', rbac('RELEASE1', 'RELEASE2'), c.keHoachTamConfirm);

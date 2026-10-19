@@ -1474,17 +1474,29 @@ async function confirmKeHoachTam(id, actorId) {
   return { ...res, ke_hoach_tam_id: id };
 }
 
-async function updateKeHoachTam(id, { chuyenId, ngayKeHoach, soLuong }, actorId) {
+// Sửa kế hoạch tạm — 19/10/2026 sửa được cả giờ BĐ/KT + thợ in như panel Release 1. Khóa không gửi (undefined)
+//   ⇒ giữ nguyên (bên gọi cũ chỉ gửi chuyền/SL/ngày). Thợ in chuẩn hóa như `createRelease1`; rỗng = xóa.
+async function updateKeHoachTam(id, { chuyenId, ngayKeHoach, soLuong, tgBdKh, tgKtKh, thoIn }, actorId) {
   const kt = await repo.getKeHoachTam(id);
   if (!kt) throw new AppError('Kế hoạch tạm không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   const sl = soLuong != null && soLuong !== '' ? Number(soLuong) : null;
   if (sl != null && !(sl > 0)) throw new AppError('Số lượng release phải lớn hơn 0', { status: 422, errorCode: 'INVALID_QTY' });
-  const res = await repo.updateKeHoachTam(id, { chuyenId, ngayKeHoach, soLuong: sl }, actorId);
+  const guiGio = tgBdKh !== undefined || tgKtKh !== undefined;
+  const thoMoi = thoIn !== undefined ? chuanHoaThoIn(thoIn) : undefined;
+  const res = await repo.updateKeHoachTam(id, {
+    chuyenId, ngayKeHoach, soLuong: sl,
+    ...(guiGio ? { tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null } : {}),
+    thoInKh: thoMoi,
+  }, actorId);
   if (!res) throw new AppError('Không cập nhật được kế hoạch tạm', { status: 409, errorCode: 'UPDATE_FAILED' });
-  await repo.logKeHoachTam('SUA_KE_HOACH_TAM', kt.dot_vai_ve_id,
-    { chuyen_id: chuyenId || null, ngay_ke_hoach: ngayKeHoach || null, so_luong: sl }, actorId);
+  const thoInChuaLuu = !!thoMoi && !(await coCotThoInKh());
+  await repo.logKeHoachTam('SUA_KE_HOACH_TAM', kt.dot_vai_ve_id, {
+    chuyen_id: chuyenId || null, ngay_ke_hoach: ngayKeHoach || null, so_luong: sl,
+    ...(guiGio ? { gio_bd: gioCua(tgBdKh), gio_kt: gioCua(tgKtKh) } : {}),
+    ...(thoMoi !== undefined && !thoInChuaLuu ? { tho_in: thoMoi } : {}),
+  }, actorId);
   sockets.emit('dashboard:refresh', {});
-  return { id };
+  return { id, tho_in_chua_luu: thoInChuaLuu };
 }
 
 async function deleteKeHoachTam(id, actorId) {
@@ -1496,11 +1508,38 @@ async function deleteKeHoachTam(id, actorId) {
   return { id };
 }
 
+// ─── TAB "HỦY KẾ HOẠCH TẠM" ở *Hủy lệnh xác nhận* (19/10/2026) ──────────────────────────────────────
+// Phần in đã lập kế hoạch Release 1 nhưng CHƯA Ready (QC READY chưa xác nhận) nằm ở `ke_hoach_tam` — hủy =
+//   xóa dòng (như nút thùng rác ở màn Kế hoạch tạm) nhưng LÝ DO BẮT BUỘC + audit `HUY_KE_HOACH_TAM` (ghi đủ
+//   chuyền/ngày/giờ/SL/thợ in cũ). Đợt vải quay về pool Release 1 (badge Chờ Ready / Đã Ready như thường).
+//   Không có lệnh ⇒ không có gì báo ERP. Danh sách KHÔNG lọc *Hiển thị theo PA in* (§5.7).
+async function listKeHoachTamHuy({ search, page, limit, offset }) {
+  const { rows, total } = await repo.listKeHoachTamRows({ search, offset, limit, locPain: false });
+  return { items: rows, meta: buildMeta(page, limit, total) };
+}
+
+async function huyKeHoachTam(id, { lyDo } = {}, actorId) {
+  const lyDoSach = String(lyDo || '').trim();
+  if (!lyDoSach) throw new AppError('Nhập lý do hủy kế hoạch tạm', { status: 422, errorCode: 'NO_REASON' });
+  const kt = await repo.getKeHoachTam(id);
+  if (!kt) throw new AppError('Kế hoạch tạm không còn (đã xác nhận Release 1 hoặc đã bị xóa)', { status: 404, errorCode: 'NOT_FOUND' });
+  await repo.deleteKeHoachTam(id);
+  await repo.logKeHoachTam('HUY_KE_HOACH_TAM', kt.dot_vai_ve_id, {
+    chuyen_id: kt.chuyen_id, ngay_ke_hoach: toDateStr(kt.ngay_ke_hoach), so_luong: kt.so_luong,
+    gio_bd: gioCua(kt.tg_bd_kh), gio_kt: gioCua(kt.tg_kt_kh), tho_in: kt.tho_in_kh || null,
+    qc_done: !!kt.qc_done, ly_do: lyDoSach,
+  }, actorId);
+  sockets.emit('workflow:updated', { dotVaiId: kt.dot_vai_ve_id, huyKeHoachTam: true });
+  sockets.emit('dashboard:refresh', {});
+  return { id, dot_vai_ve_id: kt.dot_vai_ve_id };
+}
+
 // Lịch sử thao tác Kế hoạch tạm theo ngày (nguồn audit_log — dòng tạm đã bị xóa khi lên lệnh).
 const KHT_LABEL = {
   LUU_KE_HOACH_TAM: 'Lập kế hoạch tạm',
   SUA_KE_HOACH_TAM: 'Sửa kế hoạch tạm',
   XOA_KE_HOACH_TAM: 'Xóa kế hoạch tạm',
+  HUY_KE_HOACH_TAM: 'Hủy kế hoạch tạm',
   XAC_NHAN_KE_HOACH_TAM: 'Xác nhận Release 1',
 };
 function khtChiTiet(r) {
@@ -1508,6 +1547,9 @@ function khtChiTiet(r) {
   if (r.ten_chuyen) parts.push(`chuyền ${r.ten_chuyen}`);
   if (r.so_luong) parts.push(`SL ${r.so_luong}`);
   if (r.ngay_ke_hoach) parts.push(`ngày KH ${String(r.ngay_ke_hoach).slice(0, 10)}`);
+  if (r.gio_bd || r.gio_kt) parts.push(`giờ ${r.gio_bd || '—'}–${r.gio_kt || '—'}`);
+  if (r.tho_in) parts.push(`thợ in ${r.tho_in}`);
+  if (r.ly_do) parts.push(`lý do: ${r.ly_do}`);
   return parts.filter(Boolean).join(' · ');
 }
 async function keHoachTamHistory(date) {
@@ -2273,6 +2315,7 @@ module.exports = {
   listReplanIds: (o) => repo.listReplanIds(o),
   listReplanMaQuet: (o) => repo.listReplanMaQuet(o),  listGiaCong, confirmGiaCongToOqc, giaCongHistory, listGiaCongTemCancelable, cancelGiaCongTem, traLaiNhaGiaCong,
   listKeHoachTam, keHoachTamSet, confirmKeHoachTam, updateKeHoachTam, deleteKeHoachTam, keHoachTamHistory, keHoachTamDone, keHoachTamTheoDoi,
+  listKeHoachTamHuy, huyKeHoachTam,
   listCancelableLenh, rollbackLenh, testRunsChoHuy, listLanTestChoHuy, huyLanTest,
   release1Done, release2Done, replanDone, testCnspDone, testQaDone,
   releaseList,

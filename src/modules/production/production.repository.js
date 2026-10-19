@@ -1160,6 +1160,41 @@ async function ghiDauCa(khoa, { ngayCa, ngayCt }, actorId) {
   );
 }
 
+// ─── PHÂN CÔNG ĐẦU CA THEO CHUYỀN (19/10/2026, người dùng chốt) ─────────────────────────────────────────────────
+// "Phân công đầu ca, máy nào nhớ phân công máy đó, sang ca khác mới phân công lại": nhớ ca trưởng / chuyền trưởng /
+// thợ in / tổ in theo CHUYỀN × LƯỢT CA. Cùng khuôn `docDauCa` (audit_log, không migration):
+//   ten_bang 'phan_cong_dau_ca' · id_ban_ghi = `<chuyen_id>|<nhóm ca>|<YYMMDD><mã ca>` · hanh_dong 'DAU_CA_PHAN_CONG'
+//   · gia_tri_moi { ca_truong_id, ca_truong_ten, chuyen_truong, tho_in, co_to_in, to_in_id, ma_to, ten_to }.
+// Dòng MỚI NHẤT của khóa là phân công đang nhớ (sửa giữa ca ⇒ thêm dòng mới). Hàm đọc NÉM lỗi — bên gọi tự lùi về
+// phân công của chính phiếu (đừng coi lỗi đọc là "chưa phân công" mà chặn in).
+const BANG_PC_DAU_CA = 'phan_cong_dau_ca';
+async function docPhanCongDauCa(khoa) {
+  const { rows } = await query(
+    `SELECT a.gia_tri_moi AS pc, a.thoi_gian, nd.ho_ten AS nguoi
+       FROM audit_log a LEFT JOIN nguoi_dung nd ON nd.id = a.nguoi_thuc_hien_id
+      WHERE a.ten_bang = '${BANG_PC_DAU_CA}' AND a.id_ban_ghi = $1 AND a.hanh_dong = 'DAU_CA_PHAN_CONG'
+      ORDER BY a.thoi_gian DESC LIMIT 1`.replace(/\s+/g, ' '),
+    [String(khoa)]
+  );
+  return rows[0] ? { ...(rows[0].pc || {}), nguoi: rows[0].nguoi, thoi_gian: rows[0].thoi_gian } : null;
+}
+async function ghiPhanCongDauCa(khoa, pc, actorId) {
+  await query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('${BANG_PC_DAU_CA}', $1, 'DAU_CA_PHAN_CONG', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`.replace(/\s+/g, ' '),
+    [String(khoa), JSON.stringify(pc), actorId]
+  );
+}
+// Phiếu ĐANG CHẠY của 1 chuyền (để Lưu phân công ở 1 lệnh áp luôn cho các lệnh khác cùng chuyền trong ca).
+async function phieuDangChayCuaChuyen(chuyenId) {
+  const { rows } = await query(
+    `SELECT ps.id, ps.lenh_san_xuat_id FROM phieu_san_xuat ps JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+      WHERE ps.trang_thai = 'DANG_CHAY' AND ls.chuyen_id = $1`.replace(/\s+/g, ' '),
+    [chuyenId]
+  );
+  return rows;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // BÁO NGƯỢC LÊN ERP MỖI LẦN IN TEM (`POST /ghi-in-tem` → proc `MES_spr_MES2SF0`, mig 082)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1409,7 +1444,7 @@ async function listXePhoi() {
 async function listCurrentPhoi() {
   const { rows } = await query(
     `SELECT txp.id AS tem_xe_id, txp.xe_phoi_id, txp.so_luong_phoi, txp.tg_bd_phoi, txp.tg_kt_phoi,
-            t.ma_tem, t.so_luong, ls.ma_lenh_san_xuat, ${SLA_COLS}
+            t.id AS tem_id, t.ma_tem, t.so_luong, ls.ma_lenh_san_xuat, ${SLA_COLS}
             info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.mau_vai, info.kich_vai, info.kich_phim
      FROM tem_xe_phoi txp
      JOIN tem t ON t.id = txp.tem_id
@@ -1494,13 +1529,26 @@ async function accumulateDryTime(client, temId) {
   } catch (e) { /* migration 038 chưa chạy */ }
 }
 
+// XÁC NHẬN KHÔ TAY (nút ở Xe phơi, 19/10/2026 — trước chỉ có ở màn Chờ khô đã gỡ khỏi menu): tem khô sớm hơn giờ phơi
+//   dự kiến ⇒ chuyển DA_KHO ngay. ⚠ `tg_kt_phoi` kẹp về BÂY GIỜ (bản cũ giữ giờ dự kiến ở TƯƠNG LAI ⇒ mốc "tem khô" —
+//   mốc vào KCS của dải Theo dõi / SLA KCS (`siSoTram.MOC_VAO_TEM.KIEM`) — rơi vào tương lai). Ghi audit `XAC_NHAN_KHO`
+//   (giờ phơi dự kiến cũ) để tra ai xác nhận sớm.
 async function confirmDry(client, temId, actorId) {
+  const { rows } = await client.query(
+    "SELECT tg_kt_phoi FROM tem_xe_phoi WHERE tem_id=$1 AND trang_thai='DANG_PHOI' ORDER BY tg_bd_phoi DESC NULLS LAST LIMIT 1",
+    [temId]
+  );
   await accumulateDryTime(client, temId);
   await client.query("UPDATE tem SET trang_thai='DA_KHO', updated_by=$2, updated_date=CURRENT_TIMESTAMP WHERE id=$1", [temId, actorId]);
   await client.query(
-    `UPDATE tem_xe_phoi SET trang_thai='XONG', tg_kt_phoi=COALESCE(tg_kt_phoi, CURRENT_TIMESTAMP),
+    `UPDATE tem_xe_phoi SET trang_thai='XONG', tg_kt_phoi=LEAST(COALESCE(tg_kt_phoi, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP),
        updated_by=$2, updated_date=CURRENT_TIMESTAMP WHERE tem_id=$1 AND trang_thai='DANG_PHOI'`,
     [temId, actorId]
+  );
+  await client.query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('tem', $1, 'XAC_NHAN_KHO', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`,
+    [String(temId), JSON.stringify({ tg_kt_phoi_du_kien: rows[0] ? rows[0].tg_kt_phoi : null }), actorId]
   );
 }
 
@@ -1967,6 +2015,7 @@ module.exports = {
   setPhieuChuyen, getChuyenById, logDoiChuyen,
   getLenhDotVaiList, phanInRowsByLenh, insertVaiHuy, listVaiHuyByLenh,
   getActivePhieu, getPhieuById, getTemsByPhieu, getTemContext, cancelTem, getTemLabelData, caPartsForTem, docDauCa, ghiDauCa,
+  docPhanCongDauCa, ghiPhanCongDauCa, phieuDangChayCuaChuyen,
   listCancelableTem, listTemDaIn, getTemForCancel, logTemCancel, logCloseProduction,
   listReopenableTem, getTemForReopen, reopenTem, logTemReopen, dongGhiInTemCuoi,
   listReopenCandidates, getPhieuFull, reopenPhieuTx, logReopenProduction, logPauseLenhChay,
