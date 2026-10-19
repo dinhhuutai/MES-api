@@ -39,6 +39,14 @@ function dsThoCuaDong(r) {
   return ds.length ? ds : [KHONG_RO];
 }
 
+// BÁO CÁO SẢN XUẤT (19/10/2026 người dùng chốt): CẢ danh sách thợ in PHÂN CÔNG, mọi loại chuyền (KHÔNG áp luật
+// chuyền Máy lấy chuyền trưởng) → thợ in kế hoạch → chuyền trưởng; không ai ⇒ ['Chưa phân công']. Bảng "Theo thợ
+// in" chia đều số của dòng cho số người (`chiaDeu`).
+function dsThoPhanCong({ tho_in: thoIn, tho_in_kh: thoKh, chuyen_truong: chuyenTruong } = {}) {
+  const ds = tachTho(sach(thoIn) || sach(thoKh) || sach(chuyenTruong));
+  return ds.length ? ds : [KHONG_RO];
+}
+
 // Chia số nguyên `tong` cho `n` phần gần đều nhau, Σ = tong (phần lẻ dồn các phần đầu). Số thực ⇒ chia thẳng.
 function chiaDeu(tong, n) {
   const k = Math.max(1, n | 0);
@@ -53,4 +61,4 @@ function chiaDeu(tong, n) {
 const thoInPhieuSql = (psCol) => `(SELECT string_agg(DISTINCT zpc.tho_in, ', ') FROM phan_cong_san_xuat zpc
   WHERE zpc.phieu_san_xuat_id = ${psCol} AND COALESCE(zpc.tho_in, '') <> '')`;
 
-module.exports = { thoInHienThi, tachTho, dsThoCuaDong, chiaDeu, laChuyenMay, thoInPhieuSql, KHONG_RO };
+module.exports = { thoInHienThi, tachTho, dsThoCuaDong, dsThoPhanCong, chiaDeu, laChuyenMay, thoInPhieuSql, KHONG_RO };

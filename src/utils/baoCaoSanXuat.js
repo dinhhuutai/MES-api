@@ -4,11 +4,12 @@
 // Hàm THUẦN — dữ liệu thô lấy ở `modules/production/baoCaoSanXuat.js`. Dựng 2 bảng từ CÙNG một lượt dữ
 // liệu (FE bật/tắt bảng không phải gọi lại API):
 //   · Bảng 1 `theo_nhom`: nhóm chuyền (MTD · Banin · RB · MT · LG · MEP) cả xưởng — không tách tổ (07/10/2026).
-//   · Bảng 2 `chi_tiet` : 1 dòng / (chuyền × phần in × THỢ PHỤ TRÁCH) — 11/10/2026 thêm chiều thợ để FE gom được
-//     mọi bảng (khu chuyền · chuyền · khách · thợ in) theo bộ chọn chuyền. THỢ PHỤ TRÁCH = người ĐẦU trong danh
-//     sách thợ in của phiếu (chuyền Máy lấy chuyền trưởng — `utils/thoIn.js`; cùng quy ước ô "Phụ trách" của tờ
-//     Lệnh sản xuất 07/10/2026) ⇒ mỗi lượt chạy thuộc đúng 1 người, Σ các thợ = Tổng cộng. `tho_ds` = cả nhóm thợ.
-//   · `theo_tho` / `theo_chuyen`: cùng đơn vị (phiếu × phần in) ⇒ Σ = Tổng cộng.
+//   · Bảng 2 `chi_tiet` : 1 dòng / (chuyền × phần in × NHÓM THỢ IN) — FE gom được mọi bảng (khu chuyền · chuyền ·
+//     khách · thợ in) theo bộ chọn chuyền. ⚠ 19/10/2026 người dùng chốt: NHÓM THỢ = CẢ danh sách thợ in PHÂN CÔNG
+//     của phiếu, mọi loại chuyền (bỏ luật "người đầu" + "chuyền Máy lấy chuyền trưởng" ở báo cáo này — `utils/thoIn.js
+//     dsThoPhanCong`); `tho_ds` = danh sách, `tho` = người đầu (giữ cho tương thích).
+//   · `theo_tho`: mỗi dòng chi tiết CHIA ĐỀU cho số thợ trong nhóm (`chiaBo`) ⇒ Σ các thợ = Tổng cộng.
+//   · `theo_chuyen`: cùng đơn vị (phiếu × phần in) ⇒ Σ = Tổng cộng.
 // Mỗi ô = 5 cột-nhóm Tổng · HC · CA1 · CA2 · CA3, mỗi cột-nhóm 4 số: kh (SL kế hoạch) · tt (SL in thực
 // tế) · gk (số giờ KH) · gt (số giờ TT). FE tự tính % = tt/kh và C.lệch giờ = gt − gk.
 //
@@ -46,7 +47,7 @@
 //     phiếu `ghi_chu` mở đầu `[HỆ THỐNG` (4.626 phiếu) + tem `HT-…` (4.657 tem) — không phải sản xuất thật.
 
 const { caFromHour, khoaTuanIso, khoaNhomCa } = require('./ca');
-const { dsThoCuaDong } = require('./thoIn');
+const { dsThoPhanCong } = require('./thoIn');
 
 const CA = ['HC', 'CA1', 'CA2', 'CA3'];
 const NHOM = [
@@ -156,6 +157,25 @@ function xuatBo(bo) {
     ['kh', 'tt', 'gk', 'gt'].forEach((k) => { tong[k] += o[k]; });
   });
   out.TONG = { kh: lam(tong.kh, 2), tt: tong.tt, gk: lam(tong.gk), gt: lam(tong.gt) };
+  return out;
+}
+// Chia 1 bộ số cho `n` người: KH + giờ chia thẳng; SL in TT chia số nguyên, phần LẺ của ca sau tiếp từ người kế
+// người nhận lẻ cuối của ca trước ⇒ tổng mỗi người chênh nhau ≤ 1 pcs (dồn hết về người đầu thì lệch dần theo số ca).
+function chiaBo(bo, n) {
+  const k = Math.max(1, n | 0);
+  const out = Array.from({ length: k }, boRong);
+  let ke = 0;
+  CA.forEach((c) => {
+    const tt = Number(bo[c].tt) || 0;
+    const nguyen = Number.isInteger(tt) && tt >= 0;
+    const co = Math.floor(tt / k);
+    const du = nguyen ? tt - co * k : 0;
+    out.forEach((o, i) => {
+      o[c].tt = nguyen ? co + ((i - ke + k) % k < du ? 1 : 0) : tt / k;
+      ['kh', 'gk', 'gt'].forEach((f) => { o[c][f] = bo[c][f] / k; });
+    });
+    ke = (ke + du) % k;
+  });
   return out;
 }
 const coSo = (bo) => CA.some((c) => bo[c].kh || bo[c].tt || bo[c].gk || bo[c].gt);
@@ -298,45 +318,43 @@ function dungBaoCaoSanXuat({
     });
   });
 
-  // Thợ của phiếu: [phụ trách, …cả nhóm] theo luật `utils/thoIn.js` (chuyền Máy ⇒ chuyền trưởng).
+  // Thợ của phiếu = CẢ danh sách thợ in phân công (19/10/2026 — `utils/thoIn.js dsThoPhanCong`, mọi loại chuyền).
   const thoCuaPhieu = new Map();
   const thoPhieu = (phieu) => {
     const k = String(phieu.id);
     if (!thoCuaPhieu.has(k)) {
-      const c = chuyenById.get(String(phieu.chuyen_id)) || {};
-      thoCuaPhieu.set(k, dsThoCuaDong({
-        ma_loai_chuyen: c.ma_loai, tho_in: phieu.tho_in, tho_in_kh: phieu.tho_in_kh, chuyen_truong: phieu.chuyen_truong,
+      thoCuaPhieu.set(k, dsThoPhanCong({
+        tho_in: phieu.tho_in, tho_in_kh: phieu.tho_in_kh, chuyen_truong: phieu.chuyen_truong,
       }));
     }
     return thoCuaPhieu.get(k);
   };
 
-  // 4. Bảng 2 — gom (chuyền × phần in × thợ phụ trách).
+  // 4. Bảng 2 — gom (chuyền × phần in × NHÓM thợ in).
   const dong2 = new Map();
   donVi.forEach(({ phieu, pin, bo }) => {
     const ds = thoPhieu(phieu);
-    const k = `${phieu.chuyen_id}|${pin.phan_in_id}|${ds[0]}`;
+    const k = `${phieu.chuyen_id}|${pin.phan_in_id}|${ds.join(', ')}`;
     if (!dong2.has(k)) {
       const c = chuyenById.get(String(phieu.chuyen_id)) || {};
       dong2.set(k, {
         ma_chuyen: c.ma_chuyen || '—', ten_chuyen: c.ten_chuyen || null, nhom: nhomCuaLoai(c.ma_loai),
         ma_phan: pin.ma_phan, khach: pin.ten_khach_hang || null, po: pin.ma_don_hang || null,
         ma_hang: pin.ma_hang || null, mau_vai: pin.mau_vai || null, kich_vai: pin.kich_vai || null,
-        kich_phim: pin.kich_phim || null, tho: ds[0], thoDs: new Set(), to: new Set(), bo: boRong(),
+        kich_phim: pin.kich_phim || null, tho: ds[0], tho_ds: ds.join(', '), thoArr: ds, to: new Set(), bo: boRong(),
       });
     }
     const r = dong2.get(k);
     congBo(r.bo, bo);
-    ds.forEach((t) => r.thoDs.add(t));
     const t = toById.get(String(phieu.to_in_id));
     if (t) r.to.add(t.ma_to);
   });
-  const chiTiet = [...dong2.values()].filter((r) => coSo(r.bo))
+  const dong2Co = [...dong2.values()].filter((r) => coSo(r.bo));
+  const chiTiet = [...dong2Co]
     .sort((x, y) => soTuNhien(x.ma_chuyen, y.ma_chuyen) || soTuNhien(x.khach, y.khach)
-      || soTuNhien(x.po, y.po) || soTuNhien(x.ma_phan, y.ma_phan) || soTuNhien(x.tho, y.tho))
+      || soTuNhien(x.po, y.po) || soTuNhien(x.ma_phan, y.ma_phan) || soTuNhien(x.tho_ds, y.tho_ds))
     .map((r) => ({
-      ...r, to: [...r.to].sort(soTuNhien).join(', ') || null, tho_ds: [...r.thoDs].join(', '), thoDs: undefined,
-      m: xuatBo(r.bo), bo: undefined,
+      ...r, to: [...r.to].sort(soTuNhien).join(', ') || null, thoArr: undefined, m: xuatBo(r.bo), bo: undefined,
     }));
 
   // 5. Bảng 1 — gom theo nhóm chuyền cho cả xưởng (07/10/2026 người dùng bỏ cột Tổ — trước đó tổ × nhóm).
@@ -364,13 +382,19 @@ function dungBaoCaoSanXuat({
     .sort((x, y) => soTuNhien(x[0], y[0]))
     .map(([ten, bo]) => ({ key: ten, label: ten, m: xuatBo(bo) }));
 
-  // 7. Bảng theo THỢ IN (phụ trách) + theo TỪNG CHUYỀN (11/10/2026) — cùng đơn vị ⇒ Σ = Tổng cộng.
+  // 7. Bảng theo THỢ IN + theo TỪNG CHUYỀN (11/10/2026) — Σ = Tổng cộng. 19/10/2026: mỗi dòng chi tiết CHIA ĐỀU
+  //    cho các thợ trong danh sách phân công (`chiaBo` — SL in TT chia số nguyên, lẻ xoay vòng; gương FE
+  //    `gomBaoCao.gomSanXuatTheoTho` chia trên CÙNG dòng chi tiết).
   const theoTho = new Map();
+  dong2Co.forEach((r) => {
+    chiaBo(r.bo, r.thoArr.length).forEach((phan, i) => {
+      const tho = r.thoArr[i];
+      if (!theoTho.has(tho)) theoTho.set(tho, boRong());
+      congBo(theoTho.get(tho), phan);
+    });
+  });
   const theoChuyen = new Map();
   donVi.forEach(({ phieu, bo }) => {
-    const tho = thoPhieu(phieu)[0];
-    if (!theoTho.has(tho)) theoTho.set(tho, boRong());
-    congBo(theoTho.get(tho), bo);
     const c = chuyenById.get(String(phieu.chuyen_id)) || {};
     const kc = c.ma_chuyen || '—';
     if (!theoChuyen.has(kc)) theoChuyen.set(kc, { ten: c.ten_chuyen || null, nhom: nhomCuaLoai(c.ma_loai), bo: boRong() });
