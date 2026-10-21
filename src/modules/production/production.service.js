@@ -62,8 +62,11 @@ async function getRun(lenhId) {
       sl_bo_sung_cty: b.sl_bo_sung_cty, sl_bo_sung_khach: b.sl_bo_sung_khach,
     });
   });
+  // Số vải hủy / thiếu CHỜ gắn vào tem in kế tiếp của phiếu (21/10/2026). Lỗi đọc ⇒ null (không chặn sidebar).
+  const vaiCho = phieu ? await repo.docVaiChoTem(phieu.id).catch(() => null) : null;
   return { lenh, phieu, tems, printed, ngung_list: ngungList, ngung_active: ngungActive,
-           dot_vai: dotVai, vai_huy: vaiHuy, phan_cong: phieu ? await phanCongHienThi(lenh, phieu, phanCong) : phanCong,
+           dot_vai: dotVai, vai_huy: vaiHuy, vai_cho_tem: vaiTrong(vaiCho) ? null : vaiCho,
+           phan_cong: phieu ? await phanCongHienThi(lenh, phieu, phanCong) : phanCong,
            goi_y_tem: await goiYTemMeta(lenhId, phieu?.id),
            so_phan_in: soPhanIn, co_gom_set: soPhanIn > 1 };
 }
@@ -226,12 +229,27 @@ async function nhoDauCa(ca, body, actorId) {
   } catch (e) { console.error(`[dau-ca] ✗ Không nhớ được ngày ca / ngày chứng từ đầu ca (${ca.khoa}): ${e.message}`); }
 }
 
-// Ghi 1 lần vải hủy (= vải hư) hoặc vải THIẾU trong lúc sản xuất, theo đợt vải / phần in của lệnh.
+// ─── VẢI HỦY / VẢI THIẾU THEO TEM (21/10/2026, người dùng chốt) ──────────────────────────────────────────────────
+// "Thiếu hay hủy cho theo TEM luôn chứ không theo phần nữa":
+//   · Ô Vải hủy / thiếu ở sidebar 1 lệnh = LƯU 1 GIÁ TRỊ CHỜ (lưu lại = THAY, không cộng dồn; 0 = xóa) cho phiếu
+//     (`repo.ghiVaiChoTem`). Lượt IN TEM KẾ TIẾP của phiếu gắn số đó vào tem ĐẦU của lượt (sổ `vai_huy.tem_id` + ERP
+//     `Soluongloi` / `SOLUONGTHIEU` cùng tem) rồi XÓA số chờ.
+//   · In NHIỀU phần in 1 lượt (bảng in của sidebar nhiều lệnh / gom set) mà dòng có nhập SL hủy / thiếu ⇒ ƯU TIÊN số
+//     ở bảng, BỎ số chờ của phiếu đó (người dùng: "ưu tiên lấy số lượng hủy thiếu theo nhiều phần in"); bảng không
+//     nhập gì ⇒ dùng số chờ.
+//   · Gắn + xóa số chờ làm TRONG transaction in tem, khóa theo phiếu (`pg_advisory_xact_lock`) ⇒ 2 lượt in cùng lúc
+//     không gắn trùng.
+// Route cũ `POST /phieu/:id/vai-huy` (`addVaiHuy`) nay là "lưu số chờ" — giữ tên để FE cũ vẫn gọi được.
+const khoaVaiCho = (phieuId) => `vai_cho_tem|${phieuId}`;
+const vaiTrong = (v) => !v || (!(v.huy > 0) && !(v.thieu > 0));
+
 async function addVaiHuy(phieuId, { dotVaiId, soLuong, lyDo, loai }, actorId) {
-  const qty = Number(soLuong);
+  const qty = Math.max(0, Math.trunc(Number(soLuong) || 0));
   const isThieu = loai === 'THIEU';
   const nhan = isThieu ? 'vải thiếu' : 'vải hủy';
-  if (!qty || qty <= 0) throw new AppError(`Số lượng ${nhan} phải > 0`, { status: 422, errorCode: 'INVALID_QTY' });
+  if (!Number.isFinite(Number(soLuong)) || Number(soLuong) < 0) {
+    throw new AppError(`Số lượng ${nhan} không hợp lệ`, { status: 422, errorCode: 'INVALID_QTY' });
+  }
   const phieu = await repo.getPhieuById(phieuId);
   if (!phieu) throw new AppError('Phiếu sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   const dotVaiList = await repo.getLenhDotVaiList(phieu.lenh_san_xuat_id);
@@ -240,18 +258,144 @@ async function addVaiHuy(phieuId, { dotVaiId, soLuong, lyDo, loai }, actorId) {
   const chosen = dotVaiId
     ? dotVaiList.find((d) => d.dot_vai_ve_id === dotVaiId)
     : (dotVaiList.length === 1 ? dotVaiList[0] : null);
-  if (!chosen) throw new AppError(`Chọn phần in cần ghi ${nhan}`, { status: 422, errorCode: 'NO_PHAN_IN' });
+  if (qty > 0 && !chosen) throw new AppError(`Chọn phần in cần ghi ${nhan}`, { status: 422, errorCode: 'NO_PHAN_IN' });
+  const cu = (await repo.docVaiChoTem(phieuId)) || {};
+  const moi = {
+    huy: isThieu ? (cu.huy || 0) : qty,
+    thieu: isThieu ? qty : (cu.thieu || 0),
+    ly_do_huy: isThieu ? (cu.ly_do_huy || null) : (qty ? (lyDo || null) : null),
+    ly_do_thieu: isThieu ? (qty ? (lyDo || null) : null) : (cu.ly_do_thieu || null),
+    dot_vai_ve_id: (chosen && chosen.dot_vai_ve_id) || cu.dot_vai_ve_id || null,
+  };
   try {
-    await repo.insertVaiHuy({
-      phieuId, lenhId: phieu.lenh_san_xuat_id, dotVaiId: chosen.dot_vai_ve_id,
-      phanInId: chosen.phan_in_id, soLuong: qty, lyDo, loai: isThieu ? 'THIEU' : 'HUY',
-    }, actorId);
+    await repo.ghiVaiChoTem(phieuId, moi, actorId);
   } catch (e) {
-    throw new AppError(`Chưa ghi được ${nhan} (kiểm tra migration 039_vai_huy + 063_vai_thieu_phan_cong)`,
-      { status: 500, errorCode: 'VAI_HUY_FAILED' });
+    throw new AppError(`Chưa lưu được ${nhan}: ${e.message}`, { status: 500, errorCode: 'VAI_HUY_FAILED' });
   }
   sockets.emit('production:updated', { lenhId: phieu.lenh_san_xuat_id, action: isThieu ? 'vai-thieu' : 'vai-huy' });
   return getRun(phieu.lenh_san_xuat_id);
+}
+
+// Trong transaction in tem: khóa phiếu, đọc số chờ, XÓA (ghi dòng 0 kèm tem đã gắn / lý do bỏ). Trả số chờ cũ (hoặc null).
+async function nhanVaiChoTx(client, phieuId, actorId, { boQua = false, temId = null } = {}) {
+  await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [khoaVaiCho(phieuId)]);
+  const v = await repo.docVaiChoTem(phieuId, client);
+  if (vaiTrong(v)) return null;
+  await repo.ghiVaiChoTem(phieuId, {
+    huy: 0, thieu: 0, dot_vai_ve_id: null, ly_do_huy: null, ly_do_thieu: null,
+    ...(boQua ? { bo_qua: true, ly_do: 'In nhiều phần in có nhập SL hủy / thiếu ở bảng — ưu tiên số ở bảng' } : {}),
+    ...(temId ? { gan_tem_id: temId } : {}),
+    truoc: { huy: v.huy, thieu: v.thieu },
+  }, actorId, client);
+  return v;
+}
+
+// ─── NHẬP / SỬA VẢI HỦY – THIẾU NGAY Ở TEM (21/10/2026, người dùng chốt) ────────────────────────────────────────
+// "Hủy / thiếu vẫn theo ĐỢT VẢI của phần in — 1 phần in nhiều tem, thường in xong tem cuối mới biết thiếu / hủy bao
+//   nhiêu ⇒ gán cho 1 TEM ĐẠI DIỆN". Ô ở bảng chi tiết tem (Danh sách tem in): nhập SỐ CỦA TEM (đặt lại, không cộng
+//   dồn). Sổ `vai_huy` chỉ có quyền INSERT ⇒ ghi 1 dòng CHÊNH LỆCH (có thể âm) cho đợt vải chọn, gắn `tem_id` ⇒ Σ sổ =
+//   số mới. Đổi số đã có ⇒ lý do BẮT BUỘC. Lưu xong gửi lại ERP phiếu in tem (SF0) CÙNG IDMES với số mới (proc ghi đè
+//   theo IDMES — `caidatapi/guiLai` dựng `Soluongloi` / `SOLUONGTHIEU` từ sổ gắn tem). Cần mig 118.
+// Số hủy / thiếu ĐANG GẮN tem: có dòng `vai_huy.tem_id` ⇒ số của sổ tem (nguon TEM); chưa có (tem in trước
+// mig 118) ⇒ số đã gửi ERP lúc in (nguon ERP — số đó nằm ở sổ ĐỢT, chưa gắn tem). Cùng luật cột "Hủy / Thiếu"
+// của Danh sách tem in (`listTemDaIn soVai`).
+async function vaiHienTaiCuaTem(temId) {
+  const vai = await repo.vaiCuaTem(temId);
+  if (vai === null) return null;
+  if (vai.so_dong > 0) return { huy: vai.huy, thieu: vai.thieu, dot_vai_ve_id: vai.dot_vai_ve_id, nguon: 'TEM' };
+  const erp = await repo.vaiErpCuaTem(temId).catch(() => null);
+  if (erp && (erp.huy > 0 || erp.thieu > 0)) return { huy: erp.huy, thieu: erp.thieu, dot_vai_ve_id: null, nguon: 'ERP' };
+  return { huy: 0, thieu: 0, dot_vai_ve_id: null, nguon: 'TEM' };
+}
+
+async function xemVaiTem(temId) {
+  const tem = await repo.getTemForCancel(temId);
+  if (!tem) throw new AppError('Tem sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  const [vai, dots] = await Promise.all([vaiHienTaiCuaTem(temId), repo.getLenhDotVaiList(tem.lenh_san_xuat_id)]);
+  return {
+    co_cot: vai !== null, huy: vai ? vai.huy : 0, thieu: vai ? vai.thieu : 0, nguon: vai ? vai.nguon : null,
+    dot_vai_ve_id: (vai && vai.dot_vai_ve_id) || (dots[0] ? dots[0].dot_vai_ve_id : null),
+    dot_vai: dots.map((d) => ({ dot_vai_ve_id: d.dot_vai_ve_id, ma_dot_vai: d.ma_dot_vai, ma_phan: d.ma_phan, mau_vai: d.mau_vai })),
+    trang_thai: tem.trang_thai,
+  };
+}
+
+async function suaVaiTheoTem(temId, { huy, thieu, dotVaiId, lyDo }, actorId) {
+  const so = (v, ten) => {
+    const n = Number(v);
+    if (v === '' || v == null || !Number.isInteger(n) || n < 0) {
+      throw new AppError(`${ten} phải là số nguyên ≥ 0`, { status: 422, errorCode: 'INVALID_QTY' });
+    }
+    return n;
+  };
+  const moiHuy = so(huy, 'Vải hủy');
+  const moiThieu = so(thieu, 'Vải thiếu');
+  const tem = await repo.getTemForCancel(temId);
+  if (!tem) throw new AppError('Tem sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  if (tem.trang_thai === 'HUY') throw new AppError('Tem đã hủy — không ghi vải hủy / thiếu', { status: 409, errorCode: 'DA_HUY' });
+  const cu = await vaiHienTaiCuaTem(temId);
+  if (cu === null) {
+    throw new AppError('Chưa chạy migration 118 (vải hủy / thiếu theo tem)', { status: 409, errorCode: 'CHUA_MIGRATION_118' });
+  }
+  const dHuy = moiHuy - cu.huy;
+  const dThieu = moiThieu - cu.thieu;
+  if (!dHuy && !dThieu) return { ...(await xemVaiTem(temId)), doi: false, gui_erp: false };
+  const ly = String(lyDo || '').trim();
+  if ((cu.huy > 0 || cu.thieu > 0) && !ly) {
+    throw new AppError('Tem đã có số vải hủy / thiếu — nhập lý do sửa', { status: 422, errorCode: 'THIEU_LY_DO' });
+  }
+  const dots = await repo.getLenhDotVaiList(tem.lenh_san_xuat_id);
+  const dot = dotVaiId ? dots.find((d) => d.dot_vai_ve_id === dotVaiId) : (dots.length === 1 ? dots[0] : null);
+  if (!dot) throw new AppError('Chọn đợt vải của phần in cần ghi hủy / thiếu', { status: 422, errorCode: 'NO_DOT_VAI' });
+  const phieu = { id: tem.phieu_san_xuat_id, lenh_san_xuat_id: tem.lenh_san_xuat_id };
+  const ghi = (soLuong, loai, coTem, lyDoDong) => repo.insertVaiHuy({
+    phieuId: phieu.id, lenhId: phieu.lenh_san_xuat_id, dotVaiId: dot.dot_vai_ve_id, phanInId: dot.phan_in_id,
+    soLuong, loai, temId: coTem ? temId : null, lyDo: lyDoDong,
+  }, actorId);
+  const lyDoDong = ly ? `Nhập ở tem: ${ly}` : 'Nhập ở tem';
+  if (cu.nguon === 'ERP') {
+    // Tem in trước mig 118: số đã gửi ERP đang nằm ở sổ ĐỢT (dòng không gắn tem) ⇒ CHUYỂN sang tem:
+    //   trừ số cũ ở sổ đợt + ghi số mới gắn tem ⇒ tổng của đợt đổi đúng (mới − cũ), tem có sổ riêng từ đây.
+    //   Luôn ghi ≥ 1 dòng gắn tem (kể cả số 0) để lần sau tem đọc từ sổ tem, không quay về số ERP.
+    for (const [cuSl, moiSl, loai] of [[cu.huy, moiHuy, 'HUY'], [cu.thieu, moiThieu, 'THIEU']]) {
+      // eslint-disable-next-line no-await-in-loop
+      if (cuSl > 0) await ghi(-cuSl, loai, false, `Chuyển sang tem ${tem.ma_tem}`);
+      // eslint-disable-next-line no-await-in-loop
+      if (moiSl > 0 || loai === 'HUY') await ghi(moiSl, loai, true, lyDoDong);
+    }
+  } else {
+    for (const [delta, loai] of [[dHuy, 'HUY'], [dThieu, 'THIEU']]) {
+      // eslint-disable-next-line no-await-in-loop
+      if (delta) await ghi(delta, loai, true, lyDoDong);
+    }
+  }
+  await repo.logSuaVaiTem(temId, {
+    cu: { huy: cu.huy, thieu: cu.thieu, nguon: cu.nguon },
+    moi: { ma_tem: tem.ma_tem, huy: moiHuy, thieu: moiThieu, dot_vai_ve_id: dot.dot_vai_ve_id, ly_do: ly || null },
+  }, actorId);
+  // Gửi lại ERP phiếu in tem của tem này (cùng IDMES) — NGẦM; tem chưa từng gửi (API tắt / mã MES) ⇒ bỏ qua.
+  const dong = await repo.dongGhiInTemCuoi(temId).catch(() => null);
+  if (dong) {
+    require('../caidatapi/guiLai').guiLai('ERP_GHI_IN_TEM', dong.id, actorId)
+      .catch((e) => console.error(`[vai-theo-tem] ✗ Gửi lại ERP tem ${tem.ma_tem}: ${e.message}`));
+  }
+  sockets.emit('production:updated', { lenhId: tem.lenh_san_xuat_id, action: 'vai-theo-tem' });
+  return { ...(await xemVaiTem(temId)), doi: true, gui_erp: !!dong };
+}
+
+// Ghi sổ vải gắn tem (sau transaction in tem, best-effort — tem đã in xong thì không được hỏng vì sổ vải).
+async function ghiVaiTheoTem(phieu, dot, { huy = 0, thieu = 0, lyDoHuy = null, lyDoThieu = null, temId = null }, actorId) {
+  if (!dot) return;
+  for (const [qty, loai, ly] of [[huy, 'HUY', lyDoHuy], [thieu, 'THIEU', lyDoThieu]]) {
+    if (!(qty > 0)) continue;
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      await repo.insertVaiHuy({
+        phieuId: phieu.id, lenhId: phieu.lenh_san_xuat_id, dotVaiId: dot.dot_vai_ve_id, phanInId: dot.phan_in_id,
+        soLuong: qty, lyDo: ly || 'Ghi khi in tem', loai, temId,
+      }, actorId);
+    } catch (e) { console.error(`[production] ✗ Ghi vải ${loai} lỗi (${dot.ma_phan}): ${e.message}`); }
+  }
 }
 
 // ----- PHÂN CÔNG SẢN XUẤT (mig 063) -----
@@ -748,19 +892,30 @@ async function printTem(phieuId, soLuong, actorId, body) {
   // `null` = API mã tem đang TẮT ở Hệ thống > Cài đặt API ⇒ lùi về dãy `TEM00123` của MES.
   const maTem = (await layBarcodeTem(actorId)) || (await repo.nextMaTem());
   let newTemId;
+  let vaiCho = null; // số vải hủy / thiếu đang CHỜ của phiếu — gắn vào tem này (21/10/2026)
   await withTransaction(async (client) => {
     newTemId = await repo.createTem(client, { phieuId, maTem, soLuong: qty, ...meta }, actorId);
     await repo.logTemPrint(client, { temId: newTemId, maTem, actorId });
     await repo.addTemToXe(client, { temId: newTemId, xeId: xe.id, soLuongPhoi: qty, phut: dryMin }, actorId);
+    vaiCho = await nhanVaiChoTx(client, phieuId, actorId, { temId: newTemId });
   });
   await nhoDauCa(caIn, body, actorId);
+  if (vaiCho) {
+    const dots = await repo.getLenhDotVaiList(phieu.lenh_san_xuat_id);
+    const dot = dots.find((d) => d.dot_vai_ve_id === vaiCho.dot_vai_ve_id) || dots[0];
+    await ghiVaiTheoTem(phieu, dot, {
+      huy: vaiCho.huy, thieu: vaiCho.thieu, lyDoHuy: vaiCho.ly_do_huy, lyDoThieu: vaiCho.ly_do_thieu, temId: newTemId,
+    }, actorId);
+  }
   await tracking.moveByLenh(phieu.lenh_san_xuat_id, 'CHO_KHO', actorId); // in tem → xe phơi → CHỜ KHÔ
-  // Báo ERP — CỐ Ý không `await` (xem ghi chú ở `guiGhiInTem`): người in không phải chờ.
-  guiGhiInTem([{ temId: newTemId, dotVaiId: null, soLuongHuy: 0, soLuongThieu: 0 }], actorId, body?.ngayCt || null);
+  // Báo ERP — CỐ Ý không `await` (xem ghi chú ở `guiGhiInTem`): người in không phải chờ. Hủy / thiếu = số chờ vừa gắn.
+  guiGhiInTem([{
+    temId: newTemId, dotVaiId: null, soLuongHuy: vaiCho ? vaiCho.huy : 0, soLuongThieu: vaiCho ? vaiCho.thieu : 0,
+  }], actorId, body?.ngayCt || null);
   sockets.emit('production:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'tem' });
   sockets.emit('drying:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'auto-phoi' });
   const run = await getRun(phieu.lenh_san_xuat_id);
-  return { ...run, new_tem_id: newTemId };
+  return { ...run, new_tem_id: newTemId, vai_gan_tem: vaiCho ? { huy: vaiCho.huy, thieu: vaiCho.thieu } : null };
 }
 
 // IN TEM NHIỀU PHẦN IN 1 LƯỢT (lệnh GOM SET): mỗi đợt vải/phần in nhập 1 số lượng → tạo N tem trong
@@ -778,18 +933,16 @@ async function printTemBatch(phieuId, items, actorId, body) {
   const meta = temMeta(body);
   const raw = Array.isArray(items) ? items : [];
   const soDuong = (v) => Math.max(0, Math.trunc(Number(v) || 0));
-  const list = raw
-    .map((it) => ({
-      dotVaiId: it.dotVaiId || null, soLuong: Number(it.soLuong), gcMauVai: it.gcMauVai || null,
-      huy: soDuong(it.soLuongHuy), thieu: soDuong(it.soLuongThieu),
-    }))
-    .filter((it) => it.soLuong > 0);
-  // Vải hủy / vải thiếu nhập NGAY TRONG modal In tem (chuyển từ modal Phân công): ghi kể cả khi dòng
-  // đó KHÔNG in tem (SL in = 0 nhưng vẫn phát sinh vải hư/thiếu) ⇒ lọc riêng, không dùng `list`.
+  // `i` = vị trí dòng trong lượt — để gắn vải hủy/thiếu của dòng vào ĐÚNG tem của dòng đó (21/10/2026).
+  const dongVao = raw.map((it, i) => ({
+    i, dotVaiId: it.dotVaiId || null, soLuong: Number(it.soLuong), gcMauVai: it.gcMauVai || null,
+    huy: soDuong(it.soLuongHuy), thieu: soDuong(it.soLuongThieu),
+  }));
+  const list = dongVao.filter((it) => it.soLuong > 0);
+  // Vải hủy / vải thiếu nhập NGAY TRONG bảng In tem: dòng có in tem ⇒ gắn vào tem của dòng; dòng KHÔNG in tem (SL in
+  // = 0) ⇒ gắn vào tem đầu cùng đợt trong lượt (không có thì tem đầu lượt) — 21/10/2026 "hủy / thiếu theo tem".
   // 19/10/2026: dòng KHÔNG chỉ đợt (lệnh thường — modal In tem nhiều lệnh) ⇒ quy về đợt đầu của lệnh (bên dưới).
-  const vaiRaw = raw
-    .map((it) => ({ dotVaiId: it.dotVaiId || null, huy: soDuong(it.soLuongHuy), thieu: soDuong(it.soLuongThieu) }))
-    .filter((it) => it.huy > 0 || it.thieu > 0);
+  const vaiRaw = dongVao.filter((it) => it.huy > 0 || it.thieu > 0);
   if (!list.length) throw new AppError('Nhập số lượng in cho ít nhất 1 phần in', { status: 422, errorCode: 'EMPTY' });
   // Mỗi tem xin 1 mã ERP TUẦN TỰ trước transaction ⇒ chặn lượt quá lớn (người đứng máy chờ + giữ phiên lâu).
   if (list.length > TOI_DA_TEM_MOT_LUOT) {
@@ -853,6 +1006,7 @@ async function printTemBatch(phieuId, items, actorId, body) {
   const maTemList = (await layNhieuBarcodeTem(list.length, actorId)) || (await repo.nextMaTemNhieu(list.length));
 
   const out = [];
+  let vaiCho = null; // số chờ của phiếu (ô Vải hủy / thiếu sidebar 1 lệnh) — dùng khi bảng in KHÔNG nhập hủy/thiếu
   await withTransaction(async (client) => {
     for (const [i, it] of list.entries()) {
       const maTem = maTemList[i];
@@ -866,25 +1020,29 @@ async function printTemBatch(phieuId, items, actorId, body) {
       const d = it.dotVaiId ? byId.get(it.dotVaiId) : null;
       out.push({
         tem_id: temId, ma_tem: maTem, dot_vai_id: it.dotVaiId, so_luong: it.soLuong,
-        ma_phan: d ? d.ma_phan : null, huy: it.huy, thieu: it.thieu,
+        ma_phan: d ? d.ma_phan : null, huy: 0, thieu: 0, src: it.i,
       });
     }
+    // ƯU TIÊN số ở bảng in: có dòng nào nhập hủy/thiếu ⇒ BỎ số chờ; không có ⇒ gắn số chờ vào tem đầu lượt.
+    const v = await nhanVaiChoTx(client, phieuId, actorId, { boQua: vaiList.length > 0, temId: out[0].tem_id });
+    vaiCho = vaiList.length ? null : v;
   });
   await nhoDauCa(caIn, body, actorId);
-  // Vải hủy/thiếu ghi SAU transaction in tem (mỗi lượt 1 bản ghi sổ có người + giờ) — best-effort:
-  // thiếu mig 063 thì tem vẫn in xong, chỉ không ghi được sổ vải.
+  // Gắn vải của từng dòng vào TEM: dòng có in tem ⇒ tem của dòng; dòng chỉ ghi vải ⇒ tem đầu cùng đợt, không có ⇒ tem
+  //   đầu lượt. Sổ ghi SAU transaction in tem — best-effort (thiếu mig 063/118 thì tem vẫn in xong).
+  const temCuaDong = (v) => out.find((o) => o.src === v.i)
+    || out.find((o) => (o.dot_vai_id || dotMacDinh) === v.dotVaiId) || out[0];
   for (const v of vaiList) {
-    const d = byId.get(v.dotVaiId);
-    if (!d) continue;
-    for (const [qty, loai] of [[v.huy, 'HUY'], [v.thieu, 'THIEU']]) {
-      if (!(qty > 0)) continue;
-      try {
-        await repo.insertVaiHuy({
-          phieuId, lenhId: phieu.lenh_san_xuat_id, dotVaiId: d.dot_vai_ve_id, phanInId: d.phan_in_id,
-          soLuong: qty, lyDo: 'Ghi khi in tem', loai,
-        }, actorId);
-      } catch (e) { console.error(`[production] ✗ Ghi vải ${loai} lỗi (${d.ma_phan}): ${e.message}`); }
-    }
+    const o = temCuaDong(v);
+    o.huy += v.huy; o.thieu += v.thieu;
+    await ghiVaiTheoTem(phieu, byId.get(v.dotVaiId), { huy: v.huy, thieu: v.thieu, temId: o.tem_id }, actorId);
+  }
+  if (vaiCho) {
+    const o = out[0];
+    o.huy += vaiCho.huy; o.thieu += vaiCho.thieu;
+    await ghiVaiTheoTem(phieu, byId.get(vaiCho.dot_vai_ve_id) || byId.get(o.dot_vai_id || dotMacDinh), {
+      huy: vaiCho.huy, thieu: vaiCho.thieu, lyDoHuy: vaiCho.ly_do_huy, lyDoThieu: vaiCho.ly_do_thieu, temId: o.tem_id,
+    }, actorId);
   }
   await tracking.moveByLenh(phieu.lenh_san_xuat_id, 'CHO_KHO', actorId);
   // Báo ERP từng tem — CỐ Ý không `await`. Lệnh gom set LUÔN có `dotVaiId` nên ERP nhận đúng đợt vải
@@ -1376,7 +1534,7 @@ async function vuotSanXuat(phieuId, soLuong, actorId) {
 module.exports = {
   listCandidates, getRun, startProduction, startProductionBatch, startProductionSpecial, printTem, printTemBatch, reprintTem, temLabel, temLogs, finishRun, monitor, vuotSanXuat,
   getXePhoi, listTemChoPhoi, addToXe, adjustPhoi, listDrying, confirmDry, redry,
-  stopLine, resumeLine, addVaiHuy, savePhanCong, suaPhanCongPhieuXong,
+  stopLine, resumeLine, addVaiHuy, xemVaiTem, suaVaiTheoTem, savePhanCong, suaPhanCongPhieuXong,
   dsLyDoNgung, taoLyDoNgung, suaLyDoNgung, doiTrangThaiLyDoNgung,
   dsToIn, taoToIn, suaToIn, doiTrangThaiToIn,
   dsLyDoBoSung, taoLyDoBoSung, suaLyDoBoSung, doiTrangThaiLyDoBoSung, luuLyDoBoSungDotVai,

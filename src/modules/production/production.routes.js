@@ -26,6 +26,9 @@ router.post('/tem/:temId/in-lai', rbac('PROD_RUN'), c.reprintTem);
 // Danh sách tem đã in của SẢN XUẤT (tem 15/16) — trang *Sản xuất › Danh sách tem in*.
 router.get('/tem/danh-sach', rbac('PROD_RUN', 'PROD_MONITOR'), c.temDaInSX);
 router.get('/tem/:temId/label', rbac('PROD_RUN', 'PROD_MONITOR'), c.temLabel);
+// Vải hủy / thiếu của 1 tem đại diện (21/10/2026) — số vẫn thuộc đợt vải của phần in.
+router.get('/tem/:temId/vai', rbac('PROD_RUN', 'PROD_MONITOR'), c.xemVaiTem);
+router.put('/tem/:temId/vai', rbac('PROD_RUN'), c.suaVaiTheoTem);
 router.get('/phieu/:phieuId/tem-logs', rbac('PROD_RUN', 'PROD_MONITOR'), c.temLogs);
 router.post('/phieu/:phieuId/vai-huy', rbac('PROD_RUN'), c.addVaiHuy); // body.loai: HUY (vải hư) | THIEU
 // Phân công sản xuất (thợ in theo phần in + ca trưởng/chuyền trưởng + SL vải hủy/thiếu) — sidebar Sản xuất
@@ -100,6 +103,8 @@ router.post('/huy-chay/:phieuId', rbac('PROD_RUN'), rbac.huyXacNhan(), c.undoSta
 router.get('/monitor', rbac('PROD_MONITOR'), c.monitor);
 // Báo cáo sản xuất ngày (theo tổ × nhóm chuyền + chi tiết phần in) — trang Sản xuất › Báo cáo sản xuất.
 router.get('/bao-cao-ngay', rbac('PROD_RUN', 'PROD_MONITOR'), c.baoCaoSanXuat);
+// Theo dõi chuyền in › Tổng nhà máy / Theo tổ (21/10/2026) — dữ liệu mức lệnh của 1 ngày.
+router.get('/theo-doi-to', rbac('PROD_RUN', 'PROD_MONITOR'), c.theoDoiTo);
 // Báo cáo bất thường dừng chuyền (theo khoảng ngày SX) — trang Sản xuất › Báo cáo dừng chuyền.
 router.get('/bao-cao-dung-chuyen', rbac('PROD_RUN', 'PROD_MONITOR'), c.baoCaoDungChuyen);
 // Báo cáo kết quả kiểm hàng (theo dây chuyền / chuyền / lượt KCS) — trang Sản xuất › Báo cáo kiểm hàng.

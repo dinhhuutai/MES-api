@@ -184,11 +184,18 @@ async function guiLai(ma, auditId, actorId) {
   chanChuaCoMa(r.ma_tem);
   const ten = ma ==='ERP_GUI_TEM_GIA_CONG' ? 'Gửi dữ liệu tem gia công' : 'Báo ERP mỗi lần in tem';
   const idMes = idMesCu(g) ?? await capIdMes(ma === 'ERP_GUI_TEM_GIA_CONG' ? 'gui-tem-gia-cong' : 'ghi-in-tem');
+  // Tem sản xuất có dòng vải hủy / thiếu gắn tem (mig 118) ⇒ gửi đúng số của sổ (đã sửa ở tem thì gửi số mới);
+  // chưa có dòng nào / chưa có cột ⇒ giữ số đã gửi lần trước như cũ.
+  let vaiTem = null;
+  if (ma === 'ERP_GHI_IN_TEM') {
+    try { vaiTem = await prodRepo.vaiCuaTem(id); } catch { vaiTem = null; }
+  }
+  const coVaiTem = !!(vaiTem && vaiTem.so_dong > 0);
   const payload = taoPayload(r, {
     idMes,
     soLuong: soHoacNull(cu.Soluong),
-    soLuongHuy: soHoacNull(cu.Soluongloi) || 0,
-    soLuongThieu: soHoacNull(cu.SOLUONGTHIEU) || 0,
+    soLuongHuy: coVaiTem ? vaiTem.huy : (soHoacNull(cu.Soluongloi) || 0),
+    soLuongThieu: coVaiTem ? vaiTem.thieu : (soHoacNull(cu.SOLUONGTHIEU) || 0),
   });
   const kq = await ghiInTem(payload, { maApi: ma });
   if (kq.bo_qua) loiNeu({ bo_qua: true, ly_do: 'API_DANG_TAT' }, ten);

@@ -21,6 +21,10 @@ router.patch('/:id', M, asyncHandler(async (req, res) => { await repo.updateChuy
 router.patch('/:id/active', M, asyncHandler(async (req, res) => { await repo.setChuyenActive(req.params.id, req.body.dangHoatDong === true, uid(req)); return ok(res, {}, 'Đã cập nhật'); }));
 
 router.get('/loai', V, asyncHandler(async (req, res) => ok(res, await repo.listLoai())));
+// Tổ để gán cho chuyền (mig 117, 21/10/2026) — `co_cot` = đã chạy migration chưa.
+router.get('/to', V, asyncHandler(async (req, res) => ok(res, {
+  co_cot: await repo.chuyenCoCotTo(), items: await repo.listToChon(),
+})));
 router.post('/loai', M, asyncHandler(async (req, res) => created(res, { id: await repo.createLoai(req.body, uid(req)) })));
 
 module.exports = router;

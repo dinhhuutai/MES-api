@@ -347,16 +347,98 @@ async function phanInRowsByLenh(lenhIds = []) {
   return rows;
 }
 
+// VẢI HỦY / THIẾU GẮN THEO TEM (mig 118, 21/10/2026 — `vai_huy.tem_id`). Dò cột; nhớ "đã có" mãi, "chưa có" dò lại.
+let _vaiCoCotTem = false;
+async function vaiHuyCoCotTem() {
+  if (_vaiCoCotTem) return true;
+  try {
+    const { rows } = await query(
+      `SELECT 1 FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='vai_huy' AND column_name='tem_id' LIMIT 1`.replace(/\s+/g, ' ')
+    );
+    _vaiCoCotTem = rows.length > 0;
+  } catch { _vaiCoCotTem = false; }
+  return _vaiCoCotTem;
+}
+
+// SỐ VẢI HỦY / THIẾU "CHỜ GẮN TEM" CỦA 1 PHIẾU (21/10/2026, người dùng chốt): ô Vải hủy / thiếu ở sidebar 1 lệnh LƯU
+//   1 giá trị (lưu lại = thay), tới lượt in tem kế tiếp thì gắn vào tem đó rồi XÓA. Nhớ ở `audit_log`
+//   (`ten_bang='vai_cho_tem'`, `id_ban_ghi` = phiếu, dòng MỚI NHẤT = giá trị đang chờ) — cùng khuôn `docDauCa`.
+//   `gia_tri_moi` = { huy, thieu, dot_vai_ve_id, ly_do_huy, ly_do_thieu, gan_tem_id? (lúc bị gắn/bỏ), bo_qua? }.
+//   `client` (tùy chọn) = đọc/ghi TRONG transaction in tem (khóa `pg_advisory_xact_lock` ở service).
+async function docVaiChoTem(phieuId, client = null) {
+  const q = client ? client.query.bind(client) : query;
+  const { rows } = await q(
+    `SELECT a.gia_tri_moi AS v, a.thoi_gian, nd.ho_ten AS nguoi FROM audit_log a
+       LEFT JOIN nguoi_dung nd ON nd.id = a.nguoi_thuc_hien_id
+      WHERE a.ten_bang = 'vai_cho_tem' AND a.id_ban_ghi = $1 AND a.hanh_dong = 'VAI_CHO_TEM'
+      ORDER BY a.thoi_gian DESC, a.id DESC LIMIT 1`.replace(/\s+/g, ' '),
+    [String(phieuId)]
+  );
+  if (!rows[0]) return null;
+  const v = rows[0].v || {};
+  return {
+    huy: Number(v.huy) || 0, thieu: Number(v.thieu) || 0, dot_vai_ve_id: v.dot_vai_ve_id || null,
+    ly_do_huy: v.ly_do_huy || null, ly_do_thieu: v.ly_do_thieu || null, nguoi: rows[0].nguoi, tg: rows[0].thoi_gian,
+  };
+}
+async function ghiVaiChoTem(phieuId, v, actorId, client = null) {
+  const q = client ? client.query.bind(client) : query;
+  await q(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('vai_cho_tem', $1, 'VAI_CHO_TEM', $2::jsonb, $3, clock_timestamp(), $3)`.replace(/\s+/g, ' '),
+    [String(phieuId), JSON.stringify(v), actorId || null]
+  );
+}
+
+// Vải hủy / thiếu ĐANG GẮN 1 tem (mig 118) — Σ theo loại (sổ có dòng điều chỉnh âm). Chưa có cột ⇒ null.
+async function vaiCuaTem(temId) {
+  if (!(await vaiHuyCoCotTem())) return null;
+  const { rows } = await query(
+    `SELECT COALESCE(SUM(so_luong) FILTER (WHERE COALESCE(loai,'HUY') = 'HUY'), 0)::int AS huy,
+            COALESCE(SUM(so_luong) FILTER (WHERE loai = 'THIEU'), 0)::int AS thieu,
+            (array_agg(dot_vai_ve_id ORDER BY created_date DESC))[1] AS dot_vai_ve_id,
+            count(*)::int AS so_dong
+       FROM vai_huy WHERE tem_id = $1`.replace(/\s+/g, ' '),
+    [temId]
+  );
+  return rows[0] || { huy: 0, thieu: 0, dot_vai_ve_id: null, so_dong: 0 };
+}
+
+// Số hủy / thiếu đã gửi ERP ở lượt ghi-in-tem gần nhất của tem — dùng cho tem CHƯA có dòng vải gắn tem
+// (in trước mig 118: số nằm ở sổ đợt, không biết thuộc tem nào). Không có lượt gửi ⇒ null.
+async function vaiErpCuaTem(temId) {
+  const { rows } = await query(
+    `SELECT COALESCE(NULLIF(a.gia_tri_moi->'gui'->>'Soluongloi','')::numeric, 0)::int AS huy,
+            COALESCE(NULLIF(a.gia_tri_moi->'gui'->>'SOLUONGTHIEU','')::numeric, 0)::int AS thieu
+       FROM audit_log a WHERE a.ten_bang = 'tem' AND a.id_ban_ghi = $1 AND a.hanh_dong IN ('ERP_GHI_IN_TEM', 'ERP_GHI_IN_TEM_LOI')
+      ORDER BY (a.hanh_dong = 'ERP_GHI_IN_TEM') DESC, a.thoi_gian DESC LIMIT 1`.replace(/\s+/g, ' '),
+    [String(temId)]
+  );
+  return rows[0] || null;
+}
+
+// Vết "nhập / sửa vải hủy – thiếu ở tem" (21/10/2026) — số cũ / mới + lý do.
+async function logSuaVaiTem(temId, v, actorId) {
+  await query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_cu, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('tem', $1, 'SUA_VAI_THEO_TEM', $2::jsonb, $3::jsonb, $4, CURRENT_TIMESTAMP, $4)`.replace(/\s+/g, ' '),
+    [String(temId), JSON.stringify(v.cu || {}), JSON.stringify(v.moi || {}), actorId || null]
+  );
+}
+
 // Ghi 1 lần vải hủy / vải thiếu (cùng sổ `vai_huy`, phân biệt bằng cột `loai` — mig 063).
 // Best-effort: bảng/cột chưa có (migration 039/063 chưa chạy) → ném lỗi để service báo.
-async function insertVaiHuy({ phieuId, lenhId, dotVaiId, phanInId, soLuong, lyDo, loai }, actorId) {
+// `temId` (mig 118) = tem đi kèm; chưa có cột ⇒ ghi như cũ (không gắn tem).
+async function insertVaiHuy({ phieuId, lenhId, dotVaiId, phanInId, soLuong, lyDo, loai, temId = null }, actorId) {
   const isThieu = loai === 'THIEU';
   const base = [phieuId || null, lenhId || null, dotVaiId || null, phanInId || null, soLuong, lyDo || null];
   try {
+    const coTem = !!temId && (await vaiHuyCoCotTem());
     const { rows } = await query(
-      `INSERT INTO vai_huy (phieu_san_xuat_id, lenh_san_xuat_id, dot_vai_ve_id, phan_in_id, so_luong, ly_do, loai, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-      [...base, isThieu ? 'THIEU' : 'HUY', actorId]
+      `INSERT INTO vai_huy (phieu_san_xuat_id, lenh_san_xuat_id, dot_vai_ve_id, phan_in_id, so_luong, ly_do, loai, created_by${coTem ? ', tem_id' : ''})
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8${coTem ? ',$9' : ''}) RETURNING id`,
+      [...base, isThieu ? 'THIEU' : 'HUY', actorId, ...(coTem ? [temId] : [])]
     );
     return rows[0].id;
   } catch (e) {
@@ -375,13 +457,17 @@ async function insertVaiHuy({ phieuId, lenhId, dotVaiId, phanInId, soLuong, lyDo
 // Lịch sử vải hủy + vải thiếu của 1 lệnh (best-effort: bảng chưa có → trả []).
 // Cột `loai` do mig 063 thêm → nếu chưa chạy, fallback query không có cột đó (mọi dòng coi là HUY).
 async function listVaiHuyByLenh(lenhId) {
+  // mig 118: kèm mã tem đi kèm lần ghi (`ma_tem` NULL = ghi trước mig 118 / không gắn tem).
+  const coTem = await vaiHuyCoCotTem();
   const SEL = (loaiCol) => `
       SELECT vh.id, vh.so_luong, vh.ly_do, vh.created_date, ${loaiCol} AS loai,
-             pin.ma_phan, pin.mau_vai, dv.ma_dot_vai, nd.ho_ten AS nguoi
+             pin.ma_phan, pin.mau_vai, dv.ma_dot_vai, nd.ho_ten AS nguoi,
+             ${coTem ? 'tv.ma_tem' : 'NULL::text AS ma_tem'}
        FROM vai_huy vh
        LEFT JOIN phan_in pin ON pin.id = vh.phan_in_id
        LEFT JOIN dot_vai_ve dv ON dv.id = vh.dot_vai_ve_id
        LEFT JOIN nguoi_dung nd ON nd.id = vh.created_by
+       ${coTem ? 'LEFT JOIN tem tv ON tv.id = vh.tem_id' : ''}
        WHERE vh.lenh_san_xuat_id = $1
        ORDER BY vh.created_date DESC`.replace(/\s+/g, ' ');
   try {
@@ -665,11 +751,13 @@ async function listCancelableTem({ search = '', offset = 0, limit = 50 }) {
 //   `da_kiem` + `mo_lai_duoc` (cùng luật nút Hủy / Mở lại ở "Tem đã in" — `getTemsByPhieu`) cho nút Hủy / Mở lại ở bảng.
 async function listTemDaIn({
   laGiaCong = false, search = '', ngayTu = '', ngayDen = '', ngayCaTu = '', ngayCaDen = '', maNgayCa = '',
-  khach = '', don = '', maHang = '', codePhan = '', maTem = '', chuyen = '',
+  khach = '', don = '', maHang = '', codePhan = '', maTem = '', chuyen = '', chuyenId = '',
   offset = 0, limit = 20,
 }) {
   const dk = [];
   const p = [];
+  // Ô CHỌN chuyền (21/10/2026) — khớp ĐÚNG chuyền chạy phiếu (ô chữ `chuyen` khớp gần đúng: "M1" ra cả M10A).
+  if (chuyenId && /^[0-9a-f-]{36}$/i.test(String(chuyenId))) { p.push(chuyenId); dk.push(`cs.id = $${p.length}::uuid`); }
   const them = (val, bieuThuc) => {
     if (!val) return;
     p.push(mauTim(val));
@@ -705,8 +793,19 @@ async function listTemDaIn({
       ${dk.length ? `AND ${dk.join(' AND ')}` : ''}`;
   const FROM = `${JOIN_GOC} ${WHERE_GOC}`;
   const cotMaLo = (await temCoCot('ma_lo')) ? 't.ma_lo' : 'NULL::text AS ma_lo';   // mig 114
+  // VẢI HỦY / THIẾU CỦA TEM (21/10/2026): có dòng sổ gắn tem (mig 118) ⇒ cộng sổ; không có (tem in trước mig 118 /
+  //   chưa chạy mig) ⇒ số đã gửi ERP cùng tem (`Soluongloi` / `SOLUONGTHIEU` lượt "Báo ERP mỗi lần in tem" — thành công
+  //   trước, không có thì lượt lỗi). Không lượt nào ⇒ 0.
+  const coVaiTem = await vaiHuyCoCotTem();
+  const soVai = (loai, khoaErp) => `CASE WHEN ${coVaiTem ? 'EXISTS (SELECT 1 FROM vai_huy vx WHERE vx.tem_id = t.id)' : 'false'}
+      THEN ${coVaiTem ? `(SELECT COALESCE(SUM(vx.so_luong),0) FROM vai_huy vx WHERE vx.tem_id = t.id AND COALESCE(vx.loai,'HUY') = '${loai}')` : '0'}
+      ELSE COALESCE(NULLIF(erpv.gui->>'${khoaErp}','')::numeric, 0) END::int`;
+  const ERP_VAI_LATERAL = `LEFT JOIN LATERAL (SELECT a.gia_tri_moi->'gui' AS gui FROM audit_log a
+      WHERE a.ten_bang = 'tem' AND a.id_ban_ghi = t.id::text AND a.hanh_dong IN ('ERP_GHI_IN_TEM', 'ERP_GHI_IN_TEM_LOI')
+      ORDER BY (a.hanh_dong = 'ERP_GHI_IN_TEM') DESC, a.thoi_gian DESC LIMIT 1) erpv ON true`;
   const dataSql = `
     SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.created_date, t.ma_ngay_ca, t.ngay_ca, ${cotMaLo},
+           ${soVai('HUY', 'Soluongloi')} AS sl_vai_huy_tem, ${soVai('THIEU', 'SOLUONGTHIEU')} AS sl_vai_thieu_tem,
            (COALESCE(t.sl_kcs_dat,0) + COALESCE(t.sl_kcs_sua,0) + COALESCE(t.sl_kcs_huy,0)
              + COALESCE(t.sl_oqc_dat,0) + COALESCE(t.sl_da_giao,0)) > 0 AS da_kiem,
            COALESCE(${MO_LAI_DUOC_SQL}, false) AS mo_lai_duoc,
@@ -724,6 +823,7 @@ async function listTemDaIn({
            (SELECT count(*) FROM log_tem lt2 WHERE lt2.tem_id = t.id)::int AS so_lan_in
     ${JOIN_GOC}
     ${SU_KIEN_CUOI_LATERAL}
+    ${ERP_VAI_LATERAL}
     ${WHERE_GOC}
     ORDER BY t.created_date DESC
     LIMIT $${p.length + 1} OFFSET $${p.length + 2}`;
@@ -2010,6 +2110,8 @@ async function insertVuotHistory(client, h, actorId) {
 module.exports = {
   // Luật "tem in đã hủy mở lại được" (alias t / ps / ls / h) — Quản trị phần in đọc CHUNG (19/10/2026).
   SU_KIEN_CUOI_LATERAL, MO_LAI_DUOC_SQL,
+  // Vải hủy / thiếu theo tem (21/10/2026, mig 118) + số chờ gắn tem của phiếu.
+  vaiHuyCoCotTem, docVaiChoTem, ghiVaiChoTem, vaiCuaTem, vaiErpCuaTem, logSuaVaiTem,
   getVuotContext, listUnreleasedDotVaiForPhanIn, incLenhRelease, insertVuotHistory,
   listProductionCandidates, getPrintedTotal, getDefaultXePhoi, nextMaPhieu, createPhieu, setLenhChuyen, setLenhTrangThai, getLenhBasic,
   setPhieuChuyen, getChuyenById, logDoiChuyen,

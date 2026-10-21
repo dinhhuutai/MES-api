@@ -38,11 +38,47 @@ function khoaNhomCa(loaiChuyen) {
   if (!lc) return '';
   return LOAI_CHUYEN_CA.includes(lc) ? lc : NHOM_CA_KHAC;
 }
-function loaiCaCua(modeMap, khoaTuan, loaiChuyen) {
+// ⚠⚠ THỪA HƯỞNG TUẦN TRƯỚC (21/10/2026, người dùng chốt "cài đặt ca cho thừa hưởng từ tuần trước, khi nào thay đổi
+//   thì mới vào cài đặt sửa lại"): tuần CHƯA cài cho nhóm ⇒ lấy tuần GẦN NHẤT TRƯỚC ĐÓ có cài cho nhóm; chưa từng cài ⇒
+//   mặc định (Ngắn / Hành chính cho Khác). "Có cài cho nhóm" của 1 tuần: Máy/Bàn/Robot = riêng của loại HOẶC chung
+//   (riêng thắng) · Khác = riêng Khác · không biết loại = chung. Tuần mới nhất thắng (tuần trước chỉ có CHUNG = Dài mà
+//   tuần trước nữa có riêng Máy = Ngắn ⇒ Máy theo Dài). Ca thật 13–14/10: tuần 42 Máy chạy ca Dài nhưng chưa cài ⇒
+//   MES mặc định Ngắn ⇒ 12 tem M3 sai ngày ca.
+// Chỉ mục tuần sắp sẵn theo nhóm, nhớ theo CHÍNH object `modeMap` (map đổi = object mới ⇒ tự tính lại).
+const _chiMuc = new WeakMap();
+const thuTuTuan = (khoa) => { const [n, t] = String(khoa).split('-').map(Number); return n * 100 + t; };
+function chiMucTuan(modeMap) {
+  if (_chiMuc.has(modeMap)) return _chiMuc.get(modeMap);
+  const tuan = new Set();
+  for (const k of modeMap.keys()) tuan.add(String(k).split('|')[0]);
+  const nhom = {};
+  for (const g of ['', ...NHOM_CA_RIENG]) {
+    const ds = [];
+    for (const kt of tuan) {
+      const v = g === NHOM_CA_KHAC ? modeMap.get(`${kt}|${NHOM_CA_KHAC}`)
+        : (g && modeMap.get(`${kt}|${g}`)) || modeMap.get(kt);
+      if (v) ds.push({ ord: thuTuTuan(kt), khoa: kt, v });
+    }
+    nhom[g] = ds.sort((a, b) => a.ord - b.ord);
+  }
+  _chiMuc.set(modeMap, nhom);
+  return nhom;
+}
+
+// Trả { loaiCa, nguon: 'TUAN' (cài đúng tuần) | 'THUA_HUONG' (lấy tuần trước) | 'MAC_DINH', tuan: 'nam-tuan' | null }.
+function loaiCaChiTiet(modeMap, khoaTuan, loaiChuyen) {
   const k = khoaNhomCa(loaiChuyen);
-  if (k === NHOM_CA_KHAC) return (modeMap && modeMap.get(`${khoaTuan}|${NHOM_CA_KHAC}`)) || CA_KHAC_MAC_DINH;
-  if (!modeMap) return 'NGAN';
-  return (k && modeMap.get(`${khoaTuan}|${k}`)) || modeMap.get(khoaTuan) || 'NGAN';
+  const macDinh = { loaiCa: k === NHOM_CA_KHAC ? CA_KHAC_MAC_DINH : 'NGAN', nguon: 'MAC_DINH', tuan: null };
+  if (!modeMap || !modeMap.size || !khoaTuan) return macDinh;
+  const ds = chiMucTuan(modeMap)[k] || [];
+  const ord = thuTuTuan(khoaTuan);
+  for (let i = ds.length - 1; i >= 0; i -= 1) {
+    if (ds[i].ord <= ord) return { loaiCa: ds[i].v, nguon: ds[i].ord === ord ? 'TUAN' : 'THUA_HUONG', tuan: ds[i].khoa };
+  }
+  return macDinh;
+}
+function loaiCaCua(modeMap, khoaTuan, loaiChuyen) {
+  return loaiCaChiTiet(modeMap, khoaTuan, loaiChuyen).loaiCa;
 }
 
 // Suy ca từ các giá trị đã EXTRACT ở SQL (giờ/phút/năm/tuần theo VN) + map cấu hình tuần (+ loại chuyền).
@@ -158,6 +194,6 @@ function ngayCaKeHoach(tuGio, ngayKeHoach, modeMap, loaiChuyen = null) {
 
 module.exports = {
   caFromHour, caFromParts, maCa, maNgayCa, ngayTuMaNgayCa, gioBatDauCa, khoaTuanIso, ngayCaKeHoach, caDangChay,
-  loaiCaCua, khoaNhomCa, LOAI_CHUYEN_CA, NHOM_CA_RIENG, NHOM_CA_KHAC, CA_KHAC_MAC_DINH,
+  loaiCaCua, loaiCaChiTiet, khoaNhomCa, LOAI_CHUYEN_CA, NHOM_CA_RIENG, NHOM_CA_KHAC, CA_KHAC_MAC_DINH,
   maNgayCaHopLe, NGAY_CA_SAI,
 };

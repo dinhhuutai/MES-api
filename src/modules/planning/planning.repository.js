@@ -2427,6 +2427,8 @@ async function auditTraVeKyThuat(pinId, dotVaiId, lyDo, actorId) {
 }
 
 module.exports = {
+  // Mảnh SQL thông tin phần in đại diện của lệnh (alias `ls`) — dùng lại ở `production/theoDoiTo.js` (21/10/2026).
+  PHAN_INFO_LATERAL,
   releaseListByDate,
   phanInIdByDotVai, dotVaiReleasedOne, auditTraVeKyThuat,
   listCaTuan, caModeMap, upsertCaTuan, caTuanCoLoaiChuyen,

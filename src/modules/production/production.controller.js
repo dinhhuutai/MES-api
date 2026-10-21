@@ -23,6 +23,13 @@ const baoCaoSanXuat = asyncHandler(async (req, res) => {
   return ok(res, await baoCaoNgay(ngay));
 });
 
+// Theo dõi sản xuất THEO TỔ (21/10/2026) — `?ngay=YYYY-MM-DD` (thiếu/sai ⇒ hôm nay). Xem `theoDoiTo.js`.
+const theoDoiTo = asyncHandler(async (req, res) => {
+  const q = String(req.query.ngay || '').trim();
+  const ngay = /^\d{4}-\d{2}-\d{2}$/.test(q) && !Number.isNaN(Date.parse(q)) ? q : ngayHomNayVN();
+  return ok(res, await require('./theoDoiTo').theoDoiTo(ngay));
+});
+
 // Báo cáo bất thường dừng chuyền (02/10/2026) — `?tuNgay=&denNgay=` (YYYY-MM-DD, ngày SX 06:00→06:00).
 // Thiếu/sai ⇒ hôm nay; đảo ngược ⇒ tự đổi chỗ; dài quá `NGAY_TOI_DA` ⇒ cắt bớt đầu (giữ đúng ngày cuối).
 const { baoCaoDungChuyen: docBaoCaoDungChuyen } = require('./baoCaoDungChuyen');
@@ -99,6 +106,11 @@ const temLogs = asyncHandler(async (req, res) => ok(res, await service.temLogs(r
 const addVaiHuy = asyncHandler(async (req, res) =>
   ok(res, await service.addVaiHuy(req.params.phieuId, req.body, req.user.id),
     req.body?.loai === 'THIEU' ? 'Đã ghi vải thiếu' : 'Đã ghi vải hủy'));
+
+// Vải hủy / thiếu NHẬP Ở TEM (21/10/2026) — body { huy, thieu, dotVaiId?, lyDo? }. Xem `service.suaVaiTheoTem`.
+const xemVaiTem = asyncHandler(async (req, res) => ok(res, await service.xemVaiTem(req.params.temId)));
+const suaVaiTheoTem = asyncHandler(async (req, res) =>
+  ok(res, await service.suaVaiTheoTem(req.params.temId, req.body || {}, req.user.id), 'Đã lưu vải hủy / thiếu của tem'));
 
 // Phân công sản xuất: body { caTruongId, chuyenTruong, items: [{ dotVaiId, thoIn, soLuongHuy, soLuongThieu }] }
 const savePhanCong = asyncHandler(async (req, res) =>
@@ -207,7 +219,7 @@ const dsTemDaIn = (laGiaCong) => asyncHandler(async (req, res) => {
     ngayCaDen: /^\d{4}-\d{2}-\d{2}$/.test(q.ngayCaDen || '') ? q.ngayCaDen : '',
     maNgayCa: String(q.maNgayCa || '').trim().slice(0, 20),
     khach: q.khach || '', don: q.don || '', maHang: q.maHang || '', codePhan: q.codePhan || '',
-    maTem: q.maTem || '', chuyen: q.chuyen || '', page, limit, offset,
+    maTem: q.maTem || '', chuyen: q.chuyen || '', chuyenId: q.chuyenId || '', page, limit, offset,
   }, laGiaCong));
 });
 
@@ -247,8 +259,9 @@ const vuotSanXuat = asyncHandler(async (req, res) =>
 
 module.exports = {
   candidates, getRun, start, startBatch, chayDacBietCandidates, chayDacBiet, printTem, printTemBatch, reprintTem, temLabel, temLogs, finish, monitor,
+  theoDoiTo,
   xePhoi, temChoPhoi, themTem, adjustPhoi, drying, confirmDry, redry,
-  stopLine, resumeLine, addVaiHuy, savePhanCong, vuotSanXuat,
+  stopLine, resumeLine, addVaiHuy, xemVaiTem, suaVaiTheoTem, savePhanCong, vuotSanXuat,
   lyDoNgungList, lyDoNgungCreate, lyDoNgungUpdate, lyDoNgungToggle,
   toInList, toInCreate, toInUpdate, toInToggle, baoCaoSanXuat, baoCaoDungChuyen, baoCaoKiemHang, baoCaoSuaHang,
   baoCaoPhanLoaiLoi,

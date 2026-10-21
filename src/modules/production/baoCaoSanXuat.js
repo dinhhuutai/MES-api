@@ -10,7 +10,7 @@
 
 const { query } = require('../../config/db');
 const { dungBaoCaoSanXuat, khoaTuanIso, suyLoaiCaTuTem } = require('../../utils/baoCaoSanXuat');
-const { NHOM_CA_RIENG, NHOM_CA_KHAC, CA_KHAC_MAC_DINH, khoaNhomCa } = require('../../utils/ca');
+const { NHOM_CA_RIENG, NHOM_CA_KHAC, khoaNhomCa, loaiCaChiTiet } = require('../../utils/ca');
 const { thoInPhieuSql } = require('../../utils/thoIn');
 const { coCotThoInKh } = require('../../utils/thoInKeHoach');
 
@@ -136,17 +136,13 @@ async function docTo(ids) {
   return rows;
 }
 
-// Loại ca ĐÃ CÀI cho tuần ISO của ngày: { chung, rieng: {MAY|BAN|ROBOT: loại ca} } (mig 112 — đọc qua
-// `planning.repository.caModeMap`, cùng nguồn mọi chỗ suy ca). Chưa cài / bảng chưa có ⇒ chung null (bên gọi
-// suy từ tem).
+// Cấu hình ca của tuần ISO chứa ngày: { map, khoa } — đọc qua `planning.repository.caModeMap`, suy bằng
+// `utils/ca.js loaiCaChiTiet` (CÙNG LUẬT mọi chỗ suy ca, gồm thừa hưởng tuần trước — 21/10/2026). Bảng chưa có ⇒ map rỗng.
 async function loaiCaCuaNgay(ngay) {
+  const khoa = khoaTuanIso(ngay);
   try {
-    const map = await require('../planning/planning.repository').caModeMap();
-    const khoa = khoaTuanIso(ngay);
-    const rieng = {};
-    NHOM_CA_RIENG.forEach((lc) => { if (map.has(`${khoa}|${lc}`)) rieng[lc] = map.get(`${khoa}|${lc}`); });
-    return { chung: map.get(khoa) || null, rieng };
-  } catch { return { chung: null, rieng: {} }; }
+    return { map: await require('../planning/planning.repository').caModeMap(), khoa };
+  } catch { return { map: new Map(), khoa }; }
 }
 
 const duyNhat = (arr) => [...new Set(arr.filter(Boolean).map(String))];
@@ -168,16 +164,16 @@ async function dungMoi(ngay) {
     docChuyen(duyNhat(phieus.map((p) => p.chuyen_id))),
     coTo ? docTo(duyNhat(phieus.map((p) => p.to_in_id))) : [],
   ]) : [[], [], [], [], []];
-  const caChung = loaiCa.chung || suyLoaiCaTuTem(tems) || 'NGAN';
-  // Mig 112: chuyền Máy/Bàn/Robot có cài riêng ⇒ chia ca theo cài riêng, không thì CHUNG; loại khác (nhóm KHAC —
-  // Gia công, Máy tròn, Logo, Ép) ⇒ cài riêng của nhóm, mặc định Hành chính (09/10/2026) — gương `utils/ca.js loaiCaCua`.
+  // Mọi loại chuyền suy qua `loaiCaChiTiet` (riêng ⇒ chung ⇒ thừa hưởng tuần trước; nhóm Khác chỉ theo riêng Khác,
+  //   mặc định Hành chính). Riêng báo cáo: Máy/Bàn/Robot chưa TỪNG cài (mặc định) ⇒ suy từ mã ca trên tem như trước.
+  const caTem = suyLoaiCaTuTem(tems) || 'NGAN';
   const caTheoLoai = (lc) => {
-    const k = khoaNhomCa(lc);
-    if (k === NHOM_CA_KHAC) return loaiCa.rieng[NHOM_CA_KHAC] || CA_KHAC_MAC_DINH;
-    return (k && loaiCa.rieng[k]) || caChung;
+    const r = loaiCaChiTiet(loaiCa.map, loaiCa.khoa, lc);
+    return r.nguon === 'MAC_DINH' && khoaNhomCa(lc) !== NHOM_CA_KHAC ? caTem : r.loaiCa;
   };
   const kq = dungBaoCaoSanXuat({ ngay, loaiCa: caTheoLoai, bayGio: Date.now(), phieus, tems, lenhs, pins, chuyens, tos });
-  return { ...kq, loai_ca_da_cai: !!loaiCa.chung || Object.keys(loaiCa.rieng).length > 0 };
+  const daCai = ['', ...NHOM_CA_RIENG].some((g) => loaiCaChiTiet(loaiCa.map, loaiCa.khoa, g || null).nguon !== 'MAC_DINH');
+  return { ...kq, loai_ca_da_cai: daCai };
 }
 
 // Lưu PROMISE (không lưu kết quả) ⇒ nhiều người mở cùng lúc chỉ chạy 1 lượt; lỗi thì bỏ cache ngay.
@@ -193,4 +189,5 @@ async function baoCaoNgay(ngay) {
 }
 
 // `coCot` dùng chung với Báo cáo dừng chuyền (`./baoCaoDungChuyen.js`).
-module.exports = { baoCaoNgay, coCot };
+// Mảnh SQL dùng chung với Theo dõi theo tổ (`theoDoiTo.js`, 21/10/2026) — cùng tập tem / phiếu thật, cùng ngày SX.
+module.exports = { baoCaoNgay, coCot, PHIEU_THAT, TEM_THAT, TEM_CUA_NGAY, MOC_TEM };
