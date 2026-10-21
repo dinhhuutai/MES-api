@@ -241,6 +241,22 @@ async function nhoDauCa(ca, body, actorId) {
 //     không gắn trùng.
 // Route cũ `POST /phieu/:id/vai-huy` (`addVaiHuy`) nay là "lưu số chờ" — giữ tên để FE cũ vẫn gọi được.
 const khoaVaiCho = (phieuId) => `vai_cho_tem|${phieuId}`;
+
+// KIỂM LẠI TRẦN 110% TRONG TRANSACTION IN TEM (21/10/2026): kiểm ở đầu hàm chạy NGOÀI transaction ⇒ 2 máy in cùng
+// phiếu cùng lúc cùng thấy "còn in được" và cùng tạo tem, vượt trần. Giữ khóa theo phiếu (cùng khóa với số vải chờ —
+// advisory lock lồng trong 1 phiên được) rồi đọc lại tổng đã in: lượt sau CHỜ lượt trước commit rồi mới tính.
+async function kiemTran110Tx(client, phieuId, target, them) {
+  await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [khoaVaiCho(phieuId)]);
+  if (!(target > 0)) return;
+  const printed = await repo.getPrintedTotal(phieuId, client);
+  const max = Math.floor(target * 1.1);
+  if (printed + them > max) {
+    throw new AppError(
+      `Vượt quá 110% SL release — máy khác vừa in tem cho lệnh này (tối đa ${max}, đã in ${printed}, còn được in ${Math.max(0, max - printed)})`,
+      { status: 422, errorCode: 'OVER_LIMIT' }
+    );
+  }
+}
 const vaiTrong = (v) => !v || (!(v.huy > 0) && !(v.thieu > 0));
 
 async function addVaiHuy(phieuId, { dotVaiId, soLuong, lyDo, loai }, actorId) {
@@ -894,6 +910,7 @@ async function printTem(phieuId, soLuong, actorId, body) {
   let newTemId;
   let vaiCho = null; // số vải hủy / thiếu đang CHỜ của phiếu — gắn vào tem này (21/10/2026)
   await withTransaction(async (client) => {
+    await kiemTran110Tx(client, phieuId, target, qty);
     newTemId = await repo.createTem(client, { phieuId, maTem, soLuong: qty, ...meta }, actorId);
     await repo.logTemPrint(client, { temId: newTemId, maTem, actorId });
     await repo.addTemToXe(client, { temId: newTemId, xeId: xe.id, soLuongPhoi: qty, phut: dryMin }, actorId);
@@ -1008,6 +1025,7 @@ async function printTemBatch(phieuId, items, actorId, body) {
   const out = [];
   let vaiCho = null; // số chờ của phiếu (ô Vải hủy / thiếu sidebar 1 lệnh) — dùng khi bảng in KHÔNG nhập hủy/thiếu
   await withTransaction(async (client) => {
+    await kiemTran110Tx(client, phieuId, target, tong);
     for (const [i, it] of list.entries()) {
       const maTem = maTemList[i];
       // GC màu vải nhập RIÊNG từng dòng ở modal gom set → ưu tiên `it.gcMauVai`; không có thì dùng ô chung.

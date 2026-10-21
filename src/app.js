@@ -63,6 +63,8 @@ app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true }));
 // Cắt khoảng trắng thừa ở MỌI tham số query (ô tìm kiếm, ô lọc, mã dán từ Excel…).
 app.use(trimQuery);
+// Mọi request ghi ⇒ cache đọc dùng chung (`utils/cacheDoc.js`) hết hiệu lực ngay (21/10/2026).
+app.use(require('./middlewares/danhDauGhi'));
 
 // Phục vụ file đã upload (ảnh avatar...). URL public thật do PUBLIC_BASE_URL quyết định;
 // dòng này cho phép truy cập trực tiếp qua chính backend (hữu ích khi test local).

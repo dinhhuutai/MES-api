@@ -5,11 +5,17 @@ const asyncHandler = require('../../utils/asyncHandler');
 const { ok, created } = require('../../utils/response');
 const { getPaging, TRAN_TAI_HET } = require('../../utils/pagination');
 const { ngayHomNayVN } = require('../../utils/khoangNgay');
+const { nhoDoc } = require('../../utils/cacheDoc');
 
-const release1Candidates = asyncHandler(async (req, res) => {
-  const { page, limit, offset } = getPaging(req.query, { tranToiDa: TRAN_TAI_HET });
-  return ok(res, await service.listRelease1Candidates({ search: req.query.search || '', page, limit, offset }));
+// Danh sách các màn dòng chảy dùng chung kết quả giữa mọi người xem cùng tham số (`utils/cacheDoc.js` — mọi thao
+// tác ghi làm cache hết hiệu lực ngay). Hàm dựng tham số chỉ đọc `req.query`, không đọc người gọi.
+const dsChung = (nhom, dungThamSo, ham) => asyncHandler(async (req, res) => {
+  const opts = dungThamSo(req.query);
+  return ok(res, await nhoDoc(nhom, opts, () => ham(opts)));
 });
+const thamSoTimTrang = (q) => ({ search: q.search || '', ...getPaging(q, { tranToiDa: TRAN_TAI_HET }) });
+
+const release1Candidates = dsChung('planning.release1', thamSoTimTrang, (o) => service.listRelease1Candidates(o));
 
 const autoPlanCandidates = asyncHandler(async (req, res) =>
   ok(res, await service.autoPlanCandidates({ search: req.query.search || '' })));
@@ -53,10 +59,7 @@ const gopHistory = asyncHandler(async (req, res) =>
 const releaseSet = asyncHandler(async (req, res) =>
   created(res, await service.releaseSet(req.params.setId, req.body, req.user.id), 'Đã release set — tạo lệnh sản xuất chung'));
 
-const testRunCandidates = asyncHandler(async (req, res) => {
-  const { page, limit, offset } = getPaging(req.query, { tranToiDa: TRAN_TAI_HET });
-  return ok(res, await service.listTestRunCandidates({ search: req.query.search || '', page, limit, offset }));
-});
+const testRunCandidates = dsChung('planning.testrun', thamSoTimTrang, (o) => service.listTestRunCandidates(o));
 
 const lenhDetail = asyncHandler(async (req, res) => ok(res, await service.getLenhDetail(req.params.lenhId)));
 
@@ -93,10 +96,7 @@ const confirmQABatch = asyncHandler(async (req, res) =>
     ghiChu: req.body?.ghiChu ?? null,
   }), 'QA xác nhận hàng loạt'));
 
-const release2Candidates = asyncHandler(async (req, res) => {
-  const { page, limit, offset } = getPaging(req.query, { tranToiDa: TRAN_TAI_HET });
-  return ok(res, await service.listRelease2Candidates({ search: req.query.search || '', page, limit, offset }));
-});
+const release2Candidates = dsChung('planning.release2', thamSoTimTrang, (o) => service.listRelease2Candidates(o));
 
 const approveRelease2 = asyncHandler(async (req, res) =>
   ok(res, await service.approveRelease2(req.params.lenhId, req.user.id), 'Đã Release 2 — sẵn sàng sản xuất'));
@@ -134,11 +134,9 @@ const replan = asyncHandler(async (req, res) =>
 const replanDetail = asyncHandler(async (req, res) =>
   ok(res, await service.getReplanDetail(req.params.lenhId)));
 
-const giaCongList = asyncHandler(async (req, res) => {
-  const { page, limit, offset } = getPaging(req.query, { tranToiDa: TRAN_TAI_HET });
-  // Cùng bộ tham số lọc với Lập kế hoạch lại (`f_<khóa>` + `tuNgay`/`denNgay`).
-  return ok(res, await service.listGiaCong({ ...replanOpts(req.query), page, limit, offset }));
-});
+// Cùng bộ tham số lọc với Lập kế hoạch lại (`f_<khóa>` + `tuNgay`/`denNgay`).
+const giaCongList = dsChung('planning.giacong',
+  (q) => ({ ...replanOpts(q), ...getPaging(q, { tranToiDa: TRAN_TAI_HET }) }), (o) => service.listGiaCong(o));
 // Nhận hàng gia công (có thể NHIỀU LẦN). 2 dạng body:
 //  · `items: [{ dot_vai_ve_id, so_luong }]` — nhận theo TỪNG CODE PHẦN (tối đa 50/lượt, đường của nút
 //    "In tem" ở màn Gia công). Đây là đường chính từ 09/09/2026.
@@ -177,10 +175,7 @@ const giaCongTemHuy = asyncHandler(async (req, res) =>
   ok(res, await service.cancelGiaCongTem(req.params.temId, req.body, req.user.id),
     'Đã hủy tem gia công — số lượng quay lại phần chờ nhận'));
 
-const keHoachTamList = asyncHandler(async (req, res) => {
-  const { page, limit, offset } = getPaging(req.query, { tranToiDa: TRAN_TAI_HET });
-  return ok(res, await service.listKeHoachTam({ search: req.query.search || '', page, limit, offset }));
-});
+const keHoachTamList = dsChung('planning.khtam', thamSoTimTrang, (o) => service.listKeHoachTam(o));
 
 // Lập kế hoạch tạm cho cả gom set (set chưa đủ Ready — chưa release được nhưng vẫn lên kế hoạch trước).
 const keHoachTamSet = asyncHandler(async (req, res) =>

@@ -278,9 +278,13 @@ async function donHangIdsForTems(temIds) {
   return rows.map((r) => r.id);
 }
 
-async function nextMaPhieuGiao() {
+// `client` (tùy chọn) = cấp số TRONG transaction lập phiếu, sau khi giữ khóa — 2 người lập phiếu cùng lúc không
+//   lấy trùng số (21/10/2026: người sau từng bị 409 "trùng khóa").
+async function nextMaPhieuGiao(client = null) {
   // Chỉ đếm mã dự phòng `PG<số>` — bản cũ gom chữ số cả mã ERP `SQ026LA-009650` (xem `utils/maKeTiep.js`).
-  const { rows } = await query(require('../../utils/maKeTiep').maKeTiepSql('giao_hang', 'ma_phieu_giao', 'PG', 4));
+  const sql = require('../../utils/maKeTiep').maKeTiepSql('giao_hang', 'ma_phieu_giao', 'PG', 4);
+  if (client) await client.query("SELECT pg_advisory_xact_lock(hashtext('giao_hang.ma_phieu_giao'))");
+  const { rows } = await (client || { query }).query(sql);
   return rows[0].ma;
 }
 
@@ -712,6 +716,28 @@ async function insertGiaoAudit(giaoHangId, maPhieu, tems, actorId) {
 }
 
 // Cộng dồn đã giao cho tem + cập nhật trạng thái dominant (chỉ DA_GIAO khi đã giao đủ).
+// ─── KHÓA CHỐNG 2 NGƯỜI BẤM CÙNG LÚC (21/10/2026) ───
+// Khóa các tem (thứ tự id cố định ⇒ không deadlock) TRƯỚC khi tính "còn giao bao nhiêu" lúc lập phiếu.
+async function khoaTemTx(client, temIds) {
+  await client.query('SELECT id FROM tem WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE', [temIds]);
+}
+// Khóa phiếu + tem của phiếu, trả trạng thái phiếu và SL CÒN GIAO hiện tại của từng dòng (cùng công thức `addTem`).
+async function khoaPhieuGiaoTx(client, giaoHangId) {
+  const p = await client.query('SELECT trang_thai FROM giao_hang WHERE id = $1 FOR UPDATE', [giaoHangId]);
+  if (!p.rows[0]) return null;
+  const { rows } = await client.query(
+    `SELECT g.tem_id, g.nguon, g.so_luong_giao, t.ma_tem,
+            CASE WHEN g.nguon='SUA'
+                 THEN GREATEST(0, COALESCE(t.sl_oqc_dat_sua,0)-COALESCE(t.sl_da_giao_sua,0))
+                 ELSE GREATEST(0, (COALESCE(t.sl_oqc_dat,0)-COALESCE(t.sl_oqc_dat_sua,0))-(COALESCE(t.sl_da_giao,0)-COALESCE(t.sl_da_giao_sua,0)))
+            END AS con
+       FROM giao_hang_tem g JOIN tem t ON t.id = g.tem_id
+      WHERE g.giao_hang_id = $1 ORDER BY g.tem_id FOR UPDATE OF t`.replace(/\s+/g, ' '),
+    [giaoHangId]
+  );
+  return { trang_thai: p.rows[0].trang_thai, dong: rows };
+}
+
 async function applyGiaoLedger(client, giaoHangId, actorId) {
   const { rows } = await client.query('SELECT tem_id, so_luong_giao, nguon FROM giao_hang_tem WHERE giao_hang_id=$1', [giaoHangId]);
   for (const r of rows) {
@@ -731,7 +757,7 @@ async function applyGiaoLedger(client, giaoHangId, actorId) {
 
 module.exports = {
   listTemSanSang, listTemChoTich, listTonKcs, donHangIdsForTems, nextMaPhieuGiao, maPhieuGiaoDaDung, doiMaPhieuGiao, createGiaoHang, addTem,
-  getGiaoHang, listGiaoHang, getGiaoHangTems, markGiaoDone, applyGiaoLedger, insertGiaoAudit,
+  getGiaoHang, listGiaoHang, getGiaoHangTems, markGiaoDone, applyGiaoLedger, insertGiaoAudit, khoaTemTx, khoaPhieuGiaoTx,
   coCotTichGiao, coCotGiaoHangTai, cotPhieuThem, setGiaoHangTai,
   tichTem, boTichTem, temDaVaoPhieu, traCuuTemTich, ghiAuditTich,
   historyGiaoByDate, doneGiaoByDate,

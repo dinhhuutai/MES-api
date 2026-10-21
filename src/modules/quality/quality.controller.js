@@ -6,6 +6,7 @@ const asyncHandler = require('../../utils/asyncHandler');
 const { ok } = require('../../utils/response');
 const AppError = require('../../utils/AppError');
 const { ngayHomNayVN } = require('../../utils/khoangNgay');
+const { nhoDoc } = require('../../utils/cacheDoc');
 
 // Gom bộ lọc chung cho danh sách tem KCS/Sửa/OQC (có khoảng ngày ngayTu/ngayDen).
 const candFilters = (q) => {
@@ -13,17 +14,22 @@ const candFilters = (q) => {
   return { search: search || '', filters: { khach, don, maHang, mauVai, kichVai, kichPhim, ngay, ngayTu, ngayDen } };
 };
 
-const kcsCandidates = asyncHandler(async (req, res) => ok(res, await service.listKcsCandidates(candFilters(req.query))));
+// Danh sách KCS / Sửa / OQC dùng chung kết quả giữa mọi người xem (`utils/cacheDoc.js` — ghi là hết hiệu lực ngay).
+const dsTem = (nhom, ham) => asyncHandler(async (req, res) => {
+  const f = candFilters(req.query);
+  return ok(res, await nhoDoc(nhom, f, () => ham(f)));
+});
+const kcsCandidates = dsTem('quality.kcs', (f) => service.listKcsCandidates(f));
 const recordKcs = asyncHandler(async (req, res) =>
   ok(res, await service.recordKcs(req.params.temId, req.body, req.user.id), 'Đã ghi nhận KCS'));
 const gopTem = asyncHandler(async (req, res) =>
   ok(res, await service.gopTem(req.body, req.user.id), 'Đã gộp tem'));
 
-const suaCandidates = asyncHandler(async (req, res) => ok(res, await service.listSuaCandidates(candFilters(req.query))));
+const suaCandidates = dsTem('quality.sua', (f) => service.listSuaCandidates(f));
 const recordSua = asyncHandler(async (req, res) =>
   ok(res, await service.recordSua(req.params.temId, req.body, req.user.id), 'Đã ghi nhận sửa'));
 
-const oqcCandidates = asyncHandler(async (req, res) => ok(res, await service.listOqcCandidates(candFilters(req.query))));
+const oqcCandidates = dsTem('quality.oqc', (f) => service.listOqcCandidates(f));
 const recordOqc = asyncHandler(async (req, res) =>
   ok(res, await service.recordOqc(req.params.temId, req.body, req.user.id), 'Đã ghi nhận OQC'));
 const oqcReturn = asyncHandler(async (req, res) => {

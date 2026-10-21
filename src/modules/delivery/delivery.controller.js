@@ -3,8 +3,13 @@
 const service = require('./delivery.service');
 const asyncHandler = require('../../utils/asyncHandler');
 const { ok, created } = require('../../utils/response');
+const { nhoDoc } = require('../../utils/cacheDoc');
 
-const temSanSang = asyncHandler(async (req, res) => ok(res, await service.listTemSanSang(req.query)));
+// Tem chờ giao dùng chung kết quả giữa mọi người xem (`utils/cacheDoc.js` — ghi là hết hiệu lực ngay).
+const temSanSang = asyncHandler(async (req, res) => {
+  const q = { ...req.query };
+  return ok(res, await nhoDoc('delivery.temSanSang', q, () => service.listTemSanSang(q)));
+});
 // Tem tồn từ KCS — đã kiểm phẩm, chưa giao (modal màn Giao hàng, 14/10/2026).
 const tonKcs = asyncHandler(async (req, res) => ok(res, await service.listTonKcs()));
 const list = asyncHandler(async (req, res) => ok(res, await service.listGiaoHang(req.query)));

@@ -228,8 +228,11 @@ async function tgKiemByTems(temIds) {
 
 // ----- SỔ CÁI SỐ LƯỢNG (migration 043) -----
 // Đọc ledger + SL còn lại từng công đoạn (để service validate số nhập ≤ còn lại).
-async function getTemLedger(temId) {
-  const { rows } = await query(
+// `{ client, khoa }`: đọc TRONG transaction + khóa dòng tem (`FOR UPDATE`) — 2 người lưu KCS/Sửa/OQC cùng 1 tem
+// cùng lúc thì người sau CHỜ người trước commit rồi đọc lại số mới (21/10/2026: thiếu khóa ⇒ tem 500 pcs được
+// KCS 2 lần thành 1.000 pcs đạt).
+async function getTemLedger(temId, { client = null, khoa = false } = {}) {
+  const { rows } = await (client || { query }).query(
     `SELECT id, ma_tem, so_luong, trang_thai, da_qua_phoi, phieu_san_xuat_id, sl_chenh_lech,
             sl_kcs_dat, sl_kcs_sua, sl_kcs_huy, sl_sua_dat, sl_sua_huy, sl_oqc_dat, sl_da_giao,
             sl_oqc_dat_sua, tem_goc_id, sl_sua_tach,
@@ -239,7 +242,7 @@ async function getTemLedger(temId) {
             (sl_kcs_dat - (sl_oqc_dat - sl_oqc_dat_sua)) AS con_oqc_kcs,
             (sl_sua_dat - sl_oqc_dat_sua - sl_sua_tach) AS con_oqc_sua,
             (sl_oqc_dat - sl_da_giao) AS con_giao
-     FROM tem WHERE id = $1`,
+     FROM tem WHERE id = $1${khoa ? ' FOR UPDATE' : ''}`,
     [temId]
   );
   return rows[0] || null;

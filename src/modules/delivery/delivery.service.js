@@ -140,9 +140,17 @@ async function createGiaoHang({ items, temIds, ngayGiao, ghiChu, giaoHangTai, xa
   const donHangId = donIds.length === 1 ? donIds[0] : null;
   const maPhieu = await layMaPhieuGiao(actorId);
 
+  // ⚠ 21/10/2026 — 2 người in phiếu cho CÙNG tem cùng lúc: bản cũ tạo phiếu ở transaction này rồi mới chốt giao ở
+  //   transaction khác ⇒ cả 2 phiếu cùng thấy "còn giao 500" và cùng cộng sổ (giao 1.000). Nay khóa tem trước khi
+  //   tính số còn giao, và khi `xacNhan` thì CHỐT GIAO NGAY TRONG CÙNG transaction (`chotGiaoTx` kiểm lại số) —
+  //   người sau chờ, đọc số mới, thiếu thì báo lỗi và KHÔNG để lại phiếu treo.
   const id = await withTransaction(async (client) => {
+    await repo.khoaTemTx(client, temIdList);
+    // Số dự phòng `PG…` (ERP không cấp) ⇒ cấp LẠI trong transaction dưới khóa: 2 người lập phiếu cùng lúc từng
+    //   lấy trùng số và người sau nhận lỗi "trùng khóa". Số do ERP cấp thì giữ nguyên.
+    const maDung = laIdErp(maPhieu) ? maPhieu : await repo.nextMaPhieuGiao(client);
     const ghId = await repo.createGiaoHang(client, {
-      maPhieu, donHangId, ngayGiao, ghiChu,
+      maPhieu: maDung, donHangId, ngayGiao, ghiChu,
       giaoHangTai: typeof giaoHangTai === 'string' ? giaoHangTai.trim().slice(0, 500) || null : null,
     }, actorId);
     for (const it of list) await repo.addTem(client, ghId, it.temId, it.soLuong, it.nguon, actorId);
@@ -151,11 +159,33 @@ async function createGiaoHang({ items, temIds, ngayGiao, ghiChu, giaoHangTai, xa
     if (coKlg.length) {
       await repo.setKlgDong(client, ghId, coKlg.map((it) => ({ tem_id: it.temId, nguon: it.nguon, klg: it.klg })), actorId);
     }
+    if (xacNhan) await chotGiaoTx(client, ghId, actorId);
     return ghId;
   });
   sockets.emit('delivery:updated', { giaoHangId: id, stage: 'TAO' });
-  if (xacNhan) return confirmGiao(id, actorId);
+  if (xacNhan) return sauChotGiao(id, actorId);
   return getDetail(id);
+}
+
+// CHỐT GIAO trong 1 transaction ĐANG MỞ: khóa phiếu + tem, kiểm lại trạng thái phiếu và số còn giao của từng tem
+// (đều đọc SAU khi giữ khóa) rồi mới cộng sổ cái. Chặn: bấm xác nhận 2 lần cùng lúc (cộng sổ 2 lần) · tem vừa được
+// giao ở phiếu khác.
+async function chotGiaoTx(client, giaoHangId, actorId) {
+  const k = await repo.khoaPhieuGiaoTx(client, giaoHangId);
+  if (!k) throw new AppError('Phiếu giao không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  if (k.trang_thai === 'DA_GIAO') throw new AppError('Phiếu đã giao', { status: 409, errorCode: 'ALREADY' });
+  if (k.trang_thai === 'HUY') throw new AppError('Phiếu đã hủy', { status: 409, errorCode: 'DA_HUY' });
+  if (!k.dong.length) throw new AppError('Phiếu chưa có tem', { status: 422, errorCode: 'EMPTY' });
+  const vuot = k.dong.find((d) => !(Number(d.so_luong_giao) > 0) || Number(d.so_luong_giao) > Number(d.con));
+  if (vuot) {
+    throw new AppError(
+      `Tem ${vuot.ma_tem} vừa được giao ở phiếu khác (còn ${Number(vuot.con)} pcs để giao) — tải lại danh sách rồi chọn lại`,
+      { status: 409, errorCode: 'DA_DOI' }
+    );
+  }
+  // Cộng dồn sổ cái đã giao + đóng phiếu; tem chỉ chuyển DA_GIAO khi đã giao đủ (recompute dominant).
+  await repo.applyGiaoLedger(client, giaoHangId, actorId);
+  await repo.markGiaoDone(client, giaoHangId, actorId);
 }
 
 // SỐ PHIẾU GIAO — ưu tiên số do ERP cấp, lỗi/tắt thì lùi về dãy MES `PG0001`.
@@ -221,6 +251,11 @@ async function huyPhieuGiao(giaoHangId, lyDo, actorId) {
   }
 
   await withTransaction(async (client) => {
+    // ⚠ 21/10/2026: khóa phiếu rồi đọc lại trạng thái — 2 người bấm hủy cùng lúc thì bản cũ trừ sổ cái 2 lần.
+    const k = await repo.khoaPhieuGiaoTx(client, giaoHangId);
+    if (!k || k.trang_thai !== gh.trang_thai) {
+      throw new AppError('Phiếu vừa được người khác xử lý — tải lại danh sách', { status: 409, errorCode: 'DA_DOI' });
+    }
     // Phiếu chưa xác nhận giao thì sổ cái chưa hề cộng ⇒ KHÔNG trừ (trừ là làm âm số của tem).
     if (gh.trang_thai === 'DA_GIAO') await repo.revertGiaoLedger(client, giaoHangId, actorId);
     await repo.markGiaoHuy(client, giaoHangId, actorId);
@@ -236,16 +271,14 @@ async function huyPhieuGiao(giaoHangId, lyDo, actorId) {
 const listPhieuGiaoCancelable = (q = {}) => repo.listPhieuGiaoCancelable({ search: q.search || '' });
 
 async function confirmGiao(giaoHangId, actorId) {
-  const gh = await repo.getGiaoHang(giaoHangId);
-  if (!gh) throw new AppError('Phiếu giao không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
-  if (gh.trang_thai === 'DA_GIAO') throw new AppError('Phiếu đã giao', { status: 409, errorCode: 'ALREADY' });
-  if (gh.so_tem === 0) throw new AppError('Phiếu chưa có tem', { status: 422, errorCode: 'EMPTY' });
+  // Mọi kiểm tra nằm TRONG transaction (`chotGiaoTx`) — kiểm ngoài transaction thì 2 lượt bấm cùng lúc cùng lọt.
+  await withTransaction((client) => chotGiaoTx(client, giaoHangId, actorId));
+  return sauChotGiao(giaoHangId, actorId);
+}
 
-  // Cộng dồn sổ cái đã giao + đóng phiếu; tem chỉ chuyển DA_GIAO khi đã giao đủ (recompute dominant).
-  await withTransaction(async (client) => {
-    await repo.applyGiaoLedger(client, giaoHangId, actorId);
-    await repo.markGiaoDone(client, giaoHangId, actorId);
-  });
+// Việc SAU khi chốt giao đã commit (không chặn nghiệp vụ): dòng chảy, audit, ERP, socket.
+async function sauChotGiao(giaoHangId, actorId) {
+  const gh = await repo.getGiaoHang(giaoHangId);
   // Theo dõi dòng chảy: các tem trong phiếu giao → trạm DONE_DELIVERY.
   const tems = await repo.getGiaoHangTems(giaoHangId);
   for (const t of tems) await tracking.moveByTem(t.tem_id || t.id, 'DONE_DELIVERY', actorId);

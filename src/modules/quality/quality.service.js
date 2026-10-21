@@ -263,6 +263,13 @@ async function recordKcs(temId, body, actorId) {
 
   let kcsId = null;
   await withTransaction(async (client) => {
+    // ⚠ Khóa tem + đọc lại (21/10/2026): kiểm ở trên chạy NGOÀI transaction ⇒ 2 người lưu cùng lúc cùng thấy
+    //   "còn 500" và cùng cộng 500 (tem 500 thành 1.000 đạt). Số đổi giữa chừng ⇒ người sau phải tải lại.
+    const moi = await repo.getTemLedger(temId, { client, khoa: true });
+    if ((Number(moi.con_kcs) || 0) !== conKcs) {
+      throw new AppError(`Tem ${tem.ma_tem} vừa được người khác xác nhận KCS — tải lại danh sách rồi nhập lại`,
+        { status: 409, errorCode: 'DA_DOI' });
+    }
     kcsId = await repo.insertKcs(client, temId, data, actorId);
     // Cộng dồn sổ cái: đạt → chờ OQC; quyết định sửa → chờ sửa; (hư không sửa + hủy) → loại; chênh lệch → tổng cần kiểm.
     await repo.addKcsLedger(client, temId, { dat, sua: quyetDinhSua, huy: huyTaiKcs, chenh }, actorId);
@@ -375,7 +382,16 @@ async function recordSua(temId, body, actorId) {
   let temConId = null;
   let maTemCon = null;
   let suaId = null;
+  let conSuaMoi = conSua;
   await withTransaction(async (client) => {
+    // ⚠ Khóa tem + kiểm lại trong transaction (21/10/2026 — cùng lỗi 2 người lưu cùng lúc như KCS). Sửa cho phép
+    //   xử lý TỪNG PHẦN ⇒ 2 lượt cùng lúc vẫn hợp lệ nếu tổng còn đủ; chỉ chặn khi vượt phần còn lại MỚI.
+    const moi = await repo.getTemLedger(temId, { client, khoa: true });
+    conSuaMoi = Number(moi.con_sua) || 0;
+    if (total > conSuaMoi) {
+      throw new AppError(`Tem ${tem.ma_tem} vừa được người khác xác nhận sửa — còn ${conSuaMoi} pcs chờ sửa, tải lại rồi nhập lại`,
+        { status: 409, errorCode: 'DA_DOI' });
+    }
     // ⚠⚠ TÁCH PHẦN SỬA ĐẠT RA **TEM CON** (nhãn 17 — mig 091). Trước đây tem 17 chỉ là phần
     //   `con_oqc_sua` ẩn trong chính tem gốc, mã `17…` do FE ghép lúc hiện/in ⇒ không truy được
     //   "lô sửa này gồm bao nhiêu" như một đơn vị độc lập.
@@ -421,7 +437,7 @@ async function recordSua(temId, body, actorId) {
   sockets.emit('quality:updated', { temId, stage: 'SUA' });
   sockets.emit('dashboard:refresh', {});
   return {
-    tem_id: temId, next: 'SUA', so_luong_sua_dat: suaDat, con_sua: conSua - total,
+    tem_id: temId, next: 'SUA', so_luong_sua_dat: suaDat, con_sua: conSuaMoi - total,
     tem_con_id: temConId,
     // Mã tem 17 THẬT (ERP cấp) để FE hiện/in đúng — đừng suy lại bằng `temCode(ma_goc, 17)`.
     ma_tem_17: maTemCon,
@@ -556,8 +572,6 @@ async function recordOqc(temId, body, actorId) {
   if (ketQua === 'DAT' && dat < bocMau) {
     throw new AppError(`Mẫu có ${loi} pcs lỗi (đạt ${dat}/${bocMau}) — phải chọn Không đạt`, { status: 422, errorCode: 'DAT_THIEU' });
   }
-  const lanKiem = await repo.nextOqcRound(temId);
-
   const ownerChoGiaoId = body.ownerChoGiaoId || null;
   const lyDoChoGiao = (body.lyDoChoGiao || '').trim() || null;
   const truongHopGiaoId = body.truongHopGiaoId || null;
@@ -580,6 +594,15 @@ async function recordOqc(temId, body, actorId) {
   const quaGiao = (ketQua === 'DAT' || choGiao) ? pending : 0;
   let oqcId = null;
   await withTransaction(async (client) => {
+    // ⚠ Khóa tem + kiểm lại (21/10/2026): OQC cho qua CẢ LÔ của nguồn ⇒ 2 người lưu cùng lúc là đếm lô 2 lần.
+    //   Lần kiểm thứ mấy cũng đọc SAU khi giữ khóa — người trước đã commit nên không trùng số lần.
+    const moi = await repo.getTemLedger(temId, { client, khoa: true });
+    const pendingMoi = nguon === 'SUA' ? (Number(moi.con_oqc_sua) || 0) : (Number(moi.con_oqc_kcs) || 0);
+    if (pendingMoi !== pending) {
+      throw new AppError(`Tem ${tem.ma_tem} vừa được người khác xác nhận OQC — tải lại danh sách rồi nhập lại`,
+        { status: 409, errorCode: 'DA_DOI' });
+    }
+    const lanKiem = await repo.nextOqcRound(temId);
     oqcId = await repo.insertOqc(client, temId, {
       lanKiem, soLuongKiem: bocMau, soLuongDat: dat, soLuongLoi: loi,
       ketQua, choGiao, lyDoChoGiao, ownerChoGiaoId, truongHopGiaoId, ghiChu: body.ghiChu,

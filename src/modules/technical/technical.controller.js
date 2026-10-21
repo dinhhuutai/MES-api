@@ -6,22 +6,24 @@ const AppError = require('../../utils/AppError');
 const { ok } = require('../../utils/response');
 const { getPaging, TRAN_TAI_HET } = require('../../utils/pagination');
 const { ngayHomNayVN } = require('../../utils/khoangNgay');
+const { nhoDoc } = require('../../utils/cacheDoc');
 
 // Map mục kỹ thuật → quyền tương ứng (xác nhận theo từng bộ phận).
 const ITEM_PERM = { KHUON: 'READY_KHUON', FILM: 'READY_FILM', MUC: 'READY_MUC', HSKT: 'READY_HSKT' };
 
 const config = asyncHandler(async (req, res) => ok(res, await service.getConfig()));
 
+// Danh sách READY / QC READY dùng chung kết quả giữa mọi người xem (`utils/cacheDoc.js` — ghi là hết hiệu lực ngay).
 const candidates = asyncHandler(async (req, res) => {
   const { page, limit, offset } = getPaging(req.query, { tranToiDa: TRAN_TAI_HET });
-  const data = await service.listCandidates({ search: req.query.search || '', page, limit, offset });
-  return ok(res, data);
+  const opts = { search: req.query.search || '', page, limit, offset };
+  return ok(res, await nhoDoc('ready.candidates', opts, () => service.listCandidates(opts)));
 });
 
 const qcCandidates = asyncHandler(async (req, res) => {
   const { page, limit, offset } = getPaging(req.query, { tranToiDa: TRAN_TAI_HET });
-  const data = await service.listCandidates({ search: req.query.search || '', page, limit, offset, onlyQcReady: true });
-  return ok(res, data);
+  const opts = { search: req.query.search || '', page, limit, offset, onlyQcReady: true };
+  return ok(res, await nhoDoc('ready.candidates', opts, () => service.listCandidates(opts)));
 });
 
 const itemCounts = asyncHandler(async (req, res) => ok(res, await service.itemCounts()));

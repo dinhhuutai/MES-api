@@ -6,10 +6,12 @@ const asyncHandler = require('../../utils/asyncHandler');
 const { ok } = require('../../utils/response');
 const AppError = require('../../utils/AppError');
 const { getPaging, TRAN_TAI_HET } = require('../../utils/pagination');
+const { nhoDoc } = require('../../utils/cacheDoc');
 
+// Chờ chạy / Đang chạy dùng chung kết quả giữa mọi người xem (`utils/cacheDoc.js` — ghi là hết hiệu lực ngay).
 const candidates = asyncHandler(async (req, res) => {
-  const { page, limit, offset } = getPaging(req.query, { tranToiDa: TRAN_TAI_HET });
-  return ok(res, await service.listCandidates({ search: req.query.search || '', page, limit, offset }));
+  const opts = { search: req.query.search || '', ...getPaging(req.query, { tranToiDa: TRAN_TAI_HET }) };
+  return ok(res, await nhoDoc('production.candidates', opts, () => service.listCandidates(opts)));
 });
 
 const getRun = asyncHandler(async (req, res) => ok(res, await service.getRun(req.params.lenhId)));
@@ -164,7 +166,7 @@ const luuLyDoBoSungDotVai = asyncHandler(async (req, res) =>
 const resumeLine = asyncHandler(async (req, res) =>
   ok(res, await service.resumeLine(req.params.phieuId, req.user.id, req.body?.gioKt || null), 'Chuyền hoạt động lại'));
 
-const monitor = asyncHandler(async (req, res) => ok(res, await service.monitor()));
+const monitor = asyncHandler(async (req, res) => ok(res, await nhoDoc('production.monitor', '', () => service.monitor())));
 
 const xePhoi = asyncHandler(async (req, res) => ok(res, await service.getXePhoi()));
 

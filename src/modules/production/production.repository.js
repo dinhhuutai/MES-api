@@ -129,8 +129,9 @@ async function listProductionCandidates({ search = '', offset = 0, limit = 20 })
 }
 
 // Tổng số lượng đã in của 1 phiếu (cho luật tối đa 110% SL release). Bỏ tem đã HỦY.
-async function getPrintedTotal(phieuId) {
-  const { rows } = await query(
+// `client` (tùy chọn) = đọc TRONG transaction in tem (sau khi giữ khóa phiếu — xem `kiemTran110Tx` ở service).
+async function getPrintedTotal(phieuId, client = null) {
+  const { rows } = await (client || { query }).query(
     "SELECT COALESCE(SUM(so_luong),0)::int AS printed FROM tem WHERE phieu_san_xuat_id = $1 AND trang_thai <> 'HUY'",
     [phieuId]
   );
