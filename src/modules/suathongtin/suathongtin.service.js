@@ -39,7 +39,8 @@ async function danhSach(q) {
 
 // ─── "HỦY VẢI KHÔNG IN" = XÓA MỀM ĐỢT VẢI (11/10/2026, người dùng chốt) ─────────────────────────
 // Trả về GN mà tích mục `HUY_VAI` ⇒ KHÔNG nằm chờ ở trang *Phần in chờ sửa thông tin* nữa: các đợt trong phạm
-// vi trả về bị xóa mềm ngay (`orders.softDeleteDotVai` — hết đợt sống thì phần in ẩn theo), lượt đóng luôn
+// vi trả về bị xóa mềm ngay (`orders.softDeleteDotVai` — CHỈ hủy đợt, phần in giữ nguyên; hết đợt sống HOẶC các
+// đợt còn lại đã giao xong thì phần in ẩn theo, ERP gửi đợt mới thì hiện lại — 19/10/2026), lượt đóng luôn
 // (audit `GN_HUY_DOT_VAI`). Đợt đang nằm trong lệnh CHƯA CHẠY (trả về từ Test Run / Release 2 / Chờ chạy) ⇒ hủy
 // lệnh trước bằng `planning.rollbackLenh` đích Release 1 (lệnh chứa phần in KHÁC — gom set cũ — thì không tự
 // hủy: báo lỗi, lượt nằm chờ để xử lý tay). ERP vẫn được báo hủy đợt READY (`gnErp.huyBenErp`, chạy ngầm).

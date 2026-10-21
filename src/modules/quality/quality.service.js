@@ -707,13 +707,19 @@ async function cancelSua(suaId, lyDo, actorId) {
     temCon = r.tem_con_id
       ? await repo.getTemConById(r.tem_con_id)
       : await repo.getTemConCuaGoc(r.tem_id);
-    const slCon = N(temCon && temCon.sl_kcs_dat);
-    if (!temCon || slCon < dat) {
-      throw new AppError('Không tìm thấy đủ số lượng trên tem sửa (17) để đảo — không hủy được lần Sửa này',
-        { status: 409, errorCode: 'LEDGER' });
-    }
-    if (slCon - dat < N(temCon.sl_oqc_dat)) {
-      throw new AppError('Tem sửa (17) của lần này đã qua OQC — hủy xác nhận OQC trước', { status: 409, errorCode: 'CONSUMED_OQC' });
+    // ⚠ (19/10/2026) Lượt sửa CŨ trước mig 091: KHÔNG có tem con và tem gốc chưa tách (`sl_sua_tach` < SL đạt của lượt)
+    //   ⇒ hàng sửa đạt nằm luôn trên tem gốc ⇒ chỉ đảo tem gốc như trước mig 091 (guard OQC của tem gốc ở trên vẫn giữ).
+    //   Bản cũ ném "không tìm thấy tem 17" ⇒ 4 lượt trên prod (đo 19/10) không hủy được.
+    const kieuCu = !temCon && !r.tem_con_id && N(r.sl_sua_tach) < dat;
+    if (!kieuCu) {
+      const slCon = N(temCon && temCon.sl_kcs_dat);
+      if (!temCon || slCon < dat) {
+        throw new AppError('Không tìm thấy đủ số lượng trên tem sửa (17) để đảo — không hủy được lần Sửa này',
+          { status: 409, errorCode: 'LEDGER' });
+      }
+      if (slCon - dat < N(temCon.sl_oqc_dat)) {
+        throw new AppError('Tem sửa (17) của lần này đã qua OQC — hủy xác nhận OQC trước', { status: 409, errorCode: 'CONSUMED_OQC' });
+      }
     }
   }
   await withTransaction(async (client) => {

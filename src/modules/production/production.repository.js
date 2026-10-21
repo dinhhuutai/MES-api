@@ -2010,6 +2010,8 @@ async function insertVuotHistory(client, h, actorId) {
 }
 
 module.exports = {
+  // Luật "tem in đã hủy mở lại được" (alias t / ps / ls / h) — Quản trị phần in đọc CHUNG (19/10/2026).
+  SU_KIEN_CUOI_LATERAL, MO_LAI_DUOC_SQL,
   getVuotContext, listUnreleasedDotVaiForPhanIn, incLenhRelease, insertVuotHistory,
   listProductionCandidates, getPrintedTotal, getDefaultXePhoi, nextMaPhieu, createPhieu, setLenhChuyen, setLenhTrangThai, getLenhBasic,
   setPhieuChuyen, getChuyenById, logDoiChuyen,

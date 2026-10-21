@@ -5,6 +5,8 @@ const { query, withTransaction } = require('../../config/db');
 const { applyPainToBarcode } = require('../../utils/hskt');
 const { tachDsMa, soMaVuaCot, NGAN_CACH } = require('../../utils/maPhanIn');
 const { coCotGia, TEN_COT: TEN_COT_GIA } = require('../../utils/giaPhanIn');
+// Khóa đồng bộ ERP của phần in admin đã sửa tay (mig 116) — xem đầu file utils/khoaErp.js.
+const { coCotKhoaErp, khongKhoaSql, dangKhoa } = require('../../utils/khoaErp');
 
 // ----- Log đồng bộ -----
 async function createSyncLog({ nguon, fromDate, tuDong }, actorId) {
@@ -208,8 +210,12 @@ async function doDaiCotBarcode(client) {
 //   mạng cho MỖI dòng ERP (25 ms/query — CLAUDE.md §11.5).
 // ⚠ `LIMIT $n` = số mã nhét vừa cột: tràn cột ném `22001` và làm HỎNG cả lượt sync của dòng đó, nên
 //   thà cắt bớt + cảnh báo. Với mig 089 (255 ⇒ 21 mã) thì thực tế không bao giờ chạm (tối đa đang là 3).
+// ⚠⚠ KHÓA ERP (mig 116, `utils/khoaErp.js`): phần in admin đã sửa tay ⇒ `ON CONFLICT … DO UPDATE … WHERE NOT khoa_erp`
+//   ⇒ KHÔNG ghi đè gì. Khi đó Postgres không trả dòng nào ở `RETURNING` ⇒ tra lại id theo mã (`idTheoMa`).
 async function upsertPhanIn(client, { maHangId, maPhan, mauVai, kichVai, kichPhim, soLuongDonHang, tinhChatIn, barcode, ddhSubId }) {
   const base = [maHangId, maPhan, mauVai || null, kichVai || null, kichPhim || null, soLuongDonHang ?? null, tinhChatIn || null];
+  const chanKhoa = (await coCotKhoaErp(client)) ? 'WHERE NOT phan_in.khoa_erp' : '';
+  const idTheoMa = async () => (await client.query('SELECT id FROM phan_in WHERE ma_phan = $1', [maPhan])).rows[0].id;
   if (await hasBarcodeCol(client)) {
     // `ddh_sub_id` (mig 088) — thêm vào cùng nhánh có `barcode` vì 2 trường đi liền nhau: subID chính
     // là 3 số cuối của `BarcodePTHDH`. Thiếu migration ⇒ bỏ hẳn cột khỏi câu SQL, sync chạy như cũ.
@@ -238,9 +244,11 @@ async function upsertPhanIn(client, { maHangId, maPhan, mauVai, kichVai, kichPhi
          barcode = ${gopSql},
          ${coSub ? 'ddh_sub_id = COALESCE(EXCLUDED.ddh_sub_id, phan_in.ddh_sub_id),' : ''}
          updated_date = CURRENT_TIMESTAMP
+       ${chanKhoa}
        RETURNING id, barcode`,
       ds
     );
+    if (!rows[0]) return idTheoMa(); // phần in đang khóa ERP — giữ nguyên mọi trường
     // Mã ERP vừa gửi mà KHÔNG nằm trong giá trị đã lưu ⇒ đã bị cắt vì chạm trần cột. Nói rõ ra: mã bị
     // bỏ thì phiếu in mã đó quét không ra, mà đó là kiểu hỏng âm thầm rất khó lần.
     const daLuu = tachDsMa(rows[0].barcode);
@@ -259,10 +267,11 @@ async function upsertPhanIn(client, { maHangId, maPhan, mauVai, kichVai, kichPhi
        so_luong_don_hang = EXCLUDED.so_luong_don_hang,
        tinh_chat_in = COALESCE(EXCLUDED.tinh_chat_in, phan_in.tinh_chat_in),
        updated_date = CURRENT_TIMESTAMP
+     ${chanKhoa}
      RETURNING id`,
     base
   );
-  return rows[0].id;
+  return rows[0] ? rows[0].id : idTheoMa();
 }
 
 // Ghi thời gian chờ khô (ERP tgphoi) vào phần in — BEST-EFFORT, tách khỏi transaction chính:
@@ -270,7 +279,8 @@ async function upsertPhanIn(client, { maHangId, maPhan, mauVai, kichVai, kichPhi
 async function setPhanInDryMin(phanInId, phut) {
   if (phut == null) return;
   try {
-    await query('UPDATE phan_in SET thoi_gian_cho_kho_phut = $2, updated_date = CURRENT_TIMESTAMP WHERE id = $1',
+    const kk = khongKhoaSql('$1', await coCotKhoaErp()); // phần in đang khóa ERP (mig 116) ⇒ giữ nguyên
+    await query(`UPDATE phan_in SET thoi_gian_cho_kho_phut = $2, updated_date = CURRENT_TIMESTAMP WHERE id = $1 AND ${kk}`,
       [phanInId, phut]);
   } catch (e) { /* migration 038 chưa chạy — bỏ qua */ }
 }
@@ -289,7 +299,8 @@ async function capNhatPhanInPhu(phanInId, { choKhoPhut = null, gia = null } = {}
   }
   if (!set.length) return;
   try {
-    await query(`UPDATE phan_in SET ${set.join(', ')}, updated_date = CURRENT_TIMESTAMP WHERE id = $1`, val);
+    const kk = khongKhoaSql('$1', await coCotKhoaErp()); // phần in đang khóa ERP (mig 116) ⇒ giữ nguyên
+    await query(`UPDATE phan_in SET ${set.join(', ')}, updated_date = CURRENT_TIMESTAMP WHERE id = $1 AND ${kk}`, val);
   } catch (e) { console.warn(`[erp] ⚠ Ghi chờ khô / đơn giá phần in lỗi: ${e.message}`); }
 }
 
@@ -320,8 +331,10 @@ async function upsertDotVai(client, { maDotVai, phanInId, loaiDotVaiId, ngayVaiV
   // hàm chạy trong transaction, lỗi 42703 làm ABORT cả transaction (cùng bẫy đã ghi ở `createTem`).
   const coNGC = await hasNgcCol(client);
   const co74 = await co074(client);
-  const existing = await client.query('SELECT id FROM dot_vai_ve WHERE ma_dot_vai = $1', [maDotVai]);
+  const existing = await client.query('SELECT id, phan_in_id FROM dot_vai_ve WHERE ma_dot_vai = $1', [maDotVai]);
   if (existing.rows.length) {
+    // Phần in đang khóa ERP (mig 116) ⇒ KHÔNG cập nhật đợt đã có (đợt MỚI vẫn tạo ở nhánh dưới).
+    if (await dangKhoa(existing.rows[0].phan_in_id, client)) return { id: existing.rows[0].id, inserted: false };
     await client.query(
       `UPDATE dot_vai_ve SET loai_dot_vai_id = COALESCE($2, loai_dot_vai_id),
          ngay_vai_ve = $3, han_giao_hang = $4, barcode = COALESCE($5, barcode),
@@ -393,12 +406,14 @@ async function ganLaiPhanIn(client, { maPhan, maHangId, mauVai, kichVai, kichPhi
   const p = [maPhan, maHangId, mauVai || null, kichVai || null, kichPhim || null, soLuongDonHang ?? null,
     tinhChatIn || null, actorId || null];
   if (coSub) p.push(ddhSubId || null);
+  // Phần in đang khóa ERP (mig 116) ⇒ không gán lại (trả null như "không có phần in" — bên gọi đã chặn trước).
+  const chanKhoa = (await coCotKhoaErp(client)) ? 'AND NOT khoa_erp' : '';
   const { rows } = await client.query(
     `UPDATE phan_in SET ma_hang_id = $2, mau_vai = $3, kich_vai = $4, kich_phim = $5,
             so_luong_don_hang = $6, tinh_chat_in = COALESCE($7, tinh_chat_in),
             ${coSub ? 'ddh_sub_id = COALESCE($9, ddh_sub_id),' : ''}
             updated_by = $8, updated_date = CURRENT_TIMESTAMP
-      WHERE ma_phan = $1 RETURNING id`.replace(/\s+/g, ' '),
+      WHERE ma_phan = $1 ${chanKhoa} RETURNING id`.replace(/\s+/g, ' '),
     p
   );
   if (!rows[0]) return null;
@@ -419,8 +434,9 @@ async function findPhanInIdByMaPhan(maPhan) {
 // Chuyển phần in đã có (từ -new) sang READY: cập nhật barcode/tinh_chat_in + set mốc cho các đợt CHỜ chuyển.
 // Trả về id các đợt vừa được chuyển (để theo dõi dòng chảy). Đợt đã ở READY (mốc ≠ null) không đụng.
 async function promotePhanInToReady(pinId, { barcode, tinhChatIn }) {
+  const kk = khongKhoaSql('$1', await coCotKhoaErp()); // phần in đang khóa ERP (mig 116) ⇒ giữ tính chất in
   await query(
-    `UPDATE phan_in SET tinh_chat_in = COALESCE($2, tinh_chat_in), updated_date = CURRENT_TIMESTAMP WHERE id = $1`,
+    `UPDATE phan_in SET tinh_chat_in = COALESCE($2, tinh_chat_in), updated_date = CURRENT_TIMESTAMP WHERE id = $1 AND ${kk}`,
     [pinId, tinhChatIn || null]
   );
   // barcode (IDDotReady) thuộc ĐỢT VẢI: gán cho các đợt đang CHỜ chuyển của phần in nếu chưa có + chuyển vào READY.
@@ -689,7 +705,8 @@ async function reopenReadyForPhanIn(pinId) {
 // Lưu vết KTCankiemtra vào đợt vải (boolean: 1=cần KT → true).
 async function setDotVaiKtCanKiemTra(dotVaiIds, val) {
   if (!dotVaiIds || !dotVaiIds.length || val == null) return;
-  await query('UPDATE dot_vai_ve SET kt_can_kiem_tra=$2, updated_date=now() WHERE id = ANY($1::uuid[])',
+  const kk = khongKhoaSql('dot_vai_ve.phan_in_id', await coCotKhoaErp()); // phần in khóa ERP (mig 116) ⇒ giữ cờ
+  await query(`UPDATE dot_vai_ve SET kt_can_kiem_tra=$2, updated_date=now() WHERE id = ANY($1::uuid[]) AND ${kk}`,
     [dotVaiIds, Number(val) === 1]);
 }
 

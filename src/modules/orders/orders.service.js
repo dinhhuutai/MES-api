@@ -156,7 +156,7 @@ async function softDeleteDotVai(dotVaiIds, lyDo, actorId) {
       if (r.ok) {
         done.push({
           id, ma: r.ma, ma_phan: r.ma_phan, trang_thai_cu: r.trang_thai_cu,
-          don_dep: r.don_dep, phan_in_da_huy: r.phan_in_da_huy,
+          don_dep: r.don_dep, phan_in_da_huy: r.phan_in_da_huy, ly_do_an: r.ly_do_an,
         });
       } else loi.push({ id, ma: r.ma || null, ly_do: r.ly_do });
     }
@@ -169,6 +169,8 @@ async function softDeleteDotVai(dotVaiIds, lyDo, actorId) {
     await repo.logSoftDeleteDotVai(d.id, {
       ma_dot_vai: d.ma, ma_phan: d.ma_phan, trang_thai_cu: d.trang_thai_cu,
       don_dep: d.don_dep, phan_in_da_huy: d.phan_in_da_huy || false,
+      // HET_DOT = hết đợt sống · DA_GIAO_HET = các đợt còn lại đã giao xong (19/10/2026).
+      ...(d.ly_do_an ? { ly_do_an_phan_in: d.ly_do_an } : {}),
     }, lyDo, actorId);
   }
   // Hủy đợt vải kéo theo tồn trạm + thành viên gom set ⇒ báo cho các màn đang mở tải lại.

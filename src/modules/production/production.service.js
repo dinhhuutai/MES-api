@@ -269,8 +269,20 @@ async function savePhanCong(phieuId, body, actorId) {
   return getRun(phieu.lenh_san_xuat_id);
 }
 
+// Sửa / xóa phân công của 1 phiếu ĐÃ XONG (Quản trị phần in, 19/10/2026) — CHỈ ghi phiếu đó, KHÔNG nhớ làm phân công
+//   đầu ca của chuyền (phiếu đang chạy thì dùng `savePhanCong` như RunPanel). Body như `savePhanCong`.
+async function suaPhanCongPhieuXong(phieuId, body, actorId) {
+  const phieu = await repo.getPhieuById(phieuId);
+  if (!phieu) throw new AppError('Phiếu sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  await ghiPhanCongPhieu(phieu, body || {}, actorId);
+  sockets.emit('production:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'phan-cong' });
+  return { phieu_id: phieuId };
+}
+
 // Nhớ phân công VỪA LƯU của phiếu làm phân công đầu ca của chuyền + áp cho phiếu đang chạy khác cùng chuyền.
-// Trả danh sách lệnh khác vừa được áp (để bắn socket).
+// Trả MỌI lệnh khác đang chạy cùng chuyền (để bắn socket) — ⚠ 21/10/2026: kể cả lệnh KHÔNG phải ghi (phiếu đã trùng
+//   phân công, vd đổ sẵn người ca trước): máy khác đang mở sidebar lệnh đó vẫn hiện "chưa phân công + Lưu phân công"
+//   (khóa In tem) tới khi được báo tải lại. Bản cũ chỉ báo lệnh có ghi.
 async function nhoPhanCongDauCa(phieu, actorId) {
   const daAp = [];
   try {
@@ -288,7 +300,8 @@ async function nhoPhanCongDauCa(phieu, actorId) {
     if (!pcCa.nho || !trungNho(pcCa.nho, nho)) await repo.ghiPhanCongDauCa(pcCa.khoa, nho, actorId);
     for (const p of await repo.phieuDangChayCuaChuyen(lenh.chuyen_id)) {
       if (p.id === phieu.id) continue;
-      if (await apPhanCongDauCa(p, nho, actorId)) daAp.push(p.lenh_san_xuat_id);
+      await apPhanCongDauCa(p, nho, actorId);
+      if (!daAp.includes(p.lenh_san_xuat_id)) daAp.push(p.lenh_san_xuat_id);
     }
   } catch (e) {
     console.error(`[phan-cong-dau-ca] ✗ Không nhớ / áp được phân công đầu ca (phiếu ${phieu.id}): ${e.message}`);
@@ -759,18 +772,19 @@ const TOI_DA_TEM_MOT_LUOT = 50;
 async function printTemBatch(phieuId, items, actorId, body) {
   const meta = temMeta(body);
   const raw = Array.isArray(items) ? items : [];
+  const soDuong = (v) => Math.max(0, Math.trunc(Number(v) || 0));
   const list = raw
-    .map((it) => ({ dotVaiId: it.dotVaiId || null, soLuong: Number(it.soLuong), gcMauVai: it.gcMauVai || null }))
+    .map((it) => ({
+      dotVaiId: it.dotVaiId || null, soLuong: Number(it.soLuong), gcMauVai: it.gcMauVai || null,
+      huy: soDuong(it.soLuongHuy), thieu: soDuong(it.soLuongThieu),
+    }))
     .filter((it) => it.soLuong > 0);
   // Vải hủy / vải thiếu nhập NGAY TRONG modal In tem (chuyển từ modal Phân công): ghi kể cả khi dòng
   // đó KHÔNG in tem (SL in = 0 nhưng vẫn phát sinh vải hư/thiếu) ⇒ lọc riêng, không dùng `list`.
-  const vaiList = raw
-    .map((it) => ({
-      dotVaiId: it.dotVaiId || null,
-      huy: Number(it.soLuongHuy) || 0,
-      thieu: Number(it.soLuongThieu) || 0,
-    }))
-    .filter((it) => it.dotVaiId && (it.huy > 0 || it.thieu > 0));
+  // 19/10/2026: dòng KHÔNG chỉ đợt (lệnh thường — modal In tem nhiều lệnh) ⇒ quy về đợt đầu của lệnh (bên dưới).
+  const vaiRaw = raw
+    .map((it) => ({ dotVaiId: it.dotVaiId || null, huy: soDuong(it.soLuongHuy), thieu: soDuong(it.soLuongThieu) }))
+    .filter((it) => it.huy > 0 || it.thieu > 0);
   if (!list.length) throw new AppError('Nhập số lượng in cho ít nhất 1 phần in', { status: 422, errorCode: 'EMPTY' });
   // Mỗi tem xin 1 mã ERP TUẦN TỰ trước transaction ⇒ chặn lượt quá lớn (người đứng máy chờ + giữ phiên lâu).
   if (list.length > TOI_DA_TEM_MOT_LUOT) {
@@ -787,6 +801,8 @@ async function printTemBatch(phieuId, items, actorId, body) {
 
   const dotVaiList = await repo.getLenhDotVaiList(phieu.lenh_san_xuat_id);
   const byId = new Map(dotVaiList.map((d) => [d.dot_vai_ve_id, d]));
+  const dotMacDinh = dotVaiList[0] ? dotVaiList[0].dot_vai_ve_id : null;
+  const vaiList = vaiRaw.map((v) => ({ ...v, dotVaiId: v.dotVaiId || dotMacDinh })).filter((v) => v.dotVaiId);
   // ⚠ 07/10/2026 in NHIỀU TEM cùng lúc (ô "Số tem"): 1 đợt có thể có N dòng trong lượt ⇒ trần 110% từng đợt
   //   so với TỔNG SL các tem của đợt đó trong lượt, không phải từng tem (N tem nhỏ lách được trần).
   const tongTheoDot = new Map();
@@ -845,7 +861,7 @@ async function printTemBatch(phieuId, items, actorId, body) {
       const d = it.dotVaiId ? byId.get(it.dotVaiId) : null;
       out.push({
         tem_id: temId, ma_tem: maTem, dot_vai_id: it.dotVaiId, so_luong: it.soLuong,
-        ma_phan: d ? d.ma_phan : null,
+        ma_phan: d ? d.ma_phan : null, huy: it.huy, thieu: it.thieu,
       });
     }
   });
@@ -867,15 +883,12 @@ async function printTemBatch(phieuId, items, actorId, body) {
   }
   await tracking.moveByLenh(phieu.lenh_san_xuat_id, 'CHO_KHO', actorId);
   // Báo ERP từng tem — CỐ Ý không `await`. Lệnh gom set LUÔN có `dotVaiId` nên ERP nhận đúng đợt vải
-  // của từng dòng (không phải đợt đầu tiên của lệnh). Vải hủy/thiếu lấy theo ĐÚNG dòng đã nhập.
-  const vaiTheoDot = new Map(vaiList.map((v) => [v.dotVaiId, v]));
-  guiGhiInTem(out.map((o) => {
-    const v = vaiTheoDot.get(o.dot_vai_id);
-    return {
-      temId: o.tem_id, dotVaiId: o.dot_vai_id,
-      soLuongHuy: v ? v.huy : 0, soLuongThieu: v ? v.thieu : 0,
-    };
-  }), actorId, body?.ngayCt || null);
+  // của từng dòng (không phải đợt đầu tiên của lệnh). Vải hủy/thiếu lấy theo ĐÚNG DÒNG (tem) đã nhập.
+  // ⚠ 19/10/2026: bản cũ tra theo ĐỢT ⇒ "Số tem" N tem cùng đợt (hủy/thiếu chỉ ở dòng đầu) gửi ERP số hủy/thiếu
+  //   cho CẢ N tem (ERP đếm N lần). Nay chỉ tem của dòng mang số mới gửi.
+  guiGhiInTem(out.map((o) => ({
+    temId: o.tem_id, dotVaiId: o.dot_vai_id, soLuongHuy: o.huy || 0, soLuongThieu: o.thieu || 0,
+  })), actorId, body?.ngayCt || null);
   sockets.emit('production:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'tem', so_tem: out.length });
   sockets.emit('drying:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'auto-phoi' });
   const run = await getRun(phieu.lenh_san_xuat_id);
@@ -1139,13 +1152,15 @@ async function listReopenCandidates() {
   return repo.listReopenCandidates();
 }
 
-async function reopenProduction(phieuId, actorId) {
+// `boQuaHan` (19/10/2026): CHỈ trang Quản trị phần in truyền (quyền `PHAN_IN_ADMIN`) — lùi phần in về sản xuất / chờ
+//   chạy thì phải mở lại phiếu dù đã đóng lâu hơn 2 ngày. Route của tab Hủy lệnh xác nhận KHÔNG truyền ⇒ luật cũ.
+async function reopenProduction(phieuId, actorId, { boQuaHan = false } = {}) {
   const phieu = await repo.getPhieuFull(phieuId);
   if (!phieu) throw new AppError('Phiếu sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   if (phieu.trang_thai !== 'HOAN_TAT') {
     throw new AppError('Chỉ mở lại phiếu đã hoàn tất (đang chạy thì không cần mở lại)', { status: 409, errorCode: 'WRONG_STAGE' });
   }
-  if (!phieu.tg_kt || (Date.now() - new Date(phieu.tg_kt).getTime()) > 2 * 24 * 60 * 60 * 1000) {
+  if (!boQuaHan && (!phieu.tg_kt || (Date.now() - new Date(phieu.tg_kt).getTime()) > 2 * 24 * 60 * 60 * 1000)) {
     throw new AppError('Chỉ mở lại được lệnh đã đóng trong 2 ngày gần nhất', { status: 409, errorCode: 'TOO_OLD' });
   }
   await withTransaction((client) => repo.reopenPhieuTx(client, phieuId, phieu.lenh_san_xuat_id, actorId));
@@ -1356,7 +1371,7 @@ async function vuotSanXuat(phieuId, soLuong, actorId) {
 module.exports = {
   listCandidates, getRun, startProduction, startProductionBatch, startProductionSpecial, printTem, printTemBatch, reprintTem, temLabel, temLogs, finishRun, monitor, vuotSanXuat,
   getXePhoi, listTemChoPhoi, addToXe, adjustPhoi, listDrying, confirmDry, redry,
-  stopLine, resumeLine, addVaiHuy, savePhanCong,
+  stopLine, resumeLine, addVaiHuy, savePhanCong, suaPhanCongPhieuXong,
   dsLyDoNgung, taoLyDoNgung, suaLyDoNgung, doiTrangThaiLyDoNgung,
   dsToIn, taoToIn, suaToIn, doiTrangThaiToIn,
   dsLyDoBoSung, taoLyDoBoSung, suaLyDoBoSung, doiTrangThaiLyDoBoSung, luuLyDoBoSungDotVai,

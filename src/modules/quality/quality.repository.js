@@ -1171,6 +1171,7 @@ async function getCancelSuaRow(id) {
   const { rows } = await query(
     `SELECT x.id, x.tem_id, x.so_luong_sua, x.so_luong_sua_dat, x.so_luong_sua_huy,
             ${co ? 'x.tem_con_id' : 'NULL::uuid AS tem_con_id'},
+            COALESCE((to_jsonb(t)->>'sl_sua_tach')::int, 0) AS sl_sua_tach,
             ${CANCEL_TARGET_TEM_COLS}, ${cancelledQc('x', 'sua')} AS da_huy
      FROM sua x JOIN tem t ON t.id = x.tem_id WHERE x.id = $1`.replace(/\s+/g, ' '),
     [id]

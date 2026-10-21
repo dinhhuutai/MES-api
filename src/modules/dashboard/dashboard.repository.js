@@ -896,12 +896,17 @@ async function tinhTrangGraph(phanInId) {
   )).rows[0];
   if (!info) return null;
 
-  const [dotVai, links, tems, readyCp, testCp, readyEv, giaoRec, kcsRec, traVeRec] = await Promise.all([
+  const [dotVai, links, tems, readyCp, testCp, readyEv, giaoRec, kcsRec, traVeRec, traVeTruocSx] = await Promise.all([
+    // `kt_can_kiem_tra` (ERP KTCankiemtra) + lúc lên READY + lúc release (lệnh sống sớm nhất) ⇒ suy đợt VÀO THẲNG
+    //   Kế hoạch không qua KT ở JS (xem `vaoThang` bên dưới).
     query(
-      `SELECT dv.id, dv.ma_dot_vai, dv.so_luong_vai_ve, dv.han_giao_hang, dv.trang_thai,
+      `SELECT dv.id, dv.ma_dot_vai, dv.so_luong_vai_ve, dv.han_giao_hang, dv.trang_thai, dv.kt_can_kiem_tra,
+              COALESCE(dv.tg_chuyen_ready, dv.created_date) AS tg_ready, ldv.ma_loai AS ma_loai_dot, ldv.ten_loai AS loai_dot,
+              (SELECT min(ls.created_date) FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id
+                WHERE lsd.dot_vai_ve_id=dv.id AND ls.trang_thai<>'HUY') AS tg_release,
               EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id
                       WHERE lsd.dot_vai_ve_id=dv.id AND ls.trang_thai<>'HUY') AS released
-       FROM dot_vai_ve dv
+       FROM dot_vai_ve dv LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id
        WHERE dv.phan_in_id = $1 AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY')
        ORDER BY dv.ma_dot_vai`.replace(/\s+/g, ' '),
       [phanInId]
@@ -916,6 +921,8 @@ async function tinhTrangGraph(phanInId) {
               EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint c ON c.id=kq.checkpoint_id
                       WHERE kq.lenh_san_xuat_id=ls.id AND c.ma_checkpoint='TEST_CNSP' AND kq.trang_thai='DAT') AS test_cnsp,
               EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id=ls.id) AS co_phieu,
+              EXISTS (SELECT 1 FROM audit_log ab WHERE ab.ten_bang='lenh_san_xuat' AND ab.hanh_dong='RELEASE_2'
+                      AND ab.id_ban_ghi = ls.id::text AND ab.gia_tri_moi->>'bo_test_run' = 'true') AS qa_bo_test,
               lsd.dot_vai_ve_id, lsd.so_luong AS sl_vao, dv.ma_dot_vai, dv.so_luong_vai_ve
        FROM lenh_sx_dot_vai lsd
        JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
@@ -978,7 +985,8 @@ async function tinhTrangGraph(phanInId) {
     ),
     // Mọi lần xác nhận READY (DAT) trong lịch sử — dựng READY RIÊNG cho từng CHU KỲ (phần in mở lại READY nhiều lần).
     query(
-      `SELECT cp.ma_checkpoint, cp.thu_tu AS cp_thu_tu, lst.tg_thuc_hien AS tg, nd.ho_ten AS nguoi
+      `SELECT cp.ma_checkpoint, cp.thu_tu AS cp_thu_tu, lst.tg_thuc_hien AS tg, nd.ho_ten AS nguoi,
+              (lst.nguoi_thuc_hien_id IS NULL) AS tu_dong
        FROM lich_su_trang_thai lst
        JOIN trang_thai tt ON tt.id = lst.trang_thai_moi_id AND tt.ma_trang_thai = 'DAT'
        JOIN ket_qua_checkpoint kq ON kq.id = lst.ket_qua_checkpoint_id AND kq.phan_in_id = $1
@@ -1032,6 +1040,31 @@ async function tinhTrangGraph(phanInId) {
        ORDER BY q.created_date`.replace(/\s+/g, ' '),
       [phanInId]
     ),
+    // TRẢ VỀ TRƯỚC SẢN XUẤT (19/10/2026) — mức phần in / đợt / lệnh: QC READY → KT (`READY`) · Release 1 → KT
+    //   (`RELEASE1`) · Test Run không đạt → KT (`TEST_RUN_KT`; dòng `TEST_RUN` theo đợt luôn đi cặp — prod 254/254 —
+    //   nên bỏ) · Test Run → Kế hoạch (`TEST_RUN_KH`, 1 dòng/đợt) · OQC hàng gia công → Kế hoạch (`OQC_GIA_CONG`) ·
+    //   Trả về GN (`TRA_VE_GN` + audit `TRA_VE_GN` mang nguồn, `GN_XAC_NHAN_LAI` mang màn quay về).
+    query(
+      `SELECT q.id, q.loai, q.ly_do, q.checklist_list, q.da_xu_ly, q.created_date AS tg, u.ho_ten AS nguoi,
+              q.lenh_san_xuat_id AS lenh_id, dv.ma_dot_vai,
+              gn.gia_tri_moi->>'nguon_ten' AS gn_nguon, gn.gia_tri_moi->>'lenh_id' AS gn_lenh_id,
+              xl.gia_tri_moi->'ve_man' AS gn_ve_man, xl.hanh_dong AS gn_xu_ly, xl.thoi_gian AS tg_xu_ly
+       FROM qc_tra_ve q
+       LEFT JOIN nguoi_dung u ON u.id = q.created_by
+       LEFT JOIN dot_vai_ve dv ON dv.id = q.dot_vai_ve_id
+       LEFT JOIN LATERAL (SELECT a.gia_tri_moi FROM audit_log a WHERE a.ten_bang='qc_tra_ve' AND a.id_ban_ghi=q.id::text
+                          AND a.hanh_dong='TRA_VE_GN' ORDER BY a.thoi_gian LIMIT 1) gn ON q.loai='TRA_VE_GN'
+       LEFT JOIN LATERAL (SELECT a.gia_tri_moi, a.hanh_dong, a.thoi_gian FROM audit_log a WHERE a.ten_bang='qc_tra_ve'
+                          AND a.id_ban_ghi=q.id::text AND a.hanh_dong IN ('GN_XAC_NHAN_LAI','GN_HUY_DOT_VAI')
+                          ORDER BY a.thoi_gian DESC LIMIT 1) xl ON q.loai='TRA_VE_GN'
+       WHERE q.loai IN ('READY','RELEASE1','TEST_RUN_KT','TEST_RUN_KH','TRA_VE_GN','OQC_GIA_CONG')
+         AND (q.phan_in_id = $1
+              OR q.dot_vai_ve_id IN (SELECT d.id FROM dot_vai_ve d WHERE d.phan_in_id = $1)
+              OR q.lenh_san_xuat_id IN (SELECT lsd.lenh_san_xuat_id FROM lenh_sx_dot_vai lsd
+                                         JOIN dot_vai_ve d ON d.id = lsd.dot_vai_ve_id WHERE d.phan_in_id = $1))
+       ORDER BY q.created_date`.replace(/\s+/g, ' '),
+      [phanInId]
+    ),
   ]);
 
   // Gom link theo lệnh → feeds[]; gom tem theo lệnh.
@@ -1081,6 +1114,28 @@ async function tinhTrangGraph(phanInId) {
     if (r.ma_checkpoint === 'TEST_QA') g.test.qa = { nguoi: r.nguoi, tg: r.tg };
   });
 
+  // ---- ĐỢT VÀO THẲNG KẾ HOẠCH, KHÔNG QUA KT (19/10/2026) ----
+  // ERP `KTCankiemtra = 0` ⇒ `erpsync.simulateReadyDone` tự đặt READY + đi thẳng Release 1. Cờ ERP một mình KHÔNG đủ:
+  // đo prod 19/10 có 817 đợt cờ 0, trong đó 231 đợt vẫn được NGƯỜI bấm QC READY sau khi đợt về (dữ liệu trước khi
+  // luật đi thẳng chạy). ⇒ Đợt "vào thẳng" = cờ 0 VÀ không có lần QC_XAC_NHAN nào của NGƯỜI trong khoảng [lúc lên
+  // READY, lúc release] (chưa release ⇒ tới bây giờ). Lệnh "vào thẳng" = MỌI đợt nuôi nó đều vào thẳng.
+  const qcNguoi = readyEv.rows.filter((e) => e.ma_checkpoint === 'QC_XAC_NHAN' && !e.tu_dong)
+    .map((e) => new Date(e.tg).getTime());
+  const dotById = new Map(dotVai.rows.map((d) => [d.id, d]));
+  dotVai.rows.forEach((d) => {
+    const a = new Date(d.tg_ready).getTime();
+    const b = d.tg_release ? new Date(d.tg_release).getTime() : Date.now();
+    d.vao_thang = d.kt_can_kiem_tra === false && !qcNguoi.some((t) => t >= a && t <= b);
+  });
+  lenhMap.forEach((g) => {
+    g.feeds.forEach((f) => {
+      const d = dotById.get(f.dot_vai_ve_id);
+      f.ma_loai_dot = d ? d.ma_loai_dot : null;
+      f.loai_dot = d ? d.loai_dot : null;
+    });
+    g.vao_thang = g.feeds.length > 0 && g.feeds.every((f) => (dotById.get(f.dot_vai_ve_id) || {}).vao_thang);
+  });
+
   const lenh = [...lenhMap.values()];
   const pending = dotVai.rows.filter((d) => !d.released);
 
@@ -1097,7 +1152,8 @@ async function tinhTrangGraph(phanInId) {
   // XÁC NHẬN NGAY nên quét trùng rất thường. Ca thật `GL-2606-006-A01-F01-C02`: 1 đợt vải, 0 lệnh,
   // FILM xác nhận 6 lần ⇒ luật "lặp" đẻ ra 6 chu kỳ (sai), luật QC cho 2 chu kỳ (đúng).
   // Dữ liệu prod ủng hộ: **0 ca QC nối ngay sau QC** ⇒ không sợ tách nhầm vì bấm QC 2 lần.
-  const readyEvents = readyEv.rows; // đã ORDER BY tg
+  // 19/10/2026: chỉ thao tác của NGƯỜI dựng chu kỳ — lượt hệ thống tự xác nhận (đợt vào thẳng) không phải 1 lần READY.
+  const readyEvents = readyEv.rows.filter((e) => !e.tu_dong); // đã ORDER BY tg
   const curChecklists = readyCp.rows.map((c) => ({ ma_checkpoint: c.ma_checkpoint, nguoi: c.nguoi, tg: c.tg }));
   const cycles = [];
   let dangMo = null;
@@ -1125,25 +1181,85 @@ async function tinhTrangGraph(phanInId) {
     return [...byCp.values()].sort((a, b) => a.cp_thu_tu - b.cp_thu_tu)
       .map((e) => ({ ma_checkpoint: e.ma_checkpoint, nguoi: e.nguoi, tg: e.tg }));
   };
+  // Mục chu kỳ không có thao tác của NGƯỜI mà hiện đang DAT do HỆ THỐNG (người NULL — đợt vào thẳng, rồi bị trả về
+  //   chỉ hủy QC) ⇒ điền "tự động" để ô READY không ghi "chưa XN" sai (ca thật SC-2609-010-A10-F01-C06).
+  const tuDongHienTai = curChecklists.filter((c) => !c.nguoi);
+  const boSungTuDong = (ds) => {
+    const co = new Set(ds.map((x) => x.ma_checkpoint));
+    const thu = new Map(readyCp.rows.map((c) => [c.ma_checkpoint, c.thu_tu]));
+    return [...ds, ...tuDongHienTai.filter((c) => !co.has(c.ma_checkpoint))]
+      .sort((a, b) => (thu.get(a.ma_checkpoint) || 0) - (thu.get(b.ma_checkpoint) || 0));
+  };
   let ready_cycles = cycles.map((c) => ({
-    checklists: c.items ? gomMuc(c.items) : curChecklists,
+    checklists: c.items ? boSungTuDong(gomMuc(c.items)) : curChecklists,
     start: c.start,
     lenh: [],
     pending: [],
   }));
-  // Dữ liệu cũ thiếu lịch sử READY → 1 chu kỳ dựng từ trạng thái hiện tại (như trước).
-  if (ready_cycles.length === 0) ready_cycles = [{ checklists: curChecklists, lenh: [], pending: [] }];
+  // Lệnh / đợt chờ VÀO THẲNG ⇒ nhánh riêng `vao_thang` (không treo dưới READY nào).
+  const lenhQuaKt = lenh.filter((l) => !l.vao_thang);
+  const pendingQuaKt = pending.filter((d) => !d.vao_thang);
+  // Dữ liệu cũ thiếu lịch sử READY → 1 chu kỳ dựng từ trạng thái hiện tại (như trước) — chỉ khi CÓ thứ qua KT.
+  if (ready_cycles.length === 0 && (lenhQuaKt.length || pendingQuaKt.length || !lenh.length)) {
+    ready_cycles = [{ checklists: curChecklists, lenh: [], pending: [] }];
+  }
   // Lệnh thuộc chu kỳ CUỐI có mốc bắt đầu ≤ lúc tạo lệnh (lệnh tạo trước mọi mốc → chu kỳ đầu).
-  lenh.forEach((l) => {
-    const T = new Date(l.created_date).getTime();
+  const cyTai = (T) => {
     let idx = 0;
     ready_cycles.forEach((cy, i) => { if (cy.start && new Date(cy.start).getTime() <= T) idx = i; });
-    ready_cycles[idx].lenh.push(l);
-  });
+    return idx;
+  };
+  lenhQuaKt.forEach((l) => { ready_cycles[cyTai(new Date(l.created_date).getTime())].lenh.push(l); });
   // Đợt vải CHƯA release thuộc chu kỳ READY HIỆN TẠI (mới nhất).
-  ready_cycles[ready_cycles.length - 1].pending = pending;
+  if (ready_cycles.length) ready_cycles[ready_cycles.length - 1].pending = pendingQuaKt;
+  const lenhThang = lenh.filter((l) => l.vao_thang);
+  const pendingThang = pending.filter((d) => d.vao_thang);
+  const vao_thang = (lenhThang.length || pendingThang.length) ? {
+    lenh: lenhThang,
+    pending: pendingThang,
+    dots: dotVai.rows.filter((d) => d.vao_thang),
+  } : null;
 
-  return { phan_in: info, ready_cycles, dot_vai: dotVai.rows };
+  // ---- TRẢ VỀ TRƯỚC SẢN XUẤT (19/10/2026): mỗi lần 1 mục, kèm ĐIỂM ĐI + ĐIỂM VỀ để FE vẽ mũi tên ----
+  //   `o_lenh` = lệnh đang vẽ nơi bị trả về (null ⇒ đặt ở READY chu kỳ `o_cycle` — lúc đó đang ở chu kỳ nào);
+  //   `t_cycle` = READY chu kỳ được làm lại (KT) — chu kỳ đầu tiên bắt đầu SAU lúc trả về, không có ⇒ chu kỳ chứa
+  //   lệnh (lệnh giữ, chờ KT làm lại) / null. Về Kế hoạch / GN không có ô đích trong cây ⇒ `t_cycle` null.
+  const KIEU_TRA_VE = { READY: 'KT', RELEASE1: 'KT', TEST_RUN_KT: 'KT', TEST_RUN_KH: 'KH', OQC_GIA_CONG: 'KH', TRA_VE_GN: 'GN' };
+  // Chu kỳ "đang làm lại" chưa có sự kiện (start null) coi như bắt đầu sau mọi lần trả về.
+  const cyBatDauSau = (T) => ready_cycles.findIndex((cy) => (cy.start ? new Date(cy.start).getTime() > T : true));
+  const cyCuaLenh = (id) => ready_cycles.findIndex((cy) => cy.lenh.some((l) => l.id === id));
+  const daCo = new Set();
+  const tra_ve = [];
+  traVeTruocSx.rows.forEach((r) => {
+    const T = new Date(r.tg).getTime();
+    const lenhId = r.lenh_id || r.gn_lenh_id || null;
+    // `TEST_RUN_KH` ghi 1 dòng / đợt ⇒ gộp theo (loại, lệnh, phút).
+    const khoa = `${r.loai}|${lenhId || ''}|${Math.floor(T / 60000)}`;
+    if (daCo.has(khoa)) return;
+    daCo.add(khoa);
+    const kieu = KIEU_TRA_VE[r.loai];
+    const oLenh = lenhId && lenhMap.has(lenhId) ? lenhId : null;
+    // Trả về TRƯỚC lần READY đầu (vd đợt tự release rồi bị Release 1 trả về KT — lệnh đã hủy, không vẽ) ⇒ không
+    //   thuộc chu kỳ nào: `o_cycle` null, FE đặt ở ô Phần in. Chu kỳ dựng từ trạng thái (không mốc) thì vẫn gắn vào nó.
+    const oCycle = oLenh || !ready_cycles.length ? null
+      : (ready_cycles.some((cy) => cy.start && new Date(cy.start).getTime() <= T) || !ready_cycles[0].start ? cyTai(T) : null);
+    let tCycle = null;
+    if (kieu === 'KT' && ready_cycles.length) {
+      const sau = cyBatDauSau(T);
+      if (sau >= 0) tCycle = sau;
+      else if (oLenh && cyCuaLenh(oLenh) >= 0) tCycle = cyCuaLenh(oLenh);
+    }
+    tra_ve.push({
+      id: r.id, loai: r.loai, kieu, ly_do: r.ly_do, checklist_list: r.checklist_list, da_xu_ly: r.da_xu_ly,
+      nguoi: r.nguoi, tg: r.tg, ma_dot_vai: r.ma_dot_vai,
+      gn_nguon: r.gn_nguon, gn_xu_ly: r.gn_xu_ly, tg_xu_ly: r.tg_xu_ly,
+      // `ve_man` của audit GN_XAC_NHAN_LAI là MẢNG tên màn (`traVeGn.dsManQuayVe`); dòng cũ có thể là chuỗi.
+      gn_ve_man: Array.isArray(r.gn_ve_man) ? r.gn_ve_man.join(', ') : (r.gn_ve_man || null),
+      o_lenh: oLenh, o_cycle: oCycle, t_cycle: tCycle === oCycle ? null : tCycle,
+    });
+  });
+
+  return { phan_in: info, ready_cycles, vao_thang, tra_ve, dot_vai: dotVai.rows };
 }
 
 // ============ LỊCH SỬ NGHẼN (suy từ lịch sử — không lưu bảng nghen) ============

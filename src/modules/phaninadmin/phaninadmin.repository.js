@@ -205,6 +205,82 @@ async function ghiAudit(tenBang, id, hanhDong, cu, moi, actorId) {
   );
 }
 
+// ─── TOÀN CẢNH LỆNH / PHIẾU / TEM / XÁC NHẬN của 1 phần in (19/10/2026) ──────────────────────────────────
+// Nguồn cho (1) khối "Lệnh · tem · xác nhận" của trang, (2) nút Hủy lẻ từng bản ghi (kiểm "có thuộc phần in này
+// không" trước khi gọi service hủy), (3) bộ máy "Lùi về trạm" (`phaninadmin.service.dungBuocLui`).
+// Mọi lệnh ≠ HUY có đợt của phần in. Lượt KCS / Sửa / OQC đã hủy xác nhận bị loại (`notCancelledQc` — CHUNG luật màn QC).
+// Tem: tem sống + tem in đã hủy MỞ LẠI ĐƯỢC (luật `production.repository.MO_LAI_DUOC_SQL`).
+async function toanCanh(phanInId) {
+  const { notCancelledQc } = require('../quality/quality.repository');
+  const { SU_KIEN_CUOI_LATERAL, MO_LAI_DUOC_SQL } = require('../production/production.repository');
+  const { thoInPhieuSql } = require('../../utils/thoIn');
+  const q1 = (sql, p) => query(sql.replace(/\s+/g, ' ').trim(), p).then((r) => r.rows);
+  const lenh = await q1(`
+    SELECT ls.id, ls.ma_lenh_san_xuat, ls.trang_thai, ls.so_luong_release, ls.ngay_ke_hoach, ls.created_date,
+           cs.ma_chuyen, lc.ma_loai AS ma_loai_chuyen,
+           (SELECT count(DISTINCT d2.phan_in_id) FROM lenh_sx_dot_vai l2 JOIN dot_vai_ve d2 ON d2.id = l2.dot_vai_ve_id
+             WHERE l2.lenh_san_xuat_id = ls.id)::int AS so_phan_in,
+           (SELECT string_agg(DISTINCT p2.ma_phan, ', ') FROM lenh_sx_dot_vai l3 JOIN dot_vai_ve d3 ON d3.id = l3.dot_vai_ve_id
+              JOIN phan_in p2 ON p2.id = d3.phan_in_id WHERE l3.lenh_san_xuat_id = ls.id AND d3.phan_in_id <> $1) AS phan_in_khac,
+           EXISTS (SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id = k.checkpoint_id
+                    WHERE k.lenh_san_xuat_id = ls.id AND c.ma_checkpoint = 'TEST_QA' AND k.trang_thai = 'DAT') AS test_dat
+      FROM lenh_san_xuat ls
+      LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+      LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
+     WHERE ls.trang_thai <> 'HUY'
+       AND ls.id IN (SELECT lsd.lenh_san_xuat_id FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+                      WHERE dv.phan_in_id = $1)
+     ORDER BY ls.created_date`, [phanInId]);
+  const lenhIds = lenh.map((l) => l.id);
+  if (!lenhIds.length) return { lenh: [], phieu: [], tem: [], kcs: [], sua: [], oqc: [], pll: [], giao: [], test: [] };
+
+  const coPll = (await q1("SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='phan_loai_loi'")).length > 0;
+  const [phieu, tem, test] = await Promise.all([
+    q1(`SELECT ps.id, ps.lenh_san_xuat_id, ps.ma_phieu_san_xuat, ps.trang_thai, ps.tg_bd, ps.tg_kt, ps.chuyen_truong,
+               ps.ca_truong_id, ct.ho_ten AS ca_truong, ps.to_in_id, ti.ma_to, cs.ma_chuyen, ${thoInPhieuSql('ps.id')} AS tho_in
+          FROM phieu_san_xuat ps
+          LEFT JOIN nguoi_dung ct ON ct.id = ps.ca_truong_id
+          LEFT JOIN to_in ti ON ti.id = ps.to_in_id
+          LEFT JOIN chuyen_san_xuat cs ON cs.id = ps.chuyen_id
+         WHERE ps.lenh_san_xuat_id = ANY($1::uuid[]) AND ps.trang_thai <> 'HUY'
+         ORDER BY ps.created_date`, [lenhIds]),
+    q1(`SELECT t.id, t.phieu_san_xuat_id, ps.lenh_san_xuat_id, t.ma_tem, t.so_luong, t.trang_thai, t.tem_goc_id, t.created_date,
+               t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy, t.sl_sua_dat, t.sl_sua_huy, t.sl_oqc_dat, t.sl_da_giao,
+               (to_jsonb(t)->>'da_tich_giao')::boolean AS da_tich_giao, (to_jsonb(t)->>'ma_lo') AS ma_lo,
+               COALESCE(${MO_LAI_DUOC_SQL}, false) AS mo_lai_duoc
+          FROM tem t
+          JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+          JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+          ${SU_KIEN_CUOI_LATERAL}
+         WHERE ps.lenh_san_xuat_id = ANY($1::uuid[]) AND (t.trang_thai <> 'HUY' OR COALESCE(${MO_LAI_DUOC_SQL}, false))
+         ORDER BY t.created_date`, [lenhIds]),
+    q1(`SELECT tr.id, tr.lenh_san_xuat_id, tr.lan_test, tr.ket_qua, tr.ghi_chu, tr.created_date
+          FROM test_run tr WHERE tr.lenh_san_xuat_id = ANY($1::uuid[]) AND COALESCE(tr.ket_qua, '') <> 'HUY'
+         ORDER BY tr.created_date`, [lenhIds]),
+  ]);
+  const temIds = tem.filter((t) => t.trang_thai !== 'HUY').map((t) => t.id);
+  if (!temIds.length) return { lenh, phieu, tem, kcs: [], sua: [], oqc: [], pll: [], giao: [], test };
+  const [kcs, sua, oqc, pll, giao] = await Promise.all([
+    q1(`SELECT k.id, k.tem_id, k.created_date, k.so_luong_kiem, k.so_luong_dat, k.so_luong_loi, k.so_luong_huy, nd.ho_ten AS nguoi
+          FROM kcs k LEFT JOIN nguoi_dung nd ON nd.id = k.created_by
+         WHERE k.tem_id = ANY($1::uuid[]) AND ${notCancelledQc('k', 'kcs')} ORDER BY k.created_date`, [temIds]),
+    q1(`SELECT s.id, s.tem_id, s.created_date, s.so_luong_sua, s.so_luong_sua_dat, s.so_luong_sua_huy, s.tem_con_id, nd.ho_ten AS nguoi
+          FROM sua s LEFT JOIN nguoi_dung nd ON nd.id = s.created_by
+         WHERE s.tem_id = ANY($1::uuid[]) AND ${notCancelledQc('s', 'sua')} ORDER BY s.created_date`, [temIds]),
+    q1(`SELECT o.id, o.tem_id, o.created_date, o.nguon, o.so_luong_kiem, o.so_luong_dat, o.sl_qua_giao, o.ket_qua, nd.ho_ten AS nguoi
+          FROM oqc o LEFT JOIN nguoi_dung nd ON nd.id = o.created_by
+         WHERE o.tem_id = ANY($1::uuid[]) AND ${notCancelledQc('o', 'oqc')} ORDER BY o.created_date`, [temIds]),
+    coPll ? q1(`SELECT p.id, p.tem_id, COALESCE(p.updated_date, p.created_date) AS tg, p.sl_sua_luc_luu, p.sl_huy_luc_luu
+                  FROM phan_loai_loi p WHERE p.tem_id = ANY($1::uuid[]) ORDER BY p.created_date`, [temIds]) : [],
+    q1(`SELECT gh.id, gh.ma_phieu_giao, gh.trang_thai, gh.created_date, SUM(ght.so_luong_giao)::int AS so_luong,
+               array_agg(DISTINCT ght.tem_id) AS tem_ids
+          FROM giao_hang gh JOIN giao_hang_tem ght ON ght.giao_hang_id = gh.id
+         WHERE ght.tem_id = ANY($1::uuid[]) AND gh.trang_thai <> 'HUY'
+         GROUP BY gh.id ORDER BY gh.created_date`, [temIds]),
+  ]);
+  return { lenh, phieu, tem, kcs, sua, oqc, pll, giao, test };
+}
+
 async function danhMucLoaiDotVai() {
   const { rows } = await query(
     'SELECT id, ma_loai, ten_loai FROM loai_dot_vai WHERE dang_hoat_dong ORDER BY ten_loai'
@@ -214,6 +290,6 @@ async function danhMucLoaiDotVai() {
 
 module.exports = {
   traCuu, getPhanIn, getReady, getDotVaiList, getDotVaiRaw,
-  updatePhanIn, updateDotVai, slDaInCuaDotVai, ghiAudit, danhMucLoaiDotVai,
+  updatePhanIn, updateDotVai, slDaInCuaDotVai, ghiAudit, danhMucLoaiDotVai, toanCanh,
   COT_PHAN_IN, COT_DOT_VAI,
 };

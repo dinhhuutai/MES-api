@@ -30,6 +30,7 @@ const erpSvc = require('../erpsync/erpsync.service');
 const erpRepo = require('../erpsync/erpsync.repository');
 const phanInAdmin = require('../phaninadmin/phaninadmin.service');
 const repo = require('./suathongtin.repository');
+const { dangKhoa } = require('../../utils/khoaErp');
 
 const E = erpSvc._erp;
 
@@ -116,6 +117,11 @@ async function loaiIdTheoLoaikd(loaikd) {
 // So 1 phần in với các dòng ERP của nó rồi ghi phần KHÁC. Trả tóm tắt để hiện trên trang.
 async function capNhatMotPhanIn(pin, dong, actorId) {
   const out = { ma_phan: pin.ma_phan, phan_in: [], dot_vai: [], ghi_chu: null };
+  // Admin đã sửa tay ở Quản trị phần in ⇒ KHÓA ERP (mig 116): không áp thông tin ERP (luồng GN vẫn đóng lượt bình thường).
+  if (await dangKhoa(pin.id)) {
+    out.ghi_chu = 'Phần in đang khóa đồng bộ ERP (Quản trị phần in) — không áp thông tin ERP';
+    return out;
+  }
   // Thông tin mức phần in: ưu tiên dòng ERP mà mã đợt (`IDDotReady`) là đợt CỦA phần in này — ERP có thể
   // trả thêm dòng đơn khác trùng code phần; không có dòng nào khớp mã đợt thì lùi về dòng mới nhất.
   const maDot = await maDotSongCuaPhanIn(pin.id);

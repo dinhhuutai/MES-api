@@ -10,6 +10,7 @@ const { buildMeta } = require('../../utils/pagination');
 const { apiBat } = require('../../utils/caiDatApi');
 const { chuanHoaDsMa } = require('../../utils/maPhanIn');
 const { docGiaErp } = require('../../utils/giaPhanIn');
+const { dangKhoa } = require('../../utils/khoaErp');
 const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
 const gomRepo = require('../gomset/gomset.repository');
@@ -640,6 +641,8 @@ async function xemTruocCodePhan({ codeParts, ngay } = {}, actorId) {
 async function ganLaiTheoDong(ma, r, actorId) {
   const [cu] = await repo.anhChupPhanInTheoMa([ma]);
   if (!cu) return { ma, doi: false, ly_do: 'Phần in chưa có trong MES' };
+  // Admin đã sửa tay ở Quản trị phần in ⇒ đang KHÓA ERP (mig 116) — không gán lại, kể cả khách/đơn/mã hàng.
+  if (await dangKhoa(cu.id)) return { ma, doi: false, khoa_erp: true, ly_do: 'Phần in đang khóa đồng bộ ERP (Quản trị phần in)' };
   const moi = {
     khach: clean(r.customer_name), don_hang: clean(r.order_name), ma_hang: clean(r.item_name),
     mau_vai: clean(r.fabric_color), kich_vai: clean(r.fabric_size), kich_phim: clean(r.film_size),

@@ -1039,13 +1039,23 @@ async function softDeleteDotVaiTx(client, dotVaiId, actorId) {
   // ⚠ Chỉ xóa mềm khi KHÔNG còn đợt vải nào ngoài đợt vừa hủy ở trạng thái sống; đợt `DA_GOP` không
   //   tính là sống (SL của nó đã dồn sang đợt khác — đợt nhận mới là đợt sống).
   // ⚠ An toàn: đợt ĐÃ RELEASE bị chặn hủy ngay từ guard trên ⇒ không thể xóa mềm phần in đang chạy.
+  // ⚠⚠ 19/10/2026 (người dùng chốt): các đợt CÒN LẠI đều ĐÃ GIAO XONG (giai đoạn chậm nhất của phần in =
+  //   `DA_GIAO`, cùng nghĩa chip "Đã giao" — `utils/stage.js dominantStageScalar`) ⇒ cũng ẩn: hủy đợt cuối chưa
+  //   làm là phần in không còn việc gì. Phần in GIỮ NGUYÊN (chỉ `dang_hoat_dong=false`, cờ `phan_in_da_huy` ở
+  //   audit) ⇒ "Mở đợt vải" bật lại, ERP gửi đợt mới thì `erpsync.moLaiPhanInCoDotMoi` bật lại.
   const conDot = await client.query(
-    `SELECT 1 FROM dot_vai_ve d2 WHERE d2.phan_in_id = (SELECT phan_in_id FROM dot_vai_ve WHERE id=$1)
-       AND d2.id <> $1 AND d2.trang_thai NOT IN ('DA_HUY','DA_GOP') LIMIT 1`.replace(/\s+/g, ' '),
+    `SELECT pin.id, EXISTS (SELECT 1 FROM dot_vai_ve d2 WHERE d2.phan_in_id = pin.id
+       AND d2.id <> $1 AND d2.trang_thai NOT IN ('DA_HUY','DA_GOP')) AS con_song,
+       (${dominantStageScalar('pin.id')}) AS giai_doan
+       FROM phan_in pin WHERE pin.id = (SELECT phan_in_id FROM dot_vai_ve WHERE id=$1)`.replace(/\s+/g, ' '),
     [dotVaiId]
   );
+  const cd = conDot.rows[0] || {};
   let phanInDaHuy = false;
-  if (!conDot.rows.length) {
+  let lyDoAn = null;
+  if (!cd.con_song) lyDoAn = 'HET_DOT';
+  else if (cd.giai_doan === 'DA_GIAO') lyDoAn = 'DA_GIAO_HET';
+  if (lyDoAn) {
     const r = await client.query(
       `UPDATE phan_in SET dang_hoat_dong=false, updated_by=$2, updated_date=CURRENT_TIMESTAMP
         WHERE id = (SELECT phan_in_id FROM dot_vai_ve WHERE id=$1) AND dang_hoat_dong RETURNING id`.replace(/\s+/g, ' '),
@@ -1056,7 +1066,7 @@ async function softDeleteDotVaiTx(client, dotVaiId, actorId) {
 
   return {
     ok: true, ma: dv.ma_dot_vai, ma_phan: dv.ma_phan, trang_thai_cu: dv.trang_thai,
-    don_dep: donDep, phan_in_da_huy: phanInDaHuy,
+    don_dep: donDep, phan_in_da_huy: phanInDaHuy, ly_do_an: phanInDaHuy ? lyDoAn : null,
   };
 }
 
