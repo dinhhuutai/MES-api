@@ -49,10 +49,7 @@ async function listCandidates({ search = '', offset = 0, limit = 50 }) {
 }
 
 async function nextMaSet() {
-  const { rows } = await query(
-    `SELECT 'SET' || LPAD((COALESCE(MAX(NULLIF(regexp_replace(ma_set,'\\D','','g'),''))::int,0)+1)::text, 4, '0') AS ma
-     FROM gom_set`
-  );
+  const { rows } = await query(require('../../utils/maKeTiep').maKeTiepSql('gom_set', 'ma_set', 'SET', 4));
   return rows[0].ma;
 }
 

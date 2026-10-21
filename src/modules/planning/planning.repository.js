@@ -298,9 +298,8 @@ async function gopHistoryByDate(date) {
   return rows;
 }
 
-const NEXT_MA_SQL =
-  `SELECT 'LSX' || LPAD((COALESCE(MAX(NULLIF(regexp_replace(ma_lenh_san_xuat,'\\D','','g'),''))::int,0)+1)::text, 4, '0') AS ma
-   FROM lenh_san_xuat`;
+// ⚠⚠ 21/10/2026: bản cũ `LPAD(…, 4)` cắt LSX10000 thành LSX1000 (trùng) ⇒ mọi lần tạo lệnh lỗi "trùng khóa" — xem `utils/maKeTiep.js`.
+const NEXT_MA_SQL = require('../../utils/maKeTiep').maKeTiepSql('lenh_san_xuat', 'ma_lenh_san_xuat', 'LSX', 4);
 
 async function nextMaLenh() {
   const { rows } = await query(NEXT_MA_SQL);

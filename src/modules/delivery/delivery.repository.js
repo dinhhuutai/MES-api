@@ -279,10 +279,8 @@ async function donHangIdsForTems(temIds) {
 }
 
 async function nextMaPhieuGiao() {
-  const { rows } = await query(
-    `SELECT 'PG' || LPAD((COALESCE(MAX(NULLIF(regexp_replace(ma_phieu_giao,'\\D','','g'),''))::int,0)+1)::text, 4, '0') AS ma
-     FROM giao_hang`
-  );
+  // Chỉ đếm mã dự phòng `PG<số>` — bản cũ gom chữ số cả mã ERP `SQ026LA-009650` (xem `utils/maKeTiep.js`).
+  const { rows } = await query(require('../../utils/maKeTiep').maKeTiepSql('giao_hang', 'ma_phieu_giao', 'PG', 4));
   return rows[0].ma;
 }
 

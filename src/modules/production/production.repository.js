@@ -18,6 +18,8 @@ const { LENH_CHO_GN_SQL } = require('../../utils/traVeGn');
 const { coCotThoInKh } = require('../../utils/thoInKeHoach');
 // Mã LÔ của tem sản xuất (mig 114) — cấu trúc mã ở `utils/maLo.js`, cấp số ở `capMaLo` bên dưới.
 const { khoaDemLo, dungMaLo } = require('../../utils/maLo');
+// Cấp mã tăng dần PSX/TEM — không cắt khi vượt số chữ số (sự cố LSX10000 → LSX1000 ngày 21/10/2026).
+const { maKeTiepSql } = require('../../utils/maKeTiep');
 
 const PHAN_AGG = `(SELECT string_agg(DISTINCT pin.ma_phan, ', ')
     FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
@@ -146,8 +148,7 @@ async function getDefaultXePhoi() {
 async function nextMaPhieu() {
   // Chỉ tính mã chuẩn '^PSX<digits>$', ép số TRƯỚC khi MAX (cùng lý do như nextMaTem).
   const { rows } = await query(
-    `SELECT 'PSX' || LPAD((COALESCE(MAX(substring(ma_phieu_san_xuat from 4)::int) FILTER (WHERE ma_phieu_san_xuat ~ '^PSX[0-9]+$'),0)+1)::text, 4, '0') AS ma
-     FROM phieu_san_xuat`
+    maKeTiepSql('phieu_san_xuat', 'ma_phieu_san_xuat', 'PSX', 4) // không cắt khi qua PSX9999 (sự cố LSX 21/10/2026)
   );
   return rows[0].ma;
 }
@@ -164,8 +165,7 @@ async function createPhieu(client, { lenhId, chuyenId, maPhieu }, actorId) {
 // Sinh mã phiếu/tem TRONG transaction (thấy các bản INSERT của cùng client) — cho vòng lặp tạo nhiều lệnh.
 async function nextMaPhieuTx(client) {
   const { rows } = await client.query(
-    `SELECT 'PSX' || LPAD((COALESCE(MAX(substring(ma_phieu_san_xuat from 4)::int) FILTER (WHERE ma_phieu_san_xuat ~ '^PSX[0-9]+$'),0)+1)::text, 4, '0') AS ma
-     FROM phieu_san_xuat`
+    maKeTiepSql('phieu_san_xuat', 'ma_phieu_san_xuat', 'PSX', 4) // không cắt khi qua PSX9999 (sự cố LSX 21/10/2026)
   );
   return rows[0].ma;
 }
@@ -173,8 +173,7 @@ async function nextMaPhieuTx(client) {
 // TRƯỚC khi mở transaction (gọi HTTP trong transaction sẽ giữ khóa bảng `tem` suốt thời gian chờ).
 async function nextMaTemTx(client) {
   const { rows } = await client.query(
-    `SELECT 'TEM' || LPAD((COALESCE(MAX(substring(ma_tem from 4)::int) FILTER (WHERE ma_tem ~ '^TEM[0-9]+$'),0)+1)::text, 5, '0') AS ma
-     FROM tem`
+    maKeTiepSql('tem', 'ma_tem', 'TEM', 5)
   );
   return rows[0].ma;
 }
@@ -987,8 +986,7 @@ async function nextMaTem() {
   // CHỈ tính mã chuẩn '^TEM<digits>$' và ép KIỂU SỐ TRƯỚC khi MAX (tránh so sánh chuỗi '2' > '00003'
   // → sinh mã trùng). Mã tem seed/khác định dạng bị bỏ qua để không làm lệch số.
   const { rows } = await query(
-    `SELECT 'TEM' || LPAD((COALESCE(MAX(substring(ma_tem from 4)::int) FILTER (WHERE ma_tem ~ '^TEM[0-9]+$'),0)+1)::text, 5, '0') AS ma
-     FROM tem`
+    maKeTiepSql('tem', 'ma_tem', 'TEM', 5)
   );
   return rows[0].ma;
 }

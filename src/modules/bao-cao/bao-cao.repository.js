@@ -5,10 +5,7 @@ const { mauTim } = require('../../utils/timKiem');
 
 // ---- Báo cáo (bao_cao) ----
 async function nextMa() {
-  const { rows } = await query(
-    `SELECT 'BC' || LPAD((COALESCE(MAX(NULLIF(regexp_replace(ma_bao_cao,'\\D','','g'),''))::int,0)+1)::text, 4, '0') AS ma
-     FROM bao_cao`
-  );
+  const { rows } = await query(require('../../utils/maKeTiep').maKeTiepSql('bao_cao', 'ma_bao_cao', 'BC', 4));
   return rows[0].ma;
 }
 

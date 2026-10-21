@@ -619,10 +619,8 @@ async function setTemStatusQty(client, temId, trangThai, soLuong, actorId) {
 
 // Sinh mã tem kế tiếp (dùng cho tem con khi tách ở KCS/Sửa). Gọi trước transaction.
 async function nextMaTem() {
-  const { rows } = await query(
-    `SELECT 'TEM' || LPAD((COALESCE(MAX(NULLIF(regexp_replace(ma_tem,'\\D','','g'),''))::int,0)+1)::text, 5, '0') AS ma
-     FROM tem`
-  );
+  // Bản cũ gom chữ số cả mã tem ERP 12 số ⇒ tràn `int` (xem `utils/maKeTiep.js`).
+  const { rows } = await query(require('../../utils/maKeTiep').maKeTiepSql('tem', 'ma_tem', 'TEM', 5));
   return rows[0].ma;
 }
 

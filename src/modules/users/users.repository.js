@@ -93,10 +93,7 @@ async function existsUsername(tenDangNhap) {
 
 async function nextMaUser() {
   // Sinh mã U#### tăng dần.
-  const { rows } = await query(
-    `SELECT 'U' || LPAD((COALESCE(MAX(NULLIF(regexp_replace(ma_user,'\\D','','g'),''))::int,0)+1)::text, 4, '0') AS ma
-     FROM nguoi_dung`
-  );
+  const { rows } = await query(require('../../utils/maKeTiep').maKeTiepSql('nguoi_dung', 'ma_user', 'U', 4));
   return rows[0].ma;
 }
 
