@@ -106,6 +106,12 @@ module.exports = {
   listCheckpointOwners: (cId) => repo.listCheckpointOwners(cId),
   addCheckpointOwner: async (b, a) => { await repo.addCheckpointOwner(b, a); emit(); return {}; },
   removeCheckpointOwner: async (id) => { await repo.removeCheckpointOwner(id); emit(); return {}; },
+  // Ghi chú phạm vi owner (hiện ở sơ đồ dòng chảy). `cap` chỉ nhận 2 giá trị ⇒ tên bảng không đến từ client.
+  suaGhiChuOwner: async (cap, id, ghiChu, a) => {
+    const n = await repo.suaGhiChuOwner(cap === 'checkpoint' ? 'checkpoint_owner' : 'tram_owner', id, ghiChu, a);
+    if (!n) throw new AppError('Không tìm thấy owner', { status: 404, errorCode: 'NOT_FOUND' });
+    emit(); return {};
+  },
   // Status
   listStatuses: (q) => repo.listStatuses(q),
   createStatus: (b, a) => repo.createStatus(b, a).then((id) => ({ id })),

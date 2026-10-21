@@ -48,6 +48,8 @@ module.exports = {
   listCheckpointOwners: h(async (req, res) => ok(res, await s.listCheckpointOwners(req.query.checkpointId))),
   addCheckpointOwner: h(async (req, res) => created(res, await s.addCheckpointOwner(req.body, uid(req)), 'Đã thêm owner')),
   removeCheckpointOwner: h(async (req, res) => ok(res, await s.removeCheckpointOwner(req.params.id), 'Đã xóa owner')),
+  suaGhiChuTramOwner: h(async (req, res) => ok(res, await s.suaGhiChuOwner('tram', req.params.id, (req.body || {}).ghiChu, uid(req)), 'Đã lưu ghi chú')),
+  suaGhiChuCheckpointOwner: h(async (req, res) => ok(res, await s.suaGhiChuOwner('checkpoint', req.params.id, (req.body || {}).ghiChu, uid(req)), 'Đã lưu ghi chú')),
 
   // Status
   listStatuses: h(async (req, res) => ok(res, await s.listStatuses({ search: req.query.search || '', nhom: req.query.nhom || '' }))),

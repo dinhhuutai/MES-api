@@ -158,9 +158,12 @@ async function deleteCondition(id) {
 }
 
 // ============ OWNER (cần DELETE) ============
+// `ghi_chu` (cột có sẵn từ mig 001, 21/10/2026 mới dùng) = phạm vi phụ trách hiện ở SƠ ĐỒ DÒNG CHẢY, vd "Khu máy",
+//   "Bàn, Robot", "Chính" — owner cùng ghi chú gom 1 dòng. Tối đa 60 ký tự.
+const ghiChuOwner = (v) => { const s = String(v == null ? '' : v).trim().replace(/\s+/g, ' '); return s ? s.slice(0, 60) : null; };
 async function listTramOwners(tramId) {
   const { rows } = await query(
-    `SELECT o.id, o.phong_ban_id, o.user_id, o.role_id, o.loai, pb.ten_phong_ban, u.ho_ten, r.ten_role
+    `SELECT o.id, o.phong_ban_id, o.user_id, o.role_id, o.loai, o.ghi_chu, pb.ten_phong_ban, u.ho_ten, r.ten_role
      FROM tram_owner o
      LEFT JOIN phong_ban pb ON pb.id = o.phong_ban_id
      LEFT JOIN nguoi_dung u ON u.id = o.user_id
@@ -172,16 +175,23 @@ async function listTramOwners(tramId) {
 }
 async function addTramOwner(d, actor) {
   await query(
-    'INSERT INTO tram_owner (tram_id, phong_ban_id, user_id, role_id, loai, created_by) VALUES ($1,$2,$3,$4,$5,$6)',
+    'INSERT INTO tram_owner (tram_id, phong_ban_id, user_id, role_id, loai, ghi_chu, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7)',
     [d.tramId, d.phongBanId || null, d.userId || null, d.roleId || null,
-     d.loai === 'CHIU_TRACH_NHIEM' ? 'CHIU_TRACH_NHIEM' : 'XU_LY', actor]
+     d.loai === 'CHIU_TRACH_NHIEM' ? 'CHIU_TRACH_NHIEM' : 'XU_LY', ghiChuOwner(d.ghiChu), actor]
   );
 }
 async function removeTramOwner(id) { await query('DELETE FROM tram_owner WHERE id = $1', [id]); }
+// Sửa ghi chú phạm vi của 1 owner (bảng = 'tram_owner' | 'checkpoint_owner', do service chọn — không lấy từ client).
+async function suaGhiChuOwner(bang, id, ghiChu, actor) {
+  const { rowCount } = await query(
+    `UPDATE ${bang} SET ghi_chu = $2, updated_date = now(), updated_by = $3 WHERE id = $1`, [id, ghiChuOwner(ghiChu), actor]
+  );
+  return rowCount;
+}
 
 async function listCheckpointOwners(checkpointId) {
   const { rows } = await query(
-    `SELECT o.id, o.phong_ban_id, o.user_id, o.role_id, o.loai, o.bat_buoc, pb.ten_phong_ban, u.ho_ten, r.ten_role
+    `SELECT o.id, o.phong_ban_id, o.user_id, o.role_id, o.loai, o.bat_buoc, o.ghi_chu, pb.ten_phong_ban, u.ho_ten, r.ten_role
      FROM checkpoint_owner o
      LEFT JOIN phong_ban pb ON pb.id = o.phong_ban_id
      LEFT JOIN nguoi_dung u ON u.id = o.user_id
@@ -193,9 +203,9 @@ async function listCheckpointOwners(checkpointId) {
 }
 async function addCheckpointOwner(d, actor) {
   await query(
-    'INSERT INTO checkpoint_owner (checkpoint_id, phong_ban_id, user_id, role_id, loai, bat_buoc, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+    'INSERT INTO checkpoint_owner (checkpoint_id, phong_ban_id, user_id, role_id, loai, bat_buoc, ghi_chu, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
     [d.checkpointId, d.phongBanId || null, d.userId || null, d.roleId || null,
-     d.loai === 'CHIU_TRACH_NHIEM' ? 'CHIU_TRACH_NHIEM' : 'XU_LY', d.batBuoc === true, actor]
+     d.loai === 'CHIU_TRACH_NHIEM' ? 'CHIU_TRACH_NHIEM' : 'XU_LY', d.batBuoc === true, ghiChuOwner(d.ghiChu), actor]
   );
 }
 async function removeCheckpointOwner(id) { await query('DELETE FROM checkpoint_owner WHERE id = $1', [id]); }
@@ -277,6 +287,6 @@ module.exports = {
   listRules, createRule, updateRule, setRuleActive,
   listConditions, createCondition, deleteCondition,
   listTramOwners, addTramOwner, removeTramOwner,
-  listCheckpointOwners, addCheckpointOwner, removeCheckpointOwner,
+  listCheckpointOwners, addCheckpointOwner, removeCheckpointOwner, suaGhiChuOwner,
   listStatuses, createStatus, updateStatus, setStatusActive,
 };

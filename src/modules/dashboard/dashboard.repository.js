@@ -881,6 +881,29 @@ async function checkpointOwnersActive() {
   return rows;
 }
 
+// SƠ ĐỒ DÒNG CHẢY (nút ở thanh đầu trang, 21/10/2026): owner trạm + checklist của workflow hiện hành, 1 lượt query,
+//   kèm `ghi_chu` (phạm vi: "Khu máy", "Bàn, Robot"…) — trạm nào hiện, gom ra sao do FE (`constants/soDoDongChay.js`).
+async function ownersSoDo() {
+  const { rows } = await query(
+    `SELECT 'tram' AS cap, tr.ma_tram AS ma, o.loai, o.ghi_chu, o.created_date,
+            COALESCE(u.ho_ten, r.ten_role, pb.ten_phong_ban) AS ten
+       FROM tram_owner o JOIN tram tr ON tr.id = o.tram_id
+       JOIN workflow_version wv ON wv.id = tr.workflow_version_id AND wv.la_hien_hanh = true
+       LEFT JOIN nguoi_dung u ON u.id = o.user_id LEFT JOIN vai_tro r ON r.id = o.role_id
+       LEFT JOIN phong_ban pb ON pb.id = o.phong_ban_id
+     UNION ALL
+     SELECT 'checkpoint', cp.ma_checkpoint, o.loai, o.ghi_chu, o.created_date,
+            COALESCE(u.ho_ten, r.ten_role, pb.ten_phong_ban)
+       FROM checkpoint_owner o JOIN checkpoint cp ON cp.id = o.checkpoint_id
+       JOIN tram tr ON tr.id = cp.tram_id
+       JOIN workflow_version wv ON wv.id = tr.workflow_version_id AND wv.la_hien_hanh = true
+       LEFT JOIN nguoi_dung u ON u.id = o.user_id LEFT JOIN vai_tro r ON r.id = o.role_id
+       LEFT JOIN phong_ban pb ON pb.id = o.phong_ban_id
+     ORDER BY 1, 2, 5`.replace(/\s+/g, ' ')
+  );
+  return rows;
+}
+
 // ============ SƠ ĐỒ RẼ NHÁNH: phần in → đợt vải → (gộp) đợt SX → tem → KCS/Sửa/OQC/Giao ============
 // Trả cấu trúc đồ thị (không double-count): mỗi lệnh SX 1 lane, feeds = đợt vải nuôi lệnh (≥2 = gộp),
 // tems = tem của lệnh + sổ cái số lượng để rẽ nhánh KCS→(Sửa)→OQC→Giao.
@@ -1350,7 +1373,7 @@ async function nghenChecklistEpisodes({ from, to }) {
 }
 
 module.exports = {
-  summary, activity, stageCounts, stageCountsCached, chartDetail, dieuPhoiExtra, flowRows, flowTimeline, tramOwnersActive, checkpointOwnersActive,
+  summary, activity, stageCounts, stageCountsCached, chartDetail, dieuPhoiExtra, flowRows, flowTimeline, tramOwnersActive, checkpointOwnersActive, ownersSoDo,
   tinhTrangActiveRows, tinhTrangPhanInList, resolveScanCode, tinhTrangDetail, tinhTrangGraph, confirmTodayGroups, confirmTodayDetail,
   nghenTramEpisodes, nghenChecklistEpisodes,
 };

@@ -34,6 +34,8 @@
 //     = trọn SL release của phần in trong lệnh (gom nhiều đợt ⇒ tổng đã gom), tính vào NGÀY + CA của lần bấm
 //     Xác nhận chạy ĐẦU TIÊN của lệnh (`tg_chay_dau`; chạy lại sau "Ngừng lệnh chạy" không đếm lại), gắn cho phiếu
 //     bấm lúc đó. Số giờ KH = độ dài khoảng `tg_bd_kh` → `tg_kt_kh` (không có ⇒ 0), cùng ngày + ca đó.
+//     ⚠ 21/10/2026: lệnh CHẠY TIẾP các ngày sau (có giờ chạy / tem trong ngày) ⇒ mỗi ngày đó CŨNG mang trọn SL KH
+//     (giờ KH thì không) — xem bước 3 trong `dungBaoCaoSanXuat`.
 //   · Lệnh nhiều phần in (gom set cũ): giờ chia ĐỀU cho các phần in; SL KH theo `lenh_sx_dot_vai` của từng
 //     phần in; tem SX không lưu đợt vải ⇒ quy về phần in đầu (giới hạn đã biết, DATABASE.md §4).
 //   · ⚠⚠ (08/10/2026) GIỜ (KH lẫn TT) LÀ GIỜ CỦA CHUYỀN: nhiều lệnh chạy CÙNG LÚC trên 1 chuyền (lệnh in set
@@ -289,18 +291,31 @@ function dungBaoCaoSanXuat({
   //    gắn vào phiếu bấm lúc đó. SL KH = trọn SL release của phần in trong CHÍNH lệnh (lệnh gom nhiều đợt ⇒ tổng
   //    đã gom) — không còn cắt theo khoảng giờ KH. Giờ KH = độ dài khoảng KH của lệnh, các lệnh cùng chuyền có
   //    khoảng KH chồng nhau chia đều theo thời điểm (giờ của chuyền, như giờ TT), cũng vào ca bấm chạy.
+  //    ⚠ 21/10/2026 (người dùng: "phần in đang chạy sản xuất thì phải lấy được SL kế hoạch" — ca thật LSX9383
+  //    SL-2609-001-A07-F01-C03: bấm chạy 20/10 15:10, KH 22/10, ngày 21 vẫn in mà SL KH trống): lệnh CHẠY TIẾP sang
+  //    ngày sau (bấm chạy ngày trước, ngày D có giờ chạy / tem) ⇒ ngày D CŨNG mang SL KH = trọn SL release, vào ca
+  //    + phiếu có hoạt động sớm nhất trong ngày. Giờ KH vẫn chỉ tính 1 lần ở ngày bấm chạy đầu (tránh nhân giờ).
+  //    Phiếu treo không chạy / không in trong ngày D ⇒ không mang KH (như luật "chỉ hàng đang / đã in").
   const khTheoChuyen = new Map();
   phieuTheoLenh.forEach((dsPhieu, lenhId) => {
     const l = lenhById.get(lenhId);
     if (!l) return;
     const dau = ms(l.tg_chay_dau);
-    if (!trongNgay(dau)) return; // bấm chạy lần đầu ngày khác ⇒ kế hoạch thuộc ngày đó
+    const ds = dsPin(lenhId);
+    const slPin = (pin) => (Number(pin.sl) || (ds.length === 1 ? Number(l.so_luong_release) || 0 : 0));
+    if (!trongNgay(dau)) {
+      // Chạy tiếp từ ngày trước: phiếu có hoạt động trong ngày, sớm nhất.
+      const hd = dsPhieu.map((p) => ({ p, kc: khoangChay(p) })).filter((x) => x.kc).sort((x, y) => x.kc[0] - y.kc[0])[0];
+      if (!hd || dau == null || dau >= W1) return;
+      const kp = khungPhieu(hd.p);
+      const ca = (kp.find((w) => hd.kc[0] >= w.a && hd.kc[0] < w.b) || kp[0]).ca;
+      ds.forEach((pin) => { dv(hd.p, pin).bo[ca].kh += slPin(pin); });
+      return;
+    }
     const chinh = dsPhieu.find((p) => ms(p.tg_bd) === dau)
       || [...dsPhieu].sort((x, y) => (ms(x.tg_bd) || 0) - (ms(y.tg_bd) || 0))[0];
     const kp = khungPhieu(chinh);
     const caChon = (kp.find((w) => dau >= w.a && dau < w.b) || kp[0]).ca;
-    const ds = dsPin(lenhId);
-    const slPin = (pin) => (Number(pin.sl) || (ds.length === 1 ? Number(l.so_luong_release) || 0 : 0));
     ds.forEach((pin) => { dv(chinh, pin).bo[caChon].kh += slPin(pin); });
     const kk = khoangKeHoach(l);
     if (kk) {

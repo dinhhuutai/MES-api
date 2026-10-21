@@ -51,9 +51,11 @@ router.delete('/conditions/:id', WM, c.deleteCondition);
 router.get('/tram-owners', WV, c.listTramOwners);
 router.post('/tram-owners', WM, c.addTramOwner);
 router.delete('/tram-owners/:id', WM, c.removeTramOwner);
+router.patch('/tram-owners/:id', WM, c.suaGhiChuTramOwner);
 router.get('/checkpoint-owners', WV, c.listCheckpointOwners);
 router.post('/checkpoint-owners', WM, c.addCheckpointOwner);
 router.delete('/checkpoint-owners/:id', WM, c.removeCheckpointOwner);
+router.patch('/checkpoint-owners/:id', WM, c.suaGhiChuCheckpointOwner);
 
 // Status
 router.get('/statuses', SV, c.listStatuses);

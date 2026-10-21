@@ -41,6 +41,17 @@ router.get('/owners', asyncHandler(async (req, res) => {
   return ok(res, { tram: groupOwners(tramOwners, 'ma_tram'), checkpoint: groupOwners(cpOwners, 'ma_checkpoint') });
 }));
 
+// GET /dashboard/so-do-dong-chay — owner (tên · chịu trách nhiệm/xử lý · ghi chú phạm vi) cho modal "Sơ đồ dòng
+//   chảy" ở thanh đầu trang. Chỉ cần đăng nhập (như /owners): ai mở được trang dòng chảy cũng xem được.
+router.get('/so-do-dong-chay', asyncHandler(async (req, res) => {
+  const m = { tram: {}, checkpoint: {} };
+  (await repo.ownersSoDo()).forEach((o) => {
+    if (!o.ten) return;
+    (m[o.cap][o.ma] = m[o.cap][o.ma] || []).push({ ten: o.ten, loai: o.loai, ghi_chu: o.ghi_chu || null });
+  });
+  return ok(res, m);
+}));
+
 // GET /dashboard/bang-2 — 3 thẻ (hoàn thành hôm nay / sắp nghẽn / nghẽn theo PHẦN IN) + nhóm drill-down.
 const RANK = { OK: 0, SAP_NGHEN: 1, NGHEN: 2 };
 router.get('/bang-2', asyncHandler(async (req, res) => {
