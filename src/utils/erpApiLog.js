@@ -113,6 +113,9 @@ async function ghiLog(maApi, o = {}) {
           erp_error: o.erpError ?? null,
           erp_return_value: o.erpReturnValue ?? null,
           loi: o.loi ?? null,
+          // Lượt "Sửa & gửi lại" (21/10/2026, `caidatapi/suaGuiLai.js`): { ly_do, tu_dong, doi: {trường: {cu, moi}} }.
+          //   Chỉ ghi khi có ⇒ dòng thường giữ nguyên hình dạng.
+          ...(o.suaTay ? { sua_tay: o.suaTay } : {}),
         }),
         o.actorId || null,
       ]

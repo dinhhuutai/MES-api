@@ -81,6 +81,20 @@ function ngayTuMaNgayCa(ma) {
   return `20${yy}-${mm}-${dd}`;
 }
 
+// ----- KIỂM MÃ NGÀY CA NGƯỜI DÙNG NHẬP (21/10/2026, người dùng chốt) -----
+// ĐÚNG 8 ký tự = YYMMDD (ngày có thật) + mã ca C1/C2/C3 · D1/D2 · HC, vd `261021HC`. Ca thật 20/10/2026: tem
+// `152608077267` in với `2610520D1` (gõ thừa 1 số) ⇒ `tem.ngay_ca` NULL, ERP lỗi 2 lần, lại được NHỚ làm giá trị
+// đầu ca. Gương FE: `features/production/components/RunPanel.js maNgayCaSai`.
+const MA_NGAY_CA_RE = /^(\d{2})(\d{2})(\d{2})(C1|C2|C3|D1|D2|HC)$/;
+const NGAY_CA_SAI = 'Nhập ngày ca không đúng — phải đủ 8 ký tự: năm tháng ngày + ca, vd 261021HC (ca: C1 · C2 · C3 · D1 · D2 · HC)';
+function maNgayCaHopLe(ma) {
+  const m = MA_NGAY_CA_RE.exec(String(ma == null ? '' : ma).trim());
+  if (!m) return false;
+  const [, yy, mm, dd] = m.map(Number);
+  const d = new Date(Date.UTC(2000 + yy, mm - 1, dd));
+  return d.getUTCMonth() === mm - 1 && d.getUTCDate() === dd;
+}
+
 // ----- LƯỢT CA ĐANG CHẠY (13/10/2026 — khóa "nhập đầu ca" của màn In tem) -----
 // Trả `{ ma, ngay, khoa }`: `ma` = mã ca (C1/C2/C3 · D1/D2 · HC), `ngay` = YYMMDD ngày lượt ca BẮT ĐẦU, `khoa` =
 // `ngay` + `ma` — 2 thời điểm cùng `khoa` ⇔ cùng một lượt ca. Ca đêm (C3 22:00→06:00 · D2 18:00→06:00) qua nửa đêm
@@ -145,4 +159,5 @@ function ngayCaKeHoach(tuGio, ngayKeHoach, modeMap, loaiChuyen = null) {
 module.exports = {
   caFromHour, caFromParts, maCa, maNgayCa, ngayTuMaNgayCa, gioBatDauCa, khoaTuanIso, ngayCaKeHoach, caDangChay,
   loaiCaCua, khoaNhomCa, LOAI_CHUYEN_CA, NHOM_CA_RIENG, NHOM_CA_KHAC, CA_KHAC_MAC_DINH,
+  maNgayCaHopLe, NGAY_CA_SAI,
 };

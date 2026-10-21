@@ -410,7 +410,7 @@ async function guiLai(gui, { idBanGhi = null, actorId = null } = {}) {
 }
 
 module.exports = {
-  xepHang, xaHet, guiTheoLenh, guiLai, huyKeHoachCu, baoHuyLenh, baoHuyLenhNgam, MA_API, MA_API_HUY,
+  xepHang, xaHet, guiTheoLenh, guiLai, huyKeHoachCu, baoHuyLenh, baoHuyLenhNgam, MA_API, MA_API_HUY, SO_TRUONG, maLenhTuDs,
   // export để kiểm thực
   _banGhi: banGhi, _chiaNhom: chiaNhom, _chiaLo: chiaLo, _maLenhTuDs: maLenhTuDs,
 };

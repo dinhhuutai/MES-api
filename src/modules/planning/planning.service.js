@@ -357,6 +357,32 @@ function chiaSlTheoDot(ids, conMap, tong) {
 // `thoIn` (mig 111, 07/10/2026) = danh sách thợ in KẾ HOẠCH (chuỗi tên ngăn dấu phẩy, hoặc mảng) — ghi vào
 //   mọi lệnh tạo ra / mọi dòng kế hoạch tạm của lượt này. Chưa chạy migration ⇒ bỏ qua (fail-open, release vẫn
 //   chạy) và trả `tho_in_chua_luu: true` để FE báo.
+// KIỂM LẠI SL còn release SAU KHI KHÓA đợt vải, trong transaction tạo lệnh (21/10/2026 — chặn release gấp đôi khi 2
+//   lượt chạy song song, xem `repo.khoaConReleaseTx`). `nhomLenh` = [[{dvId, qty}]]. SL NHẬP TAY (`chat`) mà không còn
+//   đủ ⇒ 409 OVER; release hết phần còn ⇒ cắt về phần còn thật, đợt hết thì bỏ; không còn gì ⇒ 409 ALL_RELEASED.
+async function kiemLaiConReleaseTx(client, nhomLenh, chat) {
+  const con = await repo.khoaConReleaseTx(client, nhomLenh.flat().map((p) => p.dvId));
+  const out = [];
+  for (const nhom of nhomLenh) {
+    const n = [];
+    for (const p of nhom) {
+      const c = Number(con[String(p.dvId)]) || 0;
+      if (chat && p.qty > c) {
+        throw new AppError(`SL release (${p.qty}) vượt SL còn lại (${c}) — đợt vải vừa được release ở lượt khác, tải lại trang`,
+          { status: 409, errorCode: 'OVER' });
+      }
+      const q = Math.min(p.qty, c);
+      if (q > 0) n.push({ ...p, qty: q });
+    }
+    if (n.length) out.push(n);
+  }
+  if (!out.length) {
+    throw new AppError('Các đợt vải đã release đủ số lượng (vừa được release ở lượt khác) — tải lại trang',
+      { status: 409, errorCode: 'ALL_RELEASED' });
+  }
+  return out;
+}
+
 async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach, tgBdKh, tgKtKh, thoIn }, actorId, opts = {}) {
   if (!Array.isArray(dotVaiIds) || dotVaiIds.length === 0) {
     throw new AppError('Chọn ít nhất một đợt vải', { status: 422, errorCode: 'NO_DOT_VAI' });
@@ -469,7 +495,7 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
     if (!version) throw new AppError('Chưa cấu hình workflow', { status: 500, errorCode: 'NO_WORKFLOW' });
     const created = await withTransaction(async (client) => {
       const out = [];
-      for (const nhom of nhomLenh) {
+      for (const nhom of await kiemLaiConReleaseTx(client, nhomLenh, !!chiaNhap)) {
         const c = await createGiaCongLenh(client, {
           // ⚠ Phải truyền giờ BD/KT: `createGiaCongLenh` nhận sẵn 2 tham số này nhưng caller quên
           //   ⇒ lệnh gia công release từ màn Release 1 mất giờ kế hoạch (fix 2026-08-12).
@@ -504,7 +530,7 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
 
   const created = await withTransaction(async (client) => {
     const out = [];
-    for (const nhom of nhomLenh) {
+    for (const nhom of await kiemLaiConReleaseTx(client, nhomLenh, !!chiaNhap)) {
       const dvs = nhom.map((p) => cById[p.dvId]);
       const tong = nhom.reduce((s, p) => s + p.qty, 0);
       const dangChay = dvs[0] ? dangChaySet.has(dvs[0].phan_in_id) : false;
@@ -598,10 +624,13 @@ async function createDotSanXuat({ items, chuyenId, ngayKeHoach, tgBdKh, tgKtKh, 
   const chuyenLoaiDsx = await repo.getChuyenLoai(chuyenId);
   if (chuyenLoaiDsx === 'GIA_CONG') {
     const version = await wf.getActiveVersion();
-    const gc = await withTransaction(async (client) => createGiaCongLenh(client, {
-      versionId: version.id, chuyenId, junctions: plan.map((p) => ({ dotVaiId: p.dotVaiId, soLuong: p.soLuong })),
-      tongSL, ngayKeHoach, tgBdKh, tgKtKh, thoInKh,
-    }, actorId));
+    const gc = await withTransaction(async (client) => {
+      await kiemLaiConReleaseTx(client, [plan.map((p) => ({ dvId: p.dotVaiId, qty: p.soLuong }))], true);
+      return createGiaCongLenh(client, {
+        versionId: version.id, chuyenId, junctions: plan.map((p) => ({ dotVaiId: p.dotVaiId, soLuong: p.soLuong })),
+        tongSL, ngayKeHoach, tgBdKh, tgKtKh, thoInKh,
+      }, actorId);
+    });
     await qaRepo.resolveReturnsMany('TEST_RUN', ids);
     await repo.dongSetDaReleaseHet(ids, actorId);
     sockets.emit('workflow:updated', { lenhId: gc.id, stage: 'GIA_CONG', giaCong: true });
@@ -627,6 +656,7 @@ async function createDotSanXuat({ items, chuyenId, ngayKeHoach, tgBdKh, tgKtKh, 
   const inKieng = plan.some((p) => byId[p.dotVaiId]?.la_in_kieng);
   const version = await wf.getActiveVersion();
   const { lenhId, epUiId } = await withTransaction(async (client) => {
+    await kiemLaiConReleaseTx(client, [plan.map((p) => ({ dvId: p.dotVaiId, qty: p.soLuong }))], true); // chặn lượt song song
     const maLenh = await repo.nextMaLenhTx(client);
     const id = await repo.createLenh(client, {
       versionId: version.id, maLenh, chuyenId, soLuongRelease: tongSL, ngayKeHoach, trangThai, giaiDoan: 'IN',

@@ -13,7 +13,9 @@ const planningService = require('../planning/planning.service'); // rollbackLenh
 const erpsyncRepo = require('../erpsync/erpsync.repository');     // reopenReadyForPhanIn
 const qaRepo = require('../quality/quality.repository');          // qc_tra_ve (badge + lý do ở READY)
 const thongBao = require('../thongbao/thongbao.service');         // chuông Kỹ thuật (mig 085)
-const { caFromParts, ngayTuMaNgayCa, gioBatDauCa, loaiCaCua, khoaNhomCa, caDangChay } = require('../../utils/ca');
+const {
+  caFromParts, ngayTuMaNgayCa, gioBatDauCa, loaiCaCua, khoaNhomCa, caDangChay, maNgayCaHopLe, NGAY_CA_SAI,
+} = require('../../utils/ca');
 const { layBarcodeTem, layNhieuBarcodeTem } = require('../../utils/erpTemBarcode');
 const { ghiInTem, taoPayload, laMaTemErp, ghiChuaCoMaErp } = require('../../utils/erpGhiInTem');
 const { apiChoPhepPhanIn } = require('../../utils/caiDatApi');
@@ -114,7 +116,8 @@ async function goiYTemMeta(lenhId, phieuId) {
     const ca = await caInTemHienTai(lenhId, phieuId, g, modeMap);
     const nho = ca ? await repo.docDauCa(ca.khoa).catch(() => null) : null;
     return {
-      ngay_ca: (nho && nho.ngay_ca) || '', ngay_ct: (nho && nho.ngay_ct) || '', khoa_ca: ca ? ca.khoa : '',
+      // Giá trị đầu ca nhớ TRƯỚC 21/10/2026 có thể sai dạng (vd `2610520D1`) ⇒ không điền lại, để người in nhập lại.
+      ngay_ca: (nho && maNgayCaHopLe(nho.ngay_ca) && nho.ngay_ca) || '', ngay_ct: (nho && nho.ngay_ct) || '', khoa_ca: ca ? ca.khoa : '',
       // Hôm nay chưa có mốc nào (tem trước / giờ chạy phiếu) ⇒ "Từ giờ" = giờ bắt đầu CA hiện tại.
       gio_bd: g.gio_bd || gioBatDauCa(g.gio, g.phut, mode), gio_kt: g.gio_kt || '',
     };
@@ -134,6 +137,8 @@ async function kiemNgayCaChungTu(phieu, body) {
     const thieu = [!ngayCa && 'Ngày ca', !ngayCt && 'Ngày chứng từ'].filter(Boolean).join(' và ');
     throw new AppError(`Chưa nhập ${thieu} — nhập 1 lần đầu ca rồi mới in tem được`, { status: 422, errorCode: 'THIEU_NGAY_CA' });
   }
+  // 21/10/2026: mã ngày ca phải đúng 8 ký tự YYMMDD + ca (vd 261021HC) — xem `utils/ca.js maNgayCaHopLe`.
+  if (!maNgayCaHopLe(ngayCa)) throw new AppError(NGAY_CA_SAI, { status: 422, errorCode: 'NGAY_CA_SAI' });
   if (!/^\d{4}-\d{2}-\d{2}$/.test(ngayCt) || Number.isNaN(new Date(`${ngayCt}T00:00:00Z`).getTime())) {
     throw new AppError('Ngày chứng từ không hợp lệ', { status: 422, errorCode: 'NGAY_CT_SAI' });
   }

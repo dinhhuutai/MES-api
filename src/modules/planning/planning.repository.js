@@ -125,6 +125,25 @@ async function getDotVaiRemaining(dotVaiIds) {
   return rows.map((r) => ({ id: r.id, so_luong: r.so_luong, da_release: r.da_release, con_release: Math.max(0, r.so_luong - r.da_release) }));
 }
 
+// KHÓA dòng đợt vải (FOR UPDATE, thứ tự id cố định ⇒ không deadlock) rồi đọc SL còn release TRONG transaction tạo lệnh.
+// ⚠⚠ 21/10/2026: `getDotVaiRemaining` đọc NGOÀI transaction ⇒ 2 lượt release song song (bấm đúp / mạng gửi lại, cách
+//   nhau ~0,1 s) cùng thấy "còn đủ" và cùng tạo lệnh — prod 30 ngày có 17 đợt bị release GẤP ĐÔI (vd BT-2609-001-A08-
+//   F01-C01: LSX9748 + LSX9750 cùng 12:44:01). Khóa xong mới đọc ⇒ lượt sau đợi lượt trước commit rồi thấy đúng số.
+async function khoaConReleaseTx(client, dotVaiIds) {
+  const ids = [...new Set(dotVaiIds.map(String))];
+  if (!ids.length) return {};
+  await client.query('SELECT id FROM dot_vai_ve WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE', [ids]);
+  const { rows } = await client.query(
+    `SELECT dv.id::text AS id, COALESCE(dv.so_luong_vai_ve,0)::int AS so_luong,
+            COALESCE((SELECT SUM(COALESCE(lsd.so_luong,0)) FROM lenh_sx_dot_vai lsd
+                      JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
+                      WHERE lsd.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY'),0)::int AS da_release
+     FROM dot_vai_ve dv WHERE dv.id = ANY($1::uuid[])`.replace(/\s+/g, ' '),
+    [ids]
+  );
+  return Object.fromEntries(rows.map((r) => [r.id, Math.max(0, r.so_luong - r.da_release)]));
+}
+
 // Thông tin đợt vải để SOẠN đợt sản xuất (mig 052): con_dua theo junction so_luong + màu + READY (QC).
 // Dữ liệu để kiểm luật "phương án in phải khớp loại chuyền" (utils/phuongAnChuyen.js).
 // 1 dòng / đợt vải: mã phần in + phương án in đang hiệu lực + loại chuyền được chọn.
@@ -289,7 +308,11 @@ async function nextMaLenh() {
 }
 
 // Sinh mã trong transaction (thấy được các lệnh vừa INSERT ở cùng client) — cho phép tạo nhiều lệnh 1 lần.
+// ⚠ 21/10/2026: MAX+1 không khóa ⇒ 2 lượt tạo lệnh song song (2 người release cùng lúc) đọc cùng số ⇒ lượt sau lỗi
+//   trùng khóa `lenh_san_xuat_ma_lenh_san_xuat_key`. Khóa advisory theo TRANSACTION (tự nhả khi commit/rollback) ⇒ lượt
+//   sau đợi lượt trước commit rồi mới đọc MAX. Không cần quyền gì thêm.
 async function nextMaLenhTx(client) {
+  await client.query("SELECT pg_advisory_xact_lock(hashtext('lenh_san_xuat.ma_lenh_san_xuat'))");
   const { rows } = await client.query(NEXT_MA_SQL);
   return rows[0].ma;
 }
@@ -2410,7 +2433,7 @@ module.exports = {
   listCaTuan, caModeMap, upsertCaTuan, caTuanCoLoaiChuyen,
   listRelease1Candidates, phanInDangOGnTheoDot, release1HistoryByDate, nextMaLenh, nextMaLenhTx, createLenh,
   release1DoneByDate, planDoneByDate, testDoneByDate,
-  testedDotVaiIds, getDotVaiQty, getDotVaiRemaining, getDotVaiForCompose, getPainVsChuyen, phanInDangChay, addLenhDotVai, dotVaiAlreadyReleased,
+  testedDotVaiIds, getDotVaiQty, getDotVaiRemaining, khoaConReleaseTx, getDotVaiForCompose, getPainVsChuyen, phanInDangChay, addLenhDotVai, dotVaiAlreadyReleased,
   activateEpUi, getLenhGiaiDoan, getChuyenLoai,
   listGopCandidates, getDotVaiForMerge, adjustDotVaiQty, markDotVaiGop, insertGopHistory, gopHistoryByDate,
   listTestRunCandidates, listRelease2Candidates, getLenhBasic, getLenhDotVai, dotVaiIdsByLenh, getTestRuns,

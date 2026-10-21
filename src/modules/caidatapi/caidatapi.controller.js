@@ -24,4 +24,11 @@ const lichSu = asyncHandler(async (req, res) => {
 const guiLai = asyncHandler(async (req, res) =>
   ok(res, await require('./guiLai').guiLai(req.params.ma, req.params.auditId, req.user.id), 'Đã gửi lại sang ERP'));
 
-module.exports = { list, save, thu, lichSu, guiLai };
+// Sửa dữ liệu đã gửi rồi gửi lại (21/10/2026) — xem `suaGuiLai.js`. GET = danh sách trường của thân cũ.
+const xemSuaGuiLai = asyncHandler(async (req, res) =>
+  ok(res, await require('./suaGuiLai').xemSua(req.params.ma, req.params.auditId)));
+const suaGuiLai = asyncHandler(async (req, res) =>
+  ok(res, await require('./suaGuiLai').suaGuiLai(req.params.ma, req.params.auditId,
+    { gui: req.body?.gui, lyDo: req.body?.lyDo }, req.user.id), 'Đã sửa và gửi lại sang ERP'));
+
+module.exports = { list, save, thu, lichSu, guiLai, xemSuaGuiLai, suaGuiLai };

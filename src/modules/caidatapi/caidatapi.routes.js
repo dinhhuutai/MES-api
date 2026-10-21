@@ -20,5 +20,8 @@ router.post('/thu/:ma', rbac('WORKFLOW_VIEW'), c.thu);
 router.get('/lich-su/:ma', rbac('WORKFLOW_VIEW'), c.lichSu);
 // Gửi lại 1 dòng lịch sử (5 API đẩy) — là thao tác GHI sang ERP nên cần quyền SỬA cấu hình.
 router.post('/lich-su/:ma/:auditId/gui-lai', rbac('WORKFLOW_MANAGE'), c.guiLai);
+// Sửa dữ liệu đã gửi rồi gửi lại (21/10/2026) — GET trả các trường của thân cũ; POST {gui, lyDo} gửi thân đã sửa.
+router.get('/lich-su/:ma/:auditId/sua-gui-lai', rbac('WORKFLOW_MANAGE'), c.xemSuaGuiLai);
+router.post('/lich-su/:ma/:auditId/sua-gui-lai', rbac('WORKFLOW_MANAGE'), c.suaGuiLai);
 
 module.exports = router;

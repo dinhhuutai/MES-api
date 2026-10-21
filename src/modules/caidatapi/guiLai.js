@@ -197,4 +197,4 @@ async function guiLai(ma, auditId, actorId) {
   return { ok: true };
 }
 
-module.exports = { guiLai, MA_GUI_LAI };
+module.exports = { guiLai, MA_GUI_LAI, docDong, idMesCu, loiNeu };

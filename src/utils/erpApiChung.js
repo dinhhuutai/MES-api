@@ -120,7 +120,7 @@ async function goiMotLan({ nhan, url, method, body, timeoutMs }) {
 //   API Release 1). Không truyền ⇒ như cũ (cột lấy từ `gui.BarcodeIn`/`IDPhieuGiao`).
 async function goiErp(maApi, {
   nhan, url, method = 'POST', body = null, timeoutMs, retry, idBanGhi, moTa, actorId,
-  idKetNoi = null, layIdTuPhanHoi = null, maTem = null,
+  idKetNoi = null, layIdTuPhanHoi = null, maTem = null, suaTay = null,
 }) {
   const idCoSan = idKetNoi || idTuBody(body);
   if (!(await apiBat(maApi))) {
@@ -137,7 +137,7 @@ async function goiErp(maApi, {
       await ghiLog(maApi, {
         thanhCong: true, idBanGhi: idBanGhi || '-', idMes: idKn, maTem, url, soLanThu: i, thoiGianMs: Date.now() - batDau,
         gui: method === 'POST' ? body : null, nhan: data,
-        erpMessage: data && data.message, erpReturnValue: data && data.returnValue, actorId,
+        erpMessage: data && data.message, erpReturnValue: data && data.returnValue, actorId, suaTay,
       });
       return { ok: true, data, id_ket_noi: idKn };
     } catch (e) {
@@ -157,7 +157,7 @@ async function goiErp(maApi, {
     thanhCong: false, idBanGhi: idBanGhi || '-', idMes: idKn, maTem, url, soLanThu: soLan, thoiGianMs: Date.now() - batDau,
     gui: method === 'POST' ? body : null, nhan: ph,
     erpMessage: ph && ph.message, erpError: ph && ph.error, erpReturnValue: ph && ph.returnValue,
-    loi: error, actorId,
+    loi: error, actorId, suaTay,
   });
   return { ok: false, error, id_ket_noi: idKn };
 }
