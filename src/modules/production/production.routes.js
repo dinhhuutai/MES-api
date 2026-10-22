@@ -91,6 +91,8 @@ router.post('/phieu/:phieuId/doi-chuyen', rbac('PROD_RUN'), c.doiChuyen);
 // ⚠ Quyền `PROD_RUN`: người đứng chuyền là người phát hiện lỗi khuôn/film/mực, và họ vốn đã hủy được
 //   tem qua "Hủy lệnh in tem" / "Hủy lệnh đang chạy" (cùng quyền). Guard sổ cái vẫn nằm ở service.
 router.post('/lenh/:lenhId/tra-ve-ky-thuat', rbac('PROD_RUN'), c.traVeKyThuat);
+// Trả về Kế hoạch khi đang chạy — vải còn lại về Release 1, lệnh chạy hoàn tất ở máy này (22/10/2026).
+router.post('/tra-ve-ke-hoach', rbac('PROD_RUN'), c.traVeKeHoachSx);
 
 // Vượt sản xuất: cộng SL vượt vào release + trừ đợt vải chưa release cùng phần in — sidebar Xác nhận chạy
 router.post('/phieu/:phieuId/vuot-san-xuat', rbac('PROD_RUN'), c.vuotSanXuat);

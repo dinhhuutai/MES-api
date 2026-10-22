@@ -255,6 +255,9 @@ const undoStartProduction = asyncHandler(async (req, res) =>
 const traVeKyThuat = asyncHandler(async (req, res) =>
   ok(res, await service.traVeKyThuat(req.params.lenhId, req.body || {}, req.user.id),
     'Đã trả về Kỹ thuật — phần in quay lại READY'));
+// Trả về Kế hoạch khi ĐANG CHẠY (22/10/2026): body { items: [{ lenhId, soLuong }], lyDo } ⇒ { ok, loi }.
+const traVeKeHoachSx = asyncHandler(async (req, res) =>
+  ok(res, await service.traVeKeHoachSx(req.body || {}, req.user.id), 'Đã xử lý trả về Kế hoạch'));
 
 const vuotSanXuat = asyncHandler(async (req, res) =>
   ok(res, await service.vuotSanXuat(req.params.phieuId, req.body?.soLuong, req.user.id), 'Đã ghi nhận vượt sản xuất'));
@@ -274,4 +277,5 @@ module.exports = {
   reopenCandidates, reopenProduction, pauseLenhChay, doiChuyen,
   undoStartCandidates, undoStartProduction,
   traVeKyThuat,
+  traVeKeHoachSx,
 };

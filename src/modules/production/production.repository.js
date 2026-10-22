@@ -1435,12 +1435,34 @@ async function logTemPrint(client, { temId, maTem, actorId, lyDo = null }) {
   );
 }
 
-async function finishPhieu(phieuId, actorId) {
-  await query(
+// `client` (tùy chọn) = đóng phiếu TRONG transaction của bên gọi (Trả về Kế hoạch khi đang chạy — 22/10/2026).
+async function finishPhieu(phieuId, actorId, client = null) {
+  await (client || { query }).query(
     `UPDATE phieu_san_xuat SET trang_thai='HOAN_TAT', tg_kt=CURRENT_TIMESTAMP,
        so_luong_in=(SELECT COALESCE(SUM(so_luong),0) FROM tem WHERE phieu_san_xuat_id=$1),
        updated_by=$2, updated_date=CURRENT_TIMESTAMP WHERE id=$1`,
     [phieuId, actorId]
+  );
+}
+
+// TRẢ VỀ KẾ HOẠCH KHI ĐANG CHẠY (22/10/2026): khóa lệnh rồi đọc lại TRONG transaction — trạng thái lệnh + phiếu, các
+// đợt vải gắn lệnh (đợt gắn SAU CÙNG đứng đầu — rút SL từ đó trước) và tổng đã in mọi phiếu của lệnh.
+async function docTraVeKeHoachTx(client, lenhId, phieuId) {
+  const l = (await client.query('SELECT trang_thai FROM lenh_san_xuat WHERE id = $1 FOR UPDATE', [lenhId])).rows[0];
+  const p = (await client.query('SELECT trang_thai FROM phieu_san_xuat WHERE id = $1', [phieuId])).rows[0];
+  const dots = (await client.query(
+    'SELECT dot_vai_ve_id, COALESCE(so_luong, 0)::int AS so_luong FROM lenh_sx_dot_vai WHERE lenh_san_xuat_id = $1 ORDER BY created_date DESC, id DESC',
+    [lenhId])).rows;
+  const printed = (await client.query(
+    "SELECT COALESCE(SUM(t.so_luong),0)::int AS v FROM phieu_san_xuat ps JOIN tem t ON t.phieu_san_xuat_id = ps.id WHERE ps.lenh_san_xuat_id = $1 AND t.trang_thai <> 'HUY'",
+    [lenhId])).rows[0].v;
+  return { tt_lenh: l ? l.trang_thai : null, tt_phieu: p ? p.trang_thai : null, dots, printed };
+}
+async function logTraVeKeHoachSx(client, lenhId, cu, moi, actorId) {
+  await client.query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_cu, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('lenh_san_xuat', $1, 'TRA_VE_KE_HOACH_SX', $2::jsonb, $3::jsonb, $4, CURRENT_TIMESTAMP, $4)`.replace(/\s+/g, ' '),
+    [String(lenhId), JSON.stringify(cu), JSON.stringify(moi), actorId]
   );
 }
 
@@ -2124,7 +2146,7 @@ module.exports = {
   listReopenCandidates, getPhieuFull, reopenPhieuTx, logReopenProduction, logPauseLenhChay,
   cancelPhieuStart, logUndoStart, logChayDacBiet,
   listTemLogByPhieu, nextReprint, logReprint,
-  nextMaTem, nextMaTemNhieu, createTem, goiYTemMeta, logTemPrint, finishPhieu,
+  nextMaTem, nextMaTemNhieu, createTem, goiYTemMeta, logTemPrint, finishPhieu, docTraVeKeHoachTx, logTraVeKeHoachSx,
   capIdMes, duLieuGhiInTem, logGhiInTem,
   nextMaPhieuTx, nextMaTemTx, createPhieuDone, createTemGiaCongOqc, temCoCotDotVai,
   setPhieuTruong, upsertPhanCong, getPhanCongByPhieu,

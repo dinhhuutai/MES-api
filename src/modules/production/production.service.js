@@ -10,6 +10,7 @@ const tracking = require('../workflow/tracking.service');
 const planningRepo = require('../planning/planning.repository');
 // ⚠ KHÔNG vòng: `planning.service` chỉ require `production.repository` (không phải service này).
 const planningService = require('../planning/planning.service'); // rollbackLenh (Trả về Kỹ thuật)
+const manualRepo = require('../manualentry/manualentry.repository'); // updateReleaseTx (Trả về Kế hoạch khi đang chạy)
 const erpsyncRepo = require('../erpsync/erpsync.repository');     // reopenReadyForPhanIn
 const qaRepo = require('../quality/quality.repository');          // qc_tra_ve (badge + lý do ở READY)
 const thongBao = require('../thongbao/thongbao.service');         // chuông Kỹ thuật (mig 085)
@@ -1109,15 +1110,117 @@ async function finishRun(phieuId, actorId) {
   const phieu = await repo.getPhieuById(phieuId);
   if (!phieu) throw new AppError('Phiếu sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   await repo.finishPhieu(phieuId, actorId);
-  // IN KIẾNG (điểm 16): nếu đợt vừa hoàn tất là giai đoạn IN → kích hoạt đợt ÉP ỦI liên kết sang "chờ chạy".
+  const epUi = await sauChayHoanTat(phieu.lenh_san_xuat_id, actorId);
+  return { ...(await getRun(phieu.lenh_san_xuat_id)), ep_ui_activated: epUi ? epUi.ma_lenh_san_xuat : null };
+}
+
+// Việc SAU khi phiếu đã HOAN_TAT (dùng chung `finishRun` + `traVeKeHoachSx`): IN KIẾNG (điểm 16) — đợt vừa hoàn tất là
+// giai đoạn IN ⇒ kích hoạt đợt ÉP ỦI liên kết sang "chờ chạy"; rồi báo socket. Trả lệnh ép ủi vừa kích hoạt (nếu có).
+async function sauChayHoanTat(lenhId, actorId) {
   let epUi = null;
-  const gd = await planningRepo.getLenhGiaiDoan(phieu.lenh_san_xuat_id);
+  const gd = await planningRepo.getLenhGiaiDoan(lenhId);
   if (gd && gd.giai_doan === 'IN') {
-    epUi = await planningRepo.activateEpUi(phieu.lenh_san_xuat_id, actorId);
+    epUi = await planningRepo.activateEpUi(lenhId, actorId);
     if (epUi) sockets.emit('workflow:updated', { lenhId: epUi.id, stage: 'RELEASE_2', epUi: true });
   }
-  sockets.emit('production:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'finish', epUiActivated: !!epUi });
-  return { ...(await getRun(phieu.lenh_san_xuat_id)), ep_ui_activated: epUi ? epUi.ma_lenh_san_xuat : null };
+  sockets.emit('production:updated', { lenhId, action: 'finish', epUiActivated: !!epUi });
+  return epUi;
+}
+
+// ─── TRẢ VỀ KẾ HOẠCH KHI ĐANG CHẠY (22/10/2026, người dùng chốt) ─────────────────────────────────────────────────
+// "Đang in được 1 nửa có thể trả về để làm lại kế hoạch chuyển qua máy khác in, trả về nhiều phần cùng lúc; số vải còn
+// lại nhập tay sửa được." `items` = [{ lenhId, soLuong }] (số vải trả về của TỪNG lệnh — FE đã chia hàng gom nhiều
+// lệnh về từng lệnh), lý do BẮT BUỘC. Mỗi lệnh 1 transaction riêng, TUẦN TỰ; lệnh lỗi không chặn lệnh sau ⇒ { ok, loi }.
+//   · Lệnh phải đang chạy (phiếu mới nhất DANG_CHAY). 0 ≤ soLuong ≤ SL release − đã in (đọc lại TRONG transaction sau
+//     khi khóa lệnh — 2 người bấm cùng lúc thì người sau thấy lệnh đã đóng ⇒ 409).
+//   · Đã in > 0 HOẶC trả không trọn: GIẢM SL release đúng số trả về (rút từ đợt vải gắn lệnh SAU CÙNG trước, mỗi đợt
+//     qua `manualentry.updateReleaseTx` — cùng hàm của *Cập nhật SL release*, giữ chặn "không dưới SL đã in" + audit
+//     `UPDATE_SL_RELEASE`) ⇒ đợt có lại "còn release" và HIỆN LẠI ở Release 1; rồi CHẠY HOÀN TẤT phiếu ở máy này.
+//     Trả ít hơn số còn lại ⇒ phần chênh coi như hao hụt (lệnh đóng với SL release = đã in + phần không trả).
+//   · Chưa in tem nào + trả TRỌN SL release: không còn gì để giữ ⇒ hủy xác nhận chạy (`undoStartProduction`) rồi hủy
+//     lệnh (`planning.rollbackLenh` đích RELEASE_1, force vì lệnh đã có phiếu HUY) ⇒ đợt về Release 1 nguyên vẹn, báo
+//     ERP hủy kế hoạch như mọi lần hủy lệnh.
+//   · Audit `TRA_VE_KE_HOACH_SX` (lý do · số trả về · đã in · SL release cũ/mới · cách xử lý).
+// ⚠ CHƯA báo ERP Release 1 cho lệnh bị GIẢM SL (cùng khoảng trống với *Cập nhật SL release*); phần trả về sẽ đi ERP khi
+//   Release 1 lại.
+async function traVeKeHoachSx({ items, lyDo } = {}, actorId) {
+  const reason = String(lyDo || '').trim();
+  if (!reason) throw new AppError('Nhập lý do trả về Kế hoạch', { status: 422, errorCode: 'NO_LY_DO' });
+  const ds = (Array.isArray(items) ? items : []).filter((x) => x && x.lenhId);
+  if (!ds.length) throw new AppError('Chọn ít nhất 1 lệnh để trả về', { status: 422, errorCode: 'EMPTY' });
+  if (new Set(ds.map((x) => String(x.lenhId))).size !== ds.length) {
+    throw new AppError('Mỗi lệnh chỉ trả về 1 lần trong 1 lượt', { status: 422, errorCode: 'TRUNG_LENH' });
+  }
+  for (const x of ds) {
+    const v = Number(x.soLuong);
+    if (!Number.isInteger(v) || v < 0) throw new AppError('Số lượng trả về phải là số nguyên ≥ 0', { status: 422, errorCode: 'INVALID_QTY' });
+  }
+  const ok = [];
+  const loi = [];
+  for (const x of ds) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      ok.push(await traVeKeHoachMotLenh(String(x.lenhId), Number(x.soLuong), reason, actorId));
+    } catch (e) {
+      loi.push({ lenhId: x.lenhId, ma: e.maLenh || null, message: e.message || 'Lỗi', errorCode: e.errorCode || null });
+    }
+  }
+  if (ok.length) {
+    sockets.emit('workflow:updated', { stage: 'RELEASE_1', action: 'tra-ve-ke-hoach-sx' });
+    sockets.emit('dashboard:refresh', {});
+  }
+  return { ok, loi };
+}
+
+async function traVeKeHoachMotLenh(lenhId, soLuong, lyDo, actorId) {
+  const lenh = await repo.getLenhBasic(lenhId);
+  const nem = (msg, opt) => { const e = new AppError(msg, opt); e.maLenh = lenh?.ma_lenh_san_xuat || null; throw e; };
+  if (!lenh) nem('Lệnh sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  const phieu = await repo.getActivePhieu(lenhId);
+  if (!phieu || phieu.trang_thai !== 'DANG_CHAY') nem('Lệnh không còn đang chạy', { status: 409, errorCode: 'WRONG_STAGE' });
+
+  let ketQua = null;
+  await withTransaction(async (client) => {
+    // Khóa lệnh + đọc lại mọi số TRONG transaction.
+    const { tt_lenh: ttLenh, tt_phieu: ttPhieu, dots, printed } = await repo.docTraVeKeHoachTx(client, lenhId, phieu.id);
+    if (!ttLenh || ttLenh === 'HUY' || ttPhieu !== 'DANG_CHAY') {
+      nem('Lệnh vừa được người khác xử lý — tải lại', { status: 409, errorCode: 'DA_DOI' });
+    }
+    const slRel = dots.reduce((s, d) => s + d.so_luong, 0);
+    const toiDa = Math.max(0, slRel - printed);
+    if (soLuong > toiDa) {
+      nem(`Lệnh ${lenh.ma_lenh_san_xuat}: trả về ${soLuong} vượt vải còn lại ${toiDa} (SL release ${slRel} − đã in ${printed})`,
+        { status: 409, errorCode: 'VUOT_CON_LAI' });
+    }
+    const cach = printed === 0 && soLuong === slRel && slRel > 0 ? 'HUY_LENH' : 'HOAN_TAT';
+    if (cach === 'HOAN_TAT') {
+      let con = soLuong;
+      for (const d of dots) {
+        if (con <= 0) break;
+        const rut = Math.min(d.so_luong, con);
+        if (rut <= 0) continue;
+        // eslint-disable-next-line no-await-in-loop
+        await manualRepo.updateReleaseTx(client, lenhId, d.dot_vai_ve_id, d.so_luong - rut, actorId);
+        con -= rut;
+      }
+      await repo.finishPhieu(phieu.id, actorId, client);
+    }
+    await repo.logTraVeKeHoachSx(client, lenhId,
+      { so_luong_release: slRel, da_in: printed, phieu_id: phieu.id },
+      { ly_do: lyDo, tra_ve: soLuong, so_luong_release: cach === 'HOAN_TAT' ? slRel - soLuong : slRel, cach,
+        ma_lenh: lenh.ma_lenh_san_xuat }, actorId);
+    ketQua = { lenhId, ma: lenh.ma_lenh_san_xuat, tra_ve: soLuong, da_in: printed, cach };
+  });
+
+  if (ketQua.cach === 'HUY_LENH') {
+    await undoStartProduction(phieu.id, actorId);
+    await planningService.rollbackLenh(lenhId, {
+      target: 'RELEASE_1', force: true, lyDo: `Trả về Kế hoạch khi đang chạy: ${lyDo}`,
+    }, actorId);
+  } else {
+    await sauChayHoanTat(lenhId, actorId);
+  }
+  return ketQua;
 }
 
 async function monitor() {
@@ -1561,5 +1664,6 @@ module.exports = {
   listReopenCandidates, reopenProduction, pauseLenhChay, doiChuyen,
   listUndoStartCandidates, undoStartProduction,
   traVeKyThuat,
+  traVeKeHoachSx,
   guiGhiInTem, // export để kiểm thực (không có route nào gọi trực tiếp)
 };
