@@ -61,7 +61,7 @@ async function tenDangNhap(actorId) {
   }
 }
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const { sleep, laTimeout, thoiGianCho, xepHang } = require('./erpThuLai');
 const safeJson = (s) => { try { return JSON.parse(s); } catch { return null; } };
 
 // Proxy giống hệt `erpTemBarcode`/`erpGhiInTem` — undefined thì axios tự đọc HTTP_PROXY env.
@@ -132,7 +132,10 @@ async function goiErp(maApi, {
   let loiCuoi;
   for (let i = 1; i <= soLan; i += 1) {
     try {
-      const data = await goiMotLan({ nhan, url, method, body, timeoutMs });
+      // Chỉ xếp hàng chiều ĐẨY (POST) — xin số (GET) không chạy proc ghi phiếu. Xem `utils/erpThuLai.js`.
+      const data = method === 'POST'
+        ? await xepHang(url, () => goiMotLan({ nhan, url, method, body, timeoutMs }))
+        : await goiMotLan({ nhan, url, method, body, timeoutMs });
       const idKn = idCoSan || (layIdTuPhanHoi && layIdTuPhanHoi(data)) || taoIdKetNoi();
       await ghiLog(maApi, {
         thanhCong: true, idBanGhi: idBanGhi || '-', idMes: idKn, maTem, url, soLanThu: i, thoiGianMs: Date.now() - batDau,
@@ -143,8 +146,9 @@ async function goiErp(maApi, {
     } catch (e) {
       loiCuoi = e;
       if (i < soLan) {
-        const cho = 1000 * i;
-        console.warn(`[${nhan}] ⟳ lỗi (lần ${i}/${soLan}), thử lại sau ${cho / 1000}s: ${e.message}`);
+        const cho = method === 'POST' ? thoiGianCho(i, e) : 1000 * i;
+        console.warn(`[${nhan}] ⟳ lỗi (lần ${i}/${soLan}${method === 'POST' && laTimeout(e) ? ', TIMEOUT' : ''}),`
+          + ` thử lại sau ${cho / 1000}s: ${e.message}`);
         await sleep(cho);
       }
     }

@@ -76,6 +76,7 @@ const confirmQA = asyncHandler(async (req, res) =>
     ghiChu: req.body?.ghiChu ?? null,
     loaiTest: req.body?.loaiTest ?? null,
     inKhongDat: req.body?.inKhongDat ?? null,
+    release2: req.body?.release2 === true, // ngoài giờ hành chính ⇒ kiêm Release 2 (service tự kiểm giờ)
   }), req.body?.inKhongDat ? 'QA xác nhận in không đạt' : 'QA đã xác nhận test'));
 
 const ownerChoIn = asyncHandler(async (req, res) => ok(res, await service.listOwnerChoIn()));
@@ -94,6 +95,7 @@ const confirmQABatch = asyncHandler(async (req, res) =>
     nguoiTest: req.body?.nguoiTest ?? null,
     loaiTest: req.body?.loaiTest ?? null,
     ghiChu: req.body?.ghiChu ?? null,
+    release2: req.body?.release2 === true,
   }), 'QA xác nhận hàng loạt'));
 
 const release2Candidates = dsChung('planning.release2', thamSoTimTrang, (o) => service.listRelease2Candidates(o));
@@ -257,8 +259,11 @@ const cancelLenh = asyncHandler(async (req, res) => {
 // Test Run không đạt → trả về KỸ THUẬT (READY): chọn mục rớt (Khuôn/Film/Mực) + lý do. GIỮ NGUYÊN lệnh
 // → QC xác nhận READY xong là đợt vải nhảy thẳng lại Test Run, không phải Release 1 lại.
 const returnTestRunToReady = asyncHandler(async (req, res) =>
-  ok(res, await service.returnTestRunToReady(req.params.lenhId, req.body, req.user.id),
+  ok(res, await service.returnTestRunToReady(req.params.lenhId, { ...req.body, nguon: 'TEST_RUN' }, req.user.id),
     'Đã trả về Kỹ thuật — phần in quay lại READY'));
+const release2TraVeKyThuat = asyncHandler(async (req, res) =>
+  ok(res, await service.returnTestRunToReady(req.params.lenhId, { ...req.body, nguon: 'RELEASE2' }, req.user.id),
+    'Đã trả về Kỹ thuật từ Release 2 — phần in quay lại READY'));
 
 // Test Run trả về KẾ HOẠCH (giữ lệnh) + khối "Test Run trả về" / xác nhận lại ở màn Release 1 (07/10/2026).
 const testRunTraVeKeHoach = asyncHandler(async (req, res) =>
@@ -291,7 +296,7 @@ module.exports = {
   giaCongList, giaCongToOqc, giaCongHistory, giaCongTemCancelable, giaCongTemHuy, giaCongTraLai,
   keHoachTamList, keHoachTamSet, keHoachTamConfirm, keHoachTamUpdate, keHoachTamDelete, keHoachTamHistory, keHoachTamDone, keHoachTamTheoDoi,
   keHoachTamHuyCandidates, keHoachTamHuy,
-  cancelableLenh, cancelLenh, lanTestChoHuy, lanTestCancelable, huyLanTest, returnTestRunToReady,
+  cancelableLenh, cancelLenh, lanTestChoHuy, lanTestCancelable, huyLanTest, returnTestRunToReady, release2TraVeKyThuat,
   testRunTraVeKeHoach, release1TestRunTraVe, release1XacNhanLai,
   release1Done, release2Done, replanDone, testCnspDone, testQaDone,
 };

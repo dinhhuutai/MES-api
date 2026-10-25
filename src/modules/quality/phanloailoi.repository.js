@@ -76,6 +76,7 @@ async function listTheoNgay({ ngay = '', search = '', tinhTrang = '', page = 1, 
   const sql = `
     SELECT t.id, t.id AS tem_id, pl.id AS phieu_id, pl.ghi_chu, pl.created_date, nd.ho_ten AS nguoi,
            k.tg_kcs, (pl.id IS NOT NULL) AS da_phan_loai,
+           (COALESCE(t.sl_sua_dat, 0) + COALESCE(t.sl_sua_huy, 0)) AS sl_da_xac_nhan_sua,
            t.ma_tem, ${CHI_SO},
            ls.ma_lenh_san_xuat, cs.ten_chuyen,
            info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan,

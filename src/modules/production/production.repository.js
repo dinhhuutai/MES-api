@@ -837,6 +837,122 @@ async function listTemDaIn({
 }
 
 // Tem + sổ cái để validate trước khi hủy lệnh in tem.
+// ─── GỘP LỆNH CÙNG CODE PHẦN + CÙNG CHUYỀN (25/10/2026) ──────────────────────────────────────────────────────
+// Khóa + đọc các lệnh cần gộp (FOR UPDATE lệnh): trạng thái, chuyền, SL release, phiếu đang chạy, đã in, phần in.
+async function docLenhGopTx(client, ids) {
+  const { rows } = await client.query(
+    `SELECT ls.id, ls.ma_lenh_san_xuat, ls.trang_thai, ls.chuyen_id, COALESCE(ls.so_luong_release,0)::int AS so_luong_release,
+            ps.id AS phieu_id,
+            COALESCE((SELECT SUM(t.so_luong) FROM tem t WHERE t.phieu_san_xuat_id = ps.id AND t.trang_thai <> 'HUY'), 0)::int AS da_in,
+            (SELECT COUNT(*) FROM phieu_san_xuat p2 WHERE p2.lenh_san_xuat_id = ls.id AND p2.trang_thai <> 'HUY')::int AS so_phieu,
+            (SELECT array_agg(DISTINCT dv.phan_in_id::text) FROM lenh_sx_dot_vai x JOIN dot_vai_ve dv ON dv.id = x.dot_vai_ve_id
+              WHERE x.lenh_san_xuat_id = ls.id) AS phan_in_ids
+       FROM lenh_san_xuat ls
+       LEFT JOIN phieu_san_xuat ps ON ps.lenh_san_xuat_id = ls.id AND ps.trang_thai = 'DANG_CHAY'
+      WHERE ls.id = ANY($1::uuid[])
+      ORDER BY ls.ma_lenh_san_xuat
+      FOR UPDATE OF ls`.replace(/\s+/g, ' '),
+    [ids]
+  );
+  return rows;
+}
+
+// Gộp lệnh NGUỒN `s` vào lệnh ĐÍCH `t` (cả hai đã khóa). Không xóa gì (quyền DELETE không có ở các bảng này):
+//   · mỗi dòng `lenh_sx_dot_vai` của s ⇒ cộng vào dòng cùng đợt của t (chưa có thì thêm dòng) — dòng của s ở lại với s
+//     (s thành HUY ⇒ bị loại khỏi mọi tổng "đã release");
+//   · tem của phiếu đang chạy của s ⇒ chuyển sang phiếu của t; phiếu s ⇒ HUY;
+//   · lệnh s ⇒ HUY; t.so_luong_release = Σ dòng của t.
+async function gopLenhTx(client, t, s, actorId) {
+  const { rows: dong } = await client.query(
+    'SELECT dot_vai_ve_id, COALESCE(so_luong,0)::int AS so_luong FROM lenh_sx_dot_vai WHERE lenh_san_xuat_id = $1', [s.id]);
+  for (const d of dong) {
+    // eslint-disable-next-line no-await-in-loop
+    const up = await client.query(
+      `UPDATE lenh_sx_dot_vai SET so_luong = COALESCE(so_luong,0) + $3, updated_date = CURRENT_TIMESTAMP, updated_by = $4
+        WHERE lenh_san_xuat_id = $1 AND dot_vai_ve_id = $2`, [t.id, d.dot_vai_ve_id, d.so_luong, actorId]);
+    if (!up.rowCount) {
+      // eslint-disable-next-line no-await-in-loop
+      await client.query(
+        `INSERT INTO lenh_sx_dot_vai (lenh_san_xuat_id, dot_vai_ve_id, so_luong, ghi_chu, created_by)
+         VALUES ($1, $2, $3, $4, $5)`, [t.id, d.dot_vai_ve_id, d.so_luong, `Gộp từ ${s.ma_lenh_san_xuat}`, actorId]);
+    }
+  }
+  let soTem = 0;
+  if (s.phieu_id) {
+    if (t.phieu_id) {
+      const mv = await client.query(
+        `UPDATE tem SET phieu_san_xuat_id = $2, updated_date = CURRENT_TIMESTAMP, updated_by = $3
+          WHERE phieu_san_xuat_id = $1`, [s.phieu_id, t.phieu_id, actorId]);
+      soTem = mv.rowCount;
+    }
+    await client.query(
+      `UPDATE phieu_san_xuat SET trang_thai = 'HUY', tg_kt = COALESCE(tg_kt, CURRENT_TIMESTAMP),
+              ghi_chu = TRIM(BOTH ' ' FROM COALESCE(ghi_chu,'') || ' ' || $2), updated_date = CURRENT_TIMESTAMP, updated_by = $3
+        WHERE id = $1`, [s.phieu_id, `[Gộp vào lệnh ${t.ma_lenh_san_xuat}]`, actorId]);
+  }
+  await client.query(
+    `UPDATE lenh_san_xuat SET trang_thai = 'HUY', updated_date = CURRENT_TIMESTAMP, updated_by = $2 WHERE id = $1`, [s.id, actorId]);
+  await client.query(
+    `UPDATE lenh_san_xuat SET so_luong_release = (SELECT COALESCE(SUM(so_luong),0) FROM lenh_sx_dot_vai WHERE lenh_san_xuat_id = $1),
+            updated_date = CURRENT_TIMESTAMP, updated_by = $2 WHERE id = $1`, [t.id, actorId]);
+  return { soTem };
+}
+
+async function logGopLenhTx(client, lenhId, hanhDong, cu, moi, actorId) {
+  await client.query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_cu, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('lenh_san_xuat', $1, $2, $3::jsonb, $4::jsonb, $5, CURRENT_TIMESTAMP, $5)`.replace(/\s+/g, ' '),
+    [String(lenhId), hanhDong, JSON.stringify(cu), JSON.stringify(moi), actorId]
+  );
+}
+
+// ─── SỬA TEM Ở DANH SÁCH TEM IN (25/10/2026) ─────────────────────────────────────────────────────────────────
+// Đọc + KHÓA tem trong transaction (FOR UPDATE) — guard "chưa kiểm" phải kiểm lại sau khi khóa (CLAUDE.md §9).
+async function docTemSuaTx(client, temId) {
+  const { rows } = await client.query(
+    `SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.phieu_san_xuat_id, t.tem_goc_id, t.ma_ngay_ca,
+            to_char(t.ngay_ca, 'YYYY-MM-DD') AS ngay_ca,
+            to_char(t.gio_sx_bd, 'HH24:MI') AS gio_sx_bd, to_char(t.gio_sx_kt, 'HH24:MI') AS gio_sx_kt,
+            ps.lenh_san_xuat_id, ls.ma_lenh_san_xuat, ls.trang_thai AS lenh_trang_thai,
+            (COALESCE(t.sl_kcs_dat,0) + COALESCE(t.sl_kcs_sua,0) + COALESCE(t.sl_kcs_huy,0)
+              + COALESCE(t.sl_oqc_dat,0) + COALESCE(t.sl_da_giao,0)) > 0 AS da_kiem,
+            EXISTS (SELECT 1 FROM kcs k WHERE k.tem_id = t.id) AS co_kcs
+       FROM tem t
+       JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+       JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+      WHERE t.id = $1
+      FOR UPDATE OF t`.replace(/\s+/g, ' '),
+    [temId]
+  );
+  return rows[0] || null;
+}
+
+// Ghi các trường đã sửa (chỉ trường có trong `d`) + đổi SL phơi của phiên đang phơi theo SL mới.
+async function capNhatTemSuaTx(client, temId, d, actorId) {
+  const sets = [];
+  const p = [temId, actorId];
+  const dat = (cot, v, ep = '') => { p.push(v); sets.push(`${cot} = $${p.length}${ep}`); };
+  if ('soLuong' in d) dat('so_luong', d.soLuong);
+  if ('maNgayCa' in d) { dat('ma_ngay_ca', d.maNgayCa); dat('ngay_ca', d.ngayCa, '::date'); }
+  if ('gioBd' in d) dat('gio_sx_bd', d.gioBd, '::time');
+  if ('gioKt' in d) dat('gio_sx_kt', d.gioKt, '::time');
+  if (!sets.length) return;
+  await client.query(`UPDATE tem SET ${sets.join(', ')}, updated_date = CURRENT_TIMESTAMP, updated_by = $2 WHERE id = $1`, p);
+  if ('soLuong' in d) {
+    await client.query(
+      `UPDATE tem_xe_phoi SET so_luong_phoi = $2, updated_date = CURRENT_TIMESTAMP, updated_by = $3
+        WHERE tem_id = $1 AND trang_thai = 'DANG_PHOI'`, [temId, d.soLuong, actorId]);
+  }
+}
+
+async function logSuaTemTx(client, temId, cu, moi, actorId) {
+  await client.query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_cu, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('tem', $1, 'SUA_TEM', $2::jsonb, $3::jsonb, $4, CURRENT_TIMESTAMP, $4)`.replace(/\s+/g, ' '),
+    [String(temId), JSON.stringify(cu), JSON.stringify(moi), actorId]
+  );
+}
+
 async function getTemForCancel(temId) {
   const { rows } = await query(
     `SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.phieu_san_xuat_id,
@@ -2142,6 +2258,7 @@ module.exports = {
   getActivePhieu, getPhieuById, getTemsByPhieu, getTemContext, cancelTem, getTemLabelData, caPartsForTem, docDauCa, ghiDauCa,
   docPhanCongDauCa, ghiPhanCongDauCa, phieuDangChayCuaChuyen,
   listCancelableTem, listTemDaIn, getTemForCancel, logTemCancel, logCloseProduction,
+  docTemSuaTx, capNhatTemSuaTx, logSuaTemTx, docLenhGopTx, gopLenhTx, logGopLenhTx,
   listReopenableTem, getTemForReopen, reopenTem, logTemReopen, dongGhiInTemCuoi,
   listReopenCandidates, getPhieuFull, reopenPhieuTx, logReopenProduction, logPauseLenhChay,
   cancelPhieuStart, logUndoStart, logChayDacBiet,

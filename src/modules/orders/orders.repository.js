@@ -526,17 +526,31 @@ async function getPhanInTimeline(phanInId) {
     if (!readyDotBy.has(r.dot_vai_ve_id)) readyDotBy.set(r.dot_vai_ve_id, new Map());
     readyDotBy.get(r.dot_vai_ve_id).set(r.ma_checkpoint, r);
   });
+  // ⚠⚠ 25/10/2026 (người dùng: "phần in bị trả về, QC xác nhận lại thì phải lấy thời gian LẦN CUỐI"): bản cũ lấy LẦN
+  //   ĐẦU TIÊN sau khi đợt lên READY ⇒ bị trả về KT rồi KT/QC xác nhận lại vẫn hiện giờ của chu kỳ 1. Nay lấy lần
+  //   CUỐI trong cửa sổ [đợt lên READY, đợt KẾ TIẾP của phần in lên READY) — chặn trên để không lấy nhầm xác nhận
+  //   của đợt về sau (dòng tổng xác nhận lại cho đợt mới cũng ghi lịch sử). Cửa sổ trống ⇒ lùi về lần đầu sau T0.
+  const tgReadyCacDot = [
+    ...lenhR.rows.flatMap((l) => (l.dot_vai || []).filter((x) => x && x.id).map((x) => ({ id: x.id, tg: x.tg_ready || x.tg_len_mes }))),
+    ...pendingR.rows.map((x) => ({ id: x.id, tg: x.tg_ready || x.tg_len_mes })),
+  ].map((x) => ({ id: x.id, t: new Date(x.tg).getTime() })).filter((x) => Number.isFinite(x.t));
   const readyForDot = (d) => {
     if (!d || !d.id) return null;
     const T0 = new Date(d.tg_ready || d.tg_len_mes).getTime();
+    const sau = tgReadyCacDot.filter((x) => x.id !== d.id && Number.isFinite(T0) && x.t > T0).map((x) => x.t);
+    const Tend = sau.length ? Math.min(...sau) : Infinity;
     const rieng = readyDotBy.get(d.id) || new Map();
     const byCp = new Map();
     rieng.forEach((r, ma) => byCp.set(ma, r));
+    const dauTien = new Map();
     for (const e of readyEvents) {
-      if (byCp.has(e.ma_checkpoint) || !tongDat.has(e.ma_checkpoint)) continue;
-      if (Number.isFinite(T0) && new Date(e.tg).getTime() < T0) continue;
-      byCp.set(e.ma_checkpoint, e); // events ORDER BY tg ⇒ giữ lần ĐẦU TIÊN sau khi đợt lên READY
+      if (rieng.has(e.ma_checkpoint) || !tongDat.has(e.ma_checkpoint)) continue;
+      const t = new Date(e.tg).getTime();
+      if (Number.isFinite(T0) && t < T0) continue;
+      if (!dauTien.has(e.ma_checkpoint)) dauTien.set(e.ma_checkpoint, e);
+      if (t < Tend) byCp.set(e.ma_checkpoint, e); // events ORDER BY tg ⇒ giữ lần CUỐI trong cửa sổ của đợt
     }
+    dauTien.forEach((e, ma) => { if (!byCp.has(ma)) byCp.set(ma, e); });
     const checklists = [...byCp.values()].sort((a, b) => a.cp_thu_tu - b.cp_thu_tu).map((e) => ({
       ma_checkpoint: e.ma_checkpoint, ten_checkpoint: e.ten_checkpoint,
       gia_tri_text: null, tg: e.tg, nguoi: e.nguoi || null, tu_dong: !!e.tu_dong,

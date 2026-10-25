@@ -919,7 +919,7 @@ async function tinhTrangGraph(phanInId) {
   )).rows[0];
   if (!info) return null;
 
-  const [dotVai, links, tems, readyCp, testCp, readyEv, giaoRec, kcsRec, traVeRec, traVeTruocSx] = await Promise.all([
+  const [dotVai, links, tems, readyCp, testCp, readyEv, giaoRec, kcsRec, traVeRec, traVeTruocSx, lenhHuyR] = await Promise.all([
     // `kt_can_kiem_tra` (ERP KTCankiemtra) + lúc lên READY + lúc release (lệnh sống sớm nhất) ⇒ suy đợt VÀO THẲNG
     //   Kế hoạch không qua KT ở JS (xem `vaoThang` bên dưới).
     query(
@@ -1088,6 +1088,33 @@ async function tinhTrangGraph(phanInId) {
        ORDER BY q.created_date`.replace(/\s+/g, ' '),
       [phanInId]
     ),
+    // LỆNH ĐÃ HỦY (25/10/2026, người dùng: "hiện luôn những trạm ở giữa có xác nhận lần đầu nếu có trả về — không thấy
+    //   giờ Release của lần 1, lần 2"): lệnh bị hủy khi trả về (Đổi PA in, Trả về KT ở Release 1/Sản xuất, hủy lệnh…)
+    //   vẫn là 1 lượt đi qua Release 1 / Test Run của chu kỳ READY đó ⇒ đọc mốc Release 1 · từng lần test · Release 2 ·
+    //   lúc hủy + lý do (audit mới nhất của lệnh có `ly_do`). Không có tem (lệnh có tem đã đi SX thì không vào nhánh này).
+    query(
+      `SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.created_date, ls.updated_date AS tg_huy, r1u.ho_ten AS r1_nguoi,
+              (SELECT json_agg(json_build_object('lan', tr.lan_test, 'ket_qua', tr.ket_qua, 'tg', COALESCE(tr.tg_bd_test, tr.created_date),
+                      'ghi_chu', tr.ghi_chu, 'nguoi', tu.ho_ten) ORDER BY tr.lan_test)
+                 FROM test_run tr LEFT JOIN nguoi_dung tu ON tu.id = tr.created_by WHERE tr.lenh_san_xuat_id = ls.id) AS tests,
+              (SELECT json_build_object('tg', a.thoi_gian, 'nguoi', au.ho_ten) FROM audit_log a LEFT JOIN nguoi_dung au ON au.id = a.nguoi_thuc_hien_id
+                WHERE a.ten_bang='lenh_san_xuat' AND a.id_ban_ghi=ls.id::text AND a.hanh_dong='RELEASE_2' ORDER BY a.thoi_gian LIMIT 1) AS r2,
+              (SELECT json_build_object('hanh_dong', a.hanh_dong, 'ly_do', a.gia_tri_moi->>'ly_do', 'vao_lenh', a.gia_tri_moi->>'vao_lenh',
+                      'nguoi', au.ho_ten, 'tg', a.thoi_gian)
+                 FROM audit_log a LEFT JOIN nguoi_dung au ON au.id = a.nguoi_thuc_hien_id
+                WHERE a.ten_bang='lenh_san_xuat' AND a.id_ban_ghi=ls.id::text AND (a.gia_tri_moi ? 'ly_do' OR a.hanh_dong='GOP_VAO_LENH')
+                ORDER BY a.thoi_gian DESC LIMIT 1) AS huy,
+              (SELECT string_agg(DISTINCT dv.ma_dot_vai, ', ') FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+                WHERE lsd.lenh_san_xuat_id = ls.id AND dv.phan_in_id = $1) AS dot_vai
+         FROM lenh_san_xuat ls
+         LEFT JOIN nguoi_dung r1u ON r1u.id = ls.created_by
+        WHERE ls.trang_thai = 'HUY'
+          AND EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+                      WHERE lsd.lenh_san_xuat_id = ls.id AND dv.phan_in_id = $1)
+          AND NOT EXISTS (SELECT 1 FROM phieu_san_xuat ps JOIN tem t ON t.phieu_san_xuat_id = ps.id WHERE ps.lenh_san_xuat_id = ls.id)
+        ORDER BY ls.created_date`.replace(/\s+/g, ' '),
+      [phanInId]
+    ).catch(() => ({ rows: [] })),
   ]);
 
   // Gom link theo lệnh → feeds[]; gom tem theo lệnh.
@@ -1217,6 +1244,7 @@ async function tinhTrangGraph(phanInId) {
     checklists: c.items ? boSungTuDong(gomMuc(c.items)) : curChecklists,
     start: c.start,
     lenh: [],
+    lenh_huy: [],
     pending: [],
   }));
   // Lệnh / đợt chờ VÀO THẲNG ⇒ nhánh riêng `vao_thang` (không treo dưới READY nào).
@@ -1224,7 +1252,7 @@ async function tinhTrangGraph(phanInId) {
   const pendingQuaKt = pending.filter((d) => !d.vao_thang);
   // Dữ liệu cũ thiếu lịch sử READY → 1 chu kỳ dựng từ trạng thái hiện tại (như trước) — chỉ khi CÓ thứ qua KT.
   if (ready_cycles.length === 0 && (lenhQuaKt.length || pendingQuaKt.length || !lenh.length)) {
-    ready_cycles = [{ checklists: curChecklists, lenh: [], pending: [] }];
+    ready_cycles = [{ checklists: curChecklists, lenh: [], lenh_huy: [], pending: [] }];
   }
   // Lệnh thuộc chu kỳ CUỐI có mốc bắt đầu ≤ lúc tạo lệnh (lệnh tạo trước mọi mốc → chu kỳ đầu).
   const cyTai = (T) => {
@@ -1233,6 +1261,14 @@ async function tinhTrangGraph(phanInId) {
     return idx;
   };
   lenhQuaKt.forEach((l) => { ready_cycles[cyTai(new Date(l.created_date).getTime())].lenh.push(l); });
+  // Lệnh đã hủy (25/10/2026) ⇒ gắn vào chu kỳ READY lúc tạo lệnh (`lenh_huy`) — FE vẽ các trạm Release 1 / Test Run /
+  //   Release 2 đã đi qua trước khi bị trả về. Không có chu kỳ nào (dữ liệu cũ) ⇒ bỏ.
+  if (ready_cycles.length) {
+    lenhHuyR.rows.forEach((l) => {
+      const cy = ready_cycles[cyTai(new Date(l.created_date).getTime())];
+      if (cy) cy.lenh_huy.push({ ...l, tests: l.tests || [] });
+    });
+  }
   // Đợt vải CHƯA release thuộc chu kỳ READY HIỆN TẠI (mới nhất).
   if (ready_cycles.length) ready_cycles[ready_cycles.length - 1].pending = pendingQuaKt;
   const lenhThang = lenh.filter((l) => l.vao_thang);

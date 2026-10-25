@@ -28,6 +28,7 @@ const release1Erp = require('./release1Erp');
 // Khách gia công (II/AD) miễn Khuôn — nhãn cột Khuôn của Danh sách release.
 const { isKhuonOptional } = require('../../utils/tech');
 const { ngayHomNayVN } = require('../../utils/khoangNgay');
+const { trongGioHanhChinh } = require('../../utils/gioHanhChinh'); // Test Run ngoài giờ ⇒ QA kiêm Release 2
 
 const TEST_TRAM = 'TEST_RUN';
 const CNSP_CP = 'TEST_CNSP';
@@ -960,7 +961,21 @@ async function confirmTest(lenhId, which, actorId, extra = {}) {
   }
   await tracking.moveByLenh(lenhId, TEST_TRAM, actorId); // theo dõi dòng chảy: vào trạm TEST_RUN
   sockets.emit('workflow:updated', { lenhId, stage: 'TEST_RUN', confirm: which });
-  return getLenhDetail(lenhId);
+  // ⚠ NGOÀI GIỜ HÀNH CHÍNH (25/10/2026, người dùng chốt): nút QA đạt / In không đạt kiêm Release 2 ⇒ lệnh vào
+  //   chờ sản xuất ngay (không đợi Kế hoạch duyệt). Giờ do SERVER quyết (`utils/gioHanhChinh.js`); trong giờ ⇒
+  //   như cũ, cờ bị bỏ qua. Xác nhận test ĐÃ ghi xong ở trên — duyệt R2 lỗi (vd phần in vừa bị trả về GN) thì
+  //   KHÔNG hoàn tác test, chỉ báo lại để Kế hoạch duyệt tay.
+  let release2 = null;
+  if (which === 'qa' && extra.release2 && !trongGioHanhChinh()) {
+    try {
+      await approveRelease2(lenhId, actorId, { qaNgoaiGio: true });
+      release2 = { ok: true };
+    } catch (e) {
+      release2 = { ok: false, loi: e.message };
+    }
+  }
+  const detail = await getLenhDetail(lenhId);
+  return release2 ? { ...detail, release2 } : detail;
 }
 
 // Xóa mềm (hủy) xác nhận Test Run của 1 lệnh — CNSP hoặc QA. Đưa DAT → HUY để xác nhận lại.
@@ -996,17 +1011,20 @@ async function confirmTestBatch(lenhIds, which, actorId, extra = {}) {
     throw new AppError('Bắt buộc nhập người test khi QA xác nhận đạt', { status: 422, errorCode: 'NGUOI_TEST_REQUIRED' });
   }
   let okCount = 0;
+  let release2Count = 0;
   const errors = [];
   for (const id of lenhIds) {
     try {
-      await confirmTest(id, which, actorId, extra);
+      const kq = await confirmTest(id, which, actorId, extra);
       okCount += 1;
+      if (kq && kq.release2 && kq.release2.ok) release2Count += 1;
+      else if (kq && kq.release2) errors.push({ lenhId: id, message: `Đã xác nhận test nhưng chưa Release 2: ${kq.release2.loi}` });
     } catch (e) {
       errors.push({ lenhId: id, message: e.message });
     }
   }
   sockets.emit('dashboard:refresh', {});
-  return { okCount, failedCount: errors.length, errors };
+  return { okCount, release2Count, failedCount: errors.length, errors };
 }
 
 // ----- RELEASE 2 (Kế hoạch duyệt cuối) -----
@@ -1016,7 +1034,7 @@ async function listRelease2Candidates({ search, page, limit, offset }) {
   return { items: await attachPhanInList(rows), meta: buildMeta(page, limit, total) };
 }
 
-async function approveRelease2(lenhId, actorId) {
+async function approveRelease2(lenhId, actorId, { qaNgoaiGio = false } = {}) {
   const { byMa } = await loadTestConfig();
   const lenh = await repo.getLenhBasic(lenhId);
   if (!lenh) throw new AppError('Lệnh sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
@@ -1030,7 +1048,8 @@ async function approveRelease2(lenhId, actorId) {
     await repo.setLenhTrangThai(client, lenhId, 'RELEASE_2', actorId);
     await repo.logPlanChange(client, lenhId, 'RELEASE_2',
       { trang_thai: 'RELEASE_1' },
-      { trang_thai: 'RELEASE_2', chuyen_id: lenh.chuyen_id || null, ngay_ke_hoach: toDateStr(lenh.ngay_ke_hoach) },
+      { trang_thai: 'RELEASE_2', chuyen_id: lenh.chuyen_id || null, ngay_ke_hoach: toDateStr(lenh.ngay_ke_hoach),
+        ...(qaNgoaiGio ? { qa_ngoai_gio: true } : {}) },
       actorId);
   });
   await tracking.moveByLenh(lenhId, 'RELEASE_2', actorId); // theo dõi dòng chảy
@@ -1239,8 +1258,13 @@ function normalizeTechItems(checklists) {
 //     đã chốt chuyền — giữ lệnh thì hàng quay lại đúng cái chuyền vừa bị chê.
 const LOAI_TRA_VE = new Set(['TEST_LOI', 'DOI_PA_IN']);
 
-async function returnTestRunToReady(lenhId, { checklists, lyDo, loai }, actorId) {
-  const reason = (lyDo || '').trim();
+// `nguon` (25/10/2026): 'RELEASE2' = Kế hoạch trả về Kỹ thuật ngay ở màn Release 2 (lệnh đã test xong, chờ duyệt).
+//   Cùng luật với Test Run trả về (giữ lệnh, hủy kết quả test + QC ⇒ KT làm lại xong lệnh tự về Test Run, phải
+//   test lại) — chỉ khác lý do mang tiền tố "Release 2:" + audit `TRA_VE_KY_THUAT_RELEASE_2`.
+async function returnTestRunToReady(lenhId, { checklists, lyDo, loai, nguon }, actorId) {
+  const tuRelease2 = nguon === 'RELEASE2';
+  const reasonGoc = (lyDo || '').trim();
+  const reason = tuRelease2 && reasonGoc ? `Release 2: ${reasonGoc}` : reasonGoc;
   if (!reason) throw new AppError('Nhập lý do trả về Kỹ thuật', { status: 422, errorCode: 'NO_LY_DO' });
   const kieu = LOAI_TRA_VE.has(loai) ? loai : 'TEST_LOI';
   const doiPaIn = kieu === 'DOI_PA_IN';
@@ -1258,9 +1282,13 @@ async function returnTestRunToReady(lenhId, { checklists, lyDo, loai }, actorId)
   const lenh = await repo.getLenhBasic(lenhId);
   if (!lenh) throw new AppError('Lệnh sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   if (lenh.trang_thai !== 'RELEASE_1') {
-    throw new AppError('Chỉ trả về Kỹ thuật khi lệnh đang ở Test Run', { status: 409, errorCode: 'WRONG_STAGE' });
+    throw new AppError(tuRelease2 ? 'Lệnh đã duyệt Release 2 — trả về Kỹ thuật ở màn Xác nhận chạy'
+      : 'Chỉ trả về Kỹ thuật khi lệnh đang ở Test Run', { status: 409, errorCode: 'WRONG_STAGE' });
   }
   const info = await repo.lenhChoKyThuat(lenhId);
+  if (tuRelease2 && info && (info.cho_ky_thuat || info.cho_gn || info.cho_ke_hoach)) {
+    throw new AppError('Lệnh không ở màn Release 2 (đang chờ Kỹ thuật / Giao nhận / Kế hoạch)', { status: 409, errorCode: 'WRONG_STAGE' });
+  }
   if (info && info.co_phieu) {
     throw new AppError('Lệnh đã bắt đầu sản xuất (đã in tem) — không trả về Kỹ thuật được', { status: 409, errorCode: 'HAS_PHIEU' });
   }
@@ -1297,9 +1325,10 @@ async function returnTestRunToReady(lenhId, { checklists, lyDo, loai }, actorId)
   for (const dvId of dotVaiIds) {
     await qaRepo.insertQcTraVe({ loai: 'TEST_RUN', dotVaiId: dvId, lenhId, checklistList, lyDo: reason }, actorId);
   }
-  await repo.logPlanChange(null, lenhId, 'TRA_VE_KY_THUAT_TEST_RUN',
+  await repo.logPlanChange(null, lenhId, tuRelease2 ? 'TRA_VE_KY_THUAT_RELEASE_2' : 'TRA_VE_KY_THUAT_TEST_RUN',
     { trang_thai: 'RELEASE_1' },
-    { ma_lenh: lenh.ma_lenh_san_xuat, checklists: chosen, ly_do: reason, loai: kieu, giu_lenh: !doiPaIn }, actorId);
+    { ma_lenh: lenh.ma_lenh_san_xuat, checklists: chosen, ly_do: reason, loai: kieu, giu_lenh: !doiPaIn,
+      nguon: tuRelease2 ? 'RELEASE2' : 'TEST_RUN' }, actorId);
   await tracking.moveDotVaiTo(dotVaiIds, 'READY', actorId);
   sockets.emit('workflow:updated', { lenhId, stage: 'READY', traVe: true });
   // Đổi phương án in ⇒ đợt vải quay lại màn Release 1 ⇒ báo cho màn đó tải lại ngầm.

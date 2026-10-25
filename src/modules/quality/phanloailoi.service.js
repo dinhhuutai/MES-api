@@ -166,10 +166,13 @@ async function huy(temId, lyDo, actorId) {
   const goc = await repo.chiaTruocPhanLoai(temId, mocTruoc);
   // Số gốc chỉ dùng được khi TỔNG HƯ chưa đổi từ đó tới giờ (KCS kiểm thêm lượt ⇒ lệch ⇒ dồn hết về SỬA).
   const dich = goc && goc.sua + goc.huy === slHu ? goc : { sua: slHu, huy: 0 };
+  // ⚠ 25/10/2026 (người dùng chốt): tem đã có lượt Sửa ĐƯỢC XÁC NHẬN (còn hiệu lực) thì KHÔNG hủy phân loại
+  //   lỗi — phải hủy xác nhận Sửa trước (hủy xác nhận đảo `sl_sua_dat/huy` về 0 ⇒ lúc đó mới hủy được).
+  //   Bản cũ chỉ chặn khi phần sửa sau hủy < phần đã sửa (`DA_SUA_ROI`).
   const daXuLySua = Number(sd.sl_sua_dat || 0) + Number(sd.sl_sua_huy || 0);
-  if (dich.sua < daXuLySua) {
-    throw new AppError(`Đã sửa xong ${daXuLySua} pcs của tem này — không hủy phân loại lỗi được`,
-      { status: 409, errorCode: 'DA_SUA_ROI' });
+  if (daXuLySua > 0) {
+    throw new AppError(`Tem này đã xác nhận sửa ${daXuLySua} pcs — hủy xác nhận Sửa trước rồi mới hủy phân loại lỗi`,
+      { status: 409, errorCode: 'DA_XAC_NHAN_SUA' });
   }
 
   await withTransaction(async (client) => {

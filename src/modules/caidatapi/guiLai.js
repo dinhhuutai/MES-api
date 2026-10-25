@@ -60,7 +60,9 @@ const loiNeu = (kq, ten) => {
   throw new AppError(`ERP báo lỗi: ${(kq && kq.error) || 'không rõ'}`, { status: 502, errorCode: 'ERP_LOI' });
 };
 
-async function guiLai(ma, auditId, actorId) {
+// `opts.slTheoTem` (25/10/2026 — Sửa tem ở Danh sách tem in): ERP_GHI_IN_TEM lấy `Soluong` từ CHÍNH tem (số mới
+//   vừa sửa) thay vì giữ số đã gửi lần trước. Ngày ca / giờ SX vốn đã dựng lại từ tem.
+async function guiLai(ma, auditId, actorId, opts = {}) {
   if (!MA_GUI_LAI.has(ma)) throw new AppError('API này không gửi lại được', { status: 400, errorCode: 'KHONG_GUI_LAI' });
   const d = await docDong(ma, auditId);
   if (!d) throw new AppError('Không tìm thấy dòng lịch sử', { status: 404, errorCode: 'NOT_FOUND' });
@@ -193,7 +195,7 @@ async function guiLai(ma, auditId, actorId) {
   const coVaiTem = !!(vaiTem && vaiTem.so_dong > 0);
   const payload = taoPayload(r, {
     idMes,
-    soLuong: soHoacNull(cu.Soluong),
+    soLuong: ma === 'ERP_GHI_IN_TEM' && opts.slTheoTem ? null : soHoacNull(cu.Soluong),
     soLuongHuy: coVaiTem ? vaiTem.huy : (soHoacNull(cu.Soluongloi) || 0),
     soLuongThieu: coVaiTem ? vaiTem.thieu : (soHoacNull(cu.SOLUONGTHIEU) || 0),
   });

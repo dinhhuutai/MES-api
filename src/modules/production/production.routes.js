@@ -29,6 +29,10 @@ router.get('/tem/:temId/label', rbac('PROD_RUN', 'PROD_MONITOR'), c.temLabel);
 // Vải hủy / thiếu của 1 tem đại diện (21/10/2026) — số vẫn thuộc đợt vải của phần in.
 router.get('/tem/:temId/vai', rbac('PROD_RUN', 'PROD_MONITOR'), c.xemVaiTem);
 router.put('/tem/:temId/vai', rbac('PROD_RUN'), c.suaVaiTheoTem);
+// Sửa SL in / giờ SX / mã ngày ca của tem (Danh sách tem in, 25/10/2026) — lý do bắt buộc, gửi lại ERP cùng IDMES.
+router.put('/tem/:temId/sua', rbac('PROD_RUN'), c.suaTem);
+// Gộp các lệnh cùng code phần + cùng chuyền thành 1 lệnh (25/10/2026) — sidebar nhiều lệnh gọi trước khi in tem.
+router.post('/gop-lenh', rbac('PROD_RUN'), c.gopLenh);
 router.get('/phieu/:phieuId/tem-logs', rbac('PROD_RUN', 'PROD_MONITOR'), c.temLogs);
 router.post('/phieu/:phieuId/vai-huy', rbac('PROD_RUN'), c.addVaiHuy); // body.loai: HUY (vải hư) | THIEU
 // Phân công sản xuất (thợ in theo phần in + ca trưởng/chuyền trưởng + SL vải hủy/thiếu) — sidebar Sản xuất

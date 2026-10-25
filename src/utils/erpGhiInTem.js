@@ -28,7 +28,7 @@ const { taoIdKetNoi } = require('./idKetNoi');
 const { ngayGioErp } = require('./erpNgayGio');
 const { boTraMaNhanVien } = require('./maNhanVien');
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const { sleep, laTimeout, thoiGianCho, xepHang } = require('./erpThuLai');
 
 // ─── CHỜ CÓ MÃ ERP CẤP MỚI ĐƯỢC GỬI (người dùng chốt 30/09/2026) ─────────────────────────────────
 // Dữ liệu gửi sang ERP mang mã DO ERP CẤP (mã tem 15/17/13 xin từ `/barcode-tem-*`, ID phiếu giao xin từ
@@ -345,14 +345,16 @@ async function ghiInTem(row, { maApi = 'ERP_GHI_IN_TEM' } = {}) {
   let loiCuoi;
   for (let i = 1; i <= soLan; i += 1) {
     try {
-      const data = await goiMotLan(body, k);
-      console.log(`[${k.nhan}] ✓ Đã báo ERP (IDMES ${body.IDMES}, tem ${body.BarcodeIn})`);
-      return { ok: true, body, data };
+      // Xếp hàng theo URL kênh + chờ lâu sau timeout — xem `utils/erpThuLai.js` (lỗi ERP 2 dòng / 1 tem).
+      const data = await xepHang(k.url(), () => goiMotLan(body, k));
+      console.log(`[${k.nhan}] ✓ Đã báo ERP (IDMES ${body.IDMES}, tem ${body.BarcodeIn}, lần ${i})`);
+      return { ok: true, body, data, so_lan_thu: i };
     } catch (e) {
       loiCuoi = e;
       if (i < soLan) {
-        const cho = 1000 * i; // 1s, 2s, 3s...
-        console.warn(`[${k.nhan}] ⟳ Báo ERP lỗi (lần ${i}/${soLan}), thử lại sau ${cho / 1000}s: ${e.message}`);
+        const cho = thoiGianCho(i, e);
+        console.warn(`[${k.nhan}] ⟳ Báo ERP lỗi (lần ${i}/${soLan}${laTimeout(e) ? ', TIMEOUT — chờ ERP chạy xong lượt cũ' : ''}),`
+          + ` thử lại sau ${cho / 1000}s: ${e.message}`);
         await sleep(cho);
       }
     }

@@ -68,6 +68,8 @@ router.post('/test-run/:lenhId/tra-ve-ke-hoach', rbac('TESTRUN_QA'), c.testRunTr
 router.get('/release2/candidates', rbac('RELEASE2'), c.release2Candidates);
 router.post('/release2/batch', rbac('RELEASE2'), c.approveRelease2Batch);
 router.post('/release2/:lenhId', rbac('RELEASE2'), c.approveRelease2);
+// Release 2 trả về KỸ THUẬT (25/10/2026) — cùng luật Test Run trả về (giữ lệnh, phải test lại), nguồn RELEASE2.
+router.post('/release2/:lenhId/tra-ve-ky-thuat', rbac('RELEASE2'), c.release2TraVeKyThuat);
 
 // Lập kế hoạch lại + lịch sử kế hoạch (Release 2 + lập lại) — dùng chung quyền module Kế hoạch
 router.get('/plan-history', rbac('RELEASE1', 'RELEASE2'), c.planHistory);
