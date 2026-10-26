@@ -8,9 +8,12 @@
 //     khách · thợ in) theo bộ chọn chuyền. ⚠ 19/10/2026 người dùng chốt: NHÓM THỢ = CẢ danh sách thợ in PHÂN CÔNG
 //     của phiếu, mọi loại chuyền (bỏ luật "người đầu" + "chuyền Máy lấy chuyền trưởng" ở báo cáo này — `utils/thoIn.js
 //     dsThoPhanCong`); `tho_ds` = danh sách, `tho` = người đầu (giữ cho tương thích).
-//   · `theo_tho`: mỗi dòng chi tiết CHIA ĐỀU cho số thợ trong nhóm (`chiaBo`) ⇒ Σ các thợ = Tổng cộng.
+//   · `theo_tho`: mỗi dòng chi tiết CHIA ĐỀU cho số người được tính (`chiaBo`) ⇒ Σ các thợ = Tổng cộng. ⚠ 26/10/2026
+//     người dùng chốt: chuyền MÁY + BÀN tính cho CHUYỀN TRƯỞNG (thiếu ⇒ thợ in) — dòng chi tiết mang `tho_tinh`.
+//   · `ds_kh` / `ds_tem` (26/10/2026): danh sách làm nên từng ô SL KH / SL in TT (modal bấm ô ở FE).
 //   · `theo_chuyen`: cùng đơn vị (phiếu × phần in) ⇒ Σ = Tổng cộng.
-// Mỗi ô = 5 cột-nhóm Tổng · HC · CA1 · CA2 · CA3, mỗi cột-nhóm 4 số: kh (SL kế hoạch) · tt (SL in thực
+// Mỗi ô = cột-nhóm Tổng · HC · CA1 · CA2 · CA3 · D1 · D2 (26/10/2026: ca dài có D1/D2 riêng; API `ca` = các cột
+// cần hiện theo loại ca đã cài — xem `caHien` cuối hàm), mỗi cột-nhóm 4 số: kh (SL kế hoạch) · tt (SL in thực
 // tế) · gk (số giờ KH) · gt (số giờ TT). FE tự tính % = tt/kh và C.lệch giờ = gt − gk.
 //
 // LUẬT (người dùng chốt 02/10/2026):
@@ -18,7 +21,7 @@
 //     Lệnh có kế hoạch mà chưa chạy KHÔNG lên báo cáo. Chuyền gia công bị loại (không in ở xưởng).
 //   · NGÀY D = các ca BẮT ĐẦU trong ngày D: 06:00 D → 06:00 D+1 (ca đêm C3/D2 qua nửa đêm vẫn thuộc D —
 //     đúng quy ước mã ngày ca của tem). Chia ca theo loại ca của tuần ISO (`cai_dat_ca_tuan`, `utils/ca.js`):
-//     NGAN CA1 06–14 · CA2 14–22 · CA3 22–06 · DAI CA1 06–18 · CA2 18–06 · HANH_CHINH cả ngày = HC.
+//     NGAN CA1 06–14 · CA2 14–22 · CA3 22–06 · DAI D1 06–18 · D2 18–06 · HANH_CHINH cả ngày = HC.
 //     Tuần chưa cài ⇒ suy từ mã ca trên tem trong ngày (`suyLoaiCaTuTem`), không có tem ⇒ NGAN.
 //   · SL in TT = Σ `tem.so_luong` (tem 15 sống, không tính tem con 17) có `ngay_ca` = D, ca theo HẬU TỐ mã
 //     ngày ca người in đã chọn (HC · C1/D1 · C2/D2 · C3); thiếu mã ⇒ suy từ giờ in tem.
@@ -49,9 +52,13 @@
 //     phiếu `ghi_chu` mở đầu `[HỆ THỐNG` (4.626 phiếu) + tem `HT-…` (4.657 tem) — không phải sản xuất thật.
 
 const { caFromHour, khoaTuanIso, khoaNhomCa } = require('./ca');
-const { dsThoPhanCong } = require('./thoIn');
+const { dsThoPhanCong, dsThoBaoCaoSanXuat } = require('./thoIn');
 
-const CA = ['HC', 'CA1', 'CA2', 'CA3'];
+// ⚠ 26/10/2026 (người dùng: "cài ca dài thì bảng phải là HC, D1, D2; ca ngắn HC, CA1, CA2, CA3"): ca DÀI có cột
+//   RIÊNG D1/D2 (trước đó dồn vào CA1/CA2 ⇒ ngày đi ca dài vẫn hiện 3 ca ngắn). Cột hiện = `caHien` (HC luôn có +
+//   ca của loại ca các chuyền trong ngày + ca nào có số).
+const CA = ['HC', 'CA1', 'CA2', 'CA3', 'D1', 'D2'];
+const CA_THEO_LOAI = { NGAN: ['CA1', 'CA2', 'CA3'], DAI: ['D1', 'D2'], HANH_CHINH: [] };
 const NHOM = [
   { key: 'MTD', label: 'MTD' },
   { key: 'BANIN', label: 'Banin' },
@@ -73,7 +80,7 @@ function khungCa(ngay, loaiCa) {
   const [y, m, d] = String(ngay).split('-').map(Number);
   const ws = Date.UTC(y, m - 1, d, 6) - VN_LECH;
   if (loaiCa === 'HANH_CHINH') return [{ ca: 'HC', a: ws, b: ws + 24 * GIO }];
-  if (loaiCa === 'DAI') return [{ ca: 'CA1', a: ws, b: ws + 12 * GIO }, { ca: 'CA2', a: ws + 12 * GIO, b: ws + 24 * GIO }];
+  if (loaiCa === 'DAI') return [{ ca: 'D1', a: ws, b: ws + 12 * GIO }, { ca: 'D2', a: ws + 12 * GIO, b: ws + 24 * GIO }];
   return [
     { ca: 'CA1', a: ws, b: ws + 8 * GIO },
     { ca: 'CA2', a: ws + 8 * GIO, b: ws + 16 * GIO },
@@ -118,12 +125,28 @@ function khoangKeHoach(l) {
 function caCuaTem(hint, gio, loaiCa) {
   const h = String(hint || '').toUpperCase();
   if (h === 'HC' || h === 'TC') return 'HC';
-  if (h === 'C1' || h === 'D1') return 'CA1';
-  if (h === 'C2' || h === 'D2') return 'CA2';
+  if (h === 'C1') return 'CA1';
+  if (h === 'C2') return 'CA2';
   if (h === 'C3') return 'CA3';
+  if (h === 'D1') return 'D1';
+  if (h === 'D2') return 'D2';
   const nhan = caFromHour(gio, 0, loaiCa);
   if (nhan.startsWith('Hành chính')) return 'HC';
+  if (loaiCa === 'DAI') return nhan === 'Ca 2' ? 'D2' : 'D1';
   return { 'Ca 1': 'CA1', 'Ca 2': 'CA2', 'Ca 3': 'CA3' }[nhan] || 'CA1';
+}
+
+// Ca của KẾ HOẠCH theo GIỜ BẮT ĐẦU KH (26/10/2026 người dùng chốt: "giờ kế hoạch bắt đầu ở ca nào thì là ca đó") —
+// lấy GIỜ TRONG NGÀY của `tg_bd_kh` đặt vào khung ca ngày D của chuyền (06:00 → 06:00; giờ < 06:00 thuộc phần sau
+// nửa đêm). Lệnh không có giờ BĐ KH ⇒ null (bên gọi lùi về ca lúc bấm Xác nhận chạy / hoạt động đầu).
+function caCuaGioKh(tgBdKh, khung) {
+  const a = ms(tgBdKh);
+  if (a == null || !khung || !khung.length) return null;
+  const NGAY = 24 * GIO;
+  const phutTrongNgay = (((a + VN_LECH) % NGAY) + NGAY) % NGAY; // ms kể từ 00:00 giờ VN
+  const moc = khung[0].a + ((phutTrongNgay - 6 * GIO + NGAY) % NGAY);
+  const w = khung.find((x) => moc >= x.a && moc < x.b);
+  return w ? w.ca : null;
 }
 
 // Tuần CHƯA cài loại ca (`cai_dat_ca_tuan` thiếu dòng) ⇒ suy từ mã ca người in đã chọn trên tem trong ngày
@@ -278,13 +301,36 @@ function dungBaoCaoSanXuat({
     });
   });
 
+  // Nguồn của modal "bấm ô" (26/10/2026 — Theo khu chuyền: bấm SL kế hoạch ⇒ danh sách kế hoạch, bấm SL in thực tế
+  //   ⇒ danh sách tem): mỗi phần cộng vào `kh` / `tt` ở bước 2–3 ghi kèm 1 dòng (nhóm · chuyền · ca · phần in) ⇒ lọc
+  //   theo ô là ra ĐÚNG các dòng làm nên con số đó (Σ = số trên ô).
+  const dsTem = [];
+  const dsKh = [];
+  const goc = (p, pin) => {
+    const c = chuyenById.get(String(p.chuyen_id)) || {};
+    const l = lenhById.get(String(p.lenh_id)) || {};
+    return {
+      nhom: nhomCuaLoai(c.ma_loai), ma_chuyen: c.ma_chuyen || '—', ma_lenh: l.ma_lenh_san_xuat || null,
+      ma_phan: pin.ma_phan || null, khach: pin.ten_khach_hang || null, po: pin.ma_don_hang || null,
+      ma_hang: pin.ma_hang || null, mau_vai: pin.mau_vai || null, kich_vai: pin.kich_vai || null, kich_phim: pin.kich_phim || null,
+    };
+  };
+
   // 2. SL in thực tế từ tem.
   tems.forEach((t) => {
     const p = phieuById.get(String(t.phieu_id));
     if (!p) return;
     const ds = dsPin(p.lenh_id);
     const pin = (t.dot_vai_ve_id && ds.find((x) => (x.dot_ids || []).map(String).includes(String(t.dot_vai_ve_id)))) || ds[0];
-    dv(p, pin).bo[caCuaTem(t.ca_hint, t.gio, loaiCaPhieu(p))].tt += Number(t.so_luong) || 0;
+    const ca = caCuaTem(t.ca_hint, t.gio, loaiCaPhieu(p));
+    const sl = Number(t.so_luong) || 0;
+    dv(p, pin).bo[ca].tt += sl;
+    if (sl) {
+      dsTem.push({
+        ...goc(p, pin), ca, ma_tem: t.ma_tem || null, so_luong: sl, ma_ngay_ca: t.ma_ngay_ca || null,
+        tg_in: t.tg_in || null, gio_sx_bd: t.gio_sx_bd || null, gio_sx_kt: t.gio_sx_kt || null, nguoi_in: t.nguoi_in || null,
+      });
+    }
   });
 
   // 3. Kế hoạch của lệnh (19/10/2026 người dùng chốt) → NGÀY + CA bấm Xác nhận chạy ĐẦU TIÊN (`tg_chay_dau`),
@@ -296,6 +342,9 @@ function dungBaoCaoSanXuat({
   //    ngày sau (bấm chạy ngày trước, ngày D có giờ chạy / tem) ⇒ ngày D CŨNG mang SL KH = trọn SL release, vào ca
   //    + phiếu có hoạt động sớm nhất trong ngày. Giờ KH vẫn chỉ tính 1 lần ở ngày bấm chạy đầu (tránh nhân giờ).
   //    Phiếu treo không chạy / không in trong ngày D ⇒ không mang KH (như luật "chỉ hàng đang / đã in").
+  //    ⚠⚠ 26/10/2026 (người dùng chốt): NGÀY vẫn như trên, nhưng CA của KH (SL + giờ KH) = ca chứa GIỜ BẮT ĐẦU KẾ HOẠCH
+  //    (`caCuaGioKh`, theo loại ca của chuyền) — lệnh không có giờ BĐ KH mới lùi về ca lúc bấm chạy / hoạt động đầu.
+  //    `ca_theo` của dòng danh sách: GIO_KH · BAM_CHAY · HOAT_DONG.
   const khTheoChuyen = new Map();
   phieuTheoLenh.forEach((dsPhieu, lenhId) => {
     const l = lenhById.get(lenhId);
@@ -303,20 +352,32 @@ function dungBaoCaoSanXuat({
     const dau = ms(l.tg_chay_dau);
     const ds = dsPin(lenhId);
     const slPin = (pin) => (Number(pin.sl) || (ds.length === 1 ? Number(l.so_luong_release) || 0 : 0));
+    const ghiKh = (p, pin, ca, kieu, moc, caTheo) => {
+      const sl = slPin(pin);
+      dv(p, pin).bo[ca].kh += sl;
+      if (sl) {
+        dsKh.push({
+          ...goc(p, pin), ca, sl, kieu, ca_theo: caTheo, moc_ca: moc != null ? new Date(moc).toISOString() : null,
+          tg_chay_dau: l.tg_chay_dau || null, tg_bd_kh: l.tg_bd_kh || null, tg_kt_kh: l.tg_kt_kh || null, ngay_kh: l.ngay_kh || null,
+        });
+      }
+    };
     if (!trongNgay(dau)) {
       // Chạy tiếp từ ngày trước: phiếu có hoạt động trong ngày, sớm nhất.
       const hd = dsPhieu.map((p) => ({ p, kc: khoangChay(p) })).filter((x) => x.kc).sort((x, y) => x.kc[0] - y.kc[0])[0];
       if (!hd || dau == null || dau >= W1) return;
       const kp = khungPhieu(hd.p);
-      const ca = (kp.find((w) => hd.kc[0] >= w.a && hd.kc[0] < w.b) || kp[0]).ca;
-      ds.forEach((pin) => { dv(hd.p, pin).bo[ca].kh += slPin(pin); });
+      const caKh = caCuaGioKh(l.tg_bd_kh, kp);
+      const ca = caKh || (kp.find((w) => hd.kc[0] >= w.a && hd.kc[0] < w.b) || kp[0]).ca;
+      ds.forEach((pin) => ghiKh(hd.p, pin, ca, 'CHAY_TIEP', caKh ? ms(l.tg_bd_kh) : hd.kc[0], caKh ? 'GIO_KH' : 'HOAT_DONG'));
       return;
     }
     const chinh = dsPhieu.find((p) => ms(p.tg_bd) === dau)
       || [...dsPhieu].sort((x, y) => (ms(x.tg_bd) || 0) - (ms(y.tg_bd) || 0))[0];
     const kp = khungPhieu(chinh);
-    const caChon = (kp.find((w) => dau >= w.a && dau < w.b) || kp[0]).ca;
-    ds.forEach((pin) => { dv(chinh, pin).bo[caChon].kh += slPin(pin); });
+    const caKh = caCuaGioKh(l.tg_bd_kh, kp);
+    const caChon = caKh || (kp.find((w) => dau >= w.a && dau < w.b) || kp[0]).ca;
+    ds.forEach((pin) => ghiKh(chinh, pin, caChon, 'BAM_CHAY', caKh ? ms(l.tg_bd_kh) : dau, caKh ? 'GIO_KH' : 'BAM_CHAY'));
     const kk = khoangKeHoach(l);
     if (kk) {
       const c = String(chinh.chuyen_id);
@@ -333,30 +394,37 @@ function dungBaoCaoSanXuat({
     });
   });
 
-  // Thợ của phiếu = CẢ danh sách thợ in phân công (19/10/2026 — `utils/thoIn.js dsThoPhanCong`, mọi loại chuyền).
+  // Thợ của phiếu: `ds` = CẢ danh sách thợ in phân công (19/10/2026 — `utils/thoIn.js dsThoPhanCong`, cột "Thợ in" của
+  //   chi tiết) · `tinh` = người được TÍNH ở bảng "Theo thợ in" (26/10/2026 — chuyền Máy + Bàn lấy chuyền trưởng, thiếu
+  //   thì thợ in; loại khác = danh sách thợ in — `dsThoBaoCaoSanXuat`).
   const thoCuaPhieu = new Map();
   const thoPhieu = (phieu) => {
     const k = String(phieu.id);
     if (!thoCuaPhieu.has(k)) {
-      thoCuaPhieu.set(k, dsThoPhanCong({
+      const r = {
         tho_in: phieu.tho_in, tho_in_kh: phieu.tho_in_kh, chuyen_truong: phieu.chuyen_truong,
-      }));
+        ma_loai_chuyen: (chuyenById.get(String(phieu.chuyen_id)) || {}).ma_loai || null,
+      };
+      thoCuaPhieu.set(k, { ds: dsThoPhanCong(r), tinh: dsThoBaoCaoSanXuat(r) });
     }
     return thoCuaPhieu.get(k);
   };
 
-  // 4. Bảng 2 — gom (chuyền × phần in × NHÓM thợ in).
+  // 4. Bảng 2 — gom (chuyền × phần in × NHÓM thợ in × người tính theo thợ).
   const dong2 = new Map();
   donVi.forEach(({ phieu, pin, bo }) => {
-    const ds = thoPhieu(phieu);
-    const k = `${phieu.chuyen_id}|${pin.phan_in_id}|${ds.join(', ')}`;
+    const { ds, tinh } = thoPhieu(phieu);
+    const k = `${phieu.chuyen_id}|${pin.phan_in_id}|${ds.join(', ')}|${tinh.join(', ')}`;
     if (!dong2.has(k)) {
       const c = chuyenById.get(String(phieu.chuyen_id)) || {};
       dong2.set(k, {
         ma_chuyen: c.ma_chuyen || '—', ten_chuyen: c.ten_chuyen || null, nhom: nhomCuaLoai(c.ma_loai),
+        loai_ca: loaiCaCuaLoai(c.ma_loai || null),
         ma_phan: pin.ma_phan, khach: pin.ten_khach_hang || null, po: pin.ma_don_hang || null,
         ma_hang: pin.ma_hang || null, mau_vai: pin.mau_vai || null, kich_vai: pin.kich_vai || null,
-        kich_phim: pin.kich_phim || null, tho: ds[0], tho_ds: ds.join(', '), thoArr: ds, to: new Set(), bo: boRong(),
+        kich_phim: pin.kich_phim || null, tho: ds[0], tho_ds: ds.join(', '),
+        chuyen_truong: String(phieu.chuyen_truong || '').trim() || null, tho_tinh: tinh.join(', '),
+        thoArr: tinh, to: new Set(), bo: boRong(),
       });
     }
     const r = dong2.get(k);
@@ -398,8 +466,8 @@ function dungBaoCaoSanXuat({
     .map(([ten, bo]) => ({ key: ten, label: ten, m: xuatBo(bo) }));
 
   // 7. Bảng theo THỢ IN + theo TỪNG CHUYỀN (11/10/2026) — Σ = Tổng cộng. 19/10/2026: mỗi dòng chi tiết CHIA ĐỀU
-  //    cho các thợ trong danh sách phân công (`chiaBo` — SL in TT chia số nguyên, lẻ xoay vòng; gương FE
-  //    `gomBaoCao.gomSanXuatTheoTho` chia trên CÙNG dòng chi tiết).
+  //    cho các người được tính (`chiaBo` — SL in TT chia số nguyên, lẻ xoay vòng; gương FE
+  //    `gomBaoCao.gomSanXuatTheoTho` chia trên CÙNG dòng chi tiết). 26/10/2026: Máy + Bàn = chuyền trưởng (`tho_tinh`).
   const theoTho = new Map();
   dong2Co.forEach((r) => {
     chiaBo(r.bo, r.thoArr.length).forEach((phan, i) => {
@@ -427,13 +495,23 @@ function dungBaoCaoSanXuat({
   // Nhóm "Chuyền khác" (Gia công, Máy tròn, Logo, Ép — mặc định Hành chính) chỉ ghi khi ngày đó CÓ chuyền thuộc nhóm.
   const coKhac = chuyens.some((c) => khoaNhomCa(c.ma_loai) === 'KHAC');
   ['MAY', 'BAN', 'ROBOT', ...(coKhac ? ['KHAC'] : [])].forEach((lc) => { const v = loaiCaCuaLoai(lc); if (v !== chung) rieng[lc] = v; });
+  // Cột ca hiện trên bảng (26/10/2026): HC luôn có + ca của loại ca mỗi chuyền có dòng (NGAN ⇒ CA1–3 · DAI ⇒ D1–D2)
+  //   + ca nào CÓ SỐ (vd tem Bàn hành chính nhập nhầm D2). FE tính lại theo bộ chọn chuyền (gương `gomBaoCao.caHien`).
+  const coCa = new Set(['HC']);
+  chiTiet.forEach((r) => (CA_THEO_LOAI[r.loai_ca] || []).forEach((c) => coCa.add(c)));
+  CA.forEach((c) => { const o = tongCong[c]; if (o.kh || o.tt || o.gk || o.gt) coCa.add(c); });
+  const caHien = CA.filter((c) => coCa.has(c));
   return {
-    ngay, loai_ca: chung, loai_ca_rieng: rieng, ca: CA,
+    ngay, loai_ca: chung, loai_ca_rieng: rieng, ca: caHien,
     theo_nhom: bang1, theo_khach: bangKhach, theo_tho: bangTho, theo_chuyen: bangChuyen,
     tong: xuatBo(tongCong), chi_tiet: chiTiet,
+    // Danh sách cho modal bấm ô (26/10/2026): `ds_kh` — mỗi phần SL KH đã cộng (lệnh × phần in, kiểu BAM_CHAY = ngày
+    //   bấm Xác nhận chạy đầu · CHAY_TIEP = chạy tiếp từ ngày trước, `moc_ca` = mốc quyết định ca); `ds_tem` — mỗi tem.
+    ds_kh: dsKh.sort((x, y) => soTuNhien(x.ma_chuyen, y.ma_chuyen) || String(x.moc_ca || '').localeCompare(String(y.moc_ca || ''))),
+    ds_tem: dsTem,
   };
 }
 
 module.exports = {
-  dungBaoCaoSanXuat, khungCa, khoaTuanIso, caCuaTem, nhomCuaLoai, suyLoaiCaTuTem, chiaGioCungLuc, khoangKeHoach, CA, NHOM,
+  dungBaoCaoSanXuat, khungCa, khoaTuanIso, caCuaTem, caCuaGioKh, CA_THEO_LOAI, nhomCuaLoai, suyLoaiCaTuTem, chiaGioCungLuc, khoangKeHoach, CA, NHOM,
 };

@@ -17,6 +17,7 @@ const { query } = require('../../config/db');
 const env = require('../../config/env');
 const { ghiInTem, taoPayload, laMaTemErp, ghiChuaCoMaErp } = require('../../utils/erpGhiInTem');
 const { ghiLog } = require('../../utils/erpApiLog');
+const { thuCua } = require('../../utils/erpThuLai');
 const { capIdMes } = require('../../utils/idMes');
 const prodRepo = require('../production/production.repository');
 const { maNgayCaHomNay } = require('./suaDatErp');
@@ -101,6 +102,7 @@ async function guiKiemPham(kcsId, temId, { dat = 0, hu = 0, thieu = 0 } = {}, ac
     erpError: p ? (p.error ?? null) : null,
     erpReturnValue: p && p.returnValue != null ? p.returnValue : null,
     loi: kq.error || null,
+    ...thuCua(kq),
     actorId,
   });
   return kq.ok ? { ok: true, id_mes: idMes, dung_lai_id_mes: dungLaiIdMes } : { ok: false, error: kq.error };

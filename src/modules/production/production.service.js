@@ -1035,7 +1035,7 @@ async function guiGhiInTem(items, actorId, ngayCt = null, { maApi = 'ERP_GHI_IN_
       const kq = await ghiInTem(payload, { maApi });
       if (kq.bo_qua) continue; // tắt ở Cài đặt API — không ghi audit lỗi
       // ⚠ Truyền cả `kq.data` (phản hồi ERP) để lịch sử hiện được "gửi gì → nhận gì" trong 1 màn.
-      await repo.logGhiInTem(it.temId, kq.ok, kq.body, kq.error, actorId, kq.data, maApi);
+      await repo.logGhiInTem(it.temId, kq.ok, kq.body, kq.error, actorId, kq.data, maApi, kq);
     }
   } catch (e) {
     console.error(`[ghi-in-tem] ✗ Lỗi ngoài dự kiến khi báo ERP: ${e.message}`);

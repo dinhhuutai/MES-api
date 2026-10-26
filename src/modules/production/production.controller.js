@@ -7,6 +7,7 @@ const { ok } = require('../../utils/response');
 const AppError = require('../../utils/AppError');
 const { getPaging, TRAN_TAI_HET } = require('../../utils/pagination');
 const { nhoDoc } = require('../../utils/cacheDoc');
+const { HAU_TO_CA } = require('../../utils/ca');
 
 // Chờ chạy / Đang chạy dùng chung kết quả giữa mọi người xem (`utils/cacheDoc.js` — ghi là hết hiệu lực ngay).
 const candidates = asyncHandler(async (req, res) => {
@@ -224,6 +225,7 @@ const dsTemDaIn = (laGiaCong) => asyncHandler(async (req, res) => {
     ngayCaTu: /^\d{4}-\d{2}-\d{2}$/.test(q.ngayCaTu || '') ? q.ngayCaTu : '',
     ngayCaDen: /^\d{4}-\d{2}-\d{2}$/.test(q.ngayCaDen || '') ? q.ngayCaDen : '',
     maNgayCa: String(q.maNgayCa || '').trim().slice(0, 20),
+    ca: HAU_TO_CA[String(q.ca || '').toUpperCase()] || '',
     khach: q.khach || '', don: q.don || '', maHang: q.maHang || '', codePhan: q.codePhan || '',
     maTem: q.maTem || '', chuyen: q.chuyen || '', chuyenId: q.chuyenId || '', page, limit, offset,
   }, laGiaCong));

@@ -201,7 +201,7 @@ async function guiLai(ma, auditId, actorId, opts = {}) {
   });
   const kq = await ghiInTem(payload, { maApi: ma });
   if (kq.bo_qua) loiNeu({ bo_qua: true, ly_do: 'API_DANG_TAT' }, ten);
-  await prodRepo.logGhiInTem(id, kq.ok, kq.body, kq.error, actorId, kq.data, ma);
+  await prodRepo.logGhiInTem(id, kq.ok, kq.body, kq.error, actorId, kq.data, ma, kq);
   loiNeu(kq, ten);
   return { ok: true };
 }

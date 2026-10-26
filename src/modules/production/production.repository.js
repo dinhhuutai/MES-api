@@ -11,6 +11,7 @@ const { maToInTuToCsx } = require('../../utils/toIn');
 const { timTem } = require('../../utils/temPrefix');
 // Ghi vết lượt gọi API ERP (nguồn cho nút "Lịch sử" ở trang Cài đặt API).
 const { ghiLog } = require('../../utils/erpApiLog');
+const { thuCua } = require('../../utils/erpThuLai');
 // Cấp mã IDMES (dãy dùng chung mọi chiều đẩy ERP) — nguồn luật ở `utils/idMes.js`.
 const { capIdMes: capIdMesChung } = require('../../utils/idMes');
 // Lệnh có phần in đang ở Giao nhận (trả về GN) ⇒ tạm rời danh sách Chờ chạy (06/10/2026, `utils/traVeGn.js`).
@@ -751,7 +752,7 @@ async function listCancelableTem({ search = '', offset = 0, limit = 50 }) {
 //   ngày in tem khi in bù / ca đêm) + `maNgayCa` (chuỗi trong `tem.ma_ngay_ca`, vd `261013D2` / `D2`); mỗi dòng trả thêm
 //   `da_kiem` + `mo_lai_duoc` (cùng luật nút Hủy / Mở lại ở "Tem đã in" — `getTemsByPhieu`) cho nút Hủy / Mở lại ở bảng.
 async function listTemDaIn({
-  laGiaCong = false, search = '', ngayTu = '', ngayDen = '', ngayCaTu = '', ngayCaDen = '', maNgayCa = '',
+  laGiaCong = false, search = '', ngayTu = '', ngayDen = '', ngayCaTu = '', ngayCaDen = '', maNgayCa = '', ca = '',
   khach = '', don = '', maHang = '', codePhan = '', maTem = '', chuyen = '', chuyenId = '',
   offset = 0, limit = 20,
 }) {
@@ -780,6 +781,9 @@ async function listTemDaIn({
     if (ngayCaDen) { p.push(ngayCaDen); dk.push(`t.ngay_ca <= $${p.length}::date`); }
   }
   if (maNgayCa && await temCoCotMaNgayCa()) { p.push(mauTim(maNgayCa)); dk.push(`t.ma_ngay_ca ~* $${p.length}`); }
+  // Ô CA (26/10/2026, người dùng: "chọn ngày rồi chọn ca") — 2 ký tự cuối mã ngày ca: HC · C1 · C2 · C3 · D1 · D2
+  //   (`ca` nhận mã ô lọc HC/CA1/CA2/CA3/D1/D2, quy đổi ở controller qua `utils/ca.js HAU_TO_CA`).
+  if (ca && await temCoCotMaNgayCa()) { p.push(ca); dk.push(`upper(right(COALESCE(t.ma_ngay_ca, ''), 2)) = $${p.length}`); }
 
   // `JOIN_GOC` + `WHERE_GOC` tách riêng để câu ĐẾM không phải chạy LATERAL sự kiện hủy (chỉ dòng của trang cần).
   const JOIN_GOC = `
@@ -1524,9 +1528,11 @@ async function duLieuGhiInTem(capTem = [], ngayCt = null) {
 //   ra thì mới rà được về sau.
 // `maApi` (27/09/2026): tem 13 gia công ghi dưới mã `ERP_GUI_TEM_GIA_CONG` (proc JQ6) — mặc định giữ
 // `ERP_GHI_IN_TEM` nên mọi call-site cũ không đổi.
-async function logGhiInTem(temId, thanhCong, payload, loi, actorId, phanHoi = null, maApi = 'ERP_GHI_IN_TEM') {
+// `kq` (tùy chọn, 26/10/2026) = kết quả `ghiInTem` ⇒ ghi kèm số lần thử + các lần thử hỏng (`erpThuLai.thuCua`).
+async function logGhiInTem(temId, thanhCong, payload, loi, actorId, phanHoi = null, maApi = 'ERP_GHI_IN_TEM', kq = null) {
   const p = phanHoi && typeof phanHoi === 'object' ? phanHoi : null;
   await ghiLog(maApi, {
+    ...thuCua(kq),
     thanhCong,
     idBanGhi: temId,
     idMes: payload?.IDMES ?? null,

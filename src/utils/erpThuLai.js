@@ -45,4 +45,17 @@ function xepHang(khoa, fn) {
   return chay;
 }
 
-module.exports = { sleep, laTimeout, choSauTimeoutMs, thoiGianCho, xepHang };
+// ─── GHI LẠI CÁC LẦN THỬ LỖI (26/10/2026, người dùng: "lần 1 lỗi mà các lần sau thành công thì phải báo thành công,
+//   có ghi lại các lần lỗi và lần thứ mấy thành công") ───────────────────────────────────────────────────────────
+// Mỗi lần thử hỏng trong 1 lượt gọi ⇒ 1 phần tử { lan, tg (ISO), ms (lần đó mất bao lâu), timeout, loi } — lưu ở
+// `audit_log.gia_tri_moi.cac_lan_loi` của CHÍNH dòng lịch sử lượt đó (thành công lẫn thất bại), cùng `so_lan_thu`.
+function ghiLanLoi(ds, lan, batDauLan, e) {
+  ds.push({
+    lan, tg: new Date().toISOString(), ms: Date.now() - batDauLan, timeout: laTimeout(e),
+    loi: String((e && e.message) || e || 'Lỗi').slice(0, 500),
+  });
+}
+// Kết quả `ghiInTem` → 2 khóa của `ghiLog`.
+const thuCua = (kq) => ({ soLanThu: (kq && kq.so_lan_thu) ?? null, cacLanLoi: (kq && kq.cac_lan_loi) || null });
+
+module.exports = { sleep, laTimeout, choSauTimeoutMs, thoiGianCho, xepHang, ghiLanLoi, thuCua };

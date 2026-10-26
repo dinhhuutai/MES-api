@@ -64,7 +64,10 @@ const duoiMaTem = (s) => (/^\d{12}$/.test(String(s || '').trim()) ? String(s).tr
 //   bên trong phải `->>'nhan'` rồi mới ép `::jsonb`. Dòng có phản hồi KHÔNG phải JSON (ERP trả HTML
 //   khi sập chẳng hạn) sẽ làm phép ép kiểu ném lỗi và HỎNG CẢ TRANG lịch sử ⇒ chỉ ép khi chuỗi thật
 //   sự bắt đầu bằng `{`. Đây là màn tra cứu — không được để một dòng rác làm chết cả màn.
+// ⚠ 26/10/2026: phản hồi dài bị `gonPhanHoi` CẮT ("…(cắt bớt)") vẫn mở đầu `{` mà không còn là JSON ⇒ ép kiểu ném
+//   "invalid input syntax for type json" (gặp ở Release 1 khi lịch sử gộp theo lượt đọc nhiều dòng hơn) ⇒ đòi cả `}` cuối.
 const NHAN_JSON = `CASE WHEN left(btrim(COALESCE(a.gia_tri_moi->>'nhan','')), 1) = '{'
+  AND right(btrim(a.gia_tri_moi->>'nhan'), 1) = '}'
   THEN (a.gia_tri_moi->>'nhan')::jsonb END`;
 // Ưu tiên khóa nâng sẵn ở mức trên cùng (dòng MỚI); dòng CŨ thì moi từ `nhan`.
 const ERP_MESSAGE = `COALESCE(a.gia_tri_moi->>'erp_message', (${NHAN_JSON})->>'message')`;
@@ -82,18 +85,37 @@ const ID_MES = `COALESCE(a.gia_tri_moi->>'id_mes', a.gia_tri_moi->'gui'->>'IDMES
 // ⚠ Lọc ngày theo GIỜ VN (khuôn chung của mọi màn lịch sử — §11.8 DATABASE.md).
 // ⚠ Tìm kiếm: theo IDMES / mã tem — 2 khóa người dùng thực sự cầm trên tay khi đối soát 2 bên.
 //   Dùng `~*` + `mauTim` theo luật tìm-kiếm-không-dấu toàn app (§8 CLAUDE.md).
+// ⚠⚠ 1 DÒNG = 1 LƯỢT (26/10/2026, người dùng: "lần 1 lỗi mà chạy lại các lần sau thành công thì phải báo thành công,
+//   có ghi lại các lần lỗi và lần thứ mấy thành công"). Trước đó mỗi lần gửi 1 dòng ⇒ lượt timeout rồi "Gửi lại" thành
+//   công vẫn để lại dòng "Lỗi" đỏ (prod 21–24/10: 8 lượt ghi in tem như vậy). Nay GỘP mọi lần gửi CÙNG ID KẾT NỐI
+//   (Gửi lại / Sửa & gửi giữ IDMES cũ) thành 1 dòng: số liệu + kết quả = lần gửi MỚI NHẤT (nút Gửi lại dùng đúng dòng
+//   đó), `cac_lan_gui` = mọi lần gửi cũ → mới (mỗi lần kèm `so_lan_thu` + `cac_lan_loi` của lần thử tự động bên
+//   trong), `so_lan_gui`, `co_thanh_cong`. Lọc ngày / tìm chọn LƯỢT có ít nhất 1 lần gửi khớp; lượt hiện đủ mọi lần
+//   gửi kể cả ngày khác. Phân trang + tổng theo LƯỢT.
+// Hiệu năng: quét các dòng của API ĐÚNG 1 lần (`b`, tính ID kết nối + cờ khớp lọc), chỉ đọc chi tiết JSON cho các lượt
+//   của TRANG đang xem (Release 1 ~4.400 dòng: bản quét 2 lần + gộp mọi lượt mất ~3,5 s).
 async function lichSu({ ma, date = '', search = '', offset = 0, limit = 20 }) {
-  const FROM = `
-    FROM audit_log a
-    LEFT JOIN nguoi_dung nd ON nd.id = a.nguoi_thuc_hien_id
-    WHERE a.hanh_dong IN ($1, $2)
-      AND ($3 = '' OR (a.thoi_gian AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $3::date)
-      AND ($4 = '' OR ${ID_MES} ~* $4 OR ${MA_TEM} ~* $4
-           OR ($5 <> '' AND substr(${MA_TEM}, 3) = $5))`;
   const args = [ma, `${ma}_LOI`, date || '', mauTim(search), duoiMaTem(search)];
-
-  const dataSql = `
-    SELECT a.id, a.thoi_gian, a.hanh_dong, a.id_ban_ghi,
+  const sql = `
+    WITH b AS MATERIALIZED (
+      SELECT a.id, a.thoi_gian, a.hanh_dong, a.nguoi_thuc_hien_id, ${ID_MES} AS idm,
+             (($3 = '' OR (a.thoi_gian AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $3::date)
+              AND ($4 = '' OR ${ID_MES} ~* $4 OR ${MA_TEM} ~* $4 OR ($5 <> '' AND substr(${MA_TEM}, 3) = $5))) AS khop
+        FROM audit_log a WHERE a.hanh_dong IN ($1, $2)),
+    k AS (SELECT b.idm FROM b GROUP BY b.idm HAVING bool_or(b.khop)),
+    d AS (SELECT DISTINCT ON (b.idm) b.id, b.idm, b.thoi_gian FROM b JOIN k ON k.idm = b.idm
+           ORDER BY b.idm, b.thoi_gian DESC, b.id DESC),
+    p AS (SELECT d.*, count(*) OVER () AS total FROM d ORDER BY d.thoi_gian DESC, d.id DESC LIMIT $6 OFFSET $7),
+    g AS (
+      SELECT b.idm, count(*)::int AS so_lan_gui, bool_or(b.hanh_dong = $1) AS co_thanh_cong,
+             json_agg(json_build_object('id', x.id, 'thoi_gian', x.thoi_gian, 'thanh_cong', x.hanh_dong = $1,
+               'loi', x.gia_tri_moi->>'loi', 'so_lan_thu', (x.gia_tri_moi->>'so_lan_thu')::int,
+               'thoi_gian_ms', (x.gia_tri_moi->>'thoi_gian_ms')::int, 'cac_lan_loi', x.gia_tri_moi->'cac_lan_loi',
+               'sua_tay', x.gia_tri_moi ? 'sua_tay', 'nguoi', ng.ho_ten) ORDER BY x.thoi_gian, x.id) AS cac_lan_gui
+        FROM b JOIN p ON p.idm = b.idm JOIN audit_log x ON x.id = b.id
+        LEFT JOIN nguoi_dung ng ON ng.id = x.nguoi_thuc_hien_id
+       GROUP BY b.idm)
+    SELECT p.total::int AS _total, a.id, a.thoi_gian, a.hanh_dong, a.id_ban_ghi,
            (a.hanh_dong = $1) AS thanh_cong,
            ${ID_MES} AS id_mes, ${MA_TEM} AS ma_tem,
            a.gia_tri_moi->>'url' AS url,
@@ -104,17 +126,21 @@ async function lichSu({ ma, date = '', search = '', offset = 0, limit = 20 }) {
            (a.gia_tri_moi->>'so_lan_thu')::int AS so_lan_thu,
            (a.gia_tri_moi->>'thoi_gian_ms')::int AS thoi_gian_ms,
            a.gia_tri_moi AS chi_tiet,
-           nd.ho_ten AS nguoi
-    ${FROM}
-    ORDER BY a.thoi_gian DESC
-    LIMIT $6 OFFSET $7`;
-  const countSql = `SELECT count(*)::int AS total ${FROM}`;
-
-  const [data, count] = await Promise.all([
-    query(dataSql.replace(/\s+/g, ' '), [...args, limit, offset]),
-    query(countSql.replace(/\s+/g, ' '), args),
-  ]);
-  return { rows: data.rows, total: count.rows[0].total };
+           nd.ho_ten AS nguoi,
+           g.so_lan_gui, g.co_thanh_cong, g.cac_lan_gui
+      FROM p
+      JOIN audit_log a ON a.id = p.id
+      JOIN g ON g.idm = p.idm
+      LEFT JOIN nguoi_dung nd ON nd.id = a.nguoi_thuc_hien_id
+     ORDER BY p.thoi_gian DESC, p.id DESC`;
+  const { rows } = await query(sql.replace(/\s+/g, ' '), [...args, limit, offset]);
+  let total = rows.length ? rows[0]._total : 0;
+  // Trang vượt cuối (không có dòng) mà không phải trang 1 ⇒ đếm riêng cho đúng tổng.
+  if (!rows.length && offset > 0) {
+    const c = await query(sql.replace(/\s+/g, ' '), [...args, 1, 0]);
+    total = c.rows.length ? c.rows[0]._total : 0;
+  }
+  return { rows: rows.map(({ _total, ...r }) => r), total };
 }
 
 module.exports = { luu, thongTinSua, lichSu };

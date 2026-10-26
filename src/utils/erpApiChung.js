@@ -61,7 +61,7 @@ async function tenDangNhap(actorId) {
   }
 }
 
-const { sleep, laTimeout, thoiGianCho, xepHang } = require('./erpThuLai');
+const { sleep, laTimeout, thoiGianCho, xepHang, ghiLanLoi } = require('./erpThuLai');
 const safeJson = (s) => { try { return JSON.parse(s); } catch { return null; } };
 
 // Proxy giống hệt `erpTemBarcode`/`erpGhiInTem` — undefined thì axios tự đọc HTTP_PROXY env.
@@ -129,8 +129,10 @@ async function goiErp(maApi, {
   }
   const soLan = Math.max(1, Number(retry) || 1);
   const batDau = Date.now();
+  const cacLanLoi = [];
   let loiCuoi;
   for (let i = 1; i <= soLan; i += 1) {
+    const batDauLan = Date.now();
     try {
       // Chỉ xếp hàng chiều ĐẨY (POST) — xin số (GET) không chạy proc ghi phiếu. Xem `utils/erpThuLai.js`.
       const data = method === 'POST'
@@ -140,11 +142,12 @@ async function goiErp(maApi, {
       await ghiLog(maApi, {
         thanhCong: true, idBanGhi: idBanGhi || '-', idMes: idKn, maTem, url, soLanThu: i, thoiGianMs: Date.now() - batDau,
         gui: method === 'POST' ? body : null, nhan: data,
-        erpMessage: data && data.message, erpReturnValue: data && data.returnValue, actorId, suaTay,
+        erpMessage: data && data.message, erpReturnValue: data && data.returnValue, actorId, suaTay, cacLanLoi,
       });
-      return { ok: true, data, id_ket_noi: idKn };
+      return { ok: true, data, id_ket_noi: idKn, so_lan_thu: i };
     } catch (e) {
       loiCuoi = e;
+      ghiLanLoi(cacLanLoi, i, batDauLan, e);
       if (i < soLan) {
         const cho = method === 'POST' ? thoiGianCho(i, e) : 1000 * i;
         console.warn(`[${nhan}] ⟳ lỗi (lần ${i}/${soLan}${method === 'POST' && laTimeout(e) ? ', TIMEOUT' : ''}),`
@@ -161,7 +164,7 @@ async function goiErp(maApi, {
     thanhCong: false, idBanGhi: idBanGhi || '-', idMes: idKn, maTem, url, soLanThu: soLan, thoiGianMs: Date.now() - batDau,
     gui: method === 'POST' ? body : null, nhan: ph,
     erpMessage: ph && ph.message, erpError: ph && ph.error, erpReturnValue: ph && ph.returnValue,
-    loi: error, actorId, suaTay,
+    loi: error, actorId, suaTay, cacLanLoi,
   });
   return { ok: false, error, id_ket_noi: idKn };
 }

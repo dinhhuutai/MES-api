@@ -34,6 +34,7 @@ const { ghiLog } = require('./erpApiLog');
 
 const BARCODE_RE = /^\d{12}$/;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const { ghiLanLoi } = require('./erpThuLai');
 
 // Mỗi tiền tố công đoạn ↔ 1 endpoint + 1 mã API để bật/tắt riêng ở *Hệ thống > Cài đặt API*.
 // ⚠ Thêm công đoạn mới = khai thêm 1 dòng ở đây + 1 dòng ở `utils/caiDatApi.js` (DANH_MUC_API) +
@@ -100,19 +101,22 @@ async function layBarcodeTemTienTo(tienTo, actorId = null) {
   // ⚠⚠ ID KẾT NỐI = mã DUY NHẤT DO MES SINH cho lượt xin số (30/09/2026 — không lấy mã tem ERP cấp làm
   //   ID kết nối nữa). 1 ID cho cả lượt (kể cả các lần thử lại). Mã tem ERP cấp vẫn lưu ở `maTem`.
   const idKn = taoIdKetNoi(`T${tienTo}`);
+  const cacLanLoi = [];
   let loiCuoi;
   for (let i = 1; i <= soLan; i += 1) {
+    const batDauLan = Date.now();
     try {
       const bc = await goiMotLan(url, tienTo, idKn);
       // ⚠ Ghi vết NGAY cả khi thành công — mã vừa lấy là một số ĐÃ TIÊU của ERP, phải tra lại được
       //   (kể cả khi transaction sau đó rollback làm thủng dãy). KHÔNG `await`: đây là bước phụ.
       ghiLog(cfg.ma, {
         thanhCong: true, idBanGhi: bc, idMes: idKn, maTem: bc, url,
-        soLanThu: i, thoiGianMs: Date.now() - batDau, nhan: { barcode: bc }, actorId,
+        soLanThu: i, thoiGianMs: Date.now() - batDau, nhan: { barcode: bc }, actorId, cacLanLoi,
       });
       return bc;
     } catch (e) {
       loiCuoi = e;
+      ghiLanLoi(cacLanLoi, i, batDauLan, e);
       if (i < soLan) {
         const cho = 1000 * i; // 1s, 2s, 3s...
         console.warn(`[tem-barcode] ⟳ Lấy mã ${cfg.ten} lỗi (lần ${i}/${soLan}), thử lại sau ${cho / 1000}s: ${e.message}`);
@@ -123,7 +127,7 @@ async function layBarcodeTemTienTo(tienTo, actorId = null) {
   console.error(`[tem-barcode] ✗ Không lấy được mã ${cfg.ten} sau ${soLan} lần (${url}): ${loiCuoi && loiCuoi.message}`);
   ghiLog(cfg.ma, {
     thanhCong: false, idBanGhi: '-', idMes: idKn, url,
-    soLanThu: soLan, thoiGianMs: Date.now() - batDau, loi: loiCuoi && loiCuoi.message, actorId,
+    soLanThu: soLan, thoiGianMs: Date.now() - batDau, loi: loiCuoi && loiCuoi.message, actorId, cacLanLoi,
   });
   throw new AppError(
     `Không lấy được mã ${cfg.ten} từ ERP (đã thử ${soLan} lần, ${url}): ${loiCuoi && loiCuoi.message}. `

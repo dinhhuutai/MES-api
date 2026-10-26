@@ -66,19 +66,24 @@ const MOC_TEM = (cotGio) => `CASE WHEN ${cotGio} IS NULL THEN t.created_date
     + CASE WHEN upper(right(COALESCE(t.ma_ngay_ca, ''), 2)) IN ('C3', 'D2') AND ${cotGio} < time '06:00'
            THEN interval '1 day' ELSE interval '0' END) AT TIME ZONE 'Asia/Ho_Chi_Minh') END`;
 
+// 26/10/2026: 1 dòng / TEM (trước GROUP BY phiếu × đợt × ca × giờ) — modal "bấm ô SL in thực tế" cần danh sách tem
+//   (mã tem · mã ngày ca · giờ SX · người in). Vài trăm tem / ngày ⇒ payload vẫn nhỏ; phép cộng ở hàm thuần không đổi.
 async function docTem(ngay, phieuIds, { coNgayCa, coDot, coGoc }) {
   if (!phieuIds.length) return [];
   // `coNgayCa` (mig 066) mang theo cả `gio_sx_bd/gio_sx_kt` — cùng một migration.
   const tu = coNgayCa ? MOC_TEM('t.gio_sx_bd') : 't.created_date';
   const den = coNgayCa ? MOC_TEM('t.gio_sx_kt') : 't.created_date';
-  const sql = `SELECT t.phieu_san_xuat_id AS phieu_id, ${coDot ? 't.dot_vai_ve_id' : 'NULL::uuid'} AS dot_vai_ve_id,
+  const sql = `SELECT t.id, t.ma_tem, t.phieu_san_xuat_id AS phieu_id, ${coDot ? 't.dot_vai_ve_id' : 'NULL::uuid'} AS dot_vai_ve_id,
+      ${coNgayCa ? 't.ma_ngay_ca' : 'NULL::text'} AS ma_ngay_ca,
       upper(right(COALESCE(${coNgayCa ? 't.ma_ngay_ca' : 'NULL'}, ''), 2)) AS ca_hint,
       EXTRACT(HOUR FROM t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS gio,
-      SUM(t.so_luong)::int AS so_luong, min(${tu}) AS tu_min, max(${den}) AS den_max
+      t.so_luong::int AS so_luong, ${tu} AS tu_min, ${den} AS den_max, t.created_date AS tg_in,
+      ${coNgayCa ? "to_char(t.gio_sx_bd, 'HH24:MI')" : 'NULL'} AS gio_sx_bd, ${coNgayCa ? "to_char(t.gio_sx_kt, 'HH24:MI')" : 'NULL'} AS gio_sx_kt,
+      (SELECT nd.ho_ten FROM nguoi_dung nd WHERE nd.id = t.created_by) AS nguoi_in
     FROM tem t
     WHERE t.phieu_san_xuat_id = ANY($2::uuid[]) AND t.trang_thai <> 'HUY' AND ${TEM_THAT} ${coGoc ? 'AND t.tem_goc_id IS NULL' : ''}
       AND ${TEM_CUA_NGAY(coNgayCa)}
-    GROUP BY 1, 2, 3, 4`;
+    ORDER BY t.created_date`;
   const { rows } = await query(sql.replace(/\s+/g, ' '), [ngay, phieuIds]);
   return rows;
 }

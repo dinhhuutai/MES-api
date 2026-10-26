@@ -192,7 +192,11 @@ function ngayCaKeHoach(tuGio, ngayKeHoach, modeMap, loaiChuyen = null) {
   return n ? ymd(n[1], n[2], n[3]) : '';
 }
 
+// Ô lọc CA (26/10/2026 — Danh sách tem in · Danh sách release): mã ô → 2 ký tự cuối mã ngày ca.
+const HAU_TO_CA = { HC: 'HC', CA1: 'C1', CA2: 'C2', CA3: 'C3', D1: 'D1', D2: 'D2' };
+
 module.exports = {
+  HAU_TO_CA,
   caFromHour, caFromParts, maCa, maNgayCa, ngayTuMaNgayCa, gioBatDauCa, khoaTuanIso, ngayCaKeHoach, caDangChay,
   loaiCaCua, loaiCaChiTiet, khoaNhomCa, LOAI_CHUYEN_CA, NHOM_CA_RIENG, NHOM_CA_KHAC, CA_KHAC_MAC_DINH,
   maNgayCaHopLe, NGAY_CA_SAI,

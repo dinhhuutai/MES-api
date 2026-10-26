@@ -28,7 +28,7 @@ const { taoIdKetNoi } = require('./idKetNoi');
 const { ngayGioErp } = require('./erpNgayGio');
 const { boTraMaNhanVien } = require('./maNhanVien');
 
-const { sleep, laTimeout, thoiGianCho, xepHang } = require('./erpThuLai');
+const { sleep, laTimeout, thoiGianCho, xepHang, ghiLanLoi } = require('./erpThuLai');
 
 // ─── CHỜ CÓ MÃ ERP CẤP MỚI ĐƯỢC GỬI (người dùng chốt 30/09/2026) ─────────────────────────────────
 // Dữ liệu gửi sang ERP mang mã DO ERP CẤP (mã tem 15/17/13 xin từ `/barcode-tem-*`, ID phiếu giao xin từ
@@ -342,15 +342,18 @@ async function ghiInTem(row, { maApi = 'ERP_GHI_IN_TEM' } = {}) {
     return { ok: false, chua_co_ma: true, body, error };
   }
   const soLan = Math.max(1, k.retry());
+  const cacLanLoi = []; // các lần thử hỏng — bên gọi ghi vào lịch sử (`erpThuLai.thuCua`)
   let loiCuoi;
   for (let i = 1; i <= soLan; i += 1) {
+    const batDauLan = Date.now();
     try {
       // Xếp hàng theo URL kênh + chờ lâu sau timeout — xem `utils/erpThuLai.js` (lỗi ERP 2 dòng / 1 tem).
       const data = await xepHang(k.url(), () => goiMotLan(body, k));
       console.log(`[${k.nhan}] ✓ Đã báo ERP (IDMES ${body.IDMES}, tem ${body.BarcodeIn}, lần ${i})`);
-      return { ok: true, body, data, so_lan_thu: i };
+      return { ok: true, body, data, so_lan_thu: i, cac_lan_loi: cacLanLoi };
     } catch (e) {
       loiCuoi = e;
+      ghiLanLoi(cacLanLoi, i, batDauLan, e);
       if (i < soLan) {
         const cho = thoiGianCho(i, e);
         console.warn(`[${k.nhan}] ⟳ Báo ERP lỗi (lần ${i}/${soLan}${laTimeout(e) ? ', TIMEOUT — chờ ERP chạy xong lượt cũ' : ''}),`
@@ -363,7 +366,7 @@ async function ghiInTem(row, { maApi = 'ERP_GHI_IN_TEM' } = {}) {
   console.error(`[${k.nhan}] ✗ Không báo được ERP sau ${soLan} lần — tem ${body.BarcodeIn}: ${error}`);
   // ⚠ TRẢ CẢ `data` Ở NHÁNH LỖI: phản hồi nguyên văn của ERP (nếu có) được `goiMotLan` đính vào lỗi.
   //   Lỗi mạng/timeout thì không có gì để trả → `null`, đúng bản chất "chưa tới được ERP".
-  return { ok: false, body, error, data: (loiCuoi && loiCuoi.phanHoi) || null };
+  return { ok: false, body, error, data: (loiCuoi && loiCuoi.phanHoi) || null, so_lan_thu: soLan, cac_lan_loi: cacLanLoi };
 }
 
 module.exports = {

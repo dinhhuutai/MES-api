@@ -79,6 +79,7 @@ function gonPhanHoi(v) {
  *  - maTem     {string}
  *  - url       {string}  gọi ĐI ĐÂU (bài học 11/08: lỗi chỉ ghi "timeout" nên rất khó tìm)
  *  - soLanThu  {number}  đã thử mấy lần mới xong/mới bỏ
+ *  - cacLanLoi {array}   các lần thử hỏng trong lượt (`erpThuLai.ghiLanLoi`)
  *  - thoiGianMs{number}
  *  - gui       {object}  payload gửi lên (null với API chỉ GET)
  *  - nhan      {any}     phản hồi nhận về — LƯU CẢ KHI LỖI (xem `erpGhiInTem.goiMotLan`)
@@ -116,6 +117,9 @@ async function ghiLog(maApi, o = {}) {
           // Lượt "Sửa & gửi lại" (21/10/2026, `caidatapi/suaGuiLai.js`): { ly_do, tu_dong, doi: {trường: {cu, moi}} }.
           //   Chỉ ghi khi có ⇒ dòng thường giữ nguyên hình dạng.
           ...(o.suaTay ? { sua_tay: o.suaTay } : {}),
+          // Các lần thử HỎNG trong lượt (26/10/2026, `utils/erpThuLai.ghiLanLoi`): [{ lan, tg, ms, timeout, loi }].
+          //   Dòng thành công có mảng này ⇒ "thành công ở lần thử `so_lan_thu`, các lần trước lỗi".
+          ...(o.cacLanLoi && o.cacLanLoi.length ? { cac_lan_loi: o.cacLanLoi } : {}),
         }),
         o.actorId || null,
       ]

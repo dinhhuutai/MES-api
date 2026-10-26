@@ -47,6 +47,17 @@ function dsThoPhanCong({ tho_in: thoIn, tho_in_kh: thoKh, chuyen_truong: chuyenT
   return ds.length ? ds : [KHONG_RO];
 }
 
+// BÁO CÁO SẢN XUẤT — bảng "Theo thợ in" (26/10/2026 người dùng chốt): chuyền MÁY và chuyền BÀN ⇒ CHUYỀN TRƯỞNG của
+// phiếu; phiếu chưa nhập chuyền trưởng ⇒ lùi về danh sách thợ in (`dsThoPhanCong`). Loại chuyền khác (Robot · Máy
+// tròn · Logo · Ép…) giữ luật 19/10: cả danh sách thợ in phân công.
+const LOAI_LAY_CHUYEN_TRUONG = ['MAY', 'BAN'];
+function dsThoBaoCaoSanXuat(r = {}) {
+  const loai = sach(r.ma_loai_chuyen).toUpperCase();
+  const ct = tachTho(r.chuyen_truong);
+  if (LOAI_LAY_CHUYEN_TRUONG.includes(loai) && ct.length) return ct;
+  return dsThoPhanCong(r);
+}
+
 // Chia số nguyên `tong` cho `n` phần gần đều nhau, Σ = tong (phần lẻ dồn các phần đầu). Số thực ⇒ chia thẳng.
 function chiaDeu(tong, n) {
   const k = Math.max(1, n | 0);
@@ -61,4 +72,4 @@ function chiaDeu(tong, n) {
 const thoInPhieuSql = (psCol) => `(SELECT string_agg(DISTINCT zpc.tho_in, ', ') FROM phan_cong_san_xuat zpc
   WHERE zpc.phieu_san_xuat_id = ${psCol} AND COALESCE(zpc.tho_in, '') <> '')`;
 
-module.exports = { thoInHienThi, tachTho, dsThoCuaDong, dsThoPhanCong, chiaDeu, laChuyenMay, thoInPhieuSql, KHONG_RO };
+module.exports = { thoInHienThi, tachTho, dsThoCuaDong, dsThoPhanCong, dsThoBaoCaoSanXuat, chiaDeu, laChuyenMay, thoInPhieuSql, KHONG_RO };
