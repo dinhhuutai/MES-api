@@ -21,6 +21,8 @@ const { coCotThoInKh } = require('../../utils/thoInKeHoach');
 const { khoaDemLo, dungMaLo } = require('../../utils/maLo');
 // Cấp mã tăng dần PSX/TEM — không cắt khi vượt số chữ số (sự cố LSX10000 → LSX1000 ngày 21/10/2026).
 const { maKeTiepSql } = require('../../utils/maKeTiep');
+// Mốc tuyệt đối của giờ SX nhập ở ô In tem (ngày ca + giờ, ca đêm qua nửa đêm +1 ngày) — dùng chung Báo cáo sản xuất.
+const { MOC_TEM } = require('./baoCaoSanXuat');
 
 const PHAN_AGG = `(SELECT string_agg(DISTINCT pin.ma_phan, ', ')
     FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
@@ -91,6 +93,14 @@ const SLA_COLS = 'sla.tg_vao, sla.sla_phut, sla.canh_bao_truoc_phut,';
 // loại BAN/ROBOT. Nay việc ẩn/hiện làm bằng cấu hình **Hệ thống > Hiển thị theo phương án in**
 // (mig 067) — theo PHƯƠNG ÁN IN của phần in, không theo loại chuyền.
 
+// Cột thêm cho Excel màn Xác nhận chạy (26/10/2026, người dùng: "thêm SLĐH, SL nhận, SL đã in, giờ kế hoạch, giờ thực
+//   hiện"): SL nhận vải = Σ SL vải của MỌI đợt trong lệnh (lệnh gom nhiều đợt — `info.so_luong_vai_ve` chỉ là đợt đầu;
+//   lệnh ép ủi in kiếng đọc đợt của lệnh liên kết) · giờ BĐ/KT kế hoạch của lệnh.
+const SL_NHAN_VAI_LENH = `(SELECT COALESCE(SUM(x.sl), 0)::int FROM (SELECT DISTINCT dvx.id, dvx.so_luong_vai_ve AS sl
+    FROM lenh_sx_dot_vai lsx JOIN dot_vai_ve dvx ON dvx.id = lsx.dot_vai_ve_id
+   WHERE lsx.lenh_san_xuat_id = COALESCE(ls.lenh_lien_ket_id, ls.id)) x)`;
+const COT_THEM_XAC_NHAN_CHAY = `info.so_luong_don_hang, ${SL_NHAN_VAI_LENH} AS sl_nhan_vai, ls.tg_bd_kh, ls.tg_kt_kh`;
+
 async function listProductionCandidates({ search = '', offset = 0, limit = 20 }) {
   const tim = mauTim(search);
   const dkPain = await dkTrang('SX_CHO_CHAY', 'lenh', 'ls.id');
@@ -108,7 +118,7 @@ async function listProductionCandidates({ search = '', offset = 0, limit = 20 })
            cs.ma_chuyen, cs.ten_chuyen, lc.ma_loai AS ma_loai_chuyen, lc.ten_loai AS ten_loai_chuyen,
            info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.phan_in_id,
            info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan,
-           info.han_giao_hang, info.so_luong_vai_ve,
+           info.han_giao_hang, info.so_luong_vai_ve, ${COT_THEM_XAC_NHAN_CHAY},
            ${NGC_LENH('ls.id')} AS nha_gia_cong, ${MA_QUET_LENH('ls.id')} AS ma_quet, ${MA_VACH_PIN_LENH('ls.id')} AS ma_vach_pin,
            (SELECT count(*) FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id)::int AS so_dot_vai,
            (SELECT count(DISTINCT dv.phan_in_id) FROM lenh_sx_dot_vai lsd2 JOIN dot_vai_ve dv ON dv.id = lsd2.dot_vai_ve_id WHERE lsd2.lenh_san_xuat_id = ls.id)::int AS so_phan_in,
@@ -1609,7 +1619,9 @@ async function monitorRunning() {
             info.tinh_chat_in, info.mau_in, info.do_in,
             info.han_giao_hang, ${NGC_LENH('ls.id')} AS nha_gia_cong, ${MA_QUET_LENH('ls.id')} AS ma_quet,
             ${MA_VACH_PIN_LENH('ls.id')} AS ma_vach_pin,
-            ps.chuyen_truong, ${colThoKh},
+            ps.chuyen_truong, ${colThoKh}, ${COT_THEM_XAC_NHAN_CHAY},
+            (SELECT min(${MOC_TEM('t.gio_sx_bd')}) FROM tem t WHERE t.phieu_san_xuat_id = ps.id AND t.trang_thai <> 'HUY' AND t.tem_goc_id IS NULL) AS th_tu_tem,
+            (SELECT max(${MOC_TEM('t.gio_sx_kt')}) FROM tem t WHERE t.phieu_san_xuat_id = ps.id AND t.trang_thai <> 'HUY' AND t.tem_goc_id IS NULL) AS th_den_tem,
             (SELECT nd.ho_ten FROM nguoi_dung nd WHERE nd.id = ps.ca_truong_id) AS ca_truong,
             (SELECT ti.ma_to FROM to_in ti WHERE ti.id = ps.to_in_id) AS to_in,
             (SELECT string_agg(DISTINCT pc.tho_in, ', ') FROM phan_cong_san_xuat pc

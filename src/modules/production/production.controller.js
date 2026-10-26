@@ -268,7 +268,45 @@ const traVeKeHoachSx = asyncHandler(async (req, res) =>
 const vuotSanXuat = asyncHandler(async (req, res) =>
   ok(res, await service.vuotSanXuat(req.params.phieuId, req.body?.soLuong, req.user.id), 'Đã ghi nhận vượt sản xuất'));
 
+// ─── DANH SÁCH RELEASE CỦA SẢN XUẤT (26/10/2026) ─────────────────────────────────────────────────────────────
+const dsRelease = require('./dsReleaseSx');
+const RE_NGAY = /^\d{4}-\d{2}-\d{2}$/;
+const RE_ID = /^[0-9a-f-]{36}$/i;
+const dsReleaseSx = asyncHandler(async (req, res) => {
+  const ngay = String(req.query.ngay || '');
+  if (!RE_NGAY.test(ngay)) throw new AppError('Ngày không hợp lệ', { status: 422, errorCode: 'VALIDATION' });
+  ok(res, await dsRelease.dsReleaseSx(ngay));
+});
+// DM+TEST = số nguyên ≥ 0 (trống = xóa); ghi chú ≤ 500 ký tự. Chỉ khóa có trong body bị đổi.
+const luuDongDsRelease = asyncHandler(async (req, res) => {
+  const b = req.body || {};
+  if (!RE_ID.test(String(b.lenhId || '')) || !RE_ID.test(String(b.phanInId || ''))) {
+    throw new AppError('Thiếu lệnh / phần in', { status: 422, errorCode: 'VALIDATION' });
+  }
+  const d = { lenhId: b.lenhId, phanInId: b.phanInId };
+  if ('dmTest' in b) {
+    const v = b.dmTest === '' || b.dmTest == null ? null : Number(b.dmTest);
+    if (v != null && (!Number.isInteger(v) || v < 0 || v > 1e7)) throw new AppError('DM + TEST phải là số nguyên ≥ 0', { status: 422, errorCode: 'VALIDATION' });
+    d.dmTest = v;
+  }
+  if ('ghiChu' in b) {
+    const g = String(b.ghiChu == null ? '' : b.ghiChu).trim();
+    if (g.length > 500) throw new AppError('Ghi chú tối đa 500 ký tự', { status: 422, errorCode: 'VALIDATION' });
+    d.ghiChu = g || null;
+  }
+  ok(res, await dsRelease.luuDong(d, req.user.id), 'Đã lưu');
+});
+const docChuyenThem = asyncHandler(async (req, res) => {
+  ok(res, await dsRelease.docChuyenThem(req.user.id, String(req.query.khu || '').slice(0, 40)));
+});
+const luuChuyenThem = asyncHandler(async (req, res) => {
+  const b = req.body || {};
+  if (!Array.isArray(b.maChuyen)) throw new AppError('Thiếu danh sách chuyền', { status: 422, errorCode: 'VALIDATION' });
+  ok(res, await dsRelease.luuChuyenThem(req.user.id, String(b.khu || '').slice(0, 40), b.maChuyen), 'Đã lưu chuyền thêm');
+});
+
 module.exports = {
+  dsReleaseSx, luuDongDsRelease, docChuyenThem, luuChuyenThem,
   candidates, getRun, start, startBatch, chayDacBietCandidates, chayDacBiet, printTem, printTemBatch, reprintTem, temLabel, temLogs, finish, monitor,
   theoDoiTo,
   xePhoi, temChoPhoi, themTem, adjustPhoi, drying, confirmDry, redry,

@@ -41,6 +41,13 @@ router.get('/owners', asyncHandler(async (req, res) => {
   return ok(res, { tram: groupOwners(tramOwners, 'ma_tram'), checkpoint: groupOwners(cpOwners, 'ma_checkpoint') });
 }));
 
+// GET /dashboard/so-do-dong-chay/tim?q=<code phần> (26/10/2026) — code phần đang ở trạm nào (từng đợt vải + tem sau sản
+//   xuất + cờ đang ở Giao nhận) để modal Sơ đồ dòng chảy tô trạm. Chỉ cần đăng nhập như route owner bên dưới. Route
+//   TĨNH — khai trước mọi route tham số.
+router.get('/so-do-dong-chay/tim', asyncHandler(async (req, res) => {
+  ok(res, await repo.timViTriPhanIn(String(req.query.q || '').slice(0, 80)));
+}));
+
 // GET /dashboard/so-do-dong-chay — owner (tên · chịu trách nhiệm/xử lý · ghi chú phạm vi) cho modal "Sơ đồ dòng
 //   chảy" ở thanh đầu trang. Chỉ cần đăng nhập (như /owners): ai mở được trang dòng chảy cũng xem được.
 router.get('/so-do-dong-chay', asyncHandler(async (req, res) => {

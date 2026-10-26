@@ -111,6 +111,12 @@ router.get('/monitor', rbac('PROD_MONITOR'), c.monitor);
 router.get('/bao-cao-ngay', rbac('PROD_RUN', 'PROD_MONITOR'), c.baoCaoSanXuat);
 // Theo dõi chuyền in › Tổng nhà máy / Theo tổ (21/10/2026) — dữ liệu mức lệnh của 1 ngày.
 router.get('/theo-doi-to', rbac('PROD_RUN', 'PROD_MONITOR'), c.theoDoiTo);
+// Danh sách release CỦA SẢN XUẤT (26/10/2026, nút ở Xác nhận chạy) — `dsReleaseSx.js`. Ghi DM+TEST / ghi chú theo dòng
+//   + chuyền thêm vào khu (lưu riêng từng người).
+router.get('/ds-release', rbac('PROD_RUN', 'PROD_MONITOR'), c.dsReleaseSx);
+router.put('/ds-release/dong', rbac('PROD_RUN'), c.luuDongDsRelease);
+router.get('/ds-release/chuyen-them', rbac('PROD_RUN', 'PROD_MONITOR'), c.docChuyenThem);
+router.put('/ds-release/chuyen-them', rbac('PROD_RUN', 'PROD_MONITOR'), c.luuChuyenThem);
 // Báo cáo bất thường dừng chuyền (theo khoảng ngày SX) — trang Sản xuất › Báo cáo dừng chuyền.
 router.get('/bao-cao-dung-chuyen', rbac('PROD_RUN', 'PROD_MONITOR'), c.baoCaoDungChuyen);
 // Báo cáo kết quả kiểm hàng (theo dây chuyền / chuyền / lượt KCS) — trang Sản xuất › Báo cáo kiểm hàng.

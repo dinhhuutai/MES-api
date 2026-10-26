@@ -881,6 +881,86 @@ async function checkpointOwnersActive() {
   return rows;
 }
 
+// ─── SƠ ĐỒ DÒNG CHẢY › TÌM CODE PHẦN (26/10/2026, người dùng: "nhập code phần sẽ trỏ ra vị trí code phần đang ở trạm
+//   nào để biết liên hệ ai khi không thấy ở trạm của mình") ────────────────────────────────────────────────────────
+// Không chép luật giai đoạn: mỗi ĐỢT VẢI sống lấy giai đoạn bằng CHÍNH `dotStageCase` (dashboard / chip Danh sách phần
+//   in) — 1 phần in có thể ở nhiều trạm cùng lúc (đợt 1 đang SX, đợt 2 ở READY). Phần sau sản xuất đi theo TEM (sổ cái,
+//   cùng biểu thức `quality.repository`): tem đang phơi · chờ KCS · chờ sửa · chờ OQC · chờ giao · đã giao — vì 1 lệnh có
+//   tem rải nhiều trạm mà `dotStageCase` chỉ trả 1. Kèm cờ "đang trả về Giao nhận" (`traVeGn.CHO_GN_SQL` — phần in tạm
+//   rời mọi màn, hay là lý do "không thấy"). Tối đa 10 phần in; khớp CHÍNH XÁC code phần / mã TDTHĐH thì chỉ trả bản đó.
+async function timViTriPhanIn(q) {
+  const { dotSource } = require('../../utils/stage');
+  const { CHO_GN_SQL } = require('../../utils/traVeGn');
+  // Mã TDTHĐH (`phan_in.barcode`) CÓ THỂ LÀ DANH SÁCH ngăn dấu phẩy (prod 26/10: 2.152/7.697 phần in) ⇒ so TỪNG mã.
+  const { sqlKhopMa } = require('../../utils/maPhanIn');
+  const qa = require('../quality/quality.repository');
+  const conKcs = qa.conKcsSql();
+  const ma = String(q || '').trim();
+  if (ma.length < 3) return { ds: [], qua_nhieu: false };
+  const { rows: pins } = await query(
+    `SELECT pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.dang_hoat_dong,
+            kh.ten_khach_hang AS khach, dh.ma_don_hang AS don, mh.ma_hang,
+            (upper(pin.ma_phan) = upper($1) OR ${sqlKhopMa('pin.barcode', '$1')}) AS chinh_xac,
+            ${CHO_GN_SQL('pin.id')} AS dang_o_gn
+       FROM phan_in pin
+       LEFT JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+       LEFT JOIN don_hang dh ON dh.id = mh.don_hang_id
+       LEFT JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+      WHERE pin.ma_phan ~* $2 OR ${sqlKhopMa('pin.barcode', '$1')} OR COALESCE(pin.barcode, '') ~* $2
+      ORDER BY 8 DESC, pin.dang_hoat_dong DESC, pin.ma_phan LIMIT 11`.replace(/\s+/g, ' '),
+    [ma, mauTim(ma)]
+  );
+  let ds = pins.some((p) => p.chinh_xac) ? pins.filter((p) => p.chinh_xac) : pins;
+  const quaNhieu = ds.length > 10;
+  ds = ds.slice(0, 10);
+  if (!ds.length) return { ds: [], qua_nhieu: false };
+  const ids = ds.map((p) => p.phan_in_id);
+  const [dots, tems] = await Promise.all([
+    query(
+      `SELECT s.phan_in_id, d.ma_dot_vai, d.so_luong_vai_ve AS sl, d.han_giao_hang,
+              row_number() OVER (PARTITION BY s.phan_in_id ORDER BY d.created_date, d.id)::int AS thu_tu,
+              count(*) OVER (PARTITION BY s.phan_in_id)::int AS so_dot,
+              ls.ma_lenh_san_xuat AS ma_lenh, cs.ma_chuyen, (${dotStageCase('s')}) AS stage
+         FROM (${dotSource('ANY($1::uuid[])')}) s
+         JOIN dot_vai_ve d ON d.id = s.id
+         LEFT JOIN lenh_san_xuat ls ON ls.id = s.lenh_id
+         LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+        ORDER BY s.phan_in_id, thu_tu`.replace(/\s+/g, ' '),
+      [ids]
+    ),
+    query(
+      `WITH tp AS (
+         SELECT DISTINCT ON (dv.phan_in_id, tm.id) dv.phan_in_id, tm.*
+           FROM tem tm
+           JOIN phieu_san_xuat ps ON ps.id = tm.phieu_san_xuat_id
+           JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id AND ls.trang_thai <> 'HUY'
+           JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
+           JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id AND dv.phan_in_id = ANY($1::uuid[])
+          WHERE tm.trang_thai <> 'HUY')
+       SELECT t.phan_in_id,
+              COALESCE(SUM(t.so_luong) FILTER (WHERE t.trang_thai IN ('IN','DANG_PHOI')), 0)::int AS cho_kho_sl,
+              count(*) FILTER (WHERE t.trang_thai IN ('IN','DANG_PHOI'))::int AS cho_kho_tem,
+              COALESCE(SUM(${conKcs}) FILTER (WHERE t.trang_thai = 'DA_KHO' AND ${conKcs} > 0), 0)::int AS kcs_sl,
+              count(*) FILTER (WHERE t.trang_thai = 'DA_KHO' AND ${conKcs} > 0)::int AS kcs_tem,
+              COALESCE(SUM(${qa.CON_SUA}) FILTER (WHERE ${qa.CON_SUA} > 0), 0)::int AS sua_sl,
+              count(*) FILTER (WHERE ${qa.CON_SUA} > 0)::int AS sua_tem,
+              COALESCE(SUM(${qa.CON_OQC}) FILTER (WHERE ${qa.CON_OQC} > 0), 0)::int AS oqc_sl,
+              count(*) FILTER (WHERE ${qa.CON_OQC} > 0)::int AS oqc_tem,
+              COALESCE(SUM(${qa.CON_GIAO}) FILTER (WHERE ${qa.CON_GIAO} > 0), 0)::int AS cho_giao_sl,
+              count(*) FILTER (WHERE ${qa.CON_GIAO} > 0)::int AS cho_giao_tem,
+              COALESCE(SUM(t.sl_da_giao), 0)::int AS da_giao_sl
+         FROM tp t GROUP BY t.phan_in_id`.replace(/\s+/g, ' '),
+      [ids]
+    ),
+  ]);
+  const dotTheo = new Map(); dots.rows.forEach((d) => { if (!dotTheo.has(d.phan_in_id)) dotTheo.set(d.phan_in_id, []); dotTheo.get(d.phan_in_id).push(d); });
+  const temTheo = new Map(tems.rows.map((t) => [t.phan_in_id, t]));
+  return {
+    qua_nhieu: quaNhieu,
+    ds: ds.map(({ chinh_xac: _, ...p }) => ({ ...p, dots: dotTheo.get(p.phan_in_id) || [], tem: temTheo.get(p.phan_in_id) || null })),
+  };
+}
+
 // SƠ ĐỒ DÒNG CHẢY (nút ở thanh đầu trang, 21/10/2026): owner trạm + checklist của workflow hiện hành, 1 lượt query,
 //   kèm `ghi_chu` (phạm vi: "Khu máy", "Bàn, Robot"…) — trạm nào hiện, gom ra sao do FE (`constants/soDoDongChay.js`).
 async function ownersSoDo() {
@@ -1409,7 +1489,7 @@ async function nghenChecklistEpisodes({ from, to }) {
 }
 
 module.exports = {
-  summary, activity, stageCounts, stageCountsCached, chartDetail, dieuPhoiExtra, flowRows, flowTimeline, tramOwnersActive, checkpointOwnersActive, ownersSoDo,
+  summary, activity, stageCounts, stageCountsCached, chartDetail, dieuPhoiExtra, flowRows, flowTimeline, tramOwnersActive, checkpointOwnersActive, ownersSoDo, timViTriPhanIn,
   tinhTrangActiveRows, tinhTrangPhanInList, resolveScanCode, tinhTrangDetail, tinhTrangGraph, confirmTodayGroups, confirmTodayDetail,
   nghenTramEpisodes, nghenChecklistEpisodes,
 };
