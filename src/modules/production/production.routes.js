@@ -115,6 +115,7 @@ router.get('/theo-doi-to', rbac('PROD_RUN', 'PROD_MONITOR'), c.theoDoiTo);
 //   + chuyền thêm vào khu (lưu riêng từng người).
 router.get('/ds-release', rbac('PROD_RUN', 'PROD_MONITOR'), c.dsReleaseSx);
 router.put('/ds-release/dong', rbac('PROD_RUN'), c.luuDongDsRelease);
+router.get('/ds-release/nhat-ky-in', rbac('PROD_RUN', 'PROD_MONITOR'), c.nhatKyIn);
 router.get('/ds-release/chuyen-them', rbac('PROD_RUN', 'PROD_MONITOR'), c.docChuyenThem);
 router.put('/ds-release/chuyen-them', rbac('PROD_RUN', 'PROD_MONITOR'), c.luuChuyenThem);
 // Báo cáo bất thường dừng chuyền (theo khoảng ngày SX) — trang Sản xuất › Báo cáo dừng chuyền.

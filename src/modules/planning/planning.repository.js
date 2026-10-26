@@ -2357,10 +2357,28 @@ const daXacNhanMucSql = (dvAlias, ma) => `(EXISTS (SELECT 1 FROM ket_qua_checkpo
 //     (tem 17 con mang sẵn phần sửa đạt — cộng là đếm đôi), OQC = Σ `sl_oqc_dat` mọi tem (cả lô qua giao),
 //     cùng công thức thẻ trạm "Hành trình phần in" (`orders.repository qtySql`). Tem không lưu phần in ⇒ số
 //     mức lệnh chỉ để ở DÒNG ĐẦU của lệnh (service).
-async function releaseListByDate(date, mode = 'KE_HOACH') {
+// 'IN_TEM' (26/10/2026 — Danh sách release của Sản xuất) = lệnh có TEM GỐC (sống, không phải tem `HT-` của script) IN
+//   trong khoảng [$1, $2] theo giờ VN (`tem.created_date` — cùng nghĩa ô "Ngày in tem" của Danh sách tem in).
+//   ⚠ Tập lệnh lấy bằng 1 CÂU RIÊNG rồi lọc `ls.id = ANY(...)` (lọc thẳng trên bảng gốc như ngày kế hoạch). Viết thành
+//   EXISTS / IN-subquery trong câu chính thì planner tính các LATERAL cho MỌI lệnh trước khi lọc — đo prod 26/10/2026:
+//   1–4 s cho 33 dòng. Chế độ này cũng KHÔNG tính `giai_doan_hien_tai` (`dominantStageScalar` nặng với phần in đang sản
+//   xuất) — người gọi duy nhất (`production/dsReleaseSx`) tự tính trạng thái theo CHÍNH lệnh.
+async function releaseListByDate(date, mode = 'KE_HOACH', denNgay = null) {
+  const VN = "AT TIME ZONE 'Asia/Ho_Chi_Minh'";
+  let thamSo = [date];
+  if (mode === 'IN_TEM') {
+    const { rows: ids } = await query(
+      `SELECT DISTINCT psn.lenh_san_xuat_id AS id FROM tem tn JOIN phieu_san_xuat psn ON psn.id = tn.phieu_san_xuat_id
+        WHERE tn.trang_thai <> 'HUY' AND tn.tem_goc_id IS NULL AND tn.ma_tem NOT LIKE 'HT-%'
+          AND tn.created_date >= ($1::date)::timestamp ${VN} AND tn.created_date < ($2::date + 1)::timestamp ${VN}`.replace(/\s+/g, ' '),
+      [date, denNgay || date]
+    );
+    if (!ids.length) return [];
+    thamSo = [ids.map((x) => x.id)];
+  }
   const dkNgay = mode === 'RELEASE'
-    ? "(ls.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date"
-    : 'ls.ngay_ke_hoach = $1::date';
+    ? `(ls.created_date ${VN})::date = $1::date`
+    : mode === 'IN_TEM' ? 'ls.id = ANY($1::uuid[])' : 'ls.ngay_ke_hoach = $1::date';
   // `tho_in_kh` (mig 111) = thợ in KẾ HOẠCH chọn lúc Release 1; cột "Thợ in" hiện phân công thật trước, chưa có thì kế hoạch.
   const colTho = (await coCotThoInKh()) ? 'ls.tho_in_kh' : 'NULL::text AS tho_in_kh';
   // 4 giá của phần in (mig 113, ERP `GiaIn`/`Giaep`/`giainkieng`/`Dongia`) — cột "Doanh thu" = `don_gia` × SL release của dòng (`sl_release_phan`); thiếu cột ⇒ NULL.
@@ -2369,7 +2387,7 @@ async function releaseListByDate(date, mode = 'KE_HOACH') {
     SELECT ls.id AS lenh_id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.ngay_ke_hoach, ls.created_date,
            ls.tg_bd_kh, ls.tg_kt_kh, ls.giai_doan, ls.trang_thai AS lenh_trang_thai, ${colTho},
            pin.id AS phan_in_id, ${colGia},
-           ${dominantStageScalar('pin.id')} AS giai_doan_hien_tai,
+           ${mode === 'IN_TEM' ? 'NULL::text' : dominantStageScalar('pin.id')} AS giai_doan_hien_tai,
            cs.ma_chuyen, cs.ten_chuyen, cs.dinh_muc_gio, lc.ma_loai AS ma_loai_chuyen, lc.ten_loai AS ten_loai_chuyen,
            pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.so_luong_don_hang, pin.tinh_chat_in,
            mh.ma_hang, mh.ten_ma_hang, dh.ma_don_hang, dh.so_po, kh.ten_khach_hang,
@@ -2403,7 +2421,7 @@ async function releaseListByDate(date, mode = 'KE_HOACH') {
     LEFT JOIN nguoi_dung u ON u.id = ls.created_by
     WHERE ls.trang_thai <> 'HUY' AND ${dkNgay}
     ORDER BY cs.ten_chuyen NULLS LAST, kh.ten_khach_hang, dh.ma_don_hang, ls.created_date, ls.id, pin.ma_phan`;
-  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [date]);
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), thamSo);
   return rows;
 }
 

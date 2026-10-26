@@ -23,6 +23,7 @@ const { khoaDemLo, dungMaLo } = require('../../utils/maLo');
 const { maKeTiepSql } = require('../../utils/maKeTiep');
 // Mốc tuyệt đối của giờ SX nhập ở ô In tem (ngày ca + giờ, ca đêm qua nửa đêm +1 ngày) — dùng chung Báo cáo sản xuất.
 const { MOC_TEM } = require('./baoCaoSanXuat');
+const { chuanMaChuyen, chuanMaChuyenSql } = require('../../utils/maChuyen');
 
 const PHAN_AGG = `(SELECT string_agg(DISTINCT pin.ma_phan, ', ')
     FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
@@ -371,6 +372,22 @@ async function vaiHuyCoCotTem() {
     _vaiCoCotTem = rows.length > 0;
   } catch { _vaiCoCotTem = false; }
   return _vaiCoCotTem;
+}
+
+// VẢI HỦY / THIẾU CỦA TEM (21/10/2026) — mảnh SQL (alias tem `t`), dùng chung Danh sách tem in + Nhật ký in (26/10/2026):
+//   có dòng sổ gắn tem (mig 118) ⇒ cộng sổ; không có (tem in trước mig 118 / chưa chạy mig) ⇒ số đã gửi ERP cùng tem
+//   (`Soluongloi` / `SOLUONGTHIEU` lượt "Báo ERP mỗi lần in tem" — thành công trước, không có thì lượt lỗi). Không lượt
+//   nào ⇒ 0. `ERP_VAI_LATERAL` (alias `erpv`, cột `gui` · `id_mes`) phải JOIN vào câu dùng `soVai`.
+async function vaiTemSql() {
+  const coVaiTem = await vaiHuyCoCotTem();
+  const soVai = (loai, khoaErp) => `CASE WHEN ${coVaiTem ? 'EXISTS (SELECT 1 FROM vai_huy vx WHERE vx.tem_id = t.id)' : 'false'}
+      THEN ${coVaiTem ? `(SELECT COALESCE(SUM(vx.so_luong),0) FROM vai_huy vx WHERE vx.tem_id = t.id AND COALESCE(vx.loai,'HUY') = '${loai}')` : '0'}
+      ELSE COALESCE(NULLIF(erpv.gui->>'${khoaErp}','')::numeric, 0) END::int`;
+  const ERP_VAI_LATERAL = `LEFT JOIN LATERAL (SELECT a.gia_tri_moi->'gui' AS gui, a.gia_tri_moi->>'id_mes' AS id_mes,
+      (a.hanh_dong = 'ERP_GHI_IN_TEM') AS erp_ok FROM audit_log a
+      WHERE a.ten_bang = 'tem' AND a.id_ban_ghi = t.id::text AND a.hanh_dong IN ('ERP_GHI_IN_TEM', 'ERP_GHI_IN_TEM_LOI')
+      ORDER BY (a.hanh_dong = 'ERP_GHI_IN_TEM') DESC, a.thoi_gian DESC LIMIT 1) erpv ON true`;
+  return { soVai, ERP_VAI_LATERAL };
 }
 
 // SỐ VẢI HỦY / THIẾU "CHỜ GẮN TEM" CỦA 1 PHIẾU (21/10/2026, người dùng chốt): ô Vải hủy / thiếu ở sidebar 1 lệnh LƯU
@@ -764,6 +781,7 @@ async function listCancelableTem({ search = '', offset = 0, limit = 50 }) {
 async function listTemDaIn({
   laGiaCong = false, search = '', ngayTu = '', ngayDen = '', ngayCaTu = '', ngayCaDen = '', maNgayCa = '', ca = '',
   khach = '', don = '', maHang = '', codePhan = '', maTem = '', chuyen = '', chuyenId = '',
+  loaiChuyen = '', maChuyenDs = '',
   offset = 0, limit = 20,
 }) {
   const dk = [];
@@ -794,6 +812,12 @@ async function listTemDaIn({
   // Ô CA (26/10/2026, người dùng: "chọn ngày rồi chọn ca") — 2 ký tự cuối mã ngày ca: HC · C1 · C2 · C3 · D1 · D2
   //   (`ca` nhận mã ô lọc HC/CA1/CA2/CA3/D1/D2, quy đổi ở controller qua `utils/ca.js HAU_TO_CA`).
   if (ca && await temCoCotMaNgayCa()) { p.push(ca); dk.push(`upper(right(COALESCE(t.ma_ngay_ca, ''), 2)) = $${p.length}`); }
+  // KHU CHUYỀN (26/10/2026, người dùng: "thêm khu chuyền ở Danh sách tem in") — cùng dải chip `LOAI_TABS` của FE, gửi
+  //   như dải Theo dõi (`locSiSoTheoChip`): chip loại ⇒ `loaiChuyen` (mã loại) · chip khu ⇒ `maChuyenDs` (danh sách mã
+  //   chuyền ERP của khu, so qua `chuanMaChuyenSql` ⇒ khớp cả mã cũ `M4A-4B`).
+  if (loaiChuyen) { p.push(String(loaiChuyen).toUpperCase()); dk.push(`lc.ma_loai = $${p.length}`); }
+  const dsMa = String(maChuyenDs || '').split(',').map((x) => chuanMaChuyen(x)).filter(Boolean);
+  if (dsMa.length) { p.push(dsMa); dk.push(`${chuanMaChuyenSql('cs.ma_chuyen')} = ANY($${p.length}::text[])`); }
 
   // `JOIN_GOC` + `WHERE_GOC` tách riêng để câu ĐẾM không phải chạy LATERAL sự kiện hủy (chỉ dòng của trang cần).
   const JOIN_GOC = `
@@ -808,16 +832,7 @@ async function listTemDaIn({
       ${dk.length ? `AND ${dk.join(' AND ')}` : ''}`;
   const FROM = `${JOIN_GOC} ${WHERE_GOC}`;
   const cotMaLo = (await temCoCot('ma_lo')) ? 't.ma_lo' : 'NULL::text AS ma_lo';   // mig 114
-  // VẢI HỦY / THIẾU CỦA TEM (21/10/2026): có dòng sổ gắn tem (mig 118) ⇒ cộng sổ; không có (tem in trước mig 118 /
-  //   chưa chạy mig) ⇒ số đã gửi ERP cùng tem (`Soluongloi` / `SOLUONGTHIEU` lượt "Báo ERP mỗi lần in tem" — thành công
-  //   trước, không có thì lượt lỗi). Không lượt nào ⇒ 0.
-  const coVaiTem = await vaiHuyCoCotTem();
-  const soVai = (loai, khoaErp) => `CASE WHEN ${coVaiTem ? 'EXISTS (SELECT 1 FROM vai_huy vx WHERE vx.tem_id = t.id)' : 'false'}
-      THEN ${coVaiTem ? `(SELECT COALESCE(SUM(vx.so_luong),0) FROM vai_huy vx WHERE vx.tem_id = t.id AND COALESCE(vx.loai,'HUY') = '${loai}')` : '0'}
-      ELSE COALESCE(NULLIF(erpv.gui->>'${khoaErp}','')::numeric, 0) END::int`;
-  const ERP_VAI_LATERAL = `LEFT JOIN LATERAL (SELECT a.gia_tri_moi->'gui' AS gui FROM audit_log a
-      WHERE a.ten_bang = 'tem' AND a.id_ban_ghi = t.id::text AND a.hanh_dong IN ('ERP_GHI_IN_TEM', 'ERP_GHI_IN_TEM_LOI')
-      ORDER BY (a.hanh_dong = 'ERP_GHI_IN_TEM') DESC, a.thoi_gian DESC LIMIT 1) erpv ON true`;
+  const { soVai, ERP_VAI_LATERAL } = await vaiTemSql();
   const dataSql = `
     SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.created_date, t.ma_ngay_ca, t.ngay_ca, ${cotMaLo},
            ${soVai('HUY', 'Soluongloi')} AS sl_vai_huy_tem, ${soVai('THIEU', 'SOLUONGTHIEU')} AS sl_vai_thieu_tem,
@@ -2268,7 +2283,8 @@ module.exports = {
   // Luật "tem in đã hủy mở lại được" (alias t / ps / ls / h) — Quản trị phần in đọc CHUNG (19/10/2026).
   SU_KIEN_CUOI_LATERAL, MO_LAI_DUOC_SQL,
   // Vải hủy / thiếu theo tem (21/10/2026, mig 118) + số chờ gắn tem của phiếu.
-  vaiHuyCoCotTem, docVaiChoTem, ghiVaiChoTem, vaiCuaTem, vaiErpCuaTem, logSuaVaiTem,
+  vaiHuyCoCotTem, vaiTemSql, docVaiChoTem, ghiVaiChoTem, vaiCuaTem, vaiErpCuaTem, logSuaVaiTem,
+  temCoCot,
   getVuotContext, listUnreleasedDotVaiForPhanIn, incLenhRelease, insertVuotHistory,
   listProductionCandidates, getPrintedTotal, getDefaultXePhoi, nextMaPhieu, createPhieu, setLenhChuyen, setLenhTrangThai, getLenhBasic,
   setPhieuChuyen, getChuyenById, logDoiChuyen,

@@ -15,8 +15,12 @@ const thu = asyncHandler(async (req, res) => ok(res, await service.thuKetNoi(req
 // Lịch sử gọi API (lấy mã tem / báo ERP in tem) — lọc ngày + tìm theo IDMES hoặc mã tem.
 const lichSu = asyncHandler(async (req, res) => {
   const { page, limit, offset } = getPaging(req.query);
+  const q = req.query;
+  // Lọc theo trường (26/10/2026): code phần · ngày ca · chuyền · đơn hàng · mã hàng · kích (vải/phim) · màu vải.
+  const s = (k) => String(q[k] || '').trim().slice(0, 80);
   return ok(res, await service.lichSu(req.params.ma, {
-    date: req.query.date || '', search: req.query.search || '', page, limit, offset,
+    date: q.date || '', search: q.search || '', page, limit, offset,
+    loc: { codePhan: s('codePhan'), ngayCa: s('ngayCa'), chuyen: s('chuyen'), don: s('don'), maHang: s('maHang'), kich: s('kich'), mau: s('mau') },
   }));
 });
 

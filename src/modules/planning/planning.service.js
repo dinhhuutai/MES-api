@@ -2016,7 +2016,11 @@ function gioCua(v) {
 
 // `thoIn` (07/10/2026, mig 111): THỢ IN KẾ HOẠCH — không gửi (`undefined`) = GIỮ NGUYÊN; gửi chuỗi = ghi đè
 //   (chuỗi rỗng = xóa). Thiếu cột (chưa chạy mig) ⇒ vẫn lập lại kế hoạch, trả `tho_in_chua_luu` để FE báo.
-async function replan(lenhId, { chuyenId, ngayKeHoach, lyDo, tgBdKh, tgKtKh, slRelease, thoIn }, actorId) {
+// `opts.choDaChay` (26/10/2026 — CHỈ *Quản trị phần in* truyền, người dùng: "cho sửa thông tin của kế hoạch"): nhận cả
+//   lệnh in trong xưởng ĐÃ xác nhận chạy (có phiếu) — chỉ sửa THÔNG TIN kế hoạch: chuyền KH (trong xưởng, không qua gia
+//   công) · ngày · giờ · SL release từng đợt (vẫn trần theo vải + không dưới SL đã in — `updateReleaseTx`) · thợ in KH.
+//   KHÔNG đổi chặng (`changMoi` = null khi có phiếu), chuyền chạy thật của phiếu không đụng (đổi máy dùng "Đổi chuyền").
+async function replan(lenhId, { chuyenId, ngayKeHoach, lyDo, tgBdKh, tgKtKh, slRelease, thoIn }, actorId, opts = {}) {
   if (!ngayKeHoach) throw new AppError('Chọn ngày sản xuất theo kế hoạch', { status: 422, errorCode: 'NO_NGAY' });
   // Lý do KHÔNG bắt buộc (chốt 2026-08-14) — dời ngày/chuyền là việc điều độ hằng ngày, bắt nhập lý do
   // mỗi lần chỉ khiến người dùng gõ cho có. Vẫn ghi vào audit khi có nhập.
@@ -2029,7 +2033,8 @@ async function replan(lenhId, { chuyenId, ngayKeHoach, lyDo, tgBdKh, tgKtKh, slR
   //   nhận sinh 1 phiếu + 1 tem, mà phần CHƯA nhận vẫn còn ở nhà gia công và vẫn cần dời ngày. Lệnh
   //   IN THƯỜNG có phiếu = đang chạy máy ⇒ giữ nguyên chặn (dùng *Hủy lệnh sản xuất* nếu muốn gỡ).
   const laGiaCong = lenh.trang_thai === 'GIA_CONG';
-  if (!['RELEASE_1', 'RELEASE_2', 'GIA_CONG'].includes(lenh.trang_thai) || (lenh.co_phieu && !laGiaCong)) {
+  const daChayOk = !!opts.choDaChay && lenh.co_phieu && !laGiaCong && lenh.trang_thai !== 'HUY';
+  if (!daChayOk && (!['RELEASE_1', 'RELEASE_2', 'GIA_CONG'].includes(lenh.trang_thai) || (lenh.co_phieu && !laGiaCong))) {
     throw new AppError('Chỉ lập lại kế hoạch cho lệnh đang Test Run / Release 2 / Gia công và chưa bắt đầu sản xuất',
       { status: 409, errorCode: 'NOT_REPLANNABLE' });
   }
@@ -2040,11 +2045,19 @@ async function replan(lenhId, { chuyenId, ngayKeHoach, lyDo, tgBdKh, tgKtKh, slR
   //   sang chuyền in trong xưởng sẽ kéo lệnh về `RELEASE_1`/`RELEASE_2` (xem `chuyenChangTheoChuyen`)
   //   ⇒ hàng vừa nằm ở OQC vừa nằm ở hàng đợi test, sổ cái sai mà không ai báo lỗi.
   //   Vẫn cho đổi sang **chuyền gia công KHÁC** (đổi nhà gia công) và dời ngày/giờ như thường.
+  //   Chiều ngược lại (lệnh in trong xưởng ĐÃ CHẠY — chỉ lối `choDaChay`): không đổi sang chuyền gia công.
   // ⚠ Guard chạy TRƯỚC MỌI thao tác ghi.
-  if (lenh.co_phieu && (await repo.getChuyenLoai(newChuyen)) !== 'GIA_CONG') {
-    throw new AppError(`Lệnh đã nhận về ${lenh.da_nhan}/${lenh.so_luong_release} — chỉ đổi được sang chuyền gia công khác. `
-      + 'Muốn đưa về chuyền in trong xưởng thì hủy tem gia công đã nhận trước (Hệ thống > Hủy lệnh xác nhận > Hủy tem gia công).',
-    { status: 409, errorCode: 'DA_NHAN_HANG' });
+  if (lenh.co_phieu) {
+    const loaiMoi = await repo.getChuyenLoai(newChuyen);
+    if (laGiaCong && loaiMoi !== 'GIA_CONG') {
+      throw new AppError(`Lệnh đã nhận về ${lenh.da_nhan}/${lenh.so_luong_release} — chỉ đổi được sang chuyền gia công khác. `
+        + 'Muốn đưa về chuyền in trong xưởng thì hủy tem gia công đã nhận trước (Hệ thống > Hủy lệnh xác nhận > Hủy tem gia công).',
+      { status: 409, errorCode: 'DA_NHAN_HANG' });
+    }
+    if (!laGiaCong && loaiMoi === 'GIA_CONG') {
+      throw new AppError('Lệnh đã xác nhận chạy trong xưởng — không đổi kế hoạch sang chuyền gia công',
+        { status: 409, errorCode: 'DA_CHAY' });
+    }
   }
   // GIỜ BẮT ĐẦU / KẾT THÚC kế hoạch:
   //  - FE gửi lên → dùng luôn (đã ghép sẵn ngày mới + giờ, y như Release 1).
@@ -2112,13 +2125,14 @@ async function replan(lenhId, { chuyenId, ngayKeHoach, lyDo, tgBdKh, tgKtKh, slR
       { chuyen_id: newChuyen || null, ngay_ke_hoach: ngayMoi, ly_do: lyDoSach,
         gio_bd: gioCua(bdMoi), gio_kt: gioCua(ktMoi),
         ...(items.length ? { so_luong_release: slMoi } : {}),
-        ...(doiTho ? { tho_in_kh: thoMoi } : {}) },
+        ...(doiTho ? { tho_in_kh: thoMoi } : {}),
+        ...(opts.nguon ? { nguon: opts.nguon } : {}) },
       actorId);
   });
   sockets.emit('workflow:updated', { lenhId, stage: changMoi || 'RELEASE_2', replan: true, giaCong: changMoi === 'GIA_CONG' || undefined });
   sockets.emit('dashboard:refresh', {});
   // Đổi SL release là đổi con số mà màn Sản xuất / dashboard đang đọc ⇒ báo luôn cho chúng tải lại.
-  if (items.length) sockets.emit('production:updated', { lenhId });
+  if (items.length || lenh.co_phieu) sockets.emit('production:updated', { lenhId });
   // Báo ERP kế hoạch MỚI của lệnh — `replanBatch` gọi hàm này từng lệnh, hàng chờ của `release1Erp` gom
   //   lại nên phần in inset vẫn đi chung 1 lượt.
   release1Erp.xepHang([lenhId], actorId, 'REPLAN');
@@ -2275,10 +2289,10 @@ function nhanTestRelease(r) {
 //   · `sl_da_in`/`sl_da_giao` chỉ có ở mức LỆNH nên chỉ giữ ở DÒNG ĐẦU của mỗi lệnh (`la_dong_dau`),
 //     dòng sau để `null` ⇒ nhìn vào bảng/Excel không ai cộng dồn thành số sai.
 //   · `so_lenh` để biết số ĐỢT SẢN XUẤT (khác số dòng khi có gom set).
-async function releaseList(date, mode = 'KE_HOACH') {
+async function releaseList(date, mode = 'KE_HOACH', denNgay = null) {
   if (!date) throw new AppError('Thiếu ngày', { status: 422, errorCode: 'NO_DATE' });
   const [raw, modeMap] = await Promise.all([
-    repo.releaseListByDate(date, mode),
+    repo.releaseListByDate(date, mode, denNgay),
     repo.caModeMap().catch(() => new Map()),
   ]);
   // CA KẾ HOẠCH của lệnh (26/10/2026 — ô lọc Ca ở Danh sách release): ca chứa GIỜ BẮT ĐẦU KH theo loại ca của tuần ×

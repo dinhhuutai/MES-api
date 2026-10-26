@@ -53,7 +53,17 @@ const moDotVai = asyncHandler(async (req, res) =>
 const huyMucReady = asyncHandler(async (req, res) =>
   ok(res, await service.huyMucReady(req.params.phanInId, req.body.muc, req.user.id), 'Đã hủy xác nhận READY'));
 
+// Sửa kế hoạch (26/10/2026) — lệnh (qua `planning.replan`) · kế hoạch tạm (qua `planning.updateKeHoachTam`).
+const xemKeHoachLenh = asyncHandler(async (req, res) =>
+  ok(res, await service.xemKeHoachLenh(req.params.phanInId, req.params.lenhId)));
+const suaKeHoachLenh = asyncHandler(async (req, res) => {
+  const r = await service.suaKeHoachLenh(req.params.phanInId, req.params.lenhId, req.body || {}, req.user.id);
+  return ok(res, r, r.tho_in_chua_luu ? 'Đã sửa kế hoạch (chưa lưu được thợ in — DB chưa chạy migration 111)' : 'Đã sửa kế hoạch lệnh');
+});
+const suaKeHoachTam = asyncHandler(async (req, res) =>
+  ok(res, await service.suaKeHoachTam(req.params.phanInId, req.params.ktId, req.body || {}, req.user.id), 'Đã sửa kế hoạch tạm'));
+
 module.exports = {
   traCuu, chiTiet, suaPhanIn, suaDotVai, datKhoaErp, datGiaiDoan, luiVe, huyLe, luuPhanCong, huyPhanIn, moPhanIn,
-  huyDotVai, moDotVai, huyMucReady,
+  huyDotVai, moDotVai, huyMucReady, xemKeHoachLenh, suaKeHoachLenh, suaKeHoachTam,
 };

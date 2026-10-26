@@ -29,6 +29,10 @@ router.post('/:phanInId/khoa-erp', c.datKhoaErp);
 router.post('/:phanInId/lenh/:lenhId/lui-ve', c.luiVe);
 router.post('/:phanInId/huy-le', c.huyLe);
 router.post('/:phanInId/phieu/:phieuId/phan-cong', c.luuPhanCong);
+// 26/10/2026: sửa kế hoạch lệnh (cả lệnh đã chạy) · sửa kế hoạch tạm của đợt chưa Ready.
+router.get('/:phanInId/lenh/:lenhId/ke-hoach', c.xemKeHoachLenh);
+router.put('/:phanInId/lenh/:lenhId/ke-hoach', c.suaKeHoachLenh);
+router.put('/:phanInId/ke-hoach-tam/:ktId', c.suaKeHoachTam);
 router.post('/:phanInId/huy', c.huyPhanIn);
 router.post('/:phanInId/mo', c.moPhanIn);
 

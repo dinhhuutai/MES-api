@@ -427,6 +427,53 @@ async function luuPhanCong(phanInId, phieuId, body, actorId) {
   return { phieu_id: phieuId, dang_chay: p.trang_thai === 'DANG_CHAY' };
 }
 
+// ─── SỬA KẾ HOẠCH (26/10/2026, người dùng: "Quản trị phần in cho sửa thông tin của kế hoạch") ───────────────────
+// Lệnh: gọi CHÍNH `planning.replan` (Lập lại kế hoạch — dời giờ, trần SL theo vải, không dưới SL đã in, audit REPLAN,
+//   báo ERP kế hoạch) với `choDaChay` ⇒ nhận cả lệnh in đã xác nhận chạy (chỉ sửa thông tin, không đổi chặng, không qua
+//   gia công). Kế hoạch tạm (đợt chưa Ready): gọi CHÍNH `planning.updateKeHoachTam`. Lý do bắt buộc (như mọi thao tác
+//   ở trang này), ghi kèm audit `QUAN_TRI_SUA_KE_HOACH`.
+async function xemKeHoachLenh(phanInId, lenhId) {
+  const tc = await repo.toanCanh(phanInId);
+  if (!tc.lenh.some((l) => l.id === lenhId)) throw new AppError('Lệnh không thuộc phần in này (hoặc đã hủy)', { status: 404, errorCode: 'NOT_FOUND' });
+  return planningService.getReplanDetail(lenhId);
+}
+
+async function suaKeHoachLenh(phanInId, lenhId, body = {}, actorId) {
+  const ly = String(body.lyDo || '').trim();
+  if (!ly) throw new AppError('Phải nhập lý do', { status: 422, errorCode: 'NO_LY_DO' });
+  const tc = await repo.toanCanh(phanInId);
+  const l = tc.lenh.find((x) => x.id === lenhId);
+  if (!l) throw new AppError('Lệnh không thuộc phần in này (hoặc đã hủy)', { status: 404, errorCode: 'NOT_FOUND' });
+  const kq = await planningService.replan(lenhId, {
+    chuyenId: body.chuyenId || null, ngayKeHoach: body.ngayKeHoach, tgBdKh: body.tgBdKh || null, tgKtKh: body.tgKtKh || null,
+    slRelease: body.slRelease || null, thoIn: body.thoIn, lyDo: LY(ly),
+  }, actorId, { choDaChay: true, nguon: 'QUAN_TRI_PHAN_IN' });
+  await repo.ghiAudit('lenh_san_xuat', lenhId, 'QUAN_TRI_SUA_KE_HOACH',
+    { chuyen_id: l.chuyen_id, ngay_ke_hoach: l.ngay_ke_hoach, tg_bd_kh: l.tg_bd_kh, tg_kt_kh: l.tg_kt_kh, tho_in_kh: l.tho_in_kh, so_luong_release: l.so_luong_release },
+    { phan_in_id: phanInId, chuyen_id: body.chuyenId || l.chuyen_id, ngay_ke_hoach: body.ngayKeHoach, tg_bd_kh: body.tgBdKh || null,
+      tg_kt_kh: body.tgKtKh || null, tho_in_kh: body.thoIn, so_luong_release: kq.so_luong_release, ly_do: ly }, actorId);
+  return kq;
+}
+
+async function suaKeHoachTam(phanInId, ktId, body = {}, actorId) {
+  const ly = String(body.lyDo || '').trim();
+  if (!ly) throw new AppError('Phải nhập lý do', { status: 422, errorCode: 'NO_LY_DO' });
+  const tc = await repo.toanCanh(phanInId);
+  const kt = (tc.ke_hoach_tam || []).find((x) => x.id === ktId);
+  if (!kt) throw new AppError('Kế hoạch tạm không thuộc phần in này (hoặc đã xác nhận / xóa)', { status: 404, errorCode: 'NOT_FOUND' });
+  if (!body.chuyenId) throw new AppError('Chọn chuyền', { status: 422, errorCode: 'NO_CHUYEN' });
+  if (!body.ngayKeHoach) throw new AppError('Chọn ngày sản xuất theo kế hoạch', { status: 422, errorCode: 'NO_NGAY' });
+  const kq = await planningService.updateKeHoachTam(ktId, {
+    chuyenId: body.chuyenId, ngayKeHoach: body.ngayKeHoach, soLuong: body.soLuong,
+    tgBdKh: body.tgBdKh || null, tgKtKh: body.tgKtKh || null, thoIn: body.thoIn,
+  }, actorId);
+  await repo.ghiAudit('ke_hoach_tam', ktId, 'QUAN_TRI_SUA_KE_HOACH',
+    { chuyen_id: kt.chuyen_id, ngay_ke_hoach: kt.ngay_ke_hoach, tg_bd_kh: kt.tg_bd_kh, tg_kt_kh: kt.tg_kt_kh, so_luong: kt.so_luong, tho_in_kh: kt.tho_in_kh },
+    { phan_in_id: phanInId, dot_vai_ve_id: kt.dot_vai_ve_id, chuyen_id: body.chuyenId, ngay_ke_hoach: body.ngayKeHoach,
+      tg_bd_kh: body.tgBdKh || null, tg_kt_kh: body.tgKtKh || null, so_luong: body.soLuong ?? null, tho_in_kh: body.thoIn, ly_do: ly }, actorId);
+  return kq;
+}
+
 // ─── HỦY / MỞ CẢ PHẦN IN (tái dùng tab Hủy / Mở phần in) ────────────────────────
 async function huyPhanIn(phanInId, lyDo, actorId) {
   if (!String(lyDo || '').trim()) throw new AppError('Phải nhập lý do', { status: 422, errorCode: 'NO_LY_DO' });
@@ -439,4 +486,5 @@ async function moPhanIn(phanInId, actorId) {
 module.exports = {
   traCuu, chiTiet, suaPhanIn, suaDotVai, datGiaiDoan, huyDotVai, moDotVai, huyMucReady, DICH,
   datKhoaErp, luiVe, dungBuocLui, huyLe, luuPhanCong, huyPhanIn, moPhanIn, DICH_LUI,
+  xemKeHoachLenh, suaKeHoachLenh, suaKeHoachTam,
 };

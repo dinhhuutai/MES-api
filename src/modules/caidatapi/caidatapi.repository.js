@@ -3,6 +3,7 @@
 const { query } = require('../../config/db');
 const { coCotCodePhan } = require('../../utils/caiDatApi');
 const { mauTim } = require('../../utils/timKiem');
+const { chuanMaChuyen, chuanMaChuyenSql } = require('../../utils/maChuyen');
 
 // Lưu 1 dòng cấu hình. `ma_api` là PK nên upsert theo nó.
 // ⚠⚠ DÒ CỘT `code_phan` TRƯỚC rồi mới dựng câu INSERT (khuôn `temCoCot` mig 066) — cột này thêm SAU
@@ -94,18 +95,72 @@ const ID_MES = `COALESCE(a.gia_tri_moi->>'id_mes', a.gia_tri_moi->'gui'->>'IDMES
 //   gửi kể cả ngày khác. Phân trang + tổng theo LƯỢT.
 // Hiệu năng: quét các dòng của API ĐÚNG 1 lần (`b`, tính ID kết nối + cờ khớp lọc), chỉ đọc chi tiết JSON cho các lượt
 //   của TRANG đang xem (Release 1 ~4.400 dòng: bản quét 2 lần + gộp mọi lượt mất ~3,5 s).
-async function lichSu({ ma, date = '', search = '', offset = 0, limit = 20 }) {
+// ─── LỌC THEO TRƯỜNG (26/10/2026, người dùng: "lọc theo code phần, ngày ca, chuyền, đơn hàng, mã, kích, màu") ─────
+// Mỗi dòng lịch sử quy về (lệnh, chuyền, mã ngày ca, phần in) qua `id_ban_ghi` (uuid): tem (in tem · gia công · phân
+//   loại lỗi) · lượt KCS / Sửa / OQC → tem · phiếu giao → mọi tem của phiếu · lệnh (Release 1 / hủy kế hoạch — kèm mọi
+//   mã lệnh của lượt inset ở `ma_tem`) · lượt trả về GN (`qc_tra_ve` → phần in). "Hủy theo IDMES" mang id của bản ghi bị
+//   hủy (bảng nào cũng được) ⇒ dò hết các bảng theo uuid (mỗi bảng 1 lần tra khóa chính). Tem → chuyền CHẠY của phiếu,
+//   lệnh → chuyền KẾ HOẠCH. Phần in = mọi phần in của lệnh (lệnh gom set ⇒ khớp khi BẤT KỲ phần in nào khớp).
+//   Dòng KHÔNG gắn bản ghi (xin mã tem, hủy vải theo lô, kéo GN) ⇒ chỉ lọc được Code phần / Ngày ca / Chuyền bằng chính
+//   thân đã gửi (`gui` — DsRelease / DsPhanDotVai chứa code phần, `Ngayca`, `banin`); có lọc Đơn / Mã / Kích / Màu thì loại.
+const LOC_TRUONG = ['codePhan', 'ngayCa', 'chuyen', 'don', 'maHang', 'kich', 'mau'];
+function dkTruongSql(loc, p) {
+  const v = {};
+  LOC_TRUONG.forEach((k) => { const s = String((loc || {})[k] || '').trim(); if (s) v[k] = s; });
+  if (!Object.keys(v).length) return '';
+  const tham = (x) => { p.push(x); return `$${p.length}`; };
+  const U = "(CASE WHEN a.id_ban_ghi ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN a.id_ban_ghi::uuid END)";
+  const trong = []; const gui = [];
+  if (v.codePhan) { const n = tham(mauTim(v.codePhan)); trong.push(`pin.ma_phan ~* ${n}`); gui.push(`(a.gia_tri_moi->'gui')::text ~* ${n}`); }
+  if (v.ngayCa) {
+    const n = tham(mauTim(v.ngayCa));
+    trong.push(`(x.ma_ngay_ca ~* ${n} OR a.gia_tri_moi->'gui'->>'Ngayca' ~* ${n})`); gui.push(`a.gia_tri_moi->'gui'->>'Ngayca' ~* ${n}`);
+  }
+  if (v.chuyen) {
+    const n = tham(mauTim(v.chuyen)); const nc = tham(mauTim(chuanMaChuyen(v.chuyen)));
+    trong.push(`(cs.ma_chuyen ~* ${n} OR cs.ten_chuyen ~* ${n} OR ${chuanMaChuyenSql('cs.ma_chuyen')} ~* ${nc} OR a.gia_tri_moi->'gui'->>'banin' ~* ${nc})`);
+    gui.push(`a.gia_tri_moi->'gui'->>'banin' ~* ${nc}`);
+  }
+  if (v.don) { const n = tham(mauTim(v.don)); trong.push(`(dh.ma_don_hang ~* ${n} OR dh.so_po ~* ${n})`); }
+  if (v.maHang) { const n = tham(mauTim(v.maHang)); trong.push(`mh.ma_hang ~* ${n}`); }
+  if (v.kich) { const n = tham(mauTim(v.kich)); trong.push(`(pin.kich_vai ~* ${n} OR pin.kich_phim ~* ${n})`); }
+  if (v.mau) { const n = tham(mauTim(v.mau)); trong.push(`pin.mau_vai ~* ${n}`); }
+  const coGui = !v.don && !v.maHang && !v.kich && !v.mau;
+  const tem = `(SELECT ${U} UNION ALL SELECT k.tem_id FROM kcs k WHERE k.id = ${U}
+      UNION ALL SELECT s.tem_id FROM sua s WHERE s.id = ${U} UNION ALL SELECT o.tem_id FROM oqc o WHERE o.id = ${U}
+      UNION ALL SELECT ght.tem_id FROM giao_hang_tem ght WHERE ght.giao_hang_id = ${U})`;
+  const ex = `EXISTS (SELECT 1 FROM (
+      SELECT ps.lenh_san_xuat_id AS lenh_id, ps.chuyen_id, t.ma_ngay_ca, NULL::uuid AS pin_id
+        FROM tem t JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id WHERE t.id IN ${tem}
+      UNION ALL SELECT ls.id, ls.chuyen_id, NULL, NULL FROM lenh_san_xuat ls
+        WHERE ls.id = ${U} OR (a.ten_bang = 'lenh_san_xuat'
+          AND ls.ma_lenh_san_xuat = ANY(regexp_split_to_array(COALESCE(a.gia_tri_moi->>'ma_tem', ''), '[,; ]+')))
+      UNION ALL SELECT q.lenh_san_xuat_id, NULL, NULL, q.phan_in_id FROM qc_tra_ve q WHERE q.id = ${U}) x
+    LEFT JOIN chuyen_san_xuat cs ON cs.id = x.chuyen_id
+    JOIN LATERAL (SELECT dv.phan_in_id AS id FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+                   WHERE lsd.lenh_san_xuat_id = x.lenh_id
+                  UNION SELECT x.pin_id WHERE x.pin_id IS NOT NULL) pp ON true
+    JOIN phan_in pin ON pin.id = pp.id
+    JOIN ma_hang mh ON mh.id = pin.ma_hang_id JOIN don_hang dh ON dh.id = mh.don_hang_id
+    WHERE ${trong.join(' AND ')})`;
+  return coGui ? `(${ex} OR (${gui.join(' AND ')}))` : ex;
+}
+
+async function lichSu({ ma, date = '', search = '', offset = 0, limit = 20, loc = {} }) {
   const args = [ma, `${ma}_LOI`, date || '', mauTim(search), duoiMaTem(search)];
+  const dkTruong = dkTruongSql(loc, args);
+  const L = args.length;
   const sql = `
     WITH b AS MATERIALIZED (
       SELECT a.id, a.thoi_gian, a.hanh_dong, a.nguoi_thuc_hien_id, ${ID_MES} AS idm,
              (($3 = '' OR (a.thoi_gian AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $3::date)
-              AND ($4 = '' OR ${ID_MES} ~* $4 OR ${MA_TEM} ~* $4 OR ($5 <> '' AND substr(${MA_TEM}, 3) = $5))) AS khop
+              AND ($4 = '' OR ${ID_MES} ~* $4 OR ${MA_TEM} ~* $4 OR ($5 <> '' AND substr(${MA_TEM}, 3) = $5))
+              ${dkTruong ? `AND ${dkTruong}` : ''}) AS khop
         FROM audit_log a WHERE a.hanh_dong IN ($1, $2)),
     k AS (SELECT b.idm FROM b GROUP BY b.idm HAVING bool_or(b.khop)),
     d AS (SELECT DISTINCT ON (b.idm) b.id, b.idm, b.thoi_gian FROM b JOIN k ON k.idm = b.idm
            ORDER BY b.idm, b.thoi_gian DESC, b.id DESC),
-    p AS (SELECT d.*, count(*) OVER () AS total FROM d ORDER BY d.thoi_gian DESC, d.id DESC LIMIT $6 OFFSET $7),
+    p AS (SELECT d.*, count(*) OVER () AS total FROM d ORDER BY d.thoi_gian DESC, d.id DESC LIMIT $${L + 1} OFFSET $${L + 2}),
     g AS (
       SELECT b.idm, count(*)::int AS so_lan_gui, bool_or(b.hanh_dong = $1) AS co_thanh_cong,
              json_agg(json_build_object('id', x.id, 'thoi_gian', x.thoi_gian, 'thanh_cong', x.hanh_dong = $1,

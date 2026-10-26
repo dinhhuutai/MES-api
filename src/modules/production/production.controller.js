@@ -227,7 +227,11 @@ const dsTemDaIn = (laGiaCong) => asyncHandler(async (req, res) => {
     maNgayCa: String(q.maNgayCa || '').trim().slice(0, 20),
     ca: HAU_TO_CA[String(q.ca || '').toUpperCase()] || '',
     khach: q.khach || '', don: q.don || '', maHang: q.maHang || '', codePhan: q.codePhan || '',
-    maTem: q.maTem || '', chuyen: q.chuyen || '', chuyenId: q.chuyenId || '', page, limit, offset,
+    maTem: q.maTem || '', chuyen: q.chuyen || '', chuyenId: q.chuyenId || '',
+    // Khu chuyền (26/10/2026) — chip loại ⇒ `loaiChuyen`, chip khu ⇒ `maChuyen` (danh sách mã, ngăn dấu phẩy).
+    loaiChuyen: /^[A-Z_]{1,30}$/i.test(q.loaiChuyen || '') ? q.loaiChuyen : '',
+    maChuyenDs: String(q.maChuyen || '').slice(0, 400),
+    page, limit, offset,
   }, laGiaCong));
 });
 
@@ -272,10 +276,19 @@ const vuotSanXuat = asyncHandler(async (req, res) =>
 const dsRelease = require('./dsReleaseSx');
 const RE_NGAY = /^\d{4}-\d{2}-\d{2}$/;
 const RE_ID = /^[0-9a-f-]{36}$/i;
+// Khoảng NGÀY IN TEM (26/10/2026): `tuNgay` + `denNgay` (≤ 62 ngày); `ngay` cũ = 1 ngày.
+const khoangNgayIn = (q) => {
+  const tu = String(q.tuNgay || q.ngay || '');
+  const den = String(q.denNgay || tu);
+  if (!RE_NGAY.test(tu) || !RE_NGAY.test(den) || den < tu) throw new AppError('Ngày không hợp lệ', { status: 422, errorCode: 'VALIDATION' });
+  if ((Date.parse(den) - Date.parse(tu)) / 86400000 > 62) throw new AppError('Khoảng ngày tối đa 62 ngày', { status: 422, errorCode: 'VALIDATION' });
+  return [tu, den];
+};
 const dsReleaseSx = asyncHandler(async (req, res) => {
-  const ngay = String(req.query.ngay || '');
-  if (!RE_NGAY.test(ngay)) throw new AppError('Ngày không hợp lệ', { status: 422, errorCode: 'VALIDATION' });
-  ok(res, await dsRelease.dsReleaseSx(ngay));
+  ok(res, await dsRelease.dsReleaseSx(...khoangNgayIn(req.query)));
+});
+const nhatKyIn = asyncHandler(async (req, res) => {
+  ok(res, await dsRelease.nhatKyIn(...khoangNgayIn(req.query)));
 });
 // DM+TEST = số nguyên ≥ 0 (trống = xóa); ghi chú ≤ 500 ký tự. Chỉ khóa có trong body bị đổi.
 const luuDongDsRelease = asyncHandler(async (req, res) => {
@@ -306,7 +319,7 @@ const luuChuyenThem = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
-  dsReleaseSx, luuDongDsRelease, docChuyenThem, luuChuyenThem,
+  dsReleaseSx, nhatKyIn, luuDongDsRelease, docChuyenThem, luuChuyenThem,
   candidates, getRun, start, startBatch, chayDacBietCandidates, chayDacBiet, printTem, printTemBatch, reprintTem, temLabel, temLogs, finish, monitor,
   theoDoiTo,
   xePhoi, temChoPhoi, themTem, adjustPhoi, drying, confirmDry, redry,

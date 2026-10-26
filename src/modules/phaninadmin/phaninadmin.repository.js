@@ -214,10 +214,24 @@ async function toanCanh(phanInId) {
   const { notCancelledQc } = require('../quality/quality.repository');
   const { SU_KIEN_CUOI_LATERAL, MO_LAI_DUOC_SQL } = require('../production/production.repository');
   const { thoInPhieuSql } = require('../../utils/thoIn');
+  const { coCotThoInKh } = require('../../utils/thoInKeHoach');
   const q1 = (sql, p) => query(sql.replace(/\s+/g, ' ').trim(), p).then((r) => r.rows);
+  // KẾ HOẠCH (26/10/2026 — sửa kế hoạch ở Quản trị phần in): giờ BĐ/KT + thợ in KH của lệnh; kế hoạch tạm của các đợt.
+  const coTho = await coCotThoInKh();
+  const keHoachTam = await q1(`
+    SELECT kt.id, kt.dot_vai_ve_id, dv.ma_dot_vai, kt.chuyen_id, cs.ma_chuyen, cs.ten_chuyen, kt.ngay_ke_hoach,
+           kt.tg_bd_kh, kt.tg_kt_kh, kt.so_luong, ${coTho ? 'kt.tho_in_kh' : 'NULL::text AS tho_in_kh'},
+           COALESCE(dv.so_luong_vai_ve, 0)::int AS so_luong_vai_ve
+      FROM ke_hoach_tam kt
+      JOIN dot_vai_ve dv ON dv.id = kt.dot_vai_ve_id
+      LEFT JOIN chuyen_san_xuat cs ON cs.id = kt.chuyen_id
+     WHERE kt.phan_in_id = $1
+     ORDER BY dv.created_date`, [phanInId]);
   const lenh = await q1(`
     SELECT ls.id, ls.ma_lenh_san_xuat, ls.trang_thai, ls.so_luong_release, ls.ngay_ke_hoach, ls.created_date,
-           cs.ma_chuyen, lc.ma_loai AS ma_loai_chuyen,
+           ls.chuyen_id, ls.tg_bd_kh, ls.tg_kt_kh, ${coTho ? 'ls.tho_in_kh' : 'NULL::text AS tho_in_kh'},
+           EXISTS (SELECT 1 FROM phieu_san_xuat px WHERE px.lenh_san_xuat_id = ls.id) AS co_phieu,
+           cs.ma_chuyen, cs.ten_chuyen, lc.ma_loai AS ma_loai_chuyen,
            (SELECT count(DISTINCT d2.phan_in_id) FROM lenh_sx_dot_vai l2 JOIN dot_vai_ve d2 ON d2.id = l2.dot_vai_ve_id
              WHERE l2.lenh_san_xuat_id = ls.id)::int AS so_phan_in,
            (SELECT string_agg(DISTINCT p2.ma_phan, ', ') FROM lenh_sx_dot_vai l3 JOIN dot_vai_ve d3 ON d3.id = l3.dot_vai_ve_id
@@ -232,7 +246,7 @@ async function toanCanh(phanInId) {
                       WHERE dv.phan_in_id = $1)
      ORDER BY ls.created_date`, [phanInId]);
   const lenhIds = lenh.map((l) => l.id);
-  if (!lenhIds.length) return { lenh: [], phieu: [], tem: [], kcs: [], sua: [], oqc: [], pll: [], giao: [], test: [] };
+  if (!lenhIds.length) return { lenh: [], phieu: [], tem: [], kcs: [], sua: [], oqc: [], pll: [], giao: [], test: [], ke_hoach_tam: keHoachTam };
 
   const coPll = (await q1("SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='phan_loai_loi'")).length > 0;
   const [phieu, tem, test] = await Promise.all([
@@ -259,7 +273,7 @@ async function toanCanh(phanInId) {
          ORDER BY tr.created_date`, [lenhIds]),
   ]);
   const temIds = tem.filter((t) => t.trang_thai !== 'HUY').map((t) => t.id);
-  if (!temIds.length) return { lenh, phieu, tem, kcs: [], sua: [], oqc: [], pll: [], giao: [], test };
+  if (!temIds.length) return { lenh, phieu, tem, kcs: [], sua: [], oqc: [], pll: [], giao: [], test, ke_hoach_tam: keHoachTam };
   const [kcs, sua, oqc, pll, giao] = await Promise.all([
     q1(`SELECT k.id, k.tem_id, k.created_date, k.so_luong_kiem, k.so_luong_dat, k.so_luong_loi, k.so_luong_huy, nd.ho_ten AS nguoi
           FROM kcs k LEFT JOIN nguoi_dung nd ON nd.id = k.created_by
@@ -278,7 +292,7 @@ async function toanCanh(phanInId) {
          WHERE ght.tem_id = ANY($1::uuid[]) AND gh.trang_thai <> 'HUY'
          GROUP BY gh.id ORDER BY gh.created_date`, [temIds]),
   ]);
-  return { lenh, phieu, tem, kcs, sua, oqc, pll, giao, test };
+  return { lenh, phieu, tem, kcs, sua, oqc, pll, giao, test, ke_hoach_tam: keHoachTam };
 }
 
 async function danhMucLoaiDotVai() {
