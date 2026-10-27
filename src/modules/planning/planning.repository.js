@@ -186,16 +186,45 @@ async function getDotVaiForCompose(dotVaiIds) {
 }
 
 // Phần in ĐANG IN TEM (có phiếu DANG_CHAY) — dùng quyết định đi tắt Test Run (điểm 5/6). IPS-safe 1 dòng.
+// ⚠ 27/10/2026 người dùng bảo TRẢ LẠI NHƯ CŨ: bản 26/10 (`phanInDangSanXuat` — tính cả lệnh ở Chờ chạy, thắng cờ làm
+//   lại READY) + "Release 1 cộng thẳng vào lệnh đang chạy" ĐÃ GỠ. Việc cộng vào lệnh đang chạy nay chỉ làm khi QA bấm
+//   "Không test run" ở màn Test Run (`skipTestRun`).
 async function phanInDangChay(phanInIds) {
   if (!phanInIds || phanInIds.length === 0) return [];
   const sql = `SELECT DISTINCT dv.phan_in_id::text AS phan_in_id
     FROM phieu_san_xuat ps
-    JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id AND ls.trang_thai <> 'HUY'
+    JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
     JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
     JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
-    WHERE ps.trang_thai = 'DANG_CHAY' AND dv.phan_in_id = ANY($1::uuid[])`;
+   WHERE ps.trang_thai = 'DANG_CHAY' AND ls.trang_thai <> 'HUY' AND dv.phan_in_id = ANY($1::uuid[])`;
   const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [phanInIds]);
   return rows.map((r) => r.phan_in_id);
+}
+
+// LỆNH ĐANG CHẠY của phần in để "Không test run" CỘNG THẲNG lệnh vào (27/10/2026, người dùng: "bấm không test run thì
+//   nhảy cộng số lượng vào phần in đang có đợt vải nếu đang sản xuất"). Mỗi phần in ⇒ 1 lệnh: đúng 1 phần in, đúng 1
+//   phiếu (phiếu đó đang chạy), không dính in kiếng (lệnh liên kết ép ủi) — cùng điều kiện `production.gopLenhCungPhan`
+//   (đích) để gộp không bị từ chối. Nhiều lệnh thỏa ⇒ ưu tiên lệnh trên chuyền `chuyenId` (chuyền kế hoạch của lệnh bỏ
+//   test), rồi lệnh in nhiều nhất. Trả kèm `chuyen_id` của lệnh đang chạy.
+async function lenhDangChayCuaPhanIn(phanInIds, chuyenId) {
+  if (!phanInIds || !phanInIds.length) return [];
+  const sql = `SELECT DISTINCT ON (dv.phan_in_id) dv.phan_in_id::text AS phan_in_id, ls.id, ls.ma_lenh_san_xuat,
+      ls.chuyen_id::text AS chuyen_id
+    FROM lenh_san_xuat ls
+    JOIN phieu_san_xuat ps ON ps.lenh_san_xuat_id = ls.id AND ps.trang_thai = 'DANG_CHAY'
+    JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
+    JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+   WHERE ls.trang_thai = 'SAN_XUAT' AND dv.phan_in_id = ANY($1::uuid[])
+     AND ls.lenh_lien_ket_id IS NULL
+     AND NOT EXISTS (SELECT 1 FROM lenh_san_xuat le WHERE le.lenh_lien_ket_id = ls.id AND le.trang_thai <> 'HUY')
+     AND (SELECT count(DISTINCT d2.phan_in_id) FROM lenh_sx_dot_vai l2 JOIN dot_vai_ve d2 ON d2.id = l2.dot_vai_ve_id
+           WHERE l2.lenh_san_xuat_id = ls.id) = 1
+     AND (SELECT count(*) FROM phieu_san_xuat p2 WHERE p2.lenh_san_xuat_id = ls.id AND p2.trang_thai <> 'HUY') = 1
+   ORDER BY dv.phan_in_id, (ls.chuyen_id IS NOT DISTINCT FROM $2::uuid) DESC,
+     (SELECT COALESCE(SUM(t.so_luong), 0) FROM tem t WHERE t.phieu_san_xuat_id = ps.id AND t.trang_thai <> 'HUY') DESC,
+     ls.ma_lenh_san_xuat`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [phanInIds, chuyenId || null]);
+  return rows;
 }
 
 // ===== GỘP SỐ LƯỢNG ĐỢT VẢI (migration 050) =====
@@ -714,6 +743,23 @@ async function listRelease2Candidates({ cnspId, qaId, search = '', offset = 0, l
     sql: lenhCountSql(extra, dkPain), params: [tim, cnspId, qaId], offset, limit,
   });
   return { rows: data.rows, total };
+}
+
+// Chuyền kế hoạch + phần in + đợt vải của 1 lệnh (cho "Không test run" cộng vào lệnh đang chạy, 27/10/2026).
+async function phanInChuyenCuaLenh(lenhId) {
+  const { rows } = await query(
+    `SELECT ls.chuyen_id::text AS chuyen_id, array_agg(DISTINCT dv.phan_in_id::text) AS phan_in_ids, array_agg(DISTINCT dv.id::text) AS dot_vai_ids FROM lenh_san_xuat ls JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id WHERE ls.id = $1 GROUP BY ls.chuyen_id`,
+    [lenhId]
+  );
+  return rows[0] || null;
+}
+
+// Đổi chuyền kế hoạch của lệnh (chỉ chuyen_id) — lệnh bỏ test sắp gộp vào lệnh đang chạy ở chuyền khác.
+async function doiChuyenLenhTx(client, lenhId, chuyenId, actorId) {
+  await client.query(
+    'UPDATE lenh_san_xuat SET chuyen_id = $2, updated_by = $3, updated_date = CURRENT_TIMESTAMP WHERE id = $1',
+    [lenhId, chuyenId, actorId]
+  );
 }
 
 async function getLenhBasic(lenhId) {
@@ -2147,14 +2193,18 @@ const SO_PHAN_IN_SQL = `(SELECT count(DISTINCT dvx.phan_in_id) FROM lenh_sx_dot_
 
 async function release1DoneByDate(date) {
   const sql = `
-    SELECT ls.created_date AS tg, nd.ho_ten AS nguoi, ls.ma_lenh_san_xuat AS ma,
+    SELECT ls.created_date AS tg, nd.ho_ten AS nguoi,
+           ls.ma_lenh_san_xuat || COALESCE(' → gộp vào ' || gv.vao_lenh, '') AS ma,
            ls.id AS lenh_id, ${SO_PHAN_IN_SQL},
            ls.so_luong_release AS so_luong, ${DONE_INFO}
     FROM lenh_san_xuat ls
     LEFT JOIN nguoi_dung nd ON nd.id = ls.created_by
+    LEFT JOIN LATERAL (SELECT a.gia_tri_moi->>'vao_lenh' AS vao_lenh FROM audit_log a
+                        WHERE a.ten_bang = 'lenh_san_xuat' AND a.id_ban_ghi = ls.id::text AND a.hanh_dong = 'GOP_VAO_LENH'
+                        ORDER BY a.thoi_gian DESC LIMIT 1) gv ON true
     ${PHAN_INFO_LATERAL}
     WHERE (ls.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
-      AND ls.trang_thai <> 'HUY'
+      AND (ls.trang_thai <> 'HUY' OR gv.vao_lenh IS NOT NULL)
     ORDER BY ls.created_date DESC`;
   const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [date]);
   return rows;
@@ -2452,10 +2502,10 @@ module.exports = {
   listCaTuan, caModeMap, upsertCaTuan, caTuanCoLoaiChuyen,
   listRelease1Candidates, phanInDangOGnTheoDot, release1HistoryByDate, nextMaLenh, nextMaLenhTx, createLenh,
   release1DoneByDate, planDoneByDate, testDoneByDate,
-  testedDotVaiIds, getDotVaiQty, getDotVaiRemaining, khoaConReleaseTx, getDotVaiForCompose, getPainVsChuyen, phanInDangChay, addLenhDotVai, dotVaiAlreadyReleased,
+  testedDotVaiIds, getDotVaiQty, getDotVaiRemaining, khoaConReleaseTx, getDotVaiForCompose, getPainVsChuyen, phanInDangChay, lenhDangChayCuaPhanIn, addLenhDotVai, dotVaiAlreadyReleased,
   activateEpUi, getLenhGiaiDoan, getChuyenLoai,
   listGopCandidates, getDotVaiForMerge, adjustDotVaiQty, markDotVaiGop, insertGopHistory, gopHistoryByDate,
-  listTestRunCandidates, listRelease2Candidates, getLenhBasic, getLenhDotVai, dotVaiIdsByLenh, getTestRuns,
+  listTestRunCandidates, listRelease2Candidates, getLenhBasic, phanInChuyenCuaLenh, doiChuyenLenhTx, getLenhDotVai, dotVaiIdsByLenh, getTestRuns,
   getLenhTestStatus, insertTestRun, insertTestRunTx, upsertLenhResult, insertStatusLog, setLenhTrangThai,
   testRunHistoryByDate, testRunsByLenh,
   KET_QUA_IN_KHONG_DAT, OWNER_CHO_IN_SQL, usersByUsernames, logInKhongDatTx,

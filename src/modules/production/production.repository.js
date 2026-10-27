@@ -723,7 +723,9 @@ async function logTemReopen(temId, maTem, lyDo, actorId, extra = {}) {
 // (vẫn mang IDMES). Không có dòng nào ⇒ tem chưa từng gửi ERP (API tắt / mã MES) ⇒ không gửi.
 async function dongGhiInTemCuoi(temId) {
   const { rows } = await query(
-    `SELECT id, hanh_dong FROM audit_log WHERE ten_bang = 'tem' AND id_ban_ghi = $1
+    `SELECT id, hanh_dong,
+        replace(left(COALESCE(gia_tri_moi->'gui'->>'Ngayct', gia_tri_moi->'payload'->>'Ngayct'), 10), '/', '-') AS ngay_ct
+       FROM audit_log WHERE ten_bang = 'tem' AND id_ban_ghi = $1
         AND hanh_dong IN ('ERP_GHI_IN_TEM', 'ERP_GHI_IN_TEM_LOI')
       ORDER BY (hanh_dong = 'ERP_GHI_IN_TEM') DESC, thoi_gian DESC LIMIT 1`.replace(/\s+/g, ' '),
     [String(temId)]
@@ -850,7 +852,11 @@ async function listTemDaIn({
            info.so_luong_don_hang, info.han_giao_hang, info.nha_gia_cong,
            (SELECT nd.ho_ten FROM log_tem lt LEFT JOIN nguoi_dung nd ON nd.id = lt.nguoi_in_id
              WHERE lt.tem_id = t.id ORDER BY lt.tg_in LIMIT 1) AS nguoi_in,
-           (SELECT count(*) FROM log_tem lt2 WHERE lt2.tem_id = t.id)::int AS so_lan_in
+           (SELECT count(*) FROM log_tem lt2 WHERE lt2.tem_id = t.id)::int AS so_lan_in,
+           (SELECT replace(left(COALESCE(a.gia_tri_moi->'gui'->>'Ngayct', a.gia_tri_moi->'payload'->>'Ngayct'), 10), '/', '-')
+              FROM audit_log a WHERE a.ten_bang = 'tem' AND a.id_ban_ghi = t.id::text
+               AND a.hanh_dong IN ('ERP_GHI_IN_TEM', 'ERP_GHI_IN_TEM_LOI')
+             ORDER BY (a.hanh_dong = 'ERP_GHI_IN_TEM') DESC, a.thoi_gian DESC LIMIT 1) AS ngay_ct
     ${JOIN_GOC}
     ${SU_KIEN_CUOI_LATERAL}
     ${ERP_VAI_LATERAL}
@@ -1803,7 +1809,17 @@ async function accumulateDryTime(client, temId) {
 //   dự kiến ⇒ chuyển DA_KHO ngay. ⚠ `tg_kt_phoi` kẹp về BÂY GIỜ (bản cũ giữ giờ dự kiến ở TƯƠNG LAI ⇒ mốc "tem khô" —
 //   mốc vào KCS của dải Theo dõi / SLA KCS (`siSoTram.MOC_VAO_TEM.KIEM`) — rơi vào tương lai). Ghi audit `XAC_NHAN_KHO`
 //   (giờ phơi dự kiến cũ) để tra ai xác nhận sớm.
-async function confirmDry(client, temId, actorId) {
+// Số phút CÒN LẠI tới giờ phơi xong dự kiến của phiên đang phơi (khóa phiên `FOR UPDATE`); ≤ 0 ⇒ đã tới giờ.
+async function phutKhoSomTx(client, temId) {
+  const { rows } = await client.query(
+    `SELECT CEIL(EXTRACT(EPOCH FROM (tg_kt_phoi - now())) / 60)::int AS con FROM tem_xe_phoi
+      WHERE tem_id=$1 AND trang_thai='DANG_PHOI' ORDER BY tg_bd_phoi DESC NULLS LAST LIMIT 1 FOR UPDATE`.replace(/\s+/g, ' '),
+    [temId]
+  );
+  return rows[0] && rows[0].con != null ? Math.max(0, Number(rows[0].con)) : 0;
+}
+
+async function confirmDry(client, temId, actorId, kho = {}) {
   const { rows } = await client.query(
     "SELECT tg_kt_phoi FROM tem_xe_phoi WHERE tem_id=$1 AND trang_thai='DANG_PHOI' ORDER BY tg_bd_phoi DESC NULLS LAST LIMIT 1",
     [temId]
@@ -1818,8 +1834,50 @@ async function confirmDry(client, temId, actorId) {
   await client.query(
     `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
      VALUES ('tem', $1, 'XAC_NHAN_KHO', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`,
-    [String(temId), JSON.stringify({ tg_kt_phoi_du_kien: rows[0] ? rows[0].tg_kt_phoi : null }), actorId]
+    [String(temId), JSON.stringify({ tg_kt_phoi_du_kien: rows[0] ? rows[0].tg_kt_phoi : null, ...kho }), actorId]
   );
+}
+
+// ─── BÁO CÁO TEM KIỂM TRƯỚC GIỜ PHƠI XONG (27/10/2026, nút ở màn KCS) ──────────────────────────────────────────────
+// 1 dòng / lượt KCS (chưa hủy xác nhận) có giờ KCS TRƯỚC giờ phơi xong DỰ KIẾN của phiên phơi gần nhất bắt đầu trước
+//   lượt đó. Giờ dự kiến = `XAC_NHAN_KHO.tg_kt_phoi_du_kien` (xác nhận khô sớm ở Xe phơi kẹp `tg_kt_phoi` về lúc bấm từ
+//   19/10) — không có thì `tem_xe_phoi.tg_kt_phoi`. Kèm người + giờ + owner + lý do của lần xác nhận khô. Lọc theo
+//   NGÀY KCS (giờ VN). Tem con (17) không tính.
+async function listKiemTruocKho({ tuNgay, denNgay }) {
+  const sql = `
+    SELECT k.id AS kcs_id, k.created_date AS tg_kcs, k.so_luong_kiem, k.so_luong_dat, k.so_luong_loi,
+           nk.ho_ten AS nguoi_kcs, t.id AS tem_id, t.ma_tem, t.so_luong,
+           ph.tg_bd_phoi, COALESCE((xk.gia_tri_moi->>'tg_kt_phoi_du_kien')::timestamptz, ph.tg_kt_phoi) AS tg_kho_du_kien,
+           CASE WHEN xk.id IS NOT NULL THEN ph.tg_kt_phoi END AS tg_xac_nhan_kho,
+           nx.ho_ten AS nguoi_xac_nhan_kho, xk.gia_tri_moi->>'owner' AS owner_kho, xk.gia_tri_moi->>'ly_do' AS ly_do_kho,
+           CEIL(EXTRACT(EPOCH FROM (COALESCE((xk.gia_tri_moi->>'tg_kt_phoi_du_kien')::timestamptz, ph.tg_kt_phoi) - k.created_date)) / 60)::int AS som_phut,
+           ls.ma_lenh_san_xuat, cs.ma_chuyen, cs.ten_chuyen,
+           info.ma_phan, info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.mau_vai, info.kich_vai, info.kich_phim
+      FROM kcs k
+      JOIN tem t ON t.id = k.tem_id AND t.tem_goc_id IS NULL
+      JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+      JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+      LEFT JOIN chuyen_san_xuat cs ON cs.id = COALESCE(ps.chuyen_id, ls.chuyen_id)
+      LEFT JOIN nguoi_dung nk ON nk.id = k.created_by
+      JOIN LATERAL (SELECT x.tg_bd_phoi, x.tg_kt_phoi FROM tem_xe_phoi x
+                     WHERE x.tem_id = t.id AND x.trang_thai <> 'HUY' AND x.tg_bd_phoi <= k.created_date
+                     ORDER BY x.tg_bd_phoi DESC LIMIT 1) ph ON true
+      LEFT JOIN LATERAL (SELECT a.id, a.gia_tri_moi, a.nguoi_thuc_hien_id FROM audit_log a
+                     WHERE a.ten_bang = 'tem' AND a.id_ban_ghi = t.id::text AND a.hanh_dong = 'XAC_NHAN_KHO'
+                       AND a.thoi_gian >= ph.tg_bd_phoi AND a.thoi_gian <= k.created_date
+                     ORDER BY a.thoi_gian DESC LIMIT 1) xk ON true
+      LEFT JOIN nguoi_dung nx ON nx.id = xk.nguoi_thuc_hien_id
+      LEFT JOIN LATERAL (SELECT pin.ma_phan, kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim
+                     FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+                     JOIN phan_in pin ON pin.id = dv.phan_in_id JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+                     JOIN don_hang dh ON dh.id = mh.don_hang_id JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+                    WHERE lsd.lenh_san_xuat_id = ls.id ORDER BY pin.ma_phan LIMIT 1) info ON true
+     WHERE (k.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date BETWEEN $1::date AND $2::date
+       AND NOT EXISTS (SELECT 1 FROM audit_log a2 WHERE a2.ten_bang = 'kcs' AND a2.hanh_dong = 'HUY_XAC_NHAN' AND a2.id_ban_ghi = k.id::text)
+       AND k.created_date < COALESCE((xk.gia_tri_moi->>'tg_kt_phoi_du_kien')::timestamptz, ph.tg_kt_phoi)
+     ORDER BY k.created_date DESC`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [tuNgay, denNgay]);
+  return rows;
 }
 
 // TỰ ĐỘNG: tem hết giờ phơi (tg_kt_phoi <= now) → DA_KHO (chờ KCS) + đóng phiên phơi. Gọi lazy khi mở Chờ khô/KCS.
@@ -2302,7 +2360,7 @@ module.exports = {
   nextMaPhieuTx, nextMaTemTx, createPhieuDone, createTemGiaCongOqc, temCoCotDotVai,
   setPhieuTruong, upsertPhanCong, getPhanCongByPhieu,
   monitorRunning, monitorQueue, downstreamSlaAfterProduction, listXePhoi, listCurrentPhoi, listTemChoPhoi, addTemToXe, adjustPhoi,
-  listDryingTems, confirmDry, getTemBasic,
+  listDryingTems, confirmDry, phutKhoSomTx, listKiemTruocKho, getTemBasic,
   promoteFinishedDrying, redryTem, getDryMinForPhieu,
   getActiveNgung, startNgung, resumeNgung, listNgungByPhieu,
   listLyDoNgung, createLyDoNgung, updateLyDoNgung, setLyDoNgungActive, existsMaLyDoNgung, getLyDoNgung,

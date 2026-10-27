@@ -174,7 +174,8 @@ async function guiLai(ma, auditId, actorId, opts = {}) {
   //   công báo ĐẠT/HỦY riêng, không suy lại được từ tem). Ngày chứng từ giữ ngày cũ nếu có.
   const prodRepo = require('../production/production.repository');
   const cu = g.gui || g.payload || {};
-  const ngayCt = cu.Ngayct ? String(cu.Ngayct).slice(0, 10).replace(/\//g, '-') : null;
+  // `opts.ngayCt` (27/10/2026 — Sửa tem đổi ngày chứng từ) thắng ngày CT đã gửi lần trước.
+  const ngayCt = opts.ngayCt || (cu.Ngayct ? String(cu.Ngayct).slice(0, 10).replace(/\//g, '-') : null);
   // Tem gia công nhận theo code phần có `tem.dot_vai_ve_id` (mig 095) — dùng đúng đợt đó; thiếu cột thì đợt đại diện.
   let dotVaiId = null;
   try {

@@ -137,6 +137,7 @@ router.patch('/tem-xe-phoi/:id', rbac('XEPHOI'), c.adjustPhoi);
 router.get('/drying', rbac('DRYING'), c.drying);
 // Xác nhận khô TAY — nút "Xác nhận khô" ở Xe phơi (19/10/2026) dùng chung route này ⇒ nhận cả quyền XEPHOI.
 router.post('/drying/:temId/confirm', rbac('DRYING', 'XEPHOI'), c.confirmDry);
+router.get('/kiem-truoc-kho', rbac('KCS', 'XEPHOI', 'PROD_MONITOR'), c.kiemTruocKho);
 // Phơi lại 1 tem (từ màn KCS hoặc chờ khô)
 router.post('/tem/:temId/phoi-lai', rbac('KCS', 'DRYING'), c.redry);
 

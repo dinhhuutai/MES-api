@@ -245,7 +245,20 @@ async function recordKcs(temId, body, actorId) {
   //   Trước đây chỉ chặn "vượt SL còn lại", nhập THIẾU thì lặng lẽ coi là "kiểm lần sau" nên số đạt/hư
   //   sai mà không ai biết (vd tem 50, nhập đạt 45 + hư 3 = 48 vẫn lưu, mất dấu 2 pcs).
   //   Ví dụ người dùng đưa: kiểm 50 · đạt 45 · hư 6 ⇒ +1 (chặn) · hư 3 ⇒ −2 (chặn).
-  if (kiem !== conSauChenh) {
+  // ⚠⚠ KIỂM TRƯỚC MỘT PHẦN (27/10/2026, người dùng: "kiểm trước khoảng 1 nửa số lượng, nếu còn số lượng thì vẫn còn ở
+  //   trang này"): CHỈ khi FE gửi tường minh `kiemMotPhan` (ô tích "Kiểm một phần") — không thì vẫn cân đối tuyệt đối như
+  //   trên (giữ chốt 04/09 chống nhập thiếu lặng lẽ). Lượt một phần: KHÔNG nhập thiếu/dư (chỉ chốt ở lượt kiểm HẾT),
+  //   đạt + hư < SL cần kiểm; phần còn lại giữ `con_kcs` > 0 ⇒ tem ở lại màn KCS (sổ cái → `DA_KHO`), phần đạt lên OQC ngay.
+  const motPhan = body.kiemMotPhan === true || body.kiemMotPhan === 'true' || body.kiemMotPhan === 1;
+  if (motPhan) {
+    if (thieu || du) {
+      throw new AppError('Kiểm một phần không nhập thiếu/dư — thiếu/dư nhập ở lượt kiểm hết', { status: 422, errorCode: 'MOT_PHAN_THIEU_DU' });
+    }
+    if (kiem >= conKcs) {
+      throw new AppError(`Kiểm một phần phải nhỏ hơn SL cần kiểm (${conKcs}) — kiểm hết thì bỏ tích "Kiểm một phần"`,
+        { status: 422, errorCode: 'MOT_PHAN_DU_SL' });
+    }
+  } else if (kiem !== conSauChenh) {
     const lech = kiem - conSauChenh;
     throw new AppError(
       `Chênh lệch ${lech > 0 ? '+' : ''}${lech} — phải bằng 0 mới lưu được. `
@@ -258,7 +271,8 @@ async function recordKcs(temId, body, actorId) {
   const data = {
     soLuongKiem: kiem, soLuongMau: mau, soLuongDat: dat, soLuongLoi: hu,
     soLuongHuy: huyTaiKcs, soLuongChenhLech: chenh,
-    ketQua: (hu > 0 || huyTrucTiep > 0) ? 'CO_LOI' : 'DAT', ghiChu: body.ghiChu,
+    ketQua: (hu > 0 || huyTrucTiep > 0) ? 'CO_LOI' : 'DAT',
+    ghiChu: motPhan ? [`[Kiểm một phần ${kiem}/${conKcs}]`, body.ghiChu].filter(Boolean).join(' ') : body.ghiChu,
   };
 
   let kcsId = null;
@@ -281,7 +295,7 @@ async function recordKcs(temId, body, actorId) {
   sockets.emit('dashboard:refresh', {});
   // Đẩy kết quả kiểm sang ERP (/gui-erp-kiem-pham) — NGẦM, không bao giờ chặn việc xác nhận KCS.
   if (kcsId) kiemPhamErp.guiNgam(kcsId, temId, { dat, hu, thieu }, actorId);
-  const conLai = conSauChenh - kiem; // luôn = 0 từ 04/09 (cân đối bắt buộc); giữ để không đổi hình dạng trả về
+  const conLai = conSauChenh - kiem; // = 0 khi cân đối; > 0 ở lượt "kiểm một phần" (27/10/2026)
   return { tem_id: temId, next: 'KCS', so_luong_dat: dat, so_luong_sua: quyetDinhSua, so_luong_huy: huyTaiKcs, con_kcs: conLai };
 }
 

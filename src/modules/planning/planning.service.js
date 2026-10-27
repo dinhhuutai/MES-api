@@ -523,9 +523,12 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
 
   // ĐI TẮT TEST RUN (nhất quán createDotSanXuat / CLAUDE.md §5): bỏ Test Run khi
   //   (a) LOẠI ĐỢT VẢI là BO_SUNG (5I) / MAU_SO_LUONG (6I) — thắng tuyệt đối, xem LOAI_BO_TEST_RUN; HOẶC
-  //   (b) (phần in ĐANG IN TEM trên chuyền — phiếu DANG_CHAY) HOẶC (SL release của lệnh < 100),
+  //   (b) phần in ĐANG IN TEM (phiếu DANG_CHAY — `repo.phanInDangChay`) HOẶC SL release của lệnh < 100 — nhánh (b)
   //       TRỪ đợt bật cờ LÀM LẠI (can_lam_lai_ready → ép full flow).
-  // KHÔNG còn bỏ Test Run chỉ vì "cùng phần in đã test xong ở đợt trước" — đợt MỚI vẫn phải Test Run.
+  // ⚠ 27/10/2026 người dùng bảo TRẢ LẠI NHƯ CŨ: gỡ bản 26/10 (đang Chờ chạy cũng tính + thắng cờ làm lại + cộng thẳng
+  //   vào lệnh đang chạy). Cộng vào lệnh đang chạy nay chỉ ở nút "Không test run" (`skipTestRun`).
+  // KHÔNG bỏ Test Run chỉ vì "cùng phần in đã test xong ở đợt trước".
+  // `RELEASE_2` = CHỜ SẢN XUẤT (vào thẳng modal Chờ chạy, không qua màn Release 2).
   const { version } = await loadTestConfig();
   const dangChaySet = new Set(await repo.phanInDangChay([...new Set(compose.map((r) => r.phan_in_id))]));
 
@@ -559,6 +562,7 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
   await qaRepo.resolveReturnsMany('TEST_RUN', dotDaTao); // release lại → tắt cờ "bị Test Run trả về"
   // Đợt vải thuộc gom set nay release LẺ được ⇒ set tự đóng khi member cuối cùng đã release.
   await repo.dongSetDaReleaseHet(dotDaTao, actorId);
+
   created.forEach((c) => sockets.emit('workflow:updated', { lenhId: c.id, stage: c.trang_thai }));
   sockets.emit('dashboard:refresh', {});
   release1Erp.xepHang(created.map((c) => c.id), actorId, opts.nguonErp || 'RELEASE_1');
@@ -641,7 +645,7 @@ async function createDotSanXuat({ items, chuyenId, ngayKeHoach, tgBdKh, tgKtKh, 
 
   // ĐI TẮT TEST RUN (điểm 5): bỏ Test Run khi
   //   (a) LOẠI ĐỢT VẢI là BO_SUNG (5I) / MAU_SO_LUONG (6I) — thắng tuyệt đối, xem LOAI_BO_TEST_RUN; HOẶC
-  //   (b) (phần in ĐANG IN TEM) HOẶC (tổng SL < 100), TRỪ khi có đợt bật cờ LÀM LẠI (ép full flow).
+  //   (b) phần in ĐANG IN TEM HOẶC tổng SL < 100, TRỪ khi có đợt bật cờ LÀM LẠI (ép full flow) — cùng luật `createRelease1`.
   // ⚠ Nhánh (a) dùng `every`: 1 đợt SX gộp NHIỀU đợt vải (cùng phần in) nên chỉ bỏ Test Run khi MỌI đợt
   //   đều thuộc loại bỏ test. Trộn lẫn 1 đợt SO_LUONG (3I) là có hàng mới thật sự trong lệnh ⇒ vẫn test.
   const phanInIds = [...new Set(info.map((r) => r.phan_in_id))];
@@ -1059,22 +1063,56 @@ async function approveRelease2(lenhId, actorId, { qaNgoaiGio = false } = {}) {
 }
 
 // "Không test run": bỏ Test Run cho 1 đợt SX (lệnh RELEASE_1) → duyệt thẳng RELEASE_2 (vào chờ sản xuất).
+// ⚠⚠ 27/10/2026 (người dùng: "bấm không test run thì nhảy cộng số lượng vào phần in đang có đợt vải nếu đang sản xuất"):
+//   lệnh 1 phần in mà phần in đó có lệnh ĐANG CHẠY (`repo.lenhDangChayCuaPhanIn`, ưu tiên cùng chuyền) ⇒ sau khi vào
+//   RELEASE_2 gộp luôn vào lệnh đang chạy bằng CHÍNH `production.gopLenhCungPhan` (đợt + SL dồn vào lệnh đang chạy, lệnh
+//   bỏ test HUY + audit `GOP_VAO_LENH`, ERP: hủy kế hoạch lệnh này + gửi lại kế hoạch lệnh đang chạy). Lệnh đang chạy ở
+//   CHUYỀN KHÁC ⇒ đổi chuyền kế hoạch của lệnh bỏ test sang chuyền đó trước (gộp đòi cùng chuyền). Gộp lỗi ⇒ lệnh ở lại
+//   Chờ chạy như cũ (không chặn việc bỏ test). Trả thêm `cong_vao_lenh_chay` { ma_lenh } khi đã cộng.
 async function skipTestRun(lenhId, actorId) {
   const lenh = await repo.getLenhBasic(lenhId);
   if (!lenh) throw new AppError('Đợt sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   if (lenh.trang_thai === 'RELEASE_2') throw new AppError('Đợt đã ở Release 2 (chờ sản xuất)', { status: 409, errorCode: 'ALREADY' });
   if (lenh.trang_thai !== 'RELEASE_1') throw new AppError('Chỉ bỏ Test Run khi đợt đang ở Test Run', { status: 409, errorCode: 'WRONG_STAGE' });
   await assertKhongChoKyThuat(lenhId);
+
+  let dich = null;
+  const info = await repo.phanInChuyenCuaLenh(lenhId);
+  if (info && (info.phan_in_ids || []).length === 1) {
+    dich = (await repo.lenhDangChayCuaPhanIn(info.phan_in_ids, info.chuyen_id))[0] || null;
+    if (dich && dich.id === lenhId) dich = null;
+  }
+  const doiChuyen = dich && dich.chuyen_id && dich.chuyen_id !== info.chuyen_id;
   await withTransaction(async (client) => {
     await repo.setLenhTrangThai(client, lenhId, 'RELEASE_2', actorId);
+    if (doiChuyen) await repo.doiChuyenLenhTx(client, lenhId, dich.chuyen_id, actorId);
     await repo.logPlanChange(client, lenhId, 'RELEASE_2',
-      { trang_thai: 'RELEASE_1' },
-      { trang_thai: 'RELEASE_2', bo_test_run: true },
+      { trang_thai: 'RELEASE_1', ...(doiChuyen ? { chuyen_id: info.chuyen_id } : {}) },
+      { trang_thai: 'RELEASE_2', bo_test_run: true,
+        ...(dich ? { cong_vao_lenh_id: dich.id, cong_vao_lenh: dich.ma_lenh_san_xuat } : {}),
+        ...(doiChuyen ? { chuyen_id: dich.chuyen_id } : {}) },
       actorId);
   });
   await tracking.moveByLenh(lenhId, 'RELEASE_2', actorId);
+
+  let congVao = null;
+  if (dich) {
+    try {
+      const production = require('../production/production.service');
+      await production.gopLenhCungPhan([lenhId, dich.id], actorId, { lyDo: 'Không test run — cộng thẳng vào lệnh đang chạy' });
+      await tracking.moveDotVaiTo(info.dot_vai_ids || [], 'SAN_XUAT', actorId);
+      congVao = { lenh_id: dich.id, ma_lenh: dich.ma_lenh_san_xuat, tu_lenh: lenh.ma_lenh_san_xuat };
+    } catch (e) {
+      console.error(`[test-run] ✗ Không cộng được ${lenh.ma_lenh_san_xuat} vào lệnh đang chạy ${dich.ma_lenh_san_xuat}: ${e.message}`);
+      if (doiChuyen) { // gộp không được ⇒ trả lại chuyền kế hoạch cũ
+        try { await withTransaction((client) => repo.doiChuyenLenhTx(client, lenhId, info.chuyen_id, actorId)); }
+        catch (e2) { console.error(`[test-run] ✗ Không trả lại chuyền cho ${lenh.ma_lenh_san_xuat}: ${e2.message}`); }
+      }
+    }
+  }
   sockets.emit('workflow:updated', { lenhId, stage: 'RELEASE_2', skipTest: true });
   sockets.emit('dashboard:refresh', {});
+  if (congVao) return { ...(await getLenhDetail(dich.id)), cong_vao_lenh_chay: congVao };
   return getLenhDetail(lenhId);
 }
 

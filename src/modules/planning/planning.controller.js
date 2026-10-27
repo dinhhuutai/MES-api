@@ -103,8 +103,13 @@ const release2Candidates = dsChung('planning.release2', thamSoTimTrang, (o) => s
 const approveRelease2 = asyncHandler(async (req, res) =>
   ok(res, await service.approveRelease2(req.params.lenhId, req.user.id), 'Đã Release 2 — sẵn sàng sản xuất'));
 
-const skipTestRun = asyncHandler(async (req, res) =>
-  ok(res, await service.skipTestRun(req.params.lenhId, req.user.id), 'Đã bỏ Test Run — đợt sản xuất vào chờ sản xuất'));
+const skipTestRun = asyncHandler(async (req, res) => {
+  const kq = await service.skipTestRun(req.params.lenhId, req.user.id);
+  const cv = kq && kq.cong_vao_lenh_chay;
+  ok(res, kq, cv
+    ? `Đã bỏ Test Run — cộng thẳng số lượng vào lệnh đang chạy ${cv.ma_lenh}`
+    : 'Đã bỏ Test Run — đợt sản xuất vào chờ sản xuất');
+});
 
 const testRunHistory = asyncHandler(async (req, res) => {
   const date = req.query.date || ngayHomNayVN();

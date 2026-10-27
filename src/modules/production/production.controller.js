@@ -186,7 +186,10 @@ const adjustPhoi = asyncHandler(async (req, res) =>
 const drying = asyncHandler(async (req, res) => ok(res, await service.listDrying(req.query.search || '')));
 
 const confirmDry = asyncHandler(async (req, res) =>
-  ok(res, await service.confirmDry(req.params.temId, req.user.id), 'Đã xác nhận khô'));
+  ok(res, await service.confirmDry(req.params.temId, req.user.id, req.body || {}), 'Đã xác nhận khô'));
+// Báo cáo tem KCS kiểm TRƯỚC giờ phơi xong dự kiến (27/10/2026, nút ở màn KCS).
+const kiemTruocKho = asyncHandler(async (req, res) =>
+  ok(res, await service.listKiemTruocKho(req.query.tuNgay, req.query.denNgay)));
 
 const redry = asyncHandler(async (req, res) =>
   ok(res, await service.redry(req.params.temId, req.body.phut, req.user.id), 'Đã đưa tem phơi lại'));
@@ -322,7 +325,7 @@ module.exports = {
   dsReleaseSx, nhatKyIn, luuDongDsRelease, docChuyenThem, luuChuyenThem,
   candidates, getRun, start, startBatch, chayDacBietCandidates, chayDacBiet, printTem, printTemBatch, reprintTem, temLabel, temLogs, finish, monitor,
   theoDoiTo,
-  xePhoi, temChoPhoi, themTem, adjustPhoi, drying, confirmDry, redry,
+  xePhoi, temChoPhoi, themTem, adjustPhoi, drying, confirmDry, kiemTruocKho, redry,
   stopLine, resumeLine, addVaiHuy, xemVaiTem, suaVaiTheoTem, suaTem, gopLenh, savePhanCong, vuotSanXuat,
   lyDoNgungList, lyDoNgungCreate, lyDoNgungUpdate, lyDoNgungToggle,
   toInList, toInCreate, toInUpdate, toInToggle, baoCaoSanXuat, baoCaoDungChuyen, baoCaoKiemHang, baoCaoSuaHang,
