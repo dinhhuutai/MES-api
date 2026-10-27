@@ -21,6 +21,8 @@ const {
 const { layBarcodeTem, layNhieuBarcodeTem } = require('../../utils/erpTemBarcode');
 const { ghiInTem, taoPayload, laMaTemErp, ghiChuaCoMaErp } = require('../../utils/erpGhiInTem');
 const { apiChoPhepPhanIn } = require('../../utils/caiDatApi');
+const { tenNgc } = require('../../utils/nhaGiaCong'); // tách lệnh theo nhà gia công (27/10/2026)
+const { coCotThoInKh } = require('../../utils/thoInKeHoach');
 
 // Gắn `phan_in_list` (1 dòng / phần in) cho các lệnh GOM SET — màn Xác nhận chạy tách dòng theo phần in,
 // hợp nhất ô ở STT + nút thao tác. Lệnh 1 phần in KHÔNG gắn (FE render như cũ, khỏi phình payload).
@@ -852,6 +854,10 @@ async function gopLenhCungPhan(lenhIds, actorId, { lyDo = '' } = {}) {
     if (new Set(ds.map((l) => l.chuyen_id || '')).size !== 1) {
       throw new AppError('Chỉ gộp các lệnh cùng chuyền', { status: 409, errorCode: 'KHAC_CHUYEN' });
     }
+    // Đợt khác nhà gia công không cộng chung (27/10/2026, người dùng chốt) — mỗi lệnh 1 NGC và cùng NGC.
+    if (new Set(ds.map((l) => l.ngc_khoa || '')).size !== 1 || ds.some((l) => String(l.ngc_khoa || '').includes('|'))) {
+      throw new AppError('Các lệnh khác nhà gia công — không gộp số lượng chung', { status: 409, errorCode: 'KHAC_NHA_GIA_CONG' });
+    }
     const dich = [...ds].sort((a, b) => (b.phieu_id ? 1 : 0) - (a.phieu_id ? 1 : 0) || b.da_in - a.da_in
       || String(a.ma_lenh_san_xuat).localeCompare(String(b.ma_lenh_san_xuat), 'vi', { numeric: true }))[0];
     const nguon = ds.filter((l) => l.id !== dich.id);
@@ -892,6 +898,63 @@ async function gopLenhCungPhan(lenhIds, actorId, { lyDo = '' } = {}) {
   return { lenh_id: kq.dich.id, ma_lenh: kq.dich.ma_lenh_san_xuat, gop: kq.nguon.map((l) => l.ma_lenh_san_xuat), so_tem_chuyen: kq.soTem, so_luong_release: kq.tong };
 }
 
+// ─── TÁCH LỆNH THEO NHÀ GIA CÔNG (27/10/2026, người dùng: "nhà gia công từ ERP lên theo đợt vải — 1 phần in có 2 đợt
+//   của 2 nhà gia công thì đừng cộng số lượng lại, tách ra") ─────────────────────────────────────────────────────
+// Lệnh gom đợt khác NGC (Release 1 gom cùng code phần trước 27/10, hoặc gộp lệnh khi chạy) ⇒ mỗi NGC 1 lệnh: nhóm có đợt
+//   về SỚM nhất ở lại lệnh gốc, mỗi NGC còn lại sang 1 lệnh mới cùng kế hoạch + trạng thái + kết quả test (+ phiếu đang
+//   chạy riêng nếu lệnh đang chạy). Điều kiện: lệnh 1 phần in, RELEASE_1 / RELEASE_2 chưa phiếu / SAN_XUAT đúng 1 phiếu
+//   đang chạy, CHƯA IN TEM (tem không gắn đợt ⇒ không chia được), không dính in kiếng. ERP: gửi lại kế hoạch cả lệnh gốc
+//   lẫn lệnh mới (nguồn REPLAN = hủy lượt cũ của lệnh gốc rồi gửi).
+async function tachLenhTheoNgc(lenhId, actorId, { lyDo = '' } = {}) {
+  if (!RE_UUID.test(String(lenhId || ''))) throw new AppError('Mã lệnh không hợp lệ', { status: 422, errorCode: 'VALIDATION' });
+  const [coThoIn, coToIn] = await Promise.all([coCotThoInKh(), repo.phieuCoCotToIn()]);
+  const kq = await withTransaction(async (client) => {
+    const g = await repo.docLenhTachTx(client, lenhId);
+    if (!g) throw new AppError('Lệnh sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+    const dungTram = g.trang_thai === 'RELEASE_1'
+      || (g.trang_thai === 'RELEASE_2' && g.so_phieu === 0)
+      || (g.trang_thai === 'SAN_XUAT' && g.phieu_id && g.so_phieu === 1);
+    if (!dungTram) throw new AppError(`Lệnh ${g.ma_lenh_san_xuat} không ở Test Run / chờ chạy / đang chạy — không tách được`, { status: 409, errorCode: 'WRONG_STAGE' });
+    if (g.so_tem > 0) throw new AppError(`Lệnh ${g.ma_lenh_san_xuat} đã in ${g.so_tem} tem — không tách theo nhà gia công được (hủy tem trước)`, { status: 409, errorCode: 'DA_IN_TEM' });
+    if (g.lenh_lien_ket_id || g.co_lenh_ep_ui) throw new AppError('Lệnh in kiếng (có lệnh ép ủi liên kết) — không tách được', { status: 409, errorCode: 'IN_KIENG' });
+    if (new Set(g.dots.map((d) => d.phan_in_id)).size !== 1) throw new AppError('Lệnh gom set nhiều phần in — không tách được', { status: 409, errorCode: 'KHAC_PHAN_IN' });
+    const nhom = new Map();
+    g.dots.forEach((d) => { if (!nhom.has(d.ngc_khoa)) nhom.set(d.ngc_khoa, []); nhom.get(d.ngc_khoa).push(d); });
+    if (nhom.size < 2) throw new AppError(`Lệnh ${g.ma_lenh_san_xuat} chỉ có 1 nhà gia công — không cần tách`, { status: 409, errorCode: 'KHONG_CAN_TACH' });
+    const [giu, ...tach] = [...nhom.entries()];
+    const moi = [];
+    for (const [ngc, ds] of tach) {
+      // eslint-disable-next-line no-await-in-loop
+      const maLenh = await planningRepo.nextMaLenhTx(client);
+      // eslint-disable-next-line no-await-in-loop
+      const maPhieu = g.phieu_id ? await repo.nextMaPhieuTx(client) : null;
+      // eslint-disable-next-line no-await-in-loop
+      const r = await repo.tachLenhNgcTx(client, g, ds.map((d) => d.dot_vai_ve_id),
+        { maLenh, maPhieu, coThoIn, coToIn, ghiChu: `[Tách từ ${g.ma_lenh_san_xuat} — NGC ${tenNgc(ngc)}]` }, actorId);
+      const sl = ds.reduce((s, d) => s + d.so_luong, 0);
+      moi.push({ id: r.id, ma_lenh: maLenh, ma_phieu: maPhieu, ngc: tenNgc(ngc), so_luong_release: sl, dot_vai_ids: ds.map((d) => d.dot_vai_ve_id) });
+      // eslint-disable-next-line no-await-in-loop
+      await repo.logGopLenhTx(client, r.id, 'TACH_LENH_NGC', null,
+        { tu_lenh_id: g.id, tu_lenh: g.ma_lenh_san_xuat, nha_gia_cong: tenNgc(ngc), so_luong_release: sl,
+          dot_vai_ids: ds.map((d) => d.dot_vai_ve_id), phieu: maPhieu, ly_do: lyDo || null }, actorId);
+    }
+    const slGiu = giu[1].reduce((s, d) => s + d.so_luong, 0);
+    await repo.logGopLenhTx(client, g.id, 'TACH_LENH_NGC',
+      { so_luong_release: g.so_luong_release, nha_gia_cong: [...nhom.keys()].map(tenNgc) },
+      { so_luong_release: slGiu, nha_gia_cong: tenNgc(giu[0]), tach_ra: moi.map((m) => ({ lenh_id: m.id, ma_lenh: m.ma_lenh, nha_gia_cong: m.ngc, so_luong_release: m.so_luong_release })), ly_do: lyDo || null },
+      actorId);
+    return { g, giu: { ngc: tenNgc(giu[0]), so_luong_release: slGiu }, moi };
+  });
+  release1Erp.xepHang([kq.g.id, ...kq.moi.map((m) => m.id)], actorId, 'REPLAN');
+  sockets.emit('production:updated', { lenhIds: [kq.g.id, ...kq.moi.map((m) => m.id)], action: 'tach-lenh-ngc' });
+  sockets.emit('workflow:updated', { lenhId: kq.g.id, stage: kq.g.trang_thai });
+  sockets.emit('dashboard:refresh', {});
+  return {
+    lenh_id: kq.g.id, ma_lenh: kq.g.ma_lenh_san_xuat, nha_gia_cong: kq.giu.ngc, so_luong_release: kq.giu.so_luong_release,
+    tach: kq.moi.map(({ id, ma_lenh, ma_phieu, ngc, so_luong_release }) => ({ lenh_id: id, ma_lenh, ma_phieu, nha_gia_cong: ngc, so_luong_release })),
+  };
+}
+
 // XÁC NHẬN CHẠY NHIỀU LỆNH 1 LƯỢT (08/10/2026, modal Chờ chạy: quét/tích nhiều dòng rồi bấm 1 lần).
 // `items` = [{ lenhId, chuyenId? }] (chuyenId trống = chuyền kế hoạch). Mỗi lệnh đi ĐÚNG lõi `batDauChay`
 // (transaction RIÊNG, chạy TUẦN TỰ — `nextMaPhieu` cấp mã tuần tự) ⇒ lệnh lỗi không kéo lệnh khác; trả
@@ -924,7 +987,7 @@ async function startProductionBatch(items, actorId) {
     for (const x of hopLe) {
       const l = theoId.get(x.lenhId);
       if (!l || l.trang_thai !== 'RELEASE_2' || l.so_phieu > 0 || (l.phan_in_ids || []).length !== 1) continue;
-      const k = `${l.phan_in_ids[0]}|${l.chuyen_id || ''}|${x.chuyenId || l.chuyen_id || ''}`;
+      const k = `${l.phan_in_ids[0]}|${l.chuyen_id || ''}|${x.chuyenId || l.chuyen_id || ''}|${l.ngc_khoa || ''}`; // + nhà gia công
       if (!nhom.has(k)) nhom.set(k, []);
       nhom.get(k).push(x);
     }
@@ -1885,7 +1948,7 @@ async function vuotSanXuat(phieuId, soLuong, actorId) {
 module.exports = {
   listCandidates, getRun, startProduction, startProductionBatch, startProductionSpecial, printTem, printTemBatch, reprintTem, temLabel, temLogs, finishRun, monitor, vuotSanXuat,
   getXePhoi, listTemChoPhoi, addToXe, adjustPhoi, listDrying, confirmDry, listKiemTruocKho, redry,
-  stopLine, resumeLine, addVaiHuy, xemVaiTem, suaVaiTheoTem, suaTem, gopLenhCungPhan, savePhanCong, suaPhanCongPhieuXong,
+  stopLine, resumeLine, addVaiHuy, xemVaiTem, suaVaiTheoTem, suaTem, gopLenhCungPhan, tachLenhTheoNgc, savePhanCong, suaPhanCongPhieuXong,
   dsLyDoNgung, taoLyDoNgung, suaLyDoNgung, doiTrangThaiLyDoNgung,
   dsToIn, taoToIn, suaToIn, doiTrangThaiToIn,
   dsLyDoBoSung, taoLyDoBoSung, suaLyDoBoSung, doiTrangThaiLyDoBoSung, luuLyDoBoSungDotVai,

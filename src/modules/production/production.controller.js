@@ -116,6 +116,8 @@ const suaVaiTheoTem = asyncHandler(async (req, res) =>
   ok(res, await service.suaVaiTheoTem(req.params.temId, req.body || {}, req.user.id), 'Đã lưu vải hủy / thiếu của tem'));
 const gopLenh = asyncHandler(async (req, res) =>
   ok(res, await service.gopLenhCungPhan((req.body || {}).lenhIds, req.user.id, { lyDo: (req.body || {}).lyDo || '' }), 'Đã gộp lệnh'));
+const tachLenhNgc = asyncHandler(async (req, res) =>
+  ok(res, await service.tachLenhTheoNgc(req.params.lenhId, req.user.id, { lyDo: (req.body || {}).lyDo || '' }), 'Đã tách lệnh theo nhà gia công'));
 const suaTem = asyncHandler(async (req, res) =>
   ok(res, await service.suaTem(req.params.temId, req.body || {}, req.user.id), 'Đã sửa tem'));
 
@@ -326,7 +328,7 @@ module.exports = {
   candidates, getRun, start, startBatch, chayDacBietCandidates, chayDacBiet, printTem, printTemBatch, reprintTem, temLabel, temLogs, finish, monitor,
   theoDoiTo,
   xePhoi, temChoPhoi, themTem, adjustPhoi, drying, confirmDry, kiemTruocKho, redry,
-  stopLine, resumeLine, addVaiHuy, xemVaiTem, suaVaiTheoTem, suaTem, gopLenh, savePhanCong, vuotSanXuat,
+  stopLine, resumeLine, addVaiHuy, xemVaiTem, suaVaiTheoTem, suaTem, gopLenh, tachLenhNgc, savePhanCong, vuotSanXuat,
   lyDoNgungList, lyDoNgungCreate, lyDoNgungUpdate, lyDoNgungToggle,
   toInList, toInCreate, toInUpdate, toInToggle, baoCaoSanXuat, baoCaoDungChuyen, baoCaoKiemHang, baoCaoSuaHang,
   baoCaoPhanLoaiLoi,

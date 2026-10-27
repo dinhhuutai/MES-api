@@ -24,6 +24,7 @@ const { dominantStageScalar, STAGE_LABEL, lenhStageCase } = require('../../utils
 const { coCotThoInKh } = require('../../utils/thoInKeHoach');
 const { cotGiaSql } = require('../../utils/giaPhanIn');
 const { LOAI_TRA_VE_KH, LENH_CHO_KH_SQL } = require('../../utils/traVeKeHoach');
+const { khoaNgcLenhSql } = require('../../utils/nhaGiaCong');
 
 // SL vải đã ĐƯA VÀO đợt SX của 1 đợt vải = Σ lenh_sx_dot_vai.so_luong các lệnh non-HUY gắn đợt đó
 // (mig 052: SL đưa vào theo TỪNG đợt nằm ở junction — đúng cả khi 1 lệnh gồm nhiều đợt).
@@ -171,7 +172,7 @@ async function getDotVaiForCompose(dotVaiIds) {
   const { rows } = await query(
     `SELECT dv.id::text AS id, dv.phan_in_id::text AS phan_in_id, dv.ma_dot_vai,
             pin.mau_vai, dv.can_lam_lai_ready, pin.la_in_kieng,
-            ldv.ma_loai AS ma_loai_dot_vai,
+            ldv.ma_loai AS ma_loai_dot_vai, dv.nha_gia_cong,
             COALESCE(dv.so_luong_vai_ve,0)::int AS so_luong,
             COALESCE((SELECT SUM(COALESCE(lsd.so_luong,0)) FROM lenh_sx_dot_vai lsd
                       JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
@@ -206,7 +207,8 @@ async function phanInDangChay(phanInIds) {
 //   phiếu (phiếu đó đang chạy), không dính in kiếng (lệnh liên kết ép ủi) — cùng điều kiện `production.gopLenhCungPhan`
 //   (đích) để gộp không bị từ chối. Nhiều lệnh thỏa ⇒ ưu tiên lệnh trên chuyền `chuyenId` (chuyền kế hoạch của lệnh bỏ
 //   test), rồi lệnh in nhiều nhất. Trả kèm `chuyen_id` của lệnh đang chạy.
-async function lenhDangChayCuaPhanIn(phanInIds, chuyenId) {
+// `cungNgcLenhId` (27/10/2026): chỉ lấy lệnh đang chạy có CÙNG nhà gia công với lệnh này (đợt khác NGC không cộng chung).
+async function lenhDangChayCuaPhanIn(phanInIds, chuyenId, cungNgcLenhId = null) {
   if (!phanInIds || !phanInIds.length) return [];
   const sql = `SELECT DISTINCT ON (dv.phan_in_id) dv.phan_in_id::text AS phan_in_id, ls.id, ls.ma_lenh_san_xuat,
       ls.chuyen_id::text AS chuyen_id
@@ -220,10 +222,11 @@ async function lenhDangChayCuaPhanIn(phanInIds, chuyenId) {
      AND (SELECT count(DISTINCT d2.phan_in_id) FROM lenh_sx_dot_vai l2 JOIN dot_vai_ve d2 ON d2.id = l2.dot_vai_ve_id
            WHERE l2.lenh_san_xuat_id = ls.id) = 1
      AND (SELECT count(*) FROM phieu_san_xuat p2 WHERE p2.lenh_san_xuat_id = ls.id AND p2.trang_thai <> 'HUY') = 1
+     AND ($3::uuid IS NULL OR ${khoaNgcLenhSql('ls.id')} = ${khoaNgcLenhSql('$3::uuid')})
    ORDER BY dv.phan_in_id, (ls.chuyen_id IS NOT DISTINCT FROM $2::uuid) DESC,
      (SELECT COALESCE(SUM(t.so_luong), 0) FROM tem t WHERE t.phieu_san_xuat_id = ps.id AND t.trang_thai <> 'HUY') DESC,
      ls.ma_lenh_san_xuat`;
-  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [phanInIds, chuyenId || null]);
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [phanInIds, chuyenId || null, cungNgcLenhId || null]);
   return rows;
 }
 

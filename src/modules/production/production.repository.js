@@ -21,6 +21,7 @@ const { coCotThoInKh } = require('../../utils/thoInKeHoach');
 const { khoaDemLo, dungMaLo } = require('../../utils/maLo');
 // Cấp mã tăng dần PSX/TEM — không cắt khi vượt số chữ số (sự cố LSX10000 → LSX1000 ngày 21/10/2026).
 const { maKeTiepSql } = require('../../utils/maKeTiep');
+const { khoaNgcLenhSql, khoaNgcSql } = require('../../utils/nhaGiaCong'); // đợt khác NGC không gộp (27/10/2026)
 // Mốc tuyệt đối của giờ SX nhập ở ô In tem (ngày ca + giờ, ca đêm qua nửa đêm +1 ngày) — dùng chung Báo cáo sản xuất.
 const { MOC_TEM } = require('./baoCaoSanXuat');
 const { chuanMaChuyen, chuanMaChuyenSql } = require('../../utils/maChuyen');
@@ -120,7 +121,7 @@ async function listProductionCandidates({ search = '', offset = 0, limit = 20 })
            info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.phan_in_id,
            info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan,
            info.han_giao_hang, info.so_luong_vai_ve, ${COT_THEM_XAC_NHAN_CHAY},
-           ${NGC_LENH('ls.id')} AS nha_gia_cong, ${MA_QUET_LENH('ls.id')} AS ma_quet, ${MA_VACH_PIN_LENH('ls.id')} AS ma_vach_pin,
+           ${NGC_LENH('ls.id')} AS nha_gia_cong, ${khoaNgcLenhSql('ls.id')} AS ngc_khoa, ${MA_QUET_LENH('ls.id')} AS ma_quet, ${MA_VACH_PIN_LENH('ls.id')} AS ma_vach_pin,
            (SELECT count(*) FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id)::int AS so_dot_vai,
            (SELECT count(DISTINCT dv.phan_in_id) FROM lenh_sx_dot_vai lsd2 JOIN dot_vai_ve dv ON dv.id = lsd2.dot_vai_ve_id WHERE lsd2.lenh_san_xuat_id = ls.id)::int AS so_phan_in,
            (SELECT COALESCE(SUM(t.so_luong),0)::int FROM tem t JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
@@ -323,7 +324,7 @@ async function getLenhDotVaiList(lenhId) {
             pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim,
             pin.tinh_chat_in, pin.so_luong_don_hang,
             kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, ldv.ten_loai AS ten_loai_dot_vai,
-            ldv.ma_loai AS ma_loai_dot_vai
+            ldv.ma_loai AS ma_loai_dot_vai, dv.nha_gia_cong, ${khoaNgcSql('dv.nha_gia_cong')} AS ngc_khoa
      FROM lenh_sx_dot_vai lsd
      JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
      JOIN phan_in pin ON pin.id = dv.phan_in_id
@@ -881,7 +882,8 @@ async function docLenhGopTx(client, ids) {
             COALESCE((SELECT SUM(t.so_luong) FROM tem t WHERE t.phieu_san_xuat_id = ps.id AND t.trang_thai <> 'HUY'), 0)::int AS da_in,
             (SELECT COUNT(*) FROM phieu_san_xuat p2 WHERE p2.lenh_san_xuat_id = ls.id AND p2.trang_thai <> 'HUY')::int AS so_phieu,
             (SELECT array_agg(DISTINCT dv.phan_in_id::text) FROM lenh_sx_dot_vai x JOIN dot_vai_ve dv ON dv.id = x.dot_vai_ve_id
-              WHERE x.lenh_san_xuat_id = ls.id) AS phan_in_ids
+              WHERE x.lenh_san_xuat_id = ls.id) AS phan_in_ids,
+            ${khoaNgcLenhSql('ls.id')} AS ngc_khoa
        FROM lenh_san_xuat ls
        LEFT JOIN phieu_san_xuat ps ON ps.lenh_san_xuat_id = ls.id AND ps.trang_thai = 'DANG_CHAY'
       WHERE ls.id = ANY($1::uuid[])
@@ -931,6 +933,103 @@ async function gopLenhTx(client, t, s, actorId) {
     `UPDATE lenh_san_xuat SET so_luong_release = (SELECT COALESCE(SUM(so_luong),0) FROM lenh_sx_dot_vai WHERE lenh_san_xuat_id = $1),
             updated_date = CURRENT_TIMESTAMP, updated_by = $2 WHERE id = $1`, [t.id, actorId]);
   return { soTem };
+}
+
+// ─── TÁCH LỆNH THEO NHÀ GIA CÔNG (27/10/2026, người dùng chốt) ───────────────────────────────────────────────
+// Khóa + đọc lệnh cần tách: trạng thái, phiếu (đang chạy / số phiếu sống / số tem sống), in kiếng, các đợt (SL > 0) + NGC.
+async function docLenhTachTx(client, lenhId) {
+  const { rows: [l] } = await client.query(
+    `SELECT ls.id, ls.ma_lenh_san_xuat, ls.trang_thai, ls.chuyen_id, ls.lenh_lien_ket_id,
+            COALESCE(ls.so_luong_release,0)::int AS so_luong_release,
+            (SELECT p.id FROM phieu_san_xuat p WHERE p.lenh_san_xuat_id = ls.id AND p.trang_thai = 'DANG_CHAY' LIMIT 1) AS phieu_id,
+            (SELECT COUNT(*) FROM phieu_san_xuat p WHERE p.lenh_san_xuat_id = ls.id AND p.trang_thai <> 'HUY')::int AS so_phieu,
+            (SELECT COUNT(*) FROM tem t JOIN phieu_san_xuat p ON p.id = t.phieu_san_xuat_id
+              WHERE p.lenh_san_xuat_id = ls.id AND t.trang_thai <> 'HUY')::int AS so_tem,
+            EXISTS (SELECT 1 FROM lenh_san_xuat le WHERE le.lenh_lien_ket_id = ls.id AND le.trang_thai <> 'HUY') AS co_lenh_ep_ui
+       FROM lenh_san_xuat ls WHERE ls.id = $1 FOR UPDATE OF ls`.replace(/\s+/g, ' '), [lenhId]);
+  if (!l) return null;
+  const { rows: dots } = await client.query(
+    `SELECT lsd.dot_vai_ve_id::text AS dot_vai_ve_id, COALESCE(lsd.so_luong,0)::int AS so_luong, dv.ma_dot_vai,
+            dv.phan_in_id::text AS phan_in_id, dv.nha_gia_cong, ${khoaNgcSql('dv.nha_gia_cong')} AS ngc_khoa
+       FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+      WHERE lsd.lenh_san_xuat_id = $1 AND COALESCE(lsd.so_luong,0) > 0
+      ORDER BY dv.created_date, dv.ma_dot_vai`.replace(/\s+/g, ' '), [lenhId]);
+  return { ...l, dots };
+}
+
+// Chuyển các đợt `dotIds` của lệnh gốc `g` sang 1 LỆNH MỚI (mã `maLenh`) cùng kế hoạch + trạng thái. Không xóa gì:
+//   · lệnh mới chép mọi cột kế hoạch của lệnh gốc; dòng `lenh_sx_dot_vai` của các đợt đổi `lenh_san_xuat_id` sang lệnh mới;
+//     SL release 2 lệnh = Σ dòng của chính nó;
+//   · kết quả test mức LỆNH (`ket_qua_checkpoint` không gắn đợt/tem · `test_run`) CHÉP sang lệnh mới (cùng lần test) ⇒
+//     lệnh mới không quay lại Test Run; dòng gắn đợt bị chuyển (`ket_qua_checkpoint` · `ton_tram` · `qc_tra_ve` ·
+//     `ly_do_nghen` · `vai_huy`) đổi lệnh theo đợt;
+//   · lệnh gốc đang chạy (`maPhieu`) ⇒ lệnh mới có phiếu DANG_CHAY riêng cùng chuyền / giờ chạy / ca trưởng / chuyền
+//     trưởng / tổ in; phân công (phiếu × đợt) của các đợt chuyển sang phiếu mới.
+// Trả { id, phieuId }.
+async function tachLenhNgcTx(client, g, dotIds, { maLenh, maPhieu, coThoIn, coToIn, ghiChu }, actorId) {
+  const { rows: [moi] } = await client.query(
+    `INSERT INTO lenh_san_xuat (workflow_version_id, ma_lenh_san_xuat, chuyen_id, so_luong_release, tg_bd_kh, tg_kt_kh,
+            ngay_ke_hoach, trang_thai, la_in_lai, lenh_san_xuat_goc_id, ghi_chu, giai_doan${coThoIn ? ', tho_in_kh' : ''}, created_by)
+     SELECT workflow_version_id, $2, chuyen_id, 0, tg_bd_kh, tg_kt_kh, ngay_ke_hoach, trang_thai, la_in_lai,
+            lenh_san_xuat_goc_id, TRIM(BOTH ' ' FROM COALESCE(ghi_chu,'') || ' ' || $3), giai_doan${coThoIn ? ', tho_in_kh' : ''}, $4
+       FROM lenh_san_xuat WHERE id = $1 RETURNING id`.replace(/\s+/g, ' '), [g.id, maLenh, ghiChu, actorId]);
+  const id = moi.id;
+  await client.query(
+    `UPDATE lenh_sx_dot_vai SET lenh_san_xuat_id = $2, updated_date = CURRENT_TIMESTAMP, updated_by = $4,
+            ghi_chu = TRIM(BOTH ' ' FROM COALESCE(ghi_chu,'') || ' ' || $5)
+      WHERE lenh_san_xuat_id = $1 AND dot_vai_ve_id = ANY($3::uuid[])`.replace(/\s+/g, ' '),
+    [g.id, id, dotIds, actorId, `[Tách từ ${g.ma_lenh_san_xuat}]`]);
+  for (const lid of [g.id, id]) {
+    // eslint-disable-next-line no-await-in-loop
+    await client.query(
+      `UPDATE lenh_san_xuat SET so_luong_release = (SELECT COALESCE(SUM(so_luong),0) FROM lenh_sx_dot_vai WHERE lenh_san_xuat_id = $1),
+              updated_date = CURRENT_TIMESTAMP, updated_by = $2 WHERE id = $1`.replace(/\s+/g, ' '), [lid, actorId]);
+  }
+  await client.query(
+    `INSERT INTO ket_qua_checkpoint (checkpoint_id, phan_in_id, dot_vai_ve_id, lenh_san_xuat_id, tem_id, trang_thai,
+            gia_tri_text, gia_tri_so, gia_tri_ngay, gia_tri_json, bang_chung, nguoi_bat_dau_id, tg_bat_dau,
+            nguoi_xac_nhan_id, tg_xac_nhan, tg_ket_thuc, ghi_chu, created_date, created_by, updated_date, updated_by)
+     SELECT checkpoint_id, phan_in_id, dot_vai_ve_id, $2, tem_id, trang_thai, gia_tri_text, gia_tri_so, gia_tri_ngay,
+            gia_tri_json, bang_chung, nguoi_bat_dau_id, tg_bat_dau, nguoi_xac_nhan_id, tg_xac_nhan, tg_ket_thuc, ghi_chu,
+            created_date, created_by, CURRENT_TIMESTAMP, $3
+       FROM ket_qua_checkpoint WHERE lenh_san_xuat_id = $1 AND dot_vai_ve_id IS NULL AND tem_id IS NULL`.replace(/\s+/g, ' '),
+    [g.id, id, actorId]);
+  await client.query(
+    `INSERT INTO test_run (lenh_san_xuat_id, lan_test, so_luong, ket_qua, tg_bd_test, tg_kt_test, ghi_chu,
+            created_date, created_by, updated_date, updated_by)
+     SELECT $2, lan_test, so_luong, ket_qua, tg_bd_test, tg_kt_test, ghi_chu, created_date, created_by, CURRENT_TIMESTAMP, $3
+       FROM test_run WHERE lenh_san_xuat_id = $1`.replace(/\s+/g, ' '), [g.id, id, actorId]);
+  // Lượt duyệt Release 2 (mốc vào chờ chạy) cũng là của lệnh mới — chép, bỏ cờ `bo_test_run` để Lịch sử Test Run không đếm đôi.
+  await client.query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_cu, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     SELECT ten_bang, $2::text, hanh_dong, gia_tri_cu,
+            (COALESCE(gia_tri_moi, '{}'::jsonb) - 'bo_test_run') || jsonb_build_object('tach_tu_lenh', $3::text),
+            nguoi_thuc_hien_id, thoi_gian, created_by
+       FROM audit_log WHERE ten_bang = 'lenh_san_xuat' AND id_ban_ghi = $1::text AND hanh_dong = 'RELEASE_2'`.replace(/\s+/g, ' '),
+    [g.id, id, g.ma_lenh_san_xuat]);
+  for (const bang of ['ket_qua_checkpoint', 'ton_tram', 'qc_tra_ve', 'ly_do_nghen']) {
+    // eslint-disable-next-line no-await-in-loop
+    await client.query(`UPDATE ${bang} SET lenh_san_xuat_id = $2 WHERE lenh_san_xuat_id = $1 AND dot_vai_ve_id = ANY($3::uuid[])`,
+      [g.id, id, dotIds]);
+  }
+  let phieuId = null;
+  if (g.phieu_id && maPhieu) {
+    const { rows: [p] } = await client.query(
+      `INSERT INTO phieu_san_xuat (lenh_san_xuat_id, chuyen_id, ma_phieu_san_xuat, trang_thai, tg_bd, ca_truong_id, chuyen_truong${coToIn ? ', to_in_id' : ''},
+              ghi_chu, created_by)
+       SELECT $2, chuyen_id, $3, 'DANG_CHAY', tg_bd, ca_truong_id, chuyen_truong${coToIn ? ', to_in_id' : ''}, $4, $5
+         FROM phieu_san_xuat WHERE id = $1 RETURNING id`.replace(/\s+/g, ' '),
+      [g.phieu_id, id, maPhieu, `[Tách từ ${g.ma_lenh_san_xuat} — khác nhà gia công]`, actorId]);
+    phieuId = p.id;
+    await client.query(
+      `UPDATE phan_cong_san_xuat SET phieu_san_xuat_id = $2, updated_date = CURRENT_TIMESTAMP, updated_by = $4
+        WHERE phieu_san_xuat_id = $1 AND dot_vai_ve_id = ANY($3::uuid[])`.replace(/\s+/g, ' '),
+      [g.phieu_id, phieuId, dotIds, actorId]);
+  }
+  await client.query(
+    `UPDATE vai_huy SET lenh_san_xuat_id = $2, phieu_san_xuat_id = COALESCE($4, phieu_san_xuat_id)
+      WHERE lenh_san_xuat_id = $1 AND dot_vai_ve_id = ANY($3::uuid[])`.replace(/\s+/g, ' '), [g.id, id, dotIds, phieuId]);
+  return { id, phieuId };
 }
 
 async function logGopLenhTx(client, lenhId, hanhDong, cu, moi, actorId) {
@@ -1638,7 +1737,7 @@ async function monitorRunning() {
             (SELECT count(DISTINCT dv2.phan_in_id) FROM lenh_sx_dot_vai lsd2 JOIN dot_vai_ve dv2 ON dv2.id = lsd2.dot_vai_ve_id WHERE lsd2.lenh_san_xuat_id = ls.id)::int AS so_phan_in,
             info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan, info.mau_vai, info.kich_vai, info.kich_phim,
             info.tinh_chat_in, info.mau_in, info.do_in,
-            info.han_giao_hang, ${NGC_LENH('ls.id')} AS nha_gia_cong, ${MA_QUET_LENH('ls.id')} AS ma_quet,
+            info.han_giao_hang, ${NGC_LENH('ls.id')} AS nha_gia_cong, ${khoaNgcLenhSql('ls.id')} AS ngc_khoa, ${MA_QUET_LENH('ls.id')} AS ma_quet,
             ${MA_VACH_PIN_LENH('ls.id')} AS ma_vach_pin,
             ps.chuyen_truong, ${colThoKh}, ${COT_THEM_XAC_NHAN_CHAY},
             (SELECT min(${MOC_TEM('t.gio_sx_bd')}) FROM tem t WHERE t.phieu_san_xuat_id = ps.id AND t.trang_thai <> 'HUY' AND t.tem_goc_id IS NULL) AS th_tu_tem,
@@ -2364,6 +2463,7 @@ module.exports = {
   promoteFinishedDrying, redryTem, getDryMinForPhieu,
   getActiveNgung, startNgung, resumeNgung, listNgungByPhieu,
   listLyDoNgung, createLyDoNgung, updateLyDoNgung, setLyDoNgungActive, existsMaLyDoNgung, getLyDoNgung,
+  docLenhTachTx, tachLenhNgcTx,
   listToIn, createToIn, updateToIn, setToInActive, existsMaToIn, getToIn, phieuCoCotToIn, dongBoToInTuCsx,
   listLyDoBoSung, createLyDoBoSung, updateLyDoBoSung, setLyDoBoSungActive, existsMaLyDoBoSung,
   getLyDoBoSung, setLyDoBoSungChoDotVai, lyDoBoSungByLenh,

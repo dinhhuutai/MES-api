@@ -29,6 +29,7 @@ const release1Erp = require('./release1Erp');
 const { isKhuonOptional } = require('../../utils/tech');
 const { ngayHomNayVN } = require('../../utils/khoangNgay');
 const { trongGioHanhChinh } = require('../../utils/gioHanhChinh'); // Test Run ngoài giờ ⇒ QA kiêm Release 2
+const { khoaNgc, tenNgc } = require('../../utils/nhaGiaCong'); // đợt khác nhà gia công không gom (27/10/2026)
 
 const TEST_TRAM = 'TEST_RUN';
 const CNSP_CP = 'TEST_CNSP';
@@ -467,12 +468,13 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
   //   `lenh_sx_dot_vai` (đúng luật "gộp đợt vào 1 lệnh chỉ khi cùng phần in" — §10, như Gom đợt vải). Trước đó mỗi đợt
   //   1 lệnh riêng.
   // 27/10/2026: hết luật bỏ Test Run theo loại đợt ⇒ đợt bổ sung / mẫu SL gom CHUNG với đợt thường của cùng phần in.
+  // ⚠ 27/10/2026 (người dùng chốt): đợt KHÁC NHÀ GIA CÔNG (`nha_gia_cong`, ERP NGC) không gom — mỗi NGC 1 lệnh.
   const compose = await repo.getDotVaiForCompose(plan.map((p) => p.dvId));
   const cById = Object.fromEntries(compose.map((r) => [r.id, r]));
   const nhomMap = new Map();
   for (const p of plan) {
     const dv = cById[p.dvId];
-    const k = `${dv?.phan_in_id || p.dvId}`;
+    const k = `${dv?.phan_in_id || p.dvId}|${khoaNgc(dv?.nha_gia_cong)}`;
     if (!nhomMap.has(k)) nhomMap.set(k, []);
     nhomMap.get(k).push(p);
   }
@@ -573,6 +575,13 @@ async function createDotSanXuat({ items, chuyenId, ngayKeHoach, tgBdKh, tgKtKh, 
   const ids = plan.map((p) => p.dotVaiId);
   const info = await repo.getDotVaiForCompose(ids);
   const byId = Object.fromEntries(info.map((r) => [r.id, r]));
+
+  // Đợt khác nhà gia công không cộng chung 1 lệnh (27/10/2026, người dùng chốt) — gom riêng từng nhà.
+  const ngcs = [...new Set(plan.map((p) => khoaNgc(byId[p.dotVaiId]?.nha_gia_cong)))];
+  if (ngcs.length > 1) {
+    throw new AppError(`Các đợt vải khác nhà gia công (${ngcs.map(tenNgc).join(', ')}) — không gộp chung một đợt sản xuất, gom riêng từng nhà gia công`,
+      { status: 422, errorCode: 'KHAC_NHA_GIA_CONG' });
+  }
 
   // CHỈ gộp các đợt vải CÙNG PHẦN IN (code phần) vào 1 đợt SX. Muốn gom nhiều phần in cùng màu → dùng Gom set (READY).
   const pins = new Set();
@@ -1052,7 +1061,7 @@ async function skipTestRun(lenhId, actorId, lyDoVao = '') {
   let dich = null;
   const info = await repo.phanInChuyenCuaLenh(lenhId);
   if (info && (info.phan_in_ids || []).length === 1) {
-    dich = (await repo.lenhDangChayCuaPhanIn(info.phan_in_ids, info.chuyen_id))[0] || null;
+    dich = (await repo.lenhDangChayCuaPhanIn(info.phan_in_ids, info.chuyen_id, lenhId))[0] || null; // cùng nhà gia công
     if (dich && dich.id === lenhId) dich = null;
   }
   const doiChuyen = dich && dich.chuyen_id && dich.chuyen_id !== info.chuyen_id;

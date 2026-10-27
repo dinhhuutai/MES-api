@@ -33,6 +33,8 @@ router.put('/tem/:temId/vai', rbac('PROD_RUN'), c.suaVaiTheoTem);
 router.put('/tem/:temId/sua', rbac('PROD_RUN'), c.suaTem);
 // Gộp các lệnh cùng code phần + cùng chuyền thành 1 lệnh (25/10/2026) — sidebar nhiều lệnh gọi trước khi in tem.
 router.post('/gop-lenh', rbac('PROD_RUN'), c.gopLenh);
+// Tách lệnh gom đợt khác nhà gia công thành mỗi NGC 1 lệnh (27/10/2026) — nút ở sidebar sản xuất.
+router.post('/lenh/:lenhId/tach-ngc', rbac('PROD_RUN'), c.tachLenhNgc);
 router.get('/phieu/:phieuId/tem-logs', rbac('PROD_RUN', 'PROD_MONITOR'), c.temLogs);
 router.post('/phieu/:phieuId/vai-huy', rbac('PROD_RUN'), c.addVaiHuy); // body.loai: HUY (vải hư) | THIEU
 // Phân công sản xuất (thợ in theo phần in + ca trưởng/chuyền trưởng + SL vải hủy/thiếu) — sidebar Sản xuất
