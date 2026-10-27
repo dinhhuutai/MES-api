@@ -999,7 +999,7 @@ async function tinhTrangGraph(phanInId) {
   )).rows[0];
   if (!info) return null;
 
-  const [dotVai, links, tems, readyCp, testCp, readyEv, giaoRec, kcsRec, traVeRec, traVeTruocSx, lenhHuyR] = await Promise.all([
+  const [dotVai, links, tems, readyCp, testCp, readyEv, giaoRec, kcsRec, traVeRec, traVeTruocSx, lenhHuyR, luotTem, sxTraVeKh, quanTriLui] = await Promise.all([
     // `kt_can_kiem_tra` (ERP KTCankiemtra) + lúc lên READY + lúc release (lệnh sống sớm nhất) ⇒ suy đợt VÀO THẲNG
     //   Kế hoạch không qua KT ở JS (xem `vaoThang` bên dưới).
     query(
@@ -1026,7 +1026,18 @@ async function tinhTrangGraph(phanInId) {
               EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id=ls.id) AS co_phieu,
               EXISTS (SELECT 1 FROM audit_log ab WHERE ab.ten_bang='lenh_san_xuat' AND ab.hanh_dong='RELEASE_2'
                       AND ab.id_ban_ghi = ls.id::text AND ab.gia_tri_moi->>'bo_test_run' = 'true') AS qa_bo_test,
-              lsd.dot_vai_ve_id, lsd.so_luong AS sl_vao, dv.ma_dot_vai, dv.so_luong_vai_ve
+              lsd.dot_vai_ve_id, lsd.so_luong AS sl_vao, dv.ma_dot_vai, dv.so_luong_vai_ve,
+              (SELECT json_agg(json_build_object('lan', tr.lan_test, 'ket_qua', tr.ket_qua, 'tg', COALESCE(tr.tg_bd_test, tr.created_date),
+                      'ghi_chu', tr.ghi_chu, 'nguoi', tu.ho_ten) ORDER BY tr.lan_test)
+                 FROM test_run tr LEFT JOIN nguoi_dung tu ON tu.id = tr.created_by WHERE tr.lenh_san_xuat_id = ls.id) AS tests,
+              (SELECT json_agg(json_build_object('hanh_dong', a.hanh_dong, 'tg', a.thoi_gian, 'nguoi', au.ho_ten,
+                      'ly_do', a.gia_tri_moi->>'ly_do', 'bo_test_run', a.gia_tri_moi->>'bo_test_run',
+                      'cong_vao_lenh', a.gia_tri_moi->>'cong_vao_lenh', 'dich', a.gia_tri_moi->>'dich') ORDER BY a.thoi_gian)
+                 FROM audit_log a LEFT JOIN nguoi_dung au ON au.id = a.nguoi_thuc_hien_id
+                WHERE a.ten_bang = 'lenh_san_xuat' AND a.id_ban_ghi = ls.id::text
+                  AND a.hanh_dong IN ('RELEASE_2','TRA_VE_KY_THUAT_TEST_RUN','TRA_VE_KY_THUAT_RELEASE_2','TRA_VE_KE_HOACH_TEST_RUN',
+                                      'XAC_NHAN_LAI_RELEASE_1','REPLAN','TRA_VE_KE_HOACH_SX','GOP_LENH_SX','DOI_CHUYEN',
+                                      'QUAN_TRI_LUI_VE')) AS nhat_ky
        FROM lenh_sx_dot_vai lsd
        JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
        JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
@@ -1171,7 +1182,8 @@ async function tinhTrangGraph(phanInId) {
     // LỆNH ĐÃ HỦY (25/10/2026, người dùng: "hiện luôn những trạm ở giữa có xác nhận lần đầu nếu có trả về — không thấy
     //   giờ Release của lần 1, lần 2"): lệnh bị hủy khi trả về (Đổi PA in, Trả về KT ở Release 1/Sản xuất, hủy lệnh…)
     //   vẫn là 1 lượt đi qua Release 1 / Test Run của chu kỳ READY đó ⇒ đọc mốc Release 1 · từng lần test · Release 2 ·
-    //   lúc hủy + lý do (audit mới nhất của lệnh có `ly_do`). Không có tem (lệnh có tem đã đi SX thì không vào nhánh này).
+    //   lúc hủy + lý do (audit mới nhất của lệnh có `ly_do`). Lệnh còn TEM SỐNG thì không vào nhánh này — lệnh từng in tem
+    //   rồi bị Quản trị phần in lùi về READY / Release 1 (27/10/2026: tem đã hủy hết) thì vẫn hiện.
     query(
       `SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.created_date, ls.updated_date AS tg_huy, r1u.ho_ten AS r1_nguoi,
               (SELECT json_agg(json_build_object('lan', tr.lan_test, 'ket_qua', tr.ket_qua, 'tg', COALESCE(tr.tg_bd_test, tr.created_date),
@@ -1180,7 +1192,7 @@ async function tinhTrangGraph(phanInId) {
               (SELECT json_build_object('tg', a.thoi_gian, 'nguoi', au.ho_ten) FROM audit_log a LEFT JOIN nguoi_dung au ON au.id = a.nguoi_thuc_hien_id
                 WHERE a.ten_bang='lenh_san_xuat' AND a.id_ban_ghi=ls.id::text AND a.hanh_dong='RELEASE_2' ORDER BY a.thoi_gian LIMIT 1) AS r2,
               (SELECT json_build_object('hanh_dong', a.hanh_dong, 'ly_do', a.gia_tri_moi->>'ly_do', 'vao_lenh', a.gia_tri_moi->>'vao_lenh',
-                      'nguoi', au.ho_ten, 'tg', a.thoi_gian)
+                      'dich', a.gia_tri_moi->>'dich', 'nguoi', au.ho_ten, 'tg', a.thoi_gian)
                  FROM audit_log a LEFT JOIN nguoi_dung au ON au.id = a.nguoi_thuc_hien_id
                 WHERE a.ten_bang='lenh_san_xuat' AND a.id_ban_ghi=ls.id::text AND (a.gia_tri_moi ? 'ly_do' OR a.hanh_dong='GOP_VAO_LENH')
                 ORDER BY a.thoi_gian DESC LIMIT 1) AS huy,
@@ -1191,8 +1203,72 @@ async function tinhTrangGraph(phanInId) {
         WHERE ls.trang_thai = 'HUY'
           AND EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
                       WHERE lsd.lenh_san_xuat_id = ls.id AND dv.phan_in_id = $1)
-          AND NOT EXISTS (SELECT 1 FROM phieu_san_xuat ps JOIN tem t ON t.phieu_san_xuat_id = ps.id WHERE ps.lenh_san_xuat_id = ls.id)
+          AND NOT EXISTS (SELECT 1 FROM phieu_san_xuat ps JOIN tem t ON t.phieu_san_xuat_id = ps.id AND t.trang_thai <> 'HUY'
+                          WHERE ps.lenh_san_xuat_id = ls.id)
         ORDER BY ls.created_date`.replace(/\s+/g, ' '),
+      [phanInId]
+    ).catch(() => ({ rows: [] })),
+    // MỌI LƯỢT KCS / SỬA / OQC của tem (27/10/2026, người dùng: "thể hiện các xác nhận của lần trước trả về") — KỂ CẢ
+    //   lượt đã HỦY XÁC NHẬN (vd OQC trả về KCS tự trừ / hủy lượt KCS cũ — `nguon` ở audit) và lượt OQC không đạt.
+    //   Cây chính vẫn vẽ theo sổ cái như cũ; danh sách này hiện thành "Nhật ký tem" dưới ô KCS.
+    query(
+      `SELECT x.* FROM (
+         SELECT 'KCS' AS buoc, k.tem_id, k.created_date AS tg, ku.ho_ten AS nguoi, k.so_luong_kiem AS sl, k.so_luong_dat AS dat,
+                k.so_luong_loi AS loi, NULL::text AS ket_qua, NULL::text AS nguon,
+                h.thoi_gian AS tg_huy, h.gia_tri_moi->>'nguon' AS huy_nguon, h.gia_tri_moi->>'ly_do' AS huy_ly_do
+           FROM kcs k LEFT JOIN nguoi_dung ku ON ku.id = k.created_by
+           LEFT JOIN LATERAL (SELECT a.thoi_gian, a.gia_tri_moi FROM audit_log a WHERE a.ten_bang='kcs' AND a.hanh_dong='HUY_XAC_NHAN'
+                               AND a.id_ban_ghi = k.id::text ORDER BY a.thoi_gian DESC LIMIT 1) h ON true
+         UNION ALL
+         SELECT 'SUA', s.tem_id, s.created_date, su.ho_ten, s.so_luong_sua, s.so_luong_sua_dat, s.so_luong_sua_huy, NULL, NULL,
+                h.thoi_gian, h.gia_tri_moi->>'nguon', h.gia_tri_moi->>'ly_do'
+           FROM sua s LEFT JOIN nguoi_dung su ON su.id = s.created_by
+           LEFT JOIN LATERAL (SELECT a.thoi_gian, a.gia_tri_moi FROM audit_log a WHERE a.ten_bang='sua' AND a.hanh_dong='HUY_XAC_NHAN'
+                               AND a.id_ban_ghi = s.id::text ORDER BY a.thoi_gian DESC LIMIT 1) h ON true
+         UNION ALL
+         SELECT 'OQC', o.tem_id, o.created_date, ou.ho_ten, o.so_luong_kiem, o.so_luong_dat, o.so_luong_loi, o.ket_qua, o.nguon,
+                h.thoi_gian, h.gia_tri_moi->>'nguon', h.gia_tri_moi->>'ly_do'
+           FROM oqc o LEFT JOIN nguoi_dung ou ON ou.id = o.created_by
+           LEFT JOIN LATERAL (SELECT a.thoi_gian, a.gia_tri_moi FROM audit_log a WHERE a.ten_bang='oqc' AND a.hanh_dong='HUY_XAC_NHAN'
+                               AND a.id_ban_ghi = o.id::text ORDER BY a.thoi_gian DESC LIMIT 1) h ON true
+       ) x
+       WHERE x.tem_id IN (
+         SELECT t.id FROM tem t JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+         JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id AND ls.trang_thai <> 'HUY'
+         JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
+         JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id AND dv.phan_in_id = $1)
+       ORDER BY x.tg`.replace(/\s+/g, ' '),
+      [phanInId]
+    ).catch(() => ({ rows: [] })),
+    // SẢN XUẤT TRẢ VỀ KẾ HOẠCH khi đang chạy (22/10/2026, audit `TRA_VE_KE_HOACH_SX` của lệnh) — không ghi `qc_tra_ve`
+    //   nên trước 27/10 sơ đồ không có. Lệnh có thể đã HỦY (trả trọn khi chưa in).
+    query(
+      `SELECT a.id::text AS id, a.thoi_gian AS tg, au.ho_ten AS nguoi, a.id_ban_ghi AS lenh_id,
+              a.gia_tri_moi->>'ly_do' AS ly_do, (a.gia_tri_moi->>'tra_ve')::int AS sl_tra_ve, a.gia_tri_moi->>'cach' AS cach,
+              a.gia_tri_moi->>'ma_lenh' AS ma_lenh
+         FROM audit_log a LEFT JOIN nguoi_dung au ON au.id = a.nguoi_thuc_hien_id
+        WHERE a.ten_bang = 'lenh_san_xuat' AND a.hanh_dong = 'TRA_VE_KE_HOACH_SX'
+          AND a.id_ban_ghi IN (SELECT lsd.lenh_san_xuat_id::text FROM lenh_sx_dot_vai lsd
+                                 JOIN dot_vai_ve d ON d.id = lsd.dot_vai_ve_id WHERE d.phan_in_id = $1)
+        ORDER BY a.thoi_gian`.replace(/\s+/g, ' '),
+      [phanInId]
+    ).catch(() => ({ rows: [] })),
+    // QUẢN TRỊ PHẦN IN LÙI VỀ TRẠM (27/10/2026, người dùng: "bấm lùi về trạm ở Quản trị phần in cũng phải thể hiện trong
+    //   sơ đồ phần in"): `QUAN_TRI_LUI_VE` (theo lệnh, `phaninadmin.luiVe`) + `QUAN_TRI_DAT_GIAI_DOAN` (đợt chưa có lệnh,
+    //   `datGiaiDoan`). Không ghi `qc_tra_ve` ⇒ đọc audit. Lệnh có thể đã HỦY (lùi về READY / Release 1).
+    query(
+      `SELECT a.id::text AS id, a.hanh_dong, a.thoi_gian AS tg, au.ho_ten AS nguoi, a.ten_bang, a.id_ban_ghi,
+              a.gia_tri_moi->>'dich' AS dich, a.gia_tri_moi->>'ly_do' AS ly_do, a.gia_tri_moi->'da_xong' AS da_xong,
+              (a.gia_tri_moi->>'so_buoc')::int AS so_buoc, a.gia_tri_moi->'loi'->>'message' AS loi,
+              a.gia_tri_cu->>'lenh' AS ma_lenh, dv.ma_dot_vai
+         FROM audit_log a LEFT JOIN nguoi_dung au ON au.id = a.nguoi_thuc_hien_id
+         LEFT JOIN dot_vai_ve dv ON a.ten_bang = 'dot_vai_ve' AND dv.id::text = a.id_ban_ghi
+        WHERE (a.ten_bang = 'lenh_san_xuat' AND a.hanh_dong = 'QUAN_TRI_LUI_VE'
+               AND a.id_ban_ghi IN (SELECT lsd.lenh_san_xuat_id::text FROM lenh_sx_dot_vai lsd
+                                      JOIN dot_vai_ve d ON d.id = lsd.dot_vai_ve_id WHERE d.phan_in_id = $1))
+           OR (a.ten_bang = 'dot_vai_ve' AND a.hanh_dong = 'QUAN_TRI_DAT_GIAI_DOAN'
+               AND a.id_ban_ghi IN (SELECT d.id::text FROM dot_vai_ve d WHERE d.phan_in_id = $1))
+        ORDER BY a.thoi_gian`.replace(/\s+/g, ' '),
       [phanInId]
     ).catch(() => ({ rows: [] })),
   ]);
@@ -1210,6 +1286,7 @@ async function tinhTrangGraph(phanInId) {
         r1: { nguoi: r.r1_nguoi, tg: r.created_date }, // Release 1 = tạo lệnh
         r2: (r.r2_nguoi || r.r2_tg) ? { nguoi: r.r2_nguoi, tg: r.r2_tg } : null, // Release 2 = audit RELEASE_2
         feeds: [], tems: [],
+        tests: r.tests || [], nhat_ky: r.nhat_ky || [],
       };
       lenhMap.set(r.lenh_id, g);
     }
@@ -1222,10 +1299,13 @@ async function tinhTrangGraph(phanInId) {
   kcsRec.rows.forEach((r) => { if (!kcsByTem.has(r.tem_id)) kcsByTem.set(r.tem_id, []); kcsByTem.get(r.tem_id).push(r); });
   const traVeByTem = new Map();
   traVeRec.rows.forEach((r) => { if (!traVeByTem.has(r.tem_id)) traVeByTem.set(r.tem_id, []); traVeByTem.get(r.tem_id).push(r); });
+  const luotByTem = new Map();
+  luotTem.rows.forEach((r) => { if (!luotByTem.has(r.tem_id)) luotByTem.set(r.tem_id, []); luotByTem.get(r.tem_id).push(r); });
   tems.rows.forEach((t) => {
     t.giao_records = giaoByTem.get(t.tem_id) || [];
     t.kcs_records = kcsByTem.get(t.tem_id) || [];
     t.tra_ve = traVeByTem.get(t.tem_id) || [];
+    t.luot = luotByTem.get(t.tem_id) || [];
   });
   // Tem 17 (sửa đạt) gắn vào tem gốc theo thứ tự tạo (mỗi lượt sửa 1 tem) — FE vẽ OQC / chờ giao / giao của nhánh Sửa
   // từ đây. Tem con mồ côi (tem gốc đã hủy / không thuộc lệnh này) thì bỏ — không có chỗ để vẽ.
@@ -1397,6 +1477,38 @@ async function tinhTrangGraph(phanInId) {
       o_lenh: oLenh, o_cycle: oCycle, t_cycle: tCycle === oCycle ? null : tCycle,
     });
   });
+
+  // Sản xuất trả về Kế hoạch (27/10/2026) — đặt ở lệnh đang vẽ (lệnh đã hủy ⇒ ô Phần in), không có ô đích.
+  sxTraVeKh.rows.forEach((r) => {
+    const oLenh = lenhMap.has(r.lenh_id) ? r.lenh_id : null;
+    tra_ve.push({
+      id: `sx-${r.id}`, loai: 'SX_KH', kieu: 'KH', ly_do: r.ly_do, nguoi: r.nguoi, tg: r.tg, da_xu_ly: true,
+      sl_tra_ve: r.sl_tra_ve, cach: r.cach, ma_lenh: r.ma_lenh,
+      o_lenh: oLenh, o_cycle: oLenh || !ready_cycles.length ? null : cyTai(new Date(r.tg).getTime()), t_cycle: null,
+    });
+  });
+  // Quản trị phần in lùi về trạm (27/10/2026) — đặt ở lệnh đang vẽ (lệnh đã hủy / đợt chưa lệnh ⇒ READY của chu kỳ
+  //   lúc đó, trước READY đầu ⇒ ô Phần in). Lùi về READY (KT / QA) ⇒ mũi tên tới READY được làm lại như trả về KT.
+  quanTriLui.rows.forEach((r) => {
+    const T = new Date(r.tg).getTime();
+    const lenhId = r.ten_bang === 'lenh_san_xuat' ? r.id_ban_ghi : null;
+    const oLenh = lenhId && lenhMap.has(lenhId) ? lenhId : null;
+    const oCycle = oLenh || !ready_cycles.length ? null
+      : (ready_cycles.some((cy) => cy.start && new Date(cy.start).getTime() <= T) || !ready_cycles[0].start ? cyTai(T) : null);
+    const veReady = r.dich === 'READY_KT' || r.dich === 'READY_QA';
+    let tCycle = null;
+    if (veReady && ready_cycles.length) {
+      const sau = cyBatDauSau(T);
+      if (sau >= 0) tCycle = sau;
+    }
+    tra_ve.push({
+      id: `qt-${r.id}`, loai: 'QUAN_TRI', kieu: veReady ? 'KT' : 'QT', dich: r.dich, ly_do: r.ly_do, nguoi: r.nguoi, tg: r.tg,
+      da_xu_ly: true, ma_lenh: r.ma_lenh, ma_dot_vai: r.ma_dot_vai, so_buoc: r.so_buoc,
+      da_xong: Array.isArray(r.da_xong) ? r.da_xong : [], loi: r.loi,
+      o_lenh: oLenh, o_cycle: oCycle, t_cycle: tCycle === oCycle ? null : tCycle,
+    });
+  });
+  tra_ve.sort((a, b) => new Date(a.tg) - new Date(b.tg));
 
   return { phan_in: info, ready_cycles, vao_thang, tra_ve, dot_vai: dotVai.rows };
 }
