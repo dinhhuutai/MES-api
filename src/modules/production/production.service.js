@@ -802,12 +802,12 @@ async function batDauChay(lenhId, actorId, chuyenId = null) {
     throw new AppError('Lệnh chưa ở trạng thái Release 2', { status: 409, errorCode: 'WRONG_STAGE' });
   }
   await planningService.assertKhongOGn(lenhId); // phần in đang ở Giao nhận (trả về GN) ⇒ chưa chạy được
-  // Chuyền THỰC TẾ chạy (kế thừa chuyền kế hoạch, cho phép đổi khi xác nhận chạy).
+  // Chuyền THỰC TẾ chạy (kế thừa chuyền kế hoạch, cho phép đổi khi xác nhận chạy). ⚠ 27/10/2026: chỉ ghi vào PHIẾU —
+  //   chuyền kế hoạch `lenh_san_xuat.chuyen_id` GIỮ NGUYÊN (Kế hoạch ghi kế hoạch, Sản xuất ghi thực tế).
   const chuyenThucTe = chuyenId || lenh.chuyen_id;
   if (!chuyenThucTe) throw new AppError('Lệnh chưa có chuyền — chọn chuyền thực tế', { status: 422, errorCode: 'THIEU_CHUYEN' });
   const maPhieu = await repo.nextMaPhieu();
   await withTransaction(async (client) => {
-    if (chuyenId && chuyenId !== lenh.chuyen_id) await repo.setLenhChuyen(client, lenhId, chuyenId, actorId);
     await repo.createPhieu(client, { lenhId, chuyenId: chuyenThucTe, maPhieu }, actorId);
     await repo.setLenhTrangThai(client, lenhId, 'SAN_XUAT', actorId);
   });
@@ -1039,7 +1039,7 @@ async function startProductionSpecial(lenhId, actorId, chuyenId = null, lyDo = n
   const chuyenThucTe = chuyenId || lenh.chuyen_id;
   const maPhieu = await repo.nextMaPhieu();
   await withTransaction(async (client) => {
-    if (chuyenId && chuyenId !== lenh.chuyen_id) await repo.setLenhChuyen(client, lenhId, chuyenId, actorId);
+    // Chuyền thực tế chỉ ghi vào PHIẾU — chuyền kế hoạch của lệnh giữ nguyên (27/10/2026, xem `repo.getLenhBasic`).
     await repo.createPhieu(client, { lenhId, chuyenId: chuyenThucTe, maPhieu }, actorId);
     await repo.setLenhTrangThai(client, lenhId, 'SAN_XUAT', actorId); // bỏ qua Test Run + Release 2
   });
@@ -1770,9 +1770,9 @@ async function pauseLenhChay(phieuId, actorId) {
 }
 
 // ----- ĐỔI CHUYỀN của lượt chạy (máy hỏng / dồn tải sang chuyền khác) -----
-// Đổi CẢ phiếu lẫn lệnh trong 1 transaction: `phieu_san_xuat.chuyen_id` là chuyền THỰC TẾ đang in,
-// còn `lenh_san_xuat.chuyen_id` là thứ mọi màn theo lệnh đọc (Theo dõi chuyền, Excel, dashboard,
-// chip lọc loại chuyền) — đổi lệch nhau sẽ ra 2 con số đá nhau.
+// ⚠⚠ 27/10/2026 (người dùng chốt): CHỈ đổi PHIẾU (`phieu_san_xuat.chuyen_id` = chuyền THỰC TẾ đang in). Chuyền KẾ HOẠCH
+//   `lenh_san_xuat.chuyen_id` GIỮ NGUYÊN — Kế hoạch ghi nhận theo kế hoạch, Sản xuất ghi nhận thực tế (trước đó đổi cả lệnh
+//   ⇒ màn Kế hoạch "nhảy theo" Sản xuất). Màn theo dõi đang in đọc chuyền của phiếu (`repo.getLenhBasic`, `monitorRunning`…).
 // ⚠ KHÔNG đụng tem/xe phơi: tem đã in xong thuộc về lượt in đó, đổi chuyền không làm chúng in lại.
 async function doiChuyen(phieuId, { chuyenId, ghiChu }, actorId) {
   const phieu = await repo.getPhieuFull(phieuId);
@@ -1793,7 +1793,6 @@ async function doiChuyen(phieuId, { chuyenId, ghiChu }, actorId) {
 
   await withTransaction(async (client) => {
     await repo.setPhieuChuyen(client, phieuId, chuyenId, actorId);
-    await repo.setLenhChuyen(client, phieu.lenh_san_xuat_id, chuyenId, actorId);
   });
   await repo.logDoiChuyen(phieuId, {
     ma_lenh: phieu.ma_lenh_san_xuat || null,

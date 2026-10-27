@@ -233,6 +233,10 @@ const dsTemDaIn = (laGiaCong) => asyncHandler(async (req, res) => {
     ca: HAU_TO_CA[String(q.ca || '').toUpperCase()] || '',
     khach: q.khach || '', don: q.don || '', maHang: q.maHang || '', codePhan: q.codePhan || '',
     maTem: q.maTem || '', chuyen: q.chuyen || '', chuyenId: q.chuyenId || '',
+    // 27/10/2026 (người dùng: "thêm bộ lọc ở danh sách tem in"): màu · kích vải · kích phim · mã lệnh · mã lô · NGC · trạng thái.
+    mauVai: q.mauVai || '', kichVai: q.kichVai || '', kichPhim: q.kichPhim || '', maLenh: q.maLenh || '',
+    maLo: String(q.maLo || '').slice(0, 40), nhaGiaCong: q.nhaGiaCong || '',
+    trangThai: String(q.trangThai || '').split(',').map((x) => x.trim().toUpperCase()).filter((x) => /^[A-Z_]{2,20}$/.test(x)).slice(0, 10),
     // Khu chuyền (26/10/2026) — chip loại ⇒ `loaiChuyen`, chip khu ⇒ `maChuyen` (danh sách mã, ngăn dấu phẩy).
     loaiChuyen: /^[A-Z_]{1,30}$/i.test(q.loaiChuyen || '') ? q.loaiChuyen : '',
     maChuyenDs: String(q.maChuyen || '').slice(0, 400),

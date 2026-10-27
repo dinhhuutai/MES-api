@@ -77,7 +77,7 @@ const TEM_CTX = `
   FROM tem t
   JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
   JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
-  LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+  LEFT JOIN chuyen_san_xuat cs ON cs.id = COALESCE(ps.chuyen_id, ls.chuyen_id)
   LEFT JOIN loai_chuyen lc_gc ON lc_gc.id = cs.loai_chuyen_id
   LEFT JOIN LATERAL (
     SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim
@@ -169,7 +169,7 @@ async function caPartsForTems(temIds) {
      FROM tem t
      LEFT JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
      LEFT JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
-     LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+     LEFT JOIN chuyen_san_xuat cs ON cs.id = COALESCE(ps.chuyen_id, ls.chuyen_id)
      LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
      WHERE t.id = ANY($1::uuid[])`.replace(/\s+/g, ' '),
     [temIds]
@@ -198,7 +198,7 @@ async function prevConfirmerByTems(temIds) {
       (SELECT nd.ho_ten FROM phieu_san_xuat ps JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
          JOIN nguoi_dung nd ON nd.id = ls.created_by WHERE ps.id = t.phieu_san_xuat_id) AS nguoi_release1,
       EXISTS (SELECT 1 FROM phieu_san_xuat ps JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
-         JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
+         JOIN chuyen_san_xuat cs ON cs.id = COALESCE(ps.chuyen_id, ls.chuyen_id) JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
          WHERE ps.id = t.phieu_san_xuat_id AND lc.ma_loai = 'GIA_CONG') AS la_gia_cong
     FROM tem t WHERE t.id = ANY($1::uuid[])`;
   const { rows } = await query(sql.replace(/\s+/g, ' '), [temIds]);
@@ -499,7 +499,7 @@ async function listInlineCandidates({ search = '' }) {
             (SELECT count(*) FROM qc_in_line q WHERE q.phieu_san_xuat_id = ps.id)::int AS so_lan_kiem
      FROM phieu_san_xuat ps
      JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
-     LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+     LEFT JOIN chuyen_san_xuat cs ON cs.id = COALESCE(ps.chuyen_id, ls.chuyen_id)
      ${PHAN_INFO_LATERAL}
      WHERE ps.trang_thai = 'DANG_CHAY'
        AND ($1 = '' OR ps.ma_phieu_san_xuat ~* $1 OR ls.ma_lenh_san_xuat ~* $1
@@ -1096,7 +1096,7 @@ async function listTraVeChiTiet({ loais, tuNgay, denNgay }) {
              l0.lenh_id
     ) x ON true
     LEFT JOIN lenh_san_xuat ls ON ls.id = x.lenh_id
-    LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+    LEFT JOIN chuyen_san_xuat cs ON cs.id = COALESCE(pst.chuyen_id, ls.chuyen_id)
     LEFT JOIN phan_in pin ON pin.id = x.pin_id
     LEFT JOIN ma_hang mh ON mh.id = pin.ma_hang_id
     LEFT JOIN don_hang dh ON dh.id = mh.don_hang_id
@@ -1233,7 +1233,7 @@ async function listTemSua({ search = '' } = {}) {
     FROM tem t
     JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
     JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
-    LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+    LEFT JOIN chuyen_san_xuat cs ON cs.id = COALESCE(ps.chuyen_id, ls.chuyen_id)
     ${TEM_INFO_LATERAL}
     WHERE ${conds.join(' AND ')}
     ORDER BY t.created_date DESC`;
@@ -1267,7 +1267,7 @@ async function listTemSuaDaHuy({ search = '' } = {}) {
     JOIN tem t ON t.id = last.tem_id::uuid
     JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
     JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
-    LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+    LEFT JOIN chuyen_san_xuat cs ON cs.id = COALESCE(ps.chuyen_id, ls.chuyen_id)
     LEFT JOIN nguoi_dung nd ON nd.id = last.nguoi_thuc_hien_id
     ${TEM_INFO_LATERAL}
     WHERE ${conds.join(' AND ')}

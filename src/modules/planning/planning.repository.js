@@ -211,7 +211,7 @@ async function phanInDangChay(phanInIds) {
 async function lenhDangChayCuaPhanIn(phanInIds, chuyenId, cungNgcLenhId = null) {
   if (!phanInIds || !phanInIds.length) return [];
   const sql = `SELECT DISTINCT ON (dv.phan_in_id) dv.phan_in_id::text AS phan_in_id, ls.id, ls.ma_lenh_san_xuat,
-      ls.chuyen_id::text AS chuyen_id
+      COALESCE(ps.chuyen_id, ls.chuyen_id)::text AS chuyen_id
     FROM lenh_san_xuat ls
     JOIN phieu_san_xuat ps ON ps.lenh_san_xuat_id = ls.id AND ps.trang_thai = 'DANG_CHAY'
     JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
@@ -223,7 +223,7 @@ async function lenhDangChayCuaPhanIn(phanInIds, chuyenId, cungNgcLenhId = null) 
            WHERE l2.lenh_san_xuat_id = ls.id) = 1
      AND (SELECT count(*) FROM phieu_san_xuat p2 WHERE p2.lenh_san_xuat_id = ls.id AND p2.trang_thai <> 'HUY') = 1
      AND ($3::uuid IS NULL OR ${khoaNgcLenhSql('ls.id')} = ${khoaNgcLenhSql('$3::uuid')})
-   ORDER BY dv.phan_in_id, (ls.chuyen_id IS NOT DISTINCT FROM $2::uuid) DESC,
+   ORDER BY dv.phan_in_id, (COALESCE(ps.chuyen_id, ls.chuyen_id) IS NOT DISTINCT FROM $2::uuid) DESC,
      (SELECT COALESCE(SUM(t.so_luong), 0) FROM tem t WHERE t.phieu_san_xuat_id = ps.id AND t.trang_thai <> 'HUY') DESC,
      ls.ma_lenh_san_xuat`;
   const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [phanInIds, chuyenId || null, cungNgcLenhId || null]);

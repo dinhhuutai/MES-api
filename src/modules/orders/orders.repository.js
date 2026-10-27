@@ -565,14 +565,40 @@ async function getPhanInTimeline(phanInId) {
     };
   };
 
+  // "KHÔNG TEST RUN" (27/10/2026, người dùng: "hành trình thêm thông tin test run là bấm không test run"): QA bỏ test
+  //   ⇒ không có TEST_CNSP/TEST_QA nên trạm Test Run trống. Đọc audit `RELEASE_2` cờ `bo_test_run` (người · giờ · lý do —
+  //   lý do bắt buộc từ 27/10). Lệnh bỏ test đã CỘNG VÀO lệnh đang chạy (`cong_vao_lenh_id`, lệnh bỏ test HUY) ⇒ gắn vào lệnh
+  //   đích; lệnh tách theo nhà gia công mang cờ gốc ở `bo_test_run_goc`. Lỗi đọc ⇒ bỏ qua (phụ trợ).
+  const boTestByLenh = new Map();
+  const lenhIds = lenhR.rows.map((l) => String(l.id));
+  if (lenhIds.length) {
+    try {
+      const { rows } = await query(`SELECT COALESCE(a.gia_tri_moi->>'cong_vao_lenh_id', a.id_ban_ghi) AS lenh_id,
+          (SELECT x.ma_lenh_san_xuat FROM lenh_san_xuat x WHERE x.id::text = a.id_ban_ghi) AS tu_lenh,
+          (a.gia_tri_moi->>'cong_vao_lenh_id') IS NOT NULL AS cong_vao, a.thoi_gian AS tg, nd.ho_ten AS nguoi,
+          a.gia_tri_moi->>'ly_do' AS ly_do
+        FROM audit_log a LEFT JOIN nguoi_dung nd ON nd.id = a.nguoi_thuc_hien_id
+        WHERE a.ten_bang = 'lenh_san_xuat' AND a.hanh_dong = 'RELEASE_2'
+          AND COALESCE(a.gia_tri_moi->>'bo_test_run', a.gia_tri_moi->>'bo_test_run_goc') = 'true'
+          AND (a.id_ban_ghi = ANY($1::text[]) OR a.gia_tri_moi->>'cong_vao_lenh_id' = ANY($1::text[]))
+        ORDER BY a.thoi_gian`.replace(/\s+/g, ' '), [lenhIds]);
+      rows.forEach((r) => {
+        if (!boTestByLenh.has(r.lenh_id)) boTestByLenh.set(r.lenh_id, []);
+        boTestByLenh.get(r.lenh_id).push({ tg: r.tg, nguoi: r.nguoi || null, ly_do: r.ly_do || null, tu_lenh: r.cong_vao ? r.tu_lenh : null });
+      });
+    } catch (e) { console.error('[hanh-trinh] ✗ Không đọc được lượt "Không test run":', e.message); }
+  }
+
   const journeys = lenhR.rows.map((l) => {
     const ckl = cklByLenh.get(l.id) || new Map();
     const moc = mocByLenh.get(l.id) || new Map();
     const q = qtyByLenh.get(l.id);
-    const maTrams = new Set([...ckl.keys(), ...moc.keys()]);
+    const boTest = boTestByLenh.get(String(l.id)) || [];
+    const maTrams = new Set([...ckl.keys(), ...moc.keys(), ...(boTest.length ? ['TEST_RUN'] : [])]);
     const trams = [...maTrams].map((ma) => ({
       ma_tram: ma, ten_tram: tenTram(ma), thu_tu: thuTu(ma),
       checklists: ckl.get(ma) || [], moc: moc.get(ma) || null, qty: nodeQty(ma, q),
+      ...(ma === 'TEST_RUN' && boTest.length ? { bo_test_run: boTest } : {}),
     })).sort((a, b) => a.thu_tu - b.thu_tu);
     // READY của chu kỳ ứng với lệnh (từ lịch sử); thiếu lịch sử (dữ liệu cũ/seed) → dùng READY hiện tại.
     // 1 đợt vải (thuộc phần in này) ⇒ READY CỦA CHÍNH ĐỢT ĐÓ; lệnh gộp nhiều đợt ⇒ giữ chu kỳ READY cũ.

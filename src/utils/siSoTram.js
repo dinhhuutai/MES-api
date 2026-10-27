@@ -181,10 +181,11 @@ const NGUON_TEM = ({ tgVao, tgRa, dk, them = '' }) => `SELECT dv.phan_in_id, ${t
   JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
   JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
   JOIN phan_in pin ON pin.id = dv.phan_in_id AND pin.dang_hoat_dong
-  LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+  LEFT JOIN chuyen_san_xuat cs ON cs.id = COALESCE(ps.chuyen_id, ls.chuyen_id)
   LEFT JOIN loai_chuyen lct ON lct.id = cs.loai_chuyen_id
   ${them}
   WHERE ${dk}`;
+// ↑ Tem thuộc chuyền THỰC TẾ của phiếu (27/10/2026 — Sản xuất không còn ghi đè chuyền kế hoạch của lệnh).
 
 // ⚠⚠ MỐC VÀO TRẠM CỦA 1 TEM (02/10/2026) — NGUỒN DUY NHẤT cho CẢ sĩ số/bảng theo dõi (`DV.KIEM/SUA/OQC/GIAO`
 //   dưới đây) LẪN đồng hồ SLA tô đỏ của 4 màn KCS · Sửa · OQC · Giao (`quality.repository TEM_CTX`,

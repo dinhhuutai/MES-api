@@ -1024,8 +1024,11 @@ async function tinhTrangGraph(phanInId) {
               EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint c ON c.id=kq.checkpoint_id
                       WHERE kq.lenh_san_xuat_id=ls.id AND c.ma_checkpoint='TEST_CNSP' AND kq.trang_thai='DAT') AS test_cnsp,
               EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id=ls.id) AS co_phieu,
-              EXISTS (SELECT 1 FROM audit_log ab WHERE ab.ten_bang='lenh_san_xuat' AND ab.hanh_dong='RELEASE_2'
-                      AND ab.id_ban_ghi = ls.id::text AND ab.gia_tri_moi->>'bo_test_run' = 'true') AS qa_bo_test,
+              (SELECT json_build_object('tg', ab.thoi_gian, 'nguoi', nbt.ho_ten, 'ly_do', ab.gia_tri_moi->>'ly_do')
+                 FROM audit_log ab LEFT JOIN nguoi_dung nbt ON nbt.id = ab.nguoi_thuc_hien_id
+                WHERE ab.ten_bang='lenh_san_xuat' AND ab.hanh_dong='RELEASE_2' AND ab.id_ban_ghi = ls.id::text
+                  AND COALESCE(ab.gia_tri_moi->>'bo_test_run', ab.gia_tri_moi->>'bo_test_run_goc') = 'true'
+                ORDER BY ab.thoi_gian DESC LIMIT 1) AS qa_bo_test,
               lsd.dot_vai_ve_id, lsd.so_luong AS sl_vao, dv.ma_dot_vai, dv.so_luong_vai_ve,
               (SELECT json_agg(json_build_object('lan', tr.lan_test, 'ket_qua', tr.ket_qua, 'tg', COALESCE(tr.tg_bd_test, tr.created_date),
                       'ghi_chu', tr.ghi_chu, 'nguoi', tu.ho_ten) ORDER BY tr.lan_test)
@@ -1298,6 +1301,7 @@ async function tinhTrangGraph(phanInId) {
         so_luong_release: r.so_luong_release, giai_doan: r.giai_doan, ngay_ke_hoach: r.ngay_ke_hoach,
         created_date: r.created_date,
         test_qa: r.test_qa, test_cnsp: r.test_cnsp, co_phieu: r.co_phieu,
+        qa_bo_test: r.qa_bo_test || null, // { tg, nguoi, ly_do } lượt QA bấm "Không test run" (27/10/2026 — trước đó bị bỏ rơi)
         r1: { nguoi: r.r1_nguoi, tg: r.created_date }, // Release 1 = tạo lệnh
         r2: (r.r2_nguoi || r.r2_tg) ? { nguoi: r.r2_nguoi, tg: r.r2_tg } : null, // Release 2 = audit RELEASE_2
         feeds: [], tems: [],
@@ -1307,6 +1311,24 @@ async function tinhTrangGraph(phanInId) {
     }
     g.feeds.push({ dot_vai_ve_id: r.dot_vai_ve_id, ma_dot_vai: r.ma_dot_vai, so_luong: r.sl_vao, so_luong_vai_ve: r.so_luong_vai_ve });
   });
+  // "Không test run" của lệnh KHÁC đã CỘNG VÀO lệnh này (27/10/2026 — lệnh bỏ test thành HUY nên không có trên sơ đồ):
+  //   1 câu cho cả phần in (khóa jsonb không có index — đặt trong subquery từng dòng là quét cả audit_log mỗi dòng).
+  if (lenhMap.size) {
+    try {
+      const { rows } = await query(
+        `SELECT a.gia_tri_moi->>'cong_vao_lenh_id' AS lenh_id, a.thoi_gian AS tg, nd.ho_ten AS nguoi,
+                a.gia_tri_moi->>'ly_do' AS ly_do, x.ma_lenh_san_xuat AS tu_lenh
+           FROM audit_log a LEFT JOIN nguoi_dung nd ON nd.id = a.nguoi_thuc_hien_id
+           LEFT JOIN lenh_san_xuat x ON x.id::text = a.id_ban_ghi
+          WHERE a.ten_bang = 'lenh_san_xuat' AND a.hanh_dong = 'RELEASE_2'
+            AND a.gia_tri_moi->>'cong_vao_lenh_id' = ANY($1::text[])`.replace(/\s+/g, ' '),
+        [[...lenhMap.keys()].map(String)]);
+      rows.forEach((r) => {
+        const g = lenhMap.get(r.lenh_id);
+        if (g) g.nhat_ky = [...g.nhat_ky, { hanh_dong: 'RELEASE_2', bo_test_run: 'true', tg: r.tg, nguoi: r.nguoi, ly_do: r.ly_do, tu_lenh: r.tu_lenh }];
+      });
+    } catch (e) { console.error('[so-do-phan-in] ✗ Không đọc được lượt Không test run cộng vào lệnh:', e.message); }
+  }
   // Gom các lần giao + các lần kiểm KCS theo tem.
   const giaoByTem = new Map();
   giaoRec.rows.forEach((r) => { if (!giaoByTem.has(r.tem_id)) giaoByTem.set(r.tem_id, []); giaoByTem.get(r.tem_id).push(r); });
