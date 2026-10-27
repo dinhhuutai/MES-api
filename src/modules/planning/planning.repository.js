@@ -2169,7 +2169,21 @@ async function testRunHistoryByDate(date) {
     LEFT JOIN nguoi_dung nd ON nd.id = l.nguoi_thuc_hien_id
     WHERE cp.ma_checkpoint IN ('TEST_CNSP', 'TEST_QA')
       AND (l.tg_thuc_hien AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
-    ORDER BY l.tg_thuc_hien DESC`;
+    UNION ALL
+    SELECT a.thoi_gian AS tg, nd.ho_ten AS nguoi, 'Không test run' AS hanh_dong,
+           ls.ma_lenh_san_xuat || COALESCE(' · ' || (SELECT string_agg(DISTINCT pin.ma_phan, ', ')
+             FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+             JOIN phan_in pin ON pin.id = dv.phan_in_id WHERE lsd.lenh_san_xuat_id = ls.id), '') AS doi_tuong,
+           NULLIF(concat_ws(' · ', 'Lý do: ' || NULLIF(a.gia_tri_moi->>'ly_do', ''),
+             'Cộng vào lệnh đang chạy ' || NULLIF(a.gia_tri_moi->>'cong_vao_lenh', ''),
+             CASE WHEN COALESCE(a.gia_tri_moi->>'cong_vao_lenh', '') = '' THEN 'Vào chờ sản xuất' END), '') AS chi_tiet
+      FROM audit_log a
+      JOIN lenh_san_xuat ls ON ls.id::text = a.id_ban_ghi
+      LEFT JOIN nguoi_dung nd ON nd.id = a.nguoi_thuc_hien_id
+     WHERE a.ten_bang = 'lenh_san_xuat' AND a.hanh_dong = 'RELEASE_2'
+       AND COALESCE((a.gia_tri_moi->>'bo_test_run')::boolean, false)
+       AND (a.thoi_gian AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
+    ORDER BY 1 DESC`;
   const { rows } = await query(sql, [date]);
   return rows;
 }

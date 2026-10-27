@@ -104,7 +104,7 @@ const approveRelease2 = asyncHandler(async (req, res) =>
   ok(res, await service.approveRelease2(req.params.lenhId, req.user.id), 'Đã Release 2 — sẵn sàng sản xuất'));
 
 const skipTestRun = asyncHandler(async (req, res) => {
-  const kq = await service.skipTestRun(req.params.lenhId, req.user.id);
+  const kq = await service.skipTestRun(req.params.lenhId, req.user.id, (req.body || {}).lyDo);
   const cv = kq && kq.cong_vao_lenh_chay;
   ok(res, kq, cv
     ? `Đã bỏ Test Run — cộng thẳng số lượng vào lệnh đang chạy ${cv.ma_lenh}`

@@ -246,19 +246,12 @@ async function recordKcs(temId, body, actorId) {
   //   sai mà không ai biết (vd tem 50, nhập đạt 45 + hư 3 = 48 vẫn lưu, mất dấu 2 pcs).
   //   Ví dụ người dùng đưa: kiểm 50 · đạt 45 · hư 6 ⇒ +1 (chặn) · hư 3 ⇒ −2 (chặn).
   // ⚠⚠ KIỂM TRƯỚC MỘT PHẦN (27/10/2026, người dùng: "kiểm trước khoảng 1 nửa số lượng, nếu còn số lượng thì vẫn còn ở
-  //   trang này"): CHỈ khi FE gửi tường minh `kiemMotPhan` (ô tích "Kiểm một phần") — không thì vẫn cân đối tuyệt đối như
-  //   trên (giữ chốt 04/09 chống nhập thiếu lặng lẽ). Lượt một phần: KHÔNG nhập thiếu/dư (chỉ chốt ở lượt kiểm HẾT),
-  //   đạt + hư < SL cần kiểm; phần còn lại giữ `con_kcs` > 0 ⇒ tem ở lại màn KCS (sổ cái → `DA_KHO`), phần đạt lên OQC ngay.
-  const motPhan = body.kiemMotPhan === true || body.kiemMotPhan === 'true' || body.kiemMotPhan === 1;
-  if (motPhan) {
-    if (thieu || du) {
-      throw new AppError('Kiểm một phần không nhập thiếu/dư — thiếu/dư nhập ở lượt kiểm hết', { status: 422, errorCode: 'MOT_PHAN_THIEU_DU' });
-    }
-    if (kiem >= conKcs) {
-      throw new AppError(`Kiểm một phần phải nhỏ hơn SL cần kiểm (${conKcs}) — kiểm hết thì bỏ tích "Kiểm một phần"`,
-        { status: 422, errorCode: 'MOT_PHAN_DU_SL' });
-    }
-  } else if (kiem !== conSauChenh) {
+  //   trang này" — rồi cùng ngày: "khỏi cần tích ô một phần, số lượng nhỏ hơn là biết 1 phần rồi"): KHÔNG nhập thiếu/dư
+  //   và đạt + hư < SL cần kiểm ⇒ TỰ coi là lượt một phần — phần còn lại giữ `con_kcs` > 0 ⇒ tem ở lại màn KCS (sổ cái →
+  //   `DA_KHO`), phần đạt lên OQC ngay. Có nhập thiếu/dư = lượt CHỐT ⇒ vẫn cân đối tuyệt đối như trên. Vượt cần kiểm mà
+  //   không nhập dư ⇒ vẫn chặn. (Chốt 04/09 "nhập thiếu là chặn" nay chỉ còn ở lượt có thiếu/dư — người dùng chấp nhận.)
+  const motPhan = !thieu && !du && kiem < conKcs;
+  if (!motPhan && kiem !== conSauChenh) {
     const lech = kiem - conSauChenh;
     throw new AppError(
       `Chênh lệch ${lech > 0 ? '+' : ''}${lech} — phải bằng 0 mới lưu được. `

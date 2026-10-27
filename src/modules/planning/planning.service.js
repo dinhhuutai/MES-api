@@ -33,20 +33,11 @@ const { trongGioHanhChinh } = require('../../utils/gioHanhChinh'); // Test Run n
 const TEST_TRAM = 'TEST_RUN';
 const CNSP_CP = 'TEST_CNSP';
 const QA_CP = 'TEST_QA';
-const SL_NHO_BO_TEST = 100; // đợt SX tổng SL < ngưỡng này → bỏ Test Run (điểm 5). Ngưỡng cấu hình được sau.
-
-// ⚠⚠ LOẠI ĐỢT VẢI BỎ HẲN TEST RUN (chốt 21/08/2026) — ERP `loaikd`: 5I = BO_SUNG · 6I = MAU_SO_LUONG.
-//   Hàng bổ sung / mẫu số lượng là chạy tiếp thứ ĐÃ IN RỒI ⇒ Release 1 coi như Release 2, đợt SX vào
-//   thẳng "chờ sản xuất".
-// ⚠⚠ LUẬT NÀY THẮNG TUYỆT ĐỐI — kể cả đợt bật cờ `can_lam_lai_ready` (người dùng chốt sau khi đã xem
-//   số đo: prod 21/08 có 127/591 đợt BO_SUNG đang bật cờ đó). KHÁC HẲN 2 luật đi tắt cũ (SL < 100 /
-//   đang in tem) vốn vẫn chừa ngoại lệ cho cờ làm lại — đừng "sửa cho nhất quán" bằng cách nhét
-//   `&& !can_lam_lai_ready` vào đây.
-// ⚠ So theo MÃ danh mục (`loai_dot_vai.ma_loai`), KHÔNG so tên hiển thị. Danh mục còn mã `MAU` (3I/khác
-//   → SO_LUONG) — CỐ Ý không đưa vào: whitelist ERP `LAY_LOAIKD` chỉ nhận 3I/5I/6I nên `MAU` không có
-//   dữ liệu, và nó là loại khác hẳn "mẫu số lượng".
-const LOAI_BO_TEST_RUN = new Set(['BO_SUNG', 'MAU_SO_LUONG']);
-const boTestTheoLoai = (dv) => LOAI_BO_TEST_RUN.has(dv?.ma_loai_dot_vai);
+// ⚠⚠⚠ 27/10/2026 (người dùng chốt: "tất cả chỗ này sửa lại đều qua Test Run; Test Run bấm Không test run thì nhảy vào
+//   chờ sản xuất, có đợt của phần đó đang sản xuất thì cộng thẳng vào"): RELEASE 1 KHÔNG CÒN TỰ BỎ TEST RUN — mọi lệnh
+//   tạo ra (Release 1 · xác nhận Kế hoạch tạm · Gom đợt vải · gia công → chuyền xưởng) đều vào `RELEASE_1` = màn Test Run.
+//   ĐÃ GỠ cả 3 luật đi tắt cũ: (a) đợt BO_SUNG (5I) / MAU_SO_LUONG (6I) — chốt 21/08 · (b) phần in đang in tem · (c) SL < 100.
+//   Bỏ test giờ CHỈ do QA bấm "Không test run" (`skipTestRun`). Đừng đưa lại luật đi tắt nếu người dùng chưa yêu cầu.
 
 // ⚠ Bọc CACHE RAM (`utils/wfCache.js`, TTL 60s): bản gốc chạy **3 query TUẦN TỰ** (version → trạm →
 //   checkpoint) và được gọi ở 8 chỗ ⇒ ~75 ms độ trễ mạng thừa cho mỗi request dùng nó. Cấu hình này
@@ -475,14 +466,13 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
   //   động gom số lượng lại"): các đợt Ready của CÙNG phần in trong 1 lượt release ⇒ 1 lệnh, SL = tổng, mỗi đợt 1 dòng
   //   `lenh_sx_dot_vai` (đúng luật "gộp đợt vào 1 lệnh chỉ khi cùng phần in" — §10, như Gom đợt vải). Trước đó mỗi đợt
   //   1 lệnh riêng.
-  // ⚠ Tách nhóm theo luật BỎ TEST RUN THEO LOẠI (`boTestTheoLoai`): đợt bổ sung (5I) / mẫu SL (6I) KHÔNG gộp chung với
-  //   đợt thường — gộp vào là kéo cả đợt bổ sung qua Test Run (phá luật "bổ sung bỏ Test Run tuyệt đối").
+  // 27/10/2026: hết luật bỏ Test Run theo loại đợt ⇒ đợt bổ sung / mẫu SL gom CHUNG với đợt thường của cùng phần in.
   const compose = await repo.getDotVaiForCompose(plan.map((p) => p.dvId));
   const cById = Object.fromEntries(compose.map((r) => [r.id, r]));
   const nhomMap = new Map();
   for (const p of plan) {
     const dv = cById[p.dvId];
-    const k = `${dv?.phan_in_id || p.dvId}|${boTestTheoLoai(dv) ? 'BO_TEST' : 'TEST'}`;
+    const k = `${dv?.phan_in_id || p.dvId}`;
     if (!nhomMap.has(k)) nhomMap.set(k, []);
     nhomMap.get(k).push(p);
   }
@@ -521,27 +511,15 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
     };
   }
 
-  // ĐI TẮT TEST RUN (nhất quán createDotSanXuat / CLAUDE.md §5): bỏ Test Run khi
-  //   (a) LOẠI ĐỢT VẢI là BO_SUNG (5I) / MAU_SO_LUONG (6I) — thắng tuyệt đối, xem LOAI_BO_TEST_RUN; HOẶC
-  //   (b) phần in ĐANG IN TEM (phiếu DANG_CHAY — `repo.phanInDangChay`) HOẶC SL release của lệnh < 100 — nhánh (b)
-  //       TRỪ đợt bật cờ LÀM LẠI (can_lam_lai_ready → ép full flow).
-  // ⚠ 27/10/2026 người dùng bảo TRẢ LẠI NHƯ CŨ: gỡ bản 26/10 (đang Chờ chạy cũng tính + thắng cờ làm lại + cộng thẳng
-  //   vào lệnh đang chạy). Cộng vào lệnh đang chạy nay chỉ ở nút "Không test run" (`skipTestRun`).
-  // KHÔNG bỏ Test Run chỉ vì "cùng phần in đã test xong ở đợt trước".
-  // `RELEASE_2` = CHỜ SẢN XUẤT (vào thẳng modal Chờ chạy, không qua màn Release 2).
+  // MỌI LỆNH QUA TEST RUN (27/10/2026, người dùng chốt — xem đầu file): lệnh vào `RELEASE_1` = màn Test Run. Bỏ test chỉ
+  //   do QA bấm "Không test run" (`skipTestRun` — vào chờ sản xuất / cộng thẳng vào lệnh đang chạy của phần in).
   const { version } = await loadTestConfig();
-  const dangChaySet = new Set(await repo.phanInDangChay([...new Set(compose.map((r) => r.phan_in_id))]));
 
   const created = await withTransaction(async (client) => {
     const out = [];
     for (const nhom of await kiemLaiConReleaseTx(client, nhomLenh, !!chiaNhap)) {
-      const dvs = nhom.map((p) => cById[p.dvId]);
       const tong = nhom.reduce((s, p) => s + p.qty, 0);
-      const dangChay = dvs[0] ? dangChaySet.has(dvs[0].phan_in_id) : false;
-      // Nhóm đồng nhất theo loại bỏ test (xem `nhomLenh`) ⇒ `every` = luật của Gom đợt vải; SL nhỏ xét TỔNG lệnh.
-      const lamLai = dvs.some((dv) => dv?.can_lam_lai_ready);
-      const diTat = dvs.every((dv) => boTestTheoLoai(dv)) || ((dangChay || tong < SL_NHO_BO_TEST) && !lamLai);
-      const trangThai = diTat ? 'RELEASE_2' : 'RELEASE_1';
+      const trangThai = 'RELEASE_1';
       const maLenh = await repo.nextMaLenhTx(client);
       const id = await repo.createLenh(client, {
         versionId: version.id, maLenh, chuyenId, soLuongRelease: tong, ngayKeHoach, trangThai,
@@ -643,18 +621,9 @@ async function createDotSanXuat({ items, chuyenId, ngayKeHoach, tgBdKh, tgKtKh, 
     return { ...(await getLenhDetail(gc.id)), gia_cong: true, so_luong_release: tongSL, tho_in_chua_luu: thoInChuaLuu };
   }
 
-  // ĐI TẮT TEST RUN (điểm 5): bỏ Test Run khi
-  //   (a) LOẠI ĐỢT VẢI là BO_SUNG (5I) / MAU_SO_LUONG (6I) — thắng tuyệt đối, xem LOAI_BO_TEST_RUN; HOẶC
-  //   (b) phần in ĐANG IN TEM HOẶC tổng SL < 100, TRỪ khi có đợt bật cờ LÀM LẠI (ép full flow) — cùng luật `createRelease1`.
-  // ⚠ Nhánh (a) dùng `every`: 1 đợt SX gộp NHIỀU đợt vải (cùng phần in) nên chỉ bỏ Test Run khi MỌI đợt
-  //   đều thuộc loại bỏ test. Trộn lẫn 1 đợt SO_LUONG (3I) là có hàng mới thật sự trong lệnh ⇒ vẫn test.
-  const phanInIds = [...new Set(info.map((r) => r.phan_in_id))];
-  const dangChaySet = new Set(await repo.phanInDangChay(phanInIds));
-  const dangChay = phanInIds.some((pid) => dangChaySet.has(pid));
-  const slNho = tongSL < SL_NHO_BO_TEST;
-  const lamLai = plan.some((p) => byId[p.dotVaiId]?.can_lam_lai_ready);
-  const diTat = plan.every((p) => boTestTheoLoai(byId[p.dotVaiId])) || ((dangChay || slNho) && !lamLai);
-  const trangThai = diTat ? 'RELEASE_2' : 'RELEASE_1';
+  // MỌI LỆNH QUA TEST RUN (27/10/2026 — cùng luật `createRelease1`, xem đầu file).
+  const diTat = false;
+  const trangThai = 'RELEASE_1';
 
   // IN KIẾNG (điểm 16): phần in in kiếng → tạo THÊM đợt SX ép ủi (giai_doan EP_UI) ở holding CHO_IN_XONG,
   // liên kết về đợt IN; kích hoạt sang "chờ chạy" khi đợt IN "Chạy hoàn tất" (production.finishRun).
@@ -1069,7 +1038,11 @@ async function approveRelease2(lenhId, actorId, { qaNgoaiGio = false } = {}) {
 //   bỏ test HUY + audit `GOP_VAO_LENH`, ERP: hủy kế hoạch lệnh này + gửi lại kế hoạch lệnh đang chạy). Lệnh đang chạy ở
 //   CHUYỀN KHÁC ⇒ đổi chuyền kế hoạch của lệnh bỏ test sang chuyền đó trước (gộp đòi cùng chuyền). Gộp lỗi ⇒ lệnh ở lại
 //   Chờ chạy như cũ (không chặn việc bỏ test). Trả thêm `cong_vao_lenh_chay` { ma_lenh } khi đã cộng.
-async function skipTestRun(lenhId, actorId) {
+// 27/10/2026 (người dùng): bấm "Không test run" phải nhập LÝ DO (422 `NO_LY_DO`) — ghi ở audit `RELEASE_2.ly_do`, hiện ở
+//   sidebar *Lịch sử* màn Test Run (`repo.testRunHistoryByDate` nối thêm các lượt Không test run).
+async function skipTestRun(lenhId, actorId, lyDoVao = '') {
+  const lyDo = String(lyDoVao || '').trim().slice(0, 500);
+  if (!lyDo) throw new AppError('Nhập lý do không test run', { status: 422, errorCode: 'NO_LY_DO' });
   const lenh = await repo.getLenhBasic(lenhId);
   if (!lenh) throw new AppError('Đợt sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   if (lenh.trang_thai === 'RELEASE_2') throw new AppError('Đợt đã ở Release 2 (chờ sản xuất)', { status: 409, errorCode: 'ALREADY' });
@@ -1088,7 +1061,7 @@ async function skipTestRun(lenhId, actorId) {
     if (doiChuyen) await repo.doiChuyenLenhTx(client, lenhId, dich.chuyen_id, actorId);
     await repo.logPlanChange(client, lenhId, 'RELEASE_2',
       { trang_thai: 'RELEASE_1', ...(doiChuyen ? { chuyen_id: info.chuyen_id } : {}) },
-      { trang_thai: 'RELEASE_2', bo_test_run: true,
+      { trang_thai: 'RELEASE_2', bo_test_run: true, ly_do: lyDo,
         ...(dich ? { cong_vao_lenh_id: dich.id, cong_vao_lenh: dich.ma_lenh_san_xuat } : {}),
         ...(doiChuyen ? { chuyen_id: dich.chuyen_id } : {}) },
       actorId);
@@ -1099,7 +1072,7 @@ async function skipTestRun(lenhId, actorId) {
   if (dich) {
     try {
       const production = require('../production/production.service');
-      await production.gopLenhCungPhan([lenhId, dich.id], actorId, { lyDo: 'Không test run — cộng thẳng vào lệnh đang chạy' });
+      await production.gopLenhCungPhan([lenhId, dich.id], actorId, { lyDo: `Không test run — cộng thẳng vào lệnh đang chạy: ${lyDo}` });
       await tracking.moveDotVaiTo(info.dot_vai_ids || [], 'SAN_XUAT', actorId);
       congVao = { lenh_id: dich.id, ma_lenh: dich.ma_lenh_san_xuat, tu_lenh: lenh.ma_lenh_san_xuat };
     } catch (e) {
@@ -2197,18 +2170,9 @@ async function chuyenChangTheoChuyen(lenh, chuyenIdMoi, dsDot, tongSL) {
   if (laGiaCong) return lenh.trang_thai === 'GIA_CONG' ? null : 'GIA_CONG';
   if (lenh.trang_thai !== 'GIA_CONG') return null; // chuyền thường → thường: giữ nguyên chặng
 
-  // GIA_CONG → chuyền in trong xưởng: quay lại dòng chảy, áp ĐÚNG luật đi tắt Test Run của
-  // `createDotSanXuat` (dùng `every` vì 1 lệnh có thể gộp nhiều đợt vải — trộn 1 đợt SO_LUONG là có
-  // hàng mới thật sự ⇒ vẫn phải test). Không chép luật ra chỗ mới: cùng `boTestTheoLoai`/`SL_NHO_BO_TEST`.
-  const ids = dsDot.map((d) => d.dot_vai_id);
-  const compose = ids.length ? await repo.getDotVaiForCompose(ids) : [];
-  const dangChay = compose.length
-    ? (await repo.phanInDangChay([...new Set(compose.map((r) => r.phan_in_id))])).length > 0
-    : false;
-  const lamLai = compose.some((r) => r.can_lam_lai_ready);
-  const boTheoLoai = compose.length > 0 && compose.every((r) => boTestTheoLoai(r));
-  const diTat = boTheoLoai || ((dangChay || tongSL < SL_NHO_BO_TEST) && !lamLai);
-  return diTat ? 'RELEASE_2' : 'RELEASE_1';
+  // GIA_CONG → chuyền in trong xưởng: quay lại dòng chảy ở TEST RUN (27/10/2026 — mọi lệnh qua Test Run, xem đầu file).
+  void dsDot; void tongSL;
+  return 'RELEASE_1';
 }
 
 // Chi tiết 1 lệnh cho màn Lập kế hoạch lại: kế hoạch hiện tại + DANH SÁCH ĐỢT VẢI kèm SL release.

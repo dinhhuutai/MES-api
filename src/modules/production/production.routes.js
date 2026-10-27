@@ -44,7 +44,8 @@ router.post('/phieu/:phieuId/hoat-dong-lai', rbac('PROD_RUN'), c.resumeLine);
 // ⚠ ĐỌC mở cho `PROD_RUN`: người đứng máy phải lấy được danh sách để chọn khi ngừng chuyền.
 // TỔ IN (mig 084) — ĐỌC mở cho người đứng máy (phải chọn được tổ ở khối Phân công); chỉ thêm/sửa/
 // ngừng dùng mới cần TO_IN_MANAGE. Route TĨNH nên không đụng route có tham số nào.
-router.get('/to-in', rbac('PROD_RUN', 'PROD_MONITOR', 'TO_IN_MANAGE'), c.toInList);
+// PHAN_IN_ADMIN (27/10/2026): trang Quản trị phần in cần danh mục tổ in cho ô Phân công — người chỉ có quyền đó vẫn đọc được.
+router.get('/to-in', rbac('PROD_RUN', 'PROD_MONITOR', 'TO_IN_MANAGE', 'PHAN_IN_ADMIN'), c.toInList);
 router.post('/to-in', rbac('TO_IN_MANAGE'), c.toInCreate);
 router.patch('/to-in/:id/active', rbac('TO_IN_MANAGE'), c.toInToggle);
 router.patch('/to-in/:id', rbac('TO_IN_MANAGE'), c.toInUpdate);
