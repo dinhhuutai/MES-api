@@ -999,7 +999,7 @@ async function tinhTrangGraph(phanInId) {
   )).rows[0];
   if (!info) return null;
 
-  const [dotVai, links, tems, readyCp, testCp, readyEv, giaoRec, kcsRec, traVeRec, traVeTruocSx, lenhHuyR, luotTem, sxTraVeKh, quanTriLui] = await Promise.all([
+  const [dotVai, links, tems, readyCp, testCp, readyEv, giaoRec, kcsRec, traVeRec, traVeTruocSx, lenhHuyR, luotTem, sxTraVeKh, quanTriLui, readyDot] = await Promise.all([
     // `kt_can_kiem_tra` (ERP KTCankiemtra) + lúc lên READY + lúc release (lệnh sống sớm nhất) ⇒ suy đợt VÀO THẲNG
     //   Kế hoạch không qua KT ở JS (xem `vaoThang` bên dưới).
     query(
@@ -1271,6 +1271,21 @@ async function tinhTrangGraph(phanInId) {
         ORDER BY a.thoi_gian`.replace(/\s+/g, ' '),
       [phanInId]
     ).catch(() => ({ rows: [] })),
+    // XÁC NHẬN READY THEO ĐỢT (27/10/2026 — người dùng: "SD-2609-007-A02-F03-C01 đợt mới về READY làm lại mà sơ đồ chỉ thấy
+    //   READY 1 lần"): phần in đã Ready từ đợt cũ thì xác nhận đợt MỚI chỉ ghi `ready_xac_nhan_dot`, KHÔNG ghi
+    //   `lich_su_trang_thai` (đo prod 20 ngày tới 27/10: 2.155 lượt theo đợt, 0 lượt có lịch sử) ⇒ trộn vào dòng sự kiện READY.
+    //   Bảng chỉ giữ lần xác nhận HIỆN TẠI (xác nhận lại ghi đè). Chỉ lượt của NGƯỜI (hệ thống tự xác nhận không dựng chu kỳ).
+    query(
+      `SELECT cp.ma_checkpoint, cp.thu_tu AS cp_thu_tu, COALESCE(r.tg_xac_nhan, r.updated_date) AS tg, u.ho_ten AS nguoi,
+              false AS tu_dong, r.dot_vai_ve_id
+         FROM ready_xac_nhan_dot r JOIN checkpoint cp ON cp.id = r.checkpoint_id
+         JOIN dot_vai_ve dv ON dv.id = r.dot_vai_ve_id AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY')
+         LEFT JOIN nguoi_dung u ON u.id = r.nguoi_xac_nhan_id
+        WHERE r.phan_in_id = $1 AND r.trang_thai = 'DAT' AND r.nguoi_xac_nhan_id IS NOT NULL
+          AND cp.ma_checkpoint IN ('KHUON','FILM','MUC','QC_XAC_NHAN')
+        ORDER BY 3`.replace(/\s+/g, ' '),
+      [phanInId]
+    ).catch(() => ({ rows: [] })),
   ]);
 
   // Gom link theo lệnh → feeds[]; gom tem theo lệnh.
@@ -1329,7 +1344,13 @@ async function tinhTrangGraph(phanInId) {
   // đo prod 19/10 có 817 đợt cờ 0, trong đó 231 đợt vẫn được NGƯỜI bấm QC READY sau khi đợt về (dữ liệu trước khi
   // luật đi thẳng chạy). ⇒ Đợt "vào thẳng" = cờ 0 VÀ không có lần QC_XAC_NHAN nào của NGƯỜI trong khoảng [lúc lên
   // READY, lúc release] (chưa release ⇒ tới bây giờ). Lệnh "vào thẳng" = MỌI đợt nuôi nó đều vào thẳng.
-  const qcNguoi = readyEv.rows.filter((e) => e.ma_checkpoint === 'QC_XAC_NHAN' && !e.tu_dong)
+  // Dòng sự kiện READY = lịch sử (mức phần in) + xác nhận THEO ĐỢT không trùng lịch sử (cùng mục, lệch < 5 giây = cùng 1
+  //   lần bấm — đợt đầu của phần in ghi cả hai nơi).
+  const tMs = (x) => new Date(x).getTime();
+  const evLs = readyEv.rows;
+  const evDot = readyDot.rows.filter((d) => !evLs.some((e) => e.ma_checkpoint === d.ma_checkpoint && Math.abs(tMs(e.tg) - tMs(d.tg)) < 5000));
+  const readyEvAll = [...evLs, ...evDot].sort((a, b) => tMs(a.tg) - tMs(b.tg) || (a.cp_thu_tu || 0) - (b.cp_thu_tu || 0));
+  const qcNguoi = readyEvAll.filter((e) => e.ma_checkpoint === 'QC_XAC_NHAN' && !e.tu_dong)
     .map((e) => new Date(e.tg).getTime());
   const dotById = new Map(dotVai.rows.map((d) => [d.id, d]));
   dotVai.rows.forEach((d) => {
@@ -1363,15 +1384,41 @@ async function tinhTrangGraph(phanInId) {
   // FILM xác nhận 6 lần ⇒ luật "lặp" đẻ ra 6 chu kỳ (sai), luật QC cho 2 chu kỳ (đúng).
   // Dữ liệu prod ủng hộ: **0 ca QC nối ngay sau QC** ⇒ không sợ tách nhầm vì bấm QC 2 lần.
   // 19/10/2026: chỉ thao tác của NGƯỜI dựng chu kỳ — lượt hệ thống tự xác nhận (đợt vào thẳng) không phải 1 lần READY.
-  const readyEvents = readyEv.rows.filter((e) => !e.tu_dong); // đã ORDER BY tg
+  // 27/10/2026: + mốc ĐỢT LÊN READY (đợt qua KT) — đợt về SAU khi chu kỳ trước đã QC đóng ⇒ MỞ chu kỳ mới ngay lúc đợt về
+  //   (kể cả chưa ai xác nhận gì — vẽ READY lần N "chưa XN"). Đợt về lúc chu kỳ đang mở / trước chu kỳ đầu ⇒ bỏ qua mốc.
+  const mocDot = dotVai.rows.filter((d) => !d.vao_thang && d.tg_ready).map((d) => ({ moc_dot: true, tg: d.tg_ready }));
+  // 27/10/2026: lượt HỆ THỐNG tự xác nhận của đợt KHÔNG vào thẳng (về sau vẫn qua tay người — vd bị Release 1 trả về KT
+  //   rồi QC xác nhận lại; ca thật SL-2609-001-A13-F01-C02) LÀ 1 lần READY ⇒ giữ lại (khớp lúc đợt lên READY ± 60 giây).
+  //   Lượt tự xác nhận của đợt vào thẳng thật vẫn bỏ (đi nhánh "Vào thẳng").
+  const tuDongCuaDotQuaKt = (e) => e.tu_dong
+    && dotVai.rows.some((d) => !d.vao_thang && d.tg_ready && Math.abs(tMs(e.tg) - tMs(d.tg_ready)) < 60000);
+  const readyEvents = [...readyEvAll.filter((e) => !e.tu_dong || tuDongCuaDotQuaKt(e)), ...mocDot]
+    // Cùng mốc giờ (hệ thống tự xác nhận 4 mục 1 lượt): mốc đợt trước, rồi theo thứ tự mục — QC luôn cuối (QC đóng chu kỳ).
+    .sort((a, b) => tMs(a.tg) - tMs(b.tg) || (a.moc_dot ? -1 : 0) - (b.moc_dot ? -1 : 0)
+      || (a.cp_thu_tu || 0) - (b.cp_thu_tu || 0));
   const curChecklists = readyCp.rows.map((c) => ({ ma_checkpoint: c.ma_checkpoint, nguoi: c.nguoi, tg: c.tg }));
   const cycles = [];
   let dangMo = null;
+  // QC vừa đóng chu kỳ (27/10/2026): QC bấm THEO ĐỢT rồi bấm cho CẢ phần in vài giây sau (2 nguồn khác nhau, ca thật
+  //   GL-2609-001-A09-F01-C02 lệch 9 giây) là CÙNG 1 lần READY ⇒ QC nối ngay sau QC trong 30 phút, không có gì xen giữa,
+  //   gộp vào chu kỳ vừa đóng thay vì đẻ chu kỳ mới.
+  let qcVuaDong = null;
   readyEvents.forEach((e) => {
+    if (e.moc_dot) {
+      qcVuaDong = null;
+      if (!dangMo && cycles.length) { dangMo = { seen: new Set(), items: [], start: e.tg, theoDot: true }; cycles.push(dangMo); }
+      return;
+    }
+    if (!dangMo && e.ma_checkpoint === 'QC_XAC_NHAN' && qcVuaDong && tMs(e.tg) - tMs(qcVuaDong.tg) < 30 * 60000) {
+      qcVuaDong.cy.items.push(e);
+      qcVuaDong = { cy: qcVuaDong.cy, tg: e.tg };
+      return;
+    }
+    qcVuaDong = null;
     if (!dangMo) { dangMo = { seen: new Set(), items: [], start: e.tg }; cycles.push(dangMo); }
     dangMo.seen.add(e.ma_checkpoint);
     dangMo.items.push(e);
-    if (e.ma_checkpoint === 'QC_XAC_NHAN') dangMo = null; // QC đóng chu kỳ; sự kiện sau = chu kỳ mới
+    if (e.ma_checkpoint === 'QC_XAC_NHAN') { qcVuaDong = { cy: dangMo, tg: e.tg }; dangMo = null; } // QC đóng chu kỳ
   });
   // Chu kỳ đang làm lại mà CHƯA xác nhận lại mục nào (vừa bị hủy bớt, chưa có sự kiện DAT mới):
   // nhận biết bằng "DAT hiện tại là TẬP CON THỰC SỰ của chu kỳ cuối".
@@ -1400,13 +1447,23 @@ async function tinhTrangGraph(phanInId) {
     return [...ds, ...tuDongHienTai.filter((c) => !co.has(c.ma_checkpoint))]
       .sort((a, b) => (thu.get(a.ma_checkpoint) || 0) - (thu.get(b.ma_checkpoint) || 0));
   };
-  let ready_cycles = cycles.map((c) => ({
-    checklists: c.items ? boSungTuDong(gomMuc(c.items)) : curChecklists,
-    start: c.start,
-    lenh: [],
-    lenh_huy: [],
-    pending: [],
-  }));
+  // Chu kỳ mở bằng SỰ KIỆN (không phải đợt mới về) mà thiếu mục KT ⇒ mục đó GIỮ từ lần trước (trả về chỉ hủy QC — §5.2:
+  //   Release 1 / Test Run / Xác nhận chạy trả về giữ Khuôn/Film/Mực) ⇒ hiện người/giờ cũ kèm cờ `giu`, không ghi "chưa XN"
+  //   sai. Chu kỳ của ĐỢT MỚI thì thiếu là thiếu thật (đợt mới phải xác nhận lại).
+  const MUC_KT = ['KHUON', 'FILM', 'MUC'];
+  let truoc = null;
+  let ready_cycles = cycles.map((c) => {
+    let ds = c.items ? boSungTuDong(gomMuc(c.items)) : curChecklists;
+    if (c.items && truoc && !c.theoDot) {
+      const co = new Set(ds.map((x) => x.ma_checkpoint));
+      const thu = new Map(readyCp.rows.map((x) => [x.ma_checkpoint, x.thu_tu]));
+      ds = [...ds, ...truoc.filter((x) => MUC_KT.includes(x.ma_checkpoint) && !co.has(x.ma_checkpoint)).map((x) => ({ ...x, giu: true }))]
+        .sort((a, b) => (thu.get(a.ma_checkpoint) || 0) - (thu.get(b.ma_checkpoint) || 0));
+    }
+    truoc = ds;
+    return { checklists: ds, start: c.start, theo_dot: !!c.theoDot,
+      tu_dong: !!(c.items && c.items.length && c.items.every((e) => e.tu_dong)), lenh: [], lenh_huy: [], pending: [] };
+  });
   // Lệnh / đợt chờ VÀO THẲNG ⇒ nhánh riêng `vao_thang` (không treo dưới READY nào).
   const lenhQuaKt = lenh.filter((l) => !l.vao_thang);
   const pendingQuaKt = pending.filter((d) => !d.vao_thang);
@@ -1429,8 +1486,13 @@ async function tinhTrangGraph(phanInId) {
       if (cy) cy.lenh_huy.push({ ...l, tests: l.tests || [] });
     });
   }
-  // Đợt vải CHƯA release thuộc chu kỳ READY HIỆN TẠI (mới nhất).
-  if (ready_cycles.length) ready_cycles[ready_cycles.length - 1].pending = pendingQuaKt;
+  // Đợt vải CHƯA release: thuộc chu kỳ READY lúc ĐỢT LÊN READY (27/10/2026 — đợt mới về sau QC đã có chu kỳ riêng); chu kỳ
+  //   cuối là chu kỳ "đang làm lại" chưa có mốc (start null) ⇒ mọi đợt chờ vào nó như cũ.
+  if (ready_cycles.length) {
+    const cuoi = ready_cycles[ready_cycles.length - 1];
+    if (!cuoi.start) cuoi.pending = pendingQuaKt;
+    else pendingQuaKt.forEach((d) => { ready_cycles[cyTai(tMs(d.tg_ready))].pending.push(d); });
+  }
   const lenhThang = lenh.filter((l) => l.vao_thang);
   const pendingThang = pending.filter((d) => d.vao_thang);
   const vao_thang = (lenhThang.length || pendingThang.length) ? {
