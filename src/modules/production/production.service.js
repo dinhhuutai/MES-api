@@ -265,10 +265,10 @@ const khoaVaiCho = (phieuId) => `vai_cho_tem|${phieuId}`;
 // KIỂM LẠI TRẦN 110% TRONG TRANSACTION IN TEM (21/10/2026): kiểm ở đầu hàm chạy NGOÀI transaction ⇒ 2 máy in cùng
 // phiếu cùng lúc cùng thấy "còn in được" và cùng tạo tem, vượt trần. Giữ khóa theo phiếu (cùng khóa với số vải chờ —
 // advisory lock lồng trong 1 phiên được) rồi đọc lại tổng đã in: lượt sau CHỜ lượt trước commit rồi mới tính.
-// TRẦN IN TEM + BTP TRƯỚC (29/10/2026, người dùng: "kế hoạch không bấm BTP khác KH mà in luôn 2 đầu trên cùng 1 máy ⇒
-//   tem có tích BTP trước thì cộng thêm số lượng tem này vào mức tối đa có thể in"): tem BTP trước (đầu 1) và tem còn
-//   lại (đầu 2 / thường) có 2 TRẦN RIÊNG, mỗi trần = 110% SL release ⇒ in BTP trước 1000 thì phần thường vẫn còn đủ trần
-//   như chưa in gì (= trần cộng thêm đúng số tem BTP trước). Không có tem BTP trước ⇒ đúng luật 110% cũ.
+// TRẦN IN TEM + BTP TRƯỚC (29/10/2026, người dùng chốt: "kế hoạch không bấm BTP khác KH mà in luôn 2 đầu trên cùng 1 máy
+//   ⇒ in bao nhiêu BTP trước thì cứ cộng số lượng bấy nhiêu vào đợt đang sản xuất, để in được tem mà không bị chặn"):
+//   trần = 110% SL release + Σ tem BTP trước ⇒ tem BTP trước KHÔNG BAO GIỜ bị chặn số lượng; tem thường (không tích BTP
+//   trước) ≤ 110% SL release, không tính phần BTP trước. Không có tem BTP trước ⇒ đúng luật 110% cũ.
 //   `daIn` / `them` = { thuong, btp } (hoặc 1 số = toàn tem thường). Nguồn DUY NHẤT — gương FE `gomPhanSanXuat.conDuocIn`.
 const tachSl = (v) => (typeof v === 'number' ? { thuong: v, btp: 0 } : { thuong: Number(v?.thuong) || 0, btp: Number(v?.btp) || 0 });
 function kiemTranIn(target, daIn, them, { tienTo = 'Vượt quá 110% SL release', duoi = '' } = {}) {
@@ -276,13 +276,12 @@ function kiemTranIn(target, daIn, them, { tienTo = 'Vượt quá 110% SL release
   const max = Math.floor(target * 1.1);
   const d = tachSl(daIn);
   const t = tachSl(them);
-  for (const [k, nhan] of [['thuong', ''], ['btp', ' (tem BTP trước)']]) {
-    if (t[k] > 0 && d[k] + t[k] > max) {
-      throw new AppError(
-        `${tienTo}${nhan}${duoi} (tối đa ${max}, đã in ${d[k]}, còn được in ${Math.max(0, max - d[k])}, đang nhập ${t[k]})`,
-        { status: 422, errorCode: 'OVER_LIMIT' }
-      );
-    }
+  if (t.thuong > 0 && d.thuong + t.thuong > max) {
+    const congBtp = d.btp > 0 ? ` (đã cộng thêm ${d.btp} BTP trước)` : '';
+    throw new AppError(
+      `${tienTo}${duoi} — tối đa ${max + d.btp}${congBtp}, đã in ${d.thuong + d.btp}, còn được in ${Math.max(0, max - d.thuong)}, đang nhập ${t.thuong}`,
+      { status: 422, errorCode: 'OVER_LIMIT' }
+    );
   }
 }
 
@@ -1332,11 +1331,12 @@ async function printTemBatch(phieuId, items, actorId, body) {
   }
   for (const [k, slDot] of tongTheoDot) {
     const [dotVaiId, loai] = k.split('|');
+    if (loai === 'btp') continue; // tem BTP trước không bị chặn số lượng (người dùng chốt 29/10/2026)
     const d = byId.get(dotVaiId);
     const capDot = Math.floor((Number(d.sl_vao_sx) || 0) * 1.1);
     if (capDot > 0 && slDot > capDot) {
       throw new AppError(
-        `Phần in ${d.ma_phan}: vượt 110% SL vào sản xuất của đợt${loai === 'btp' ? ' (tem BTP trước)' : ''} (tối đa ${capDot}, nhập ${slDot})`,
+        `Phần in ${d.ma_phan}: vượt 110% SL vào sản xuất của đợt (tối đa ${capDot}, nhập ${slDot})`,
         { status: 422, errorCode: 'OVER_LIMIT_DOT' }
       );
     }
