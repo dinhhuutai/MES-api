@@ -25,6 +25,8 @@ const { coCotThoInKh } = require('../../utils/thoInKeHoach');
 const { cotGiaSql } = require('../../utils/giaPhanIn');
 const { LOAI_TRA_VE_KH, LENH_CHO_KH_SQL } = require('../../utils/traVeKeHoach');
 const { khoaNgcLenhSql } = require('../../utils/nhaGiaCong');
+// BTP khác kế hoạch (mig 120): đợt có cờ release được 2 × SL vải (2 đầu tấm vải, 2 kế hoạch) — nguồn luật duy nhất.
+const { coBtpSql, sucChuaSql, conReleaseSql, conRelease } = require('../../utils/btpKhacKh');
 
 // SL vải đã ĐƯA VÀO đợt SX của 1 đợt vải = Σ lenh_sx_dot_vai.so_luong các lệnh non-HUY gắn đợt đó
 // (mig 052: SL đưa vào theo TỪNG đợt nằm ở junction — đúng cả khi 1 lệnh gồm nhiều đợt).
@@ -74,7 +76,7 @@ async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
       AND ${dkPain}
       AND NOT ${CHO_GN_SQL('pin.id')}
       AND dv.tg_chuyen_ready IS NOT NULL
-      AND (COALESCE(dv.so_luong_vai_ve,0) - ${DA_REL}) > 0
+      AND ${conReleaseSql('dv', DA_REL)} > 0
       AND NOT EXISTS (SELECT 1 FROM ke_hoach_tam kht
                       WHERE kht.dot_vai_ve_id = dv.id AND kht.trang_thai = 'CHO')
       AND ${SEARCH}`;
@@ -87,7 +89,8 @@ async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
            ${qcDotSql('dv', 'pin.id')} AS qc_done,
            ${DA_REL}::int AS da_release,
-           (COALESCE(dv.so_luong_vai_ve,0) - ${DA_REL})::int AS con_release,
+           ${conReleaseSql('dv', DA_REL)}::int AS con_release,
+           ${coBtpSql('dv')} AS btp_khac_kh,
            gsx.gom_set_id, gsx.ma_set,
            ${hsktCols('pin.id')}
     ${FROM}
@@ -116,14 +119,14 @@ async function phanInDangOGnTheoDot(dotVaiIds) {
 // SL đã đưa vào / còn lại của từng đợt vải (cho createRelease1 validate + prefill).
 async function getDotVaiRemaining(dotVaiIds) {
   const { rows } = await query(
-    `SELECT dv.id::text AS id, COALESCE(dv.so_luong_vai_ve,0)::int AS so_luong,
+    `SELECT dv.id::text AS id, COALESCE(dv.so_luong_vai_ve,0)::int AS so_luong, ${coBtpSql('dv')} AS btp,
             COALESCE((SELECT SUM(COALESCE(lsd.so_luong,0)) FROM lenh_sx_dot_vai lsd
                       JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
                       WHERE lsd.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY'),0)::int AS da_release
      FROM dot_vai_ve dv WHERE dv.id = ANY($1::uuid[])`,
     [dotVaiIds]
   );
-  return rows.map((r) => ({ id: r.id, so_luong: r.so_luong, da_release: r.da_release, con_release: Math.max(0, r.so_luong - r.da_release) }));
+  return rows.map((r) => ({ id: r.id, so_luong: r.so_luong, da_release: r.da_release, btp: r.btp, con_release: conRelease(r.so_luong, r.da_release, r.btp) }));
 }
 
 // KHÓA dòng đợt vải (FOR UPDATE, thứ tự id cố định ⇒ không deadlock) rồi đọc SL còn release TRONG transaction tạo lệnh.
@@ -135,14 +138,14 @@ async function khoaConReleaseTx(client, dotVaiIds) {
   if (!ids.length) return {};
   await client.query('SELECT id FROM dot_vai_ve WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE', [ids]);
   const { rows } = await client.query(
-    `SELECT dv.id::text AS id, COALESCE(dv.so_luong_vai_ve,0)::int AS so_luong,
+    `SELECT dv.id::text AS id, COALESCE(dv.so_luong_vai_ve,0)::int AS so_luong, ${coBtpSql('dv')} AS btp,
             COALESCE((SELECT SUM(COALESCE(lsd.so_luong,0)) FROM lenh_sx_dot_vai lsd
                       JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
                       WHERE lsd.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY'),0)::int AS da_release
      FROM dot_vai_ve dv WHERE dv.id = ANY($1::uuid[])`.replace(/\s+/g, ' '),
     [ids]
   );
-  return Object.fromEntries(rows.map((r) => [r.id, Math.max(0, r.so_luong - r.da_release)]));
+  return Object.fromEntries(rows.map((r) => [r.id, conRelease(r.so_luong, r.da_release, r.btp)]));
 }
 
 // Thông tin đợt vải để SOẠN đợt sản xuất (mig 052): con_dua theo junction so_luong + màu + READY (QC).
@@ -172,7 +175,7 @@ async function getDotVaiForCompose(dotVaiIds) {
   const { rows } = await query(
     `SELECT dv.id::text AS id, dv.phan_in_id::text AS phan_in_id, dv.ma_dot_vai,
             pin.mau_vai, dv.can_lam_lai_ready, pin.la_in_kieng,
-            ldv.ma_loai AS ma_loai_dot_vai, dv.nha_gia_cong,
+            ldv.ma_loai AS ma_loai_dot_vai, dv.nha_gia_cong, ${coBtpSql('dv')} AS btp_khac_kh,
             COALESCE(dv.so_luong_vai_ve,0)::int AS so_luong,
             COALESCE((SELECT SUM(COALESCE(lsd.so_luong,0)) FROM lenh_sx_dot_vai lsd
                       JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
@@ -183,7 +186,7 @@ async function getDotVaiForCompose(dotVaiIds) {
      WHERE dv.id = ANY($1::uuid[])`,
     [dotVaiIds]
   );
-  return rows.map((r) => ({ ...r, con_dua: Math.max(0, r.so_luong - r.da_dua) }));
+  return rows.map((r) => ({ ...r, con_dua: conRelease(r.so_luong, r.da_dua, r.btp_khac_kh) }));
 }
 
 // Phần in ĐANG IN TEM (có phiếu DANG_CHAY) — dùng quyết định đi tắt Test Run (điểm 5/6). IPS-safe 1 dòng.
@@ -1906,6 +1909,7 @@ async function getReplanDotVai(lenhId) {
     `SELECT lsd.dot_vai_ve_id AS dot_vai_id, dv.ma_dot_vai, pin.ma_phan, pin.mau_vai,
             COALESCE(lsd.so_luong, 0)::int AS so_luong,
             COALESCE(dv.so_luong_vai_ve, 0)::int AS so_luong_vai_ve,
+            ${sucChuaSql('dv')}::int AS suc_chua, ${coBtpSql('dv')} AS btp_khac_kh,
             COALESCE((SELECT SUM(COALESCE(l2.so_luong, 0)) FROM lenh_sx_dot_vai l2
                        JOIN lenh_san_xuat s2 ON s2.id = l2.lenh_san_xuat_id
                       WHERE l2.dot_vai_ve_id = dv.id AND s2.trang_thai <> 'HUY'
@@ -1917,7 +1921,8 @@ async function getReplanDotVai(lenhId) {
       ORDER BY pin.ma_phan, dv.ma_dot_vai`.replace(/\s+/g, ' '),
     [lenhId]
   );
-  return rows.map((r) => ({ ...r, toi_da: Math.max(0, r.so_luong_vai_ve - r.da_release_khac) }));
+  // BTP khác KH (mig 120): sức chứa = 2 × SL vải nhưng 1 lệnh vẫn chỉ giữ tối đa SL vải (1 đầu tấm vải).
+  return rows.map((r) => ({ ...r, toi_da: Math.max(0, Math.min(r.so_luong_vai_ve, r.suc_chua - r.da_release_khac)) }));
 }
 
 // Ghi SL RELEASE mới cho từng (lệnh, đợt vải) rồi tính lại `lenh_san_xuat.so_luong_release = Σ`.
@@ -2511,6 +2516,76 @@ async function auditTraVeKyThuat(pinId, dotVaiId, lyDo, actorId) {
   );
 }
 
+// ─── BTP KHÁC KẾ HOẠCH (mig 120, 28/10/2026) — trang *Hệ thống › BTP khác kế hoạch* ───────────────────────────────
+// Tìm phần in (code phần / mã TDTHĐH / mã hàng / màu, ≤ 20 phần in) ⇒ mọi đợt vải SỐNG kèm SL vải · đã release · cờ ·
+// "còn release" (cùng luật Release 1) · các lệnh đã release · có kế hoạch tạm không.
+async function timBtpKhacKh(q) {
+  const { sqlKhopMa } = require('../../utils/maPhanIn');
+  const ma = String(q || '').trim();
+  if (ma.length < 3) return [];
+  const DA = DA_REL;
+  const { rows } = await query(
+    `WITH p AS (
+       SELECT pin.id FROM phan_in pin
+        WHERE pin.dang_hoat_dong AND (upper(pin.ma_phan) = upper($1) OR ${sqlKhopMa('pin.barcode', '$1')}
+              OR pin.ma_phan ~* $2)
+        ORDER BY (upper(pin.ma_phan) = upper($1)) DESC, pin.ma_phan LIMIT 20)
+     SELECT pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.so_luong_don_hang,
+            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
+            dv.id AS dot_vai_id, dv.ma_dot_vai, COALESCE(dv.so_luong_vai_ve,0)::int AS so_luong_vai_ve,
+            dv.ngay_vai_ve, dv.han_giao_hang, dv.nha_gia_cong, ldv.ten_loai AS loai_dot_vai,
+            dv.tg_chuyen_ready IS NOT NULL AS da_len_ready,
+            ${coBtpSql('dv')} AS btp_khac_kh,
+            (to_jsonb(dv)->>'btp_khac_kh_tg')::timestamptz AS btp_khac_kh_tg,
+            nd.ho_ten AS btp_khac_kh_nguoi,
+            ${DA}::int AS da_release,
+            ${conReleaseSql('dv', DA)}::int AS con_release,
+            EXISTS (SELECT 1 FROM ke_hoach_tam kht WHERE kht.dot_vai_ve_id = dv.id AND kht.trang_thai = 'CHO') AS co_ke_hoach_tam,
+            COALESCE((SELECT json_agg(json_build_object('ma', ls.ma_lenh_san_xuat, 'sl', lsd.so_luong, 'trang_thai', ls.trang_thai,
+                                                         'chuyen', cs.ma_chuyen, 'ngay', ls.ngay_ke_hoach) ORDER BY ls.created_date)
+                        FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
+                        LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+                       WHERE lsd.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY'), '[]'::json) AS lenh
+       FROM p JOIN phan_in pin ON pin.id = p.id
+       JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+       JOIN don_hang dh ON dh.id = mh.don_hang_id
+       JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+       JOIN dot_vai_ve dv ON dv.phan_in_id = pin.id AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY')
+       LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id
+       LEFT JOIN nguoi_dung nd ON nd.id = (to_jsonb(dv)->>'btp_khac_kh_boi')::uuid
+      ORDER BY pin.ma_phan, dv.ngay_vai_ve NULLS LAST, dv.ma_dot_vai`.replace(/\s+/g, ' '),
+    [ma, mauTim(ma)]
+  );
+  return rows;
+}
+
+// Khóa 1 đợt vải + đọc lại số trong transaction (bật/tắt cờ ở trang Hệ thống).
+async function docDotBtpTx(client, dotVaiId) {
+  const { rows } = await client.query(
+    `SELECT dv.id::text AS id, dv.ma_dot_vai, dv.btp_khac_kh, COALESCE(dv.so_luong_vai_ve,0)::int AS so_luong,
+            dv.trang_thai, pin.ma_phan,
+            COALESCE((SELECT SUM(COALESCE(lsd.so_luong,0)) FROM lenh_sx_dot_vai lsd
+                      JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
+                      WHERE lsd.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY'),0)::int AS da_release
+       FROM dot_vai_ve dv JOIN phan_in pin ON pin.id = dv.phan_in_id
+      WHERE dv.id = $1 FOR UPDATE OF dv`.replace(/\s+/g, ' '),
+    [dotVaiId]
+  );
+  return rows[0] || null;
+}
+
+async function tatBtpTx(client, dotVaiId, actorId, lyDo) {
+  await client.query(
+    'UPDATE dot_vai_ve SET btp_khac_kh = false, btp_khac_kh_tg = now(), btp_khac_kh_boi = $2, updated_by = $2, updated_date = now() WHERE id = $1',
+    [dotVaiId, actorId]
+  );
+  await client.query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_cu, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('dot_vai_ve', $1, 'TAT_BTP_KHAC_KH', '{"btp_khac_kh":true}'::jsonb, $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`,
+    [String(dotVaiId), JSON.stringify({ btp_khac_kh: false, nguon: 'HE_THONG', ly_do: lyDo || null }), actorId]
+  );
+}
+
 module.exports = {
   // Mảnh SQL thông tin phần in đại diện của lệnh (alias `ls`) — dùng lại ở `production/theoDoiTo.js` (21/10/2026).
   PHAN_INFO_LATERAL,
@@ -2542,4 +2617,5 @@ module.exports = {
   CHO_KY_THUAT_SQL,
   listReleasableSets, getOpenSetMembers, getSetForRelease, getSetMembersForRelease, markSetReleased, logGomSetReleased,
   dongSetDaReleaseHet,
+  timBtpKhacKh, docDotBtpTx, tatBtpTx,
 };

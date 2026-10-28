@@ -29,10 +29,15 @@ router.post('/gop', rbac('RELEASE1'), c.gopDotVai);
 router.get('/release1/candidates', rbac('RELEASE1'), c.release1Candidates);
 router.get('/release1/history', rbac('RELEASE1'), c.release1History);
 router.get('/release-list', rbac('RELEASE1'), c.releaseList);
+// Sửa kế hoạch 1 lệnh từ sidebar Danh sách release (28/10/2026) — đọc bằng `GET /replan/:lenhId` có sẵn.
+router.put('/release-list/lenh/:lenhId/ke-hoach', rbac('RELEASE1', 'RELEASE2'), c.releaseListSuaKeHoach);
 router.get('/release1/done', rbac('RELEASE1'), c.release1Done);
 router.get('/release1/sets', rbac('RELEASE1'), c.releaseSets);
 router.post('/release1/set/:setId', rbac('RELEASE1'), c.releaseSet);
 router.post('/release1', rbac('RELEASE1'), c.createRelease1);
+// BTP khác kế hoạch (mig 120, 28/10/2026) — trang Hệ thống › BTP khác kế hoạch.
+router.get('/btp-khac-kh', rbac('RELEASE1', 'RELEASE2', 'PHAN_IN_ADMIN'), c.btpKhacKhTim);
+router.put('/btp-khac-kh/:dotVaiId', rbac('RELEASE1', 'RELEASE2', 'PHAN_IN_ADMIN'), c.btpKhacKhDat);
 // Trả đợt vải ở Release 1 NGƯỢC về Kỹ thuật (mở lại READY: hủy xác nhận Khuôn/Film/Mực/QC + cờ làm lại).
 router.post('/release1/tra-ve-ky-thuat', rbac('RELEASE1'), c.release1TraVeKyThuat);
 // Lệnh bị Test Run trả về Kế hoạch (giữ lệnh) — khối đầu màn Release 1 + xác nhận lại (07/10/2026).

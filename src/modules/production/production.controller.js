@@ -256,6 +256,20 @@ const reopenCandidates = asyncHandler(async (req, res) => ok(res, await service.
 const reopenProduction = asyncHandler(async (req, res) =>
   ok(res, await service.reopenProduction(req.params.phieuId, req.user.id), 'Đã mở lại lệnh sản xuất'));
 
+// LỊCH SỬ CHẠY HOÀN TẤT (28/10/2026, nút ở màn Xác nhận chạy) — lọc + phân trang server; mở lại lý do bắt buộc, không hạn 2 ngày.
+const lichSuHoanTat = asyncHandler(async (req, res) => {
+  const { tu, den } = khoangNgayTuQuery(req.query, 93);
+  const { page, limit, offset } = getPaging(req.query);
+  const q = req.query;
+  return ok(res, await service.listLichSuHoanTat({
+    tuNgay: tu, denNgay: den, barcode: String(q.barcode || '').trim().slice(0, 80), search: String(q.search || '').slice(0, 100),
+    chuyenId: /^[0-9a-f-]{36}$/i.test(q.chuyenId || '') ? q.chuyenId : '', page, limit, offset,
+  }));
+});
+const moLaiTuLichSu = asyncHandler(async (req, res) =>
+  ok(res, await service.reopenProduction(req.params.phieuId, req.user.id, { tuLichSu: true, lyDo: req.body && req.body.lyDo }),
+    'Đã mở lại — lệnh về Đang chạy'));
+
 // Ngừng lệnh chạy (ngừng phần in để in hàng gấp) → lệnh về chờ chạy
 const pauseLenhChay = asyncHandler(async (req, res) =>
   ok(res, await service.pauseLenhChay(req.params.phieuId, req.user.id), 'Đã ngừng lệnh chạy — lệnh về chờ chạy'));
@@ -340,7 +354,7 @@ module.exports = {
   cancelableTem, cancelPrintTem, cancelPrintTemLichSu, reopenableTem, reopenPrintTem,
   temDaInSX: dsTemDaIn(false), temDaInGiaCong: dsTemDaIn(true),
   closeCandidates, closeProduction,
-  reopenCandidates, reopenProduction, pauseLenhChay, doiChuyen,
+  reopenCandidates, reopenProduction, pauseLenhChay, doiChuyen, lichSuHoanTat, moLaiTuLichSu,
   undoStartCandidates, undoStartProduction,
   traVeKyThuat,
   traVeKeHoachSx,

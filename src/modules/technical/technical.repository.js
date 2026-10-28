@@ -74,6 +74,8 @@ async function listCandidates({
            (SELECT string_agg(DISTINCT ldv.ten_loai, ', ')
               FROM dot_vai_ve dv3 JOIN loai_dot_vai ldv ON ldv.id = dv3.loai_dot_vai_id
               WHERE dv3.phan_in_id = pin.id AND dv3.trang_thai NOT IN ('DA_GOP','DA_HUY')) AS loai_dot_vai,
+           (SELECT COALESCE(SUM(dv4.so_luong_vai_ve), 0)::int FROM dot_vai_ve dv4
+              WHERE dv4.phan_in_id = pin.id AND dv4.trang_thai NOT IN ('DA_GOP','DA_HUY')) AS sl_vai_song,
            -- Hạn giao = của đợt ĐANG CHỜ (chưa release), lùi về mọi đợt còn hiệu lực — 25/09/2026: đợt bổ sung
            -- từng hiện hạn của đợt số lượng đã release từ lâu (min mọi đợt) nên SLA theo hạn tính sai.
            -- Luật ở utils/tech.js hanGiaoReadySql (dùng chung với bảng theo dõi Dashboard — 01/10/2026).

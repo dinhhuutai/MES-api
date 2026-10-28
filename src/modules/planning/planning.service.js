@@ -30,6 +30,7 @@ const { isKhuonOptional } = require('../../utils/tech');
 const { ngayHomNayVN } = require('../../utils/khoangNgay');
 const { trongGioHanhChinh } = require('../../utils/gioHanhChinh'); // Test Run ngoài giờ ⇒ QA kiêm Release 2
 const { khoaNgc, tenNgc } = require('../../utils/nhaGiaCong'); // đợt khác nhà gia công không gom (27/10/2026)
+const { coCotBtp, batCoTx } = require('../../utils/btpKhacKh'); // BTP khác kế hoạch (mig 120, 28/10/2026)
 
 const TEST_TRAM = 'TEST_RUN';
 const CNSP_CP = 'TEST_CNSP';
@@ -376,13 +377,18 @@ async function kiemLaiConReleaseTx(client, nhomLenh, chat) {
   return out;
 }
 
-async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach, tgBdKh, tgKtKh, thoIn }, actorId, opts = {}) {
+// `btpKhacKh` (mig 120, 28/10/2026): ô tích "BTP khác KH" — in BTP 2 đầu tấm vải ở 2 kế hoạch khác nhau ⇒ bật cờ cho
+//   mọi đợt của lượt (cả đợt vào lệnh lẫn đợt lưu kế hoạch tạm) ⇒ đợt release được 2 × SL vải, ở lại Release 1 sau đầu
+//   1 (luật `utils/btpKhacKh.js`). Bật TRONG transaction tạo lệnh. Chưa chạy mig ⇒ bỏ qua, trả `btp_chua_luu`.
+async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach, tgBdKh, tgKtKh, thoIn, btpKhacKh }, actorId, opts = {}) {
   if (!Array.isArray(dotVaiIds) || dotVaiIds.length === 0) {
     throw new AppError('Chọn ít nhất một đợt vải', { status: 422, errorCode: 'NO_DOT_VAI' });
   }
   if (!chuyenId) throw new AppError('Chọn chuyền sản xuất', { status: 422, errorCode: 'NO_CHUYEN' });
   const thoInKh = chuanHoaThoIn(thoIn);
   const thoInChuaLuu = !!thoInKh && !(await coCotThoInKh());
+  const batBtp = !!btpKhacKh && (await coCotBtp());
+  const btpChuaLuu = !!btpKhacKh && !batBtp;
 
   // ⚠ CHẶN: phần in đang ở Giao nhận (trả về GN, chưa "Xác nhận lại") thì chưa release / chưa lưu kế hoạch
   //   tạm được — màn Release 1 đã ẩn, chặn này cho đường Xác nhận kế hoạch tạm + màn để lâu chưa tải lại.
@@ -423,6 +429,7 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
   }
   const slTam = chiaNhap;
   let tamCount = 0;
+  const tamIds = [];
   for (const dvId of waitIds) {
     const con = Number(conAll[dvId]) || 0;
     if (con <= 0) continue;
@@ -433,10 +440,13 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
       tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null, soLuong: qty, thoInKh,
     }, actorId);
     tamCount += 1;
+    tamIds.push(dvId);
   }
+  if (batBtp && tamIds.length) await batCoTx(null, tamIds, actorId, { nguon: 'KE_HOACH_TAM' });
+  const btpTra = { btp_khac_kh: batBtp, btp_chua_luu: btpChuaLuu };
   if (readyIds.length === 0) {
     sockets.emit('dashboard:refresh', {});
-    return { created_count: 0, created_summary: [], ke_hoach_tam_count: tamCount, chi_tam: true, tho_in_chua_luu: thoInChuaLuu };
+    return { created_count: 0, created_summary: [], ke_hoach_tam_count: tamCount, chi_tam: true, tho_in_chua_luu: thoInChuaLuu, ...btpTra };
   }
 
   // RELEASE THEO SỐ LƯỢNG: mỗi đợt còn "con_release = SL vải về − đã release". Release 1 lần = 1 lệnh với
@@ -459,7 +469,7 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
     }
   }
   if (plan.length === 0) {
-    if (tamCount > 0) { sockets.emit('dashboard:refresh', {}); return { created_count: 0, created_summary: [], ke_hoach_tam_count: tamCount, chi_tam: true, tho_in_chua_luu: thoInChuaLuu }; }
+    if (tamCount > 0) { sockets.emit('dashboard:refresh', {}); return { created_count: 0, created_summary: [], ke_hoach_tam_count: tamCount, chi_tam: true, tho_in_chua_luu: thoInChuaLuu, ...btpTra }; }
     throw new AppError('Các đợt vải đã release đủ số lượng', { status: 409, errorCode: 'ALL_RELEASED' });
   }
 
@@ -496,6 +506,7 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
           tongSL: nhom.reduce((s, p) => s + p.qty, 0), ngayKeHoach,
           tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null, thoInKh,
         }, actorId);
+        if (batBtp) await batCoTx(client, nhom.map((p) => p.dvId), actorId, { nguon: 'RELEASE_1' });
         out.push({ ...c, dot_vai_id: nhom[0].dvId, dot_vai_ids: nhom.map((p) => p.dvId), so_dot_vai: nhom.length });
       }
       return out;
@@ -509,7 +520,7 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
     const detail = await getLenhDetail(created[0].id);
     return {
       ...detail, created_summary: created, created_count: created.length,
-      gia_cong: true, skipped_test_count: created.length, tho_in_chua_luu: thoInChuaLuu,
+      gia_cong: true, skipped_test_count: created.length, tho_in_chua_luu: thoInChuaLuu, ...btpTra,
     };
   }
 
@@ -528,6 +539,7 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
         tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null, thoInKh,
       }, actorId);
       for (const p of nhom) await repo.addLenhDotVai(client, id, p.dvId, actorId, p.qty);
+      if (batBtp) await batCoTx(client, nhom.map((p) => p.dvId), actorId, { nguon: 'RELEASE_1' });
       out.push({ id, ma_lenh_san_xuat: maLenh, trang_thai: trangThai, so_dot_vai: nhom.length,
         dot_vai_id: nhom[0].dvId, dot_vai_ids: nhom.map((p) => p.dvId) });
     }
@@ -556,6 +568,7 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
     ke_hoach_tam_count: tamCount,
     skipped_test_count: created.filter((c) => c.trang_thai === 'RELEASE_2').length,
     tho_in_chua_luu: thoInChuaLuu,
+    ...btpTra,
   };
 }
 
@@ -2192,6 +2205,20 @@ async function getReplanDetail(lenhId) {
   return { ...lenh, dot_vai: await repo.getReplanDotVai(lenhId) };
 }
 
+// SỬA KẾ HOẠCH TỪ SIDEBAR "DANH SÁCH RELEASE" (28/10/2026, người dùng: "cho sửa thông tin kế hoạch luôn, có gửi tới ERP —
+//   kế hoạch là phải hủy cái cũ rồi gửi theo cái mới"). Gọi CHÍNH `replan` với `choDaChay` (cùng lối Quản trị phần in):
+//   lệnh chưa chạy đi y như Lập lại kế hoạch; lệnh đã xác nhận chạy chỉ sửa THÔNG TIN kế hoạch (không đổi chặng, không
+//   sang gia công, SL release không dưới đã in). ERP: `release1Erp.xepHang(…, 'REPLAN')` hủy MỌI lượt kế hoạch cũ còn
+//   hiệu lực của lệnh rồi gửi lượt mới. Lý do BẮT BUỘC (khác màn Lập lại kế hoạch — đây là sửa cả lệnh đã chạy).
+async function suaKeHoachTuDsRelease(lenhId, body = {}, actorId) {
+  const ly = String(body.lyDo || '').trim();
+  if (!ly) throw new AppError('Nhập lý do sửa kế hoạch', { status: 422, errorCode: 'NO_LY_DO' });
+  return replan(lenhId, {
+    chuyenId: body.chuyenId || null, ngayKeHoach: body.ngayKeHoach, tgBdKh: body.tgBdKh || null, tgKtKh: body.tgKtKh || null,
+    slRelease: body.slRelease || null, thoIn: body.thoIn, lyDo: ly,
+  }, actorId, { choDaChay: true, nguon: 'DS_RELEASE' });
+}
+
 // Lập lại kế hoạch hàng loạt — áp cùng chuyền/ngày/lý do cho nhiều lệnh.
 async function replanBatch(lenhIds, body, actorId) {
   if (!Array.isArray(lenhIds) || lenhIds.length === 0) {
@@ -2399,11 +2426,53 @@ async function attachTestRuns(rows) {
 async function testCnspDone(date) { return attachPhanInList(await attachTestRuns(await repo.testDoneByDate(date, CNSP_CP)), 'lenh_id'); }
 async function testQaDone(date) { return attachPhanInList(await attachTestRuns(await repo.testDoneByDate(date, QA_CP)), 'lenh_id'); }
 
+// ─── BTP KHÁC KẾ HOẠCH (mig 120, 28/10/2026) — trang *Hệ thống › BTP khác kế hoạch* ───────────────────────────────
+// Người lập kế hoạch QUÊN tích "BTP khác KH" lúc Release 1 ⇒ đợt đã release đủ SL rời màn ⇒ ở đây tìm phần in, bật cờ
+// cho đợt ⇒ đợt quay về Release 1 với "Còn release" = SL vải cho đầu 2. Tắt chỉ khi CHƯA lập kế hoạch đầu 2 (đã
+// release ≤ SL vải) — đã lập thì phải hủy lệnh đầu 2 trước (tắt lúc đó là release vượt SL vải).
+const UUID_BTP = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+async function timBtpKhacKh(q) {
+  const [coCot, rows] = await Promise.all([coCotBtp(), repo.timBtpKhacKh(q)]);
+  return { co_cot: coCot, rows };
+}
+
+async function datBtpKhacKh(dotVaiId, { bat, lyDo } = {}, actorId) {
+  if (!UUID_BTP.test(String(dotVaiId || ''))) throw new AppError('Đợt vải không hợp lệ', { status: 422, errorCode: 'INVALID_ID' });
+  if (!(await coCotBtp())) {
+    throw new AppError('Chưa chạy migration 120 (BTP khác kế hoạch) — báo IT chạy rồi thử lại', { status: 409, errorCode: 'CHUA_MIGRATION_120' });
+  }
+  const ly = String(lyDo || '').trim();
+  if (!ly) throw new AppError('Nhập lý do', { status: 422, errorCode: 'NO_LY_DO' });
+  if (ly.length > 300) throw new AppError('Lý do tối đa 300 ký tự', { status: 422, errorCode: 'LY_DO_QUA_DAI' });
+  const muonBat = !!bat;
+  const kq = await withTransaction(async (client) => {
+    const d = await repo.docDotBtpTx(client, dotVaiId);
+    if (!d) throw new AppError('Không tìm thấy đợt vải', { status: 404, errorCode: 'NOT_FOUND' });
+    if (['DA_HUY', 'DA_GOP'].includes(d.trang_thai)) throw new AppError(`Đợt ${d.ma_dot_vai} đã hủy / gộp`, { status: 409, errorCode: 'WRONG_STAGE' });
+    if (!!d.btp_khac_kh === muonBat) return { ...d, doi: false };
+    if (muonBat) {
+      await batCoTx(client, [d.id], actorId, { nguon: 'HE_THONG', lyDo: ly });
+    } else {
+      if (d.da_release > d.so_luong) {
+        throw new AppError(`Đợt ${d.ma_dot_vai} đã lập kế hoạch cả đầu 2 (đã release ${d.da_release} / SL vải ${d.so_luong}) — hủy lệnh của đầu 2 trước rồi mới tắt`,
+          { status: 409, errorCode: 'DA_LAP_DAU_2' });
+      }
+      await repo.tatBtpTx(client, d.id, actorId, ly);
+    }
+    return { ...d, doi: true };
+  });
+  if (kq.doi) {
+    sockets.emit('workflow:updated', { dotVaiId: kq.id, btpKhacKh: muonBat });
+    sockets.emit('dashboard:refresh', {});
+  }
+  return { dot_vai_id: kq.id, ma_dot_vai: kq.ma_dot_vai, ma_phan: kq.ma_phan, btp_khac_kh: muonBat, da_doi: kq.doi };
+}
+
 module.exports = {
   assertKhongOGn,
   listRelease1Candidates, autoPlanCandidates, createRelease1, traVeKyThuat, createDotSanXuat, release1History, listReleaseSets, releaseSet,
   listGopCandidates, gopDotVai, gopHistory,
-  getReplanDetail,
+  getReplanDetail, suaKeHoachTuDsRelease,
   listTestRunCandidates, getLenhDetail, recordTestRun, confirmTest, confirmTestBatch, cancelTest, listOwnerChoIn,
   returnTestRunToReady, traVeKeHoachTuTestRun, listTestRunTraVeKh, xacNhanLaiTestRunTraVe,
   listRelease2Candidates, approveRelease2, approveRelease2Batch, skipTestRun, testRunHistory,
@@ -2416,4 +2485,5 @@ module.exports = {
   release1Done, release2Done, replanDone, testCnspDone, testQaDone,
   releaseList,
   listCaTuan, upsertCaTuan,
+  timBtpKhacKh, datBtpKhacKh,
 };

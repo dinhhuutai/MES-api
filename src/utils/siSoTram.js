@@ -49,6 +49,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 const { khongReadyTuDongSql, conDotChuaReadySql, conDotChoQcSql, qcMoLaiSql } = require('./tech');
+// BTP khác kế hoạch (mig 120): đợt có cờ rời Release 1 khi đã release đủ 2 × SL vải.
+const { sucChuaSql } = require('./btpKhacKh');
 
 const VN = "AT TIME ZONE 'Asia/Ho_Chi_Minh'";
 
@@ -306,7 +308,7 @@ const DV = {
   //   sử ⇒ xóa kế hoạch tạm là đợt **tự quay lại** ô Tồn ngay, không cần bản ghi "vào lại".
   RELEASE_1: `SELECT dv.phan_in_id, dv.ma_dot_vai, dv.tg_chuyen_ready AS tg_vao,
       COALESCE(
-        CASE WHEN COALESCE(dv.so_luong_vai_ve,0) - COALESCE(rel.da_release,0) <= 0
+        CASE WHEN ${sucChuaSql('dv')} - COALESCE(rel.da_release,0) <= 0
              THEN rel.tg_release_cuoi END,
         CASE WHEN kht.id IS NOT NULL
              THEN GREATEST(dv.tg_chuyen_ready, kht.created_date) END) AS tg_ra,

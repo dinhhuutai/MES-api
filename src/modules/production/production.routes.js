@@ -85,6 +85,9 @@ router.post('/dong-lenh/:phieuId', rbac('PROD_RUN'), rbac.huyXacNhan(), c.closeP
 
 // Mở lại lệnh sản xuất (đã đóng/hoàn tất trong 2 ngày, cần in tiếp) — trang Đóng lệnh sản xuất
 router.get('/mo-lai/candidates', rbac('PROD_RUN'), c.reopenCandidates);
+// Lịch sử Chạy hoàn tất ở màn Xác nhận chạy (28/10/2026) — mở lại lý do bắt buộc, không hạn 2 ngày, không đòi HUY_XAC_NHAN.
+router.get('/lich-su-hoan-tat', rbac('PROD_RUN', 'PROD_MONITOR'), c.lichSuHoanTat);
+router.post('/lich-su-hoan-tat/:phieuId/mo-lai', rbac('PROD_RUN'), c.moLaiTuLichSu);
 router.post('/mo-lai/:phieuId', rbac('PROD_RUN'), rbac.huyXacNhan(), c.reopenProduction);
 
 // Ngừng lệnh chạy (ngừng phần in đang chạy để in hàng gấp hơn) → lệnh về chờ chạy — màn Xác nhận chạy

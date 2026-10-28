@@ -22,7 +22,7 @@ const { layBarcodeTem, layNhieuBarcodeTem } = require('../../utils/erpTemBarcode
 const { ghiInTem, taoPayload, laMaTemErp, ghiChuaCoMaErp } = require('../../utils/erpGhiInTem');
 const { apiChoPhepPhanIn } = require('../../utils/caiDatApi');
 const { tenNgc } = require('../../utils/nhaGiaCong'); // tách lệnh theo nhà gia công (27/10/2026)
-const { coCotThoInKh } = require('../../utils/thoInKeHoach');
+const { coCotThoInKh, chuanHoaThoIn } = require('../../utils/thoInKeHoach');
 
 // Gắn `phan_in_list` (1 dòng / phần in) cho các lệnh GOM SET — màn Xác nhận chạy tách dòng theo phần in,
 // hợp nhất ô ở STT + nút thao tác. Lệnh 1 phần in KHÔNG gắn (FE render như cũ, khỏi phình payload).
@@ -354,7 +354,23 @@ async function xemVaiTem(temId) {
   };
 }
 
-async function suaVaiTheoTem(temId, { huy, thieu, dotVaiId, lyDo }, actorId) {
+// Khối "Vải hủy / thiếu" ở panel tem (Danh sách tem in) = `kiemVaiTem` (đọc + kiểm, KHÔNG ghi) → `ghiVaiTem` (ghi sổ +
+//   audit) → gửi lại ERP phiếu in tem cùng IDMES.
+async function suaVaiTheoTem(temId, body, actorId) {
+  const k = await kiemVaiTem(temId, body);
+  if (!k.doi) return { ...(await xemVaiTem(temId)), doi: false, gui_erp: false };
+  await ghiVaiTem(k, actorId);
+  // Gửi lại ERP phiếu in tem của tem này (cùng IDMES) — NGẦM; tem chưa từng gửi (API tắt / mã MES) ⇒ bỏ qua.
+  const dong = await repo.dongGhiInTemCuoi(temId).catch(() => null);
+  if (dong) {
+    require('../caidatapi/guiLai').guiLai('ERP_GHI_IN_TEM', dong.id, actorId)
+      .catch((e) => console.error(`[vai-theo-tem] ✗ Gửi lại ERP tem ${k.tem.ma_tem}: ${e.message}`));
+  }
+  sockets.emit('production:updated', { lenhId: k.tem.lenh_san_xuat_id, action: 'vai-theo-tem' });
+  return { ...(await xemVaiTem(temId)), doi: true, gui_erp: !!dong };
+}
+
+async function kiemVaiTem(temId, { huy, thieu, dotVaiId, lyDo }) {
   const so = (v, ten) => {
     const n = Number(v);
     if (v === '' || v == null || !Number.isInteger(n) || n < 0) {
@@ -373,7 +389,7 @@ async function suaVaiTheoTem(temId, { huy, thieu, dotVaiId, lyDo }, actorId) {
   }
   const dHuy = moiHuy - cu.huy;
   const dThieu = moiThieu - cu.thieu;
-  if (!dHuy && !dThieu) return { ...(await xemVaiTem(temId)), doi: false, gui_erp: false };
+  if (!dHuy && !dThieu) return { doi: false, tem };
   const ly = String(lyDo || '').trim();
   if ((cu.huy > 0 || cu.thieu > 0) && !ly) {
     throw new AppError('Tem đã có số vải hủy / thiếu — nhập lý do sửa', { status: 422, errorCode: 'THIEU_LY_DO' });
@@ -381,6 +397,10 @@ async function suaVaiTheoTem(temId, { huy, thieu, dotVaiId, lyDo }, actorId) {
   const dots = await repo.getLenhDotVaiList(tem.lenh_san_xuat_id);
   const dot = dotVaiId ? dots.find((d) => d.dot_vai_ve_id === dotVaiId) : (dots.length === 1 ? dots[0] : null);
   if (!dot) throw new AppError('Chọn đợt vải của phần in cần ghi hủy / thiếu', { status: 422, errorCode: 'NO_DOT_VAI' });
+  return { doi: true, tem, temId, cu, dot, ly, moiHuy, moiThieu, dHuy, dThieu };
+}
+
+async function ghiVaiTem({ tem, temId, cu, dot, ly, moiHuy, moiThieu, dHuy, dThieu }, actorId) {
   const phieu = { id: tem.phieu_san_xuat_id, lenh_san_xuat_id: tem.lenh_san_xuat_id };
   const ghi = (soLuong, loai, coTem, lyDoDong) => repo.insertVaiHuy({
     phieuId: phieu.id, lenhId: phieu.lenh_san_xuat_id, dotVaiId: dot.dot_vai_ve_id, phanInId: dot.phan_in_id,
@@ -407,14 +427,6 @@ async function suaVaiTheoTem(temId, { huy, thieu, dotVaiId, lyDo }, actorId) {
     cu: { huy: cu.huy, thieu: cu.thieu, nguon: cu.nguon },
     moi: { ma_tem: tem.ma_tem, huy: moiHuy, thieu: moiThieu, dot_vai_ve_id: dot.dot_vai_ve_id, ly_do: ly || null },
   }, actorId);
-  // Gửi lại ERP phiếu in tem của tem này (cùng IDMES) — NGẦM; tem chưa từng gửi (API tắt / mã MES) ⇒ bỏ qua.
-  const dong = await repo.dongGhiInTemCuoi(temId).catch(() => null);
-  if (dong) {
-    require('../caidatapi/guiLai').guiLai('ERP_GHI_IN_TEM', dong.id, actorId)
-      .catch((e) => console.error(`[vai-theo-tem] ✗ Gửi lại ERP tem ${tem.ma_tem}: ${e.message}`));
-  }
-  sockets.emit('production:updated', { lenhId: tem.lenh_san_xuat_id, action: 'vai-theo-tem' });
-  return { ...(await xemVaiTem(temId)), doi: true, gui_erp: !!dong };
 }
 
 // ─── SỬA TEM Ở DANH SÁCH TEM IN (25/10/2026, người dùng yêu cầu: "sửa số lượng, giờ, ca — có gọi API ERP") ───────
@@ -460,6 +472,39 @@ async function suaTem(temId, body = {}, actorId) {
     }
   }
 
+  // PHÂN CÔNG RIÊNG CỦA TEM (28/10/2026) — `body.phanCong = { caTruongId, chuyenTruong, thoIn, toInId? }`; chỉ ghi khi KHÁC
+  //   phân công đang hiện của tem (riêng của tem nếu có, không thì của phiếu). Xem `production.repository PCT_LATERAL`.
+  let pcMoi = null; let pcCu = null;
+  if (body.phanCong && typeof body.phanCong === 'object') {
+    const b = body.phanCong;
+    const nhan = await repo.getTemLabelData(temId);
+    if (!nhan) throw new AppError('Tem không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+    const coTo = Object.prototype.hasOwnProperty.call(b, 'toInId') && await repo.phieuCoCotToIn();
+    const s = (v) => String(v == null ? '' : v).trim();
+    const moiPc = {
+      ca_truong_id: s(b.caTruongId) || null,
+      chuyen_truong: s(b.chuyenTruong).replace(/\s+/g, ' ') || null,
+      tho_in: chuanHoaThoIn(b.thoIn) || null,
+      ...(coTo ? { to_in_id: s(b.toInId) || null } : {}),
+    };
+    if (moiPc.ca_truong_id && !/^[0-9a-f-]{36}$/i.test(moiPc.ca_truong_id)) {
+      throw new AppError('Ca trưởng không hợp lệ', { status: 422, errorCode: 'CA_TRUONG_SAI' });
+    }
+    if (coTo && moiPc.to_in_id && !/^[0-9a-f-]{36}$/i.test(moiPc.to_in_id)) {
+      throw new AppError('Tổ in không hợp lệ', { status: 422, errorCode: 'TO_IN_SAI' });
+    }
+    const cuPc = {
+      ca_truong_id: nhan.ca_truong_id || null, chuyen_truong: s(nhan.chuyen_truong) || null,
+      tho_in: chuanHoaThoIn(nhan.tho_in) || null, ...(coTo ? { to_in_id: nhan.to_in_id || null } : {}),
+    };
+    if (JSON.stringify(moiPc) !== JSON.stringify(cuPc)) {
+      if (!moiPc.tho_in) throw new AppError('Thợ in không được để trống', { status: 422, errorCode: 'CHUA_PHAN_CONG_THO_IN' });
+      pcMoi = moiPc; pcCu = { ...cuPc, ca_truong: nhan.ca_truong || null, ma_to: nhan.ma_to || null };
+    }
+  }
+  // ⚠ Vải hủy / thiếu KHÔNG sửa ở đây — khối "Vải hủy / thiếu" của panel tem (`suaVaiTheoTem`) đã ghi + gửi lại ERP cùng
+  //   IDMES (người dùng 28/10/2026: "có rồi thì đỡ phải thêm chỗ sửa tem").
+
   const kq = await withTransaction(async (client) => {
     const t = await repo.docTemSuaTx(client, temId);
     if (!t) throw new AppError('Tem không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
@@ -473,7 +518,9 @@ async function suaTem(temId, body = {}, actorId) {
     if ('gioBd' in moi && moi.gioBd !== (t.gio_sx_bd || null)) doi.gioBd = moi.gioBd;
     if ('gioKt' in moi && moi.gioKt !== (t.gio_sx_kt || null)) doi.gioKt = moi.gioKt;
     if ('maNgayCa' in moi && moi.maNgayCa !== (t.ma_ngay_ca || null)) { doi.maNgayCa = moi.maNgayCa; doi.ngayCa = moi.ngayCa; }
-    if (!Object.keys(doi).length && !ngayCtMoi) throw new AppError('Không có gì thay đổi', { status: 422, errorCode: 'KHONG_DOI' });
+    if (!Object.keys(doi).length && !ngayCtMoi && !pcMoi) {
+      throw new AppError('Không có gì thay đổi', { status: 422, errorCode: 'KHONG_DOI' });
+    }
     if ('soLuong' in doi) {
       if (t.da_kiem || t.co_kcs) {
         throw new AppError('Tem đã kiểm (KCS) — không sửa số lượng được; hủy xác nhận KCS trước', { status: 409, errorCode: 'DA_KIEM' });
@@ -485,8 +532,13 @@ async function suaTem(temId, body = {}, actorId) {
       }
     }
     if (Object.keys(doi).length) await repo.capNhatTemSuaTx(client, temId, doi, actorId);
+    // Mã lô đi theo mã ngày ca (28/10/2026 — trước đó Sửa tem đổi ca mà mã lô giữ ca lúc in).
+    const lo = 'maNgayCa' in doi ? await repo.doiMaLoTheoNgayCaTx(client, t, doi.maNgayCa) : null;
+    if (pcMoi) await repo.ghiPhanCongTemTx(client, temId, pcMoi, pcCu, actorId);
     const cu = { so_luong: t.so_luong, gio_sx_bd: t.gio_sx_bd, gio_sx_kt: t.gio_sx_kt, ma_ngay_ca: t.ma_ngay_ca, ngay_ca: t.ngay_ca,
-      ...(ngayCtMoi ? { ngay_ct: dongErp.ngay_ct || null } : {}) };
+      ...(ngayCtMoi ? { ngay_ct: dongErp.ngay_ct || null } : {}),
+      ...(lo ? { ma_lo: lo.cu } : {}),
+      ...(pcMoi ? { phan_cong: pcCu } : {}) };
     const ghiMoi = {
       ma_tem: t.ma_tem, ly_do: ly,
       ...(ngayCtMoi ? { ngay_ct: ngayCtMoi } : {}),
@@ -494,9 +546,17 @@ async function suaTem(temId, body = {}, actorId) {
       ...('gioBd' in doi ? { gio_sx_bd: doi.gioBd } : {}),
       ...('gioKt' in doi ? { gio_sx_kt: doi.gioKt } : {}),
       ...('maNgayCa' in doi ? { ma_ngay_ca: doi.maNgayCa, ngay_ca: doi.ngayCa } : {}),
+      ...(lo ? { ma_lo: lo.moi } : {}),
+      ...(pcMoi ? { phan_cong: pcMoi } : {}),
     };
     await repo.logSuaTemTx(client, temId, cu, ghiMoi, actorId);
-    return { t, doi: ngayCtMoi ? { ...doi, ngayCt: ngayCtMoi } : doi };
+    return {
+      t,
+      doi: {
+        ...doi, ...(ngayCtMoi ? { ngayCt: ngayCtMoi } : {}), ...(lo ? { maLo: lo.moi } : {}),
+        ...(pcMoi ? { phanCong: true } : {}),
+      },
+    };
   });
 
   // Gửi lại ERP phiếu in tem cùng IDMES — NGẦM, SL lấy từ tem (số mới). Tem chưa từng gửi (API tắt / mã MES) ⇒ bỏ qua.
@@ -1383,6 +1443,10 @@ async function finishRun(phieuId, actorId) {
   const phieu = await repo.getPhieuById(phieuId);
   if (!phieu) throw new AppError('Phiếu sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   await repo.finishPhieu(phieuId, actorId);
+  // Vết người bấm (28/10/2026 — cột "Người hoàn tất" của Lịch sử hoàn tất). Phụ — không chặn.
+  repo.getPrintedTotal(phieuId)
+    .then((daIn) => repo.logChayHoanTat(phieuId, phieu.ma_lenh_san_xuat || null, daIn, actorId))
+    .catch((e) => console.error(`[production] ✗ Ghi vết Chạy hoàn tất phiếu ${phieuId}: ${e.message}`));
   const epUi = await sauChayHoanTat(phieu.lenh_san_xuat_id, actorId);
   return { ...(await getRun(phieu.lenh_san_xuat_id)), ep_ui_activated: epUi ? epUi.ma_lenh_san_xuat : null };
 }
@@ -1729,19 +1793,43 @@ async function listReopenCandidates() {
   return repo.listReopenCandidates();
 }
 
+// LỊCH SỬ CHẠY HOÀN TẤT (28/10/2026) — `repo.listLichSuHoanTat`. Khoảng ngày theo lúc hoàn tất (giờ VN), ≤ 93 ngày.
+async function listLichSuHoanTat(q) {
+  const { rows, total } = await repo.listLichSuHoanTat(q);
+  return { items: rows, meta: buildMeta(q.page, q.limit, total) };
+}
+
 // `boQuaHan` (19/10/2026): CHỈ trang Quản trị phần in truyền (quyền `PHAN_IN_ADMIN`) — lùi phần in về sản xuất / chờ
 //   chạy thì phải mở lại phiếu dù đã đóng lâu hơn 2 ngày. Route của tab Hủy lệnh xác nhận KHÔNG truyền ⇒ luật cũ.
-async function reopenProduction(phieuId, actorId, { boQuaHan = false } = {}) {
+// `lyDo` + `tuLichSu` (28/10/2026 — nút "Mở lại" ở Lịch sử hoàn tất màn Xác nhận chạy): bỏ hạn 2 ngày, lý do BẮT BUỘC,
+//   kiểm lại TRONG transaction sau khi khóa lệnh (lệnh chưa HUY · không phiếu khác đang chạy · là phiếu mới nhất của lệnh —
+//   `repo.docMoLaiPhieuTx`, gương cờ `mo_lai_duoc` của danh sách).
+async function reopenProduction(phieuId, actorId, { boQuaHan = false, lyDo = null, tuLichSu = false } = {}) {
+  const ly = String(lyDo || '').trim();
+  if (tuLichSu && !ly) throw new AppError('Nhập lý do mở lại', { status: 422, errorCode: 'NO_LY_DO' });
   const phieu = await repo.getPhieuFull(phieuId);
   if (!phieu) throw new AppError('Phiếu sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   if (phieu.trang_thai !== 'HOAN_TAT') {
     throw new AppError('Chỉ mở lại phiếu đã hoàn tất (đang chạy thì không cần mở lại)', { status: 409, errorCode: 'WRONG_STAGE' });
   }
-  if (!boQuaHan && (!phieu.tg_kt || (Date.now() - new Date(phieu.tg_kt).getTime()) > 2 * 24 * 60 * 60 * 1000)) {
+  if (!boQuaHan && !tuLichSu && (!phieu.tg_kt || (Date.now() - new Date(phieu.tg_kt).getTime()) > 2 * 24 * 60 * 60 * 1000)) {
     throw new AppError('Chỉ mở lại được lệnh đã đóng trong 2 ngày gần nhất', { status: 409, errorCode: 'TOO_OLD' });
   }
-  await withTransaction((client) => repo.reopenPhieuTx(client, phieuId, phieu.lenh_san_xuat_id, actorId));
-  await repo.logReopenProduction(phieuId, phieu.ma_lenh_san_xuat, actorId);
+  await withTransaction(async (client) => {
+    if (tuLichSu) {
+      const p = await repo.docMoLaiPhieuTx(client, phieuId);
+      if (!p || p.trang_thai !== 'HOAN_TAT') throw new AppError('Phiếu vừa đổi trạng thái — tải lại danh sách', { status: 409, errorCode: 'DA_DOI' });
+      if (!p.mo_lai_duoc) {
+        throw new AppError(p.lenh_trang_thai === 'HUY'
+          ? `Lệnh ${p.ma_lenh_san_xuat} đã hủy — không mở lại được`
+          : `Lệnh ${p.ma_lenh_san_xuat} đang có phiếu chạy khác hoặc đã có phiếu mới hơn — mở phiếu đó thay vì phiếu này`,
+        { status: 409, errorCode: 'KHONG_MO_LAI_DUOC' });
+      }
+    }
+    await repo.reopenPhieuTx(client, phieuId, phieu.lenh_san_xuat_id, actorId);
+  });
+  await repo.logReopenProduction(phieuId, phieu.ma_lenh_san_xuat, actorId,
+    tuLichSu ? { ly_do: ly, nguon: 'LICH_SU_HOAN_TAT' } : {});
   await tracking.moveByLenh(phieu.lenh_san_xuat_id, 'SAN_XUAT', actorId);
   sockets.emit('production:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'reopen' });
   sockets.emit('dashboard:refresh', {});
@@ -1953,7 +2041,7 @@ module.exports = {
   dsLyDoBoSung, taoLyDoBoSung, suaLyDoBoSung, doiTrangThaiLyDoBoSung, luuLyDoBoSungDotVai,
   listCancelableTem, listTemDaIn, cancelPrintTem, listReopenableTem, reopenPrintTem,
   listCloseCandidates, closeProduction,
-  listReopenCandidates, reopenProduction, pauseLenhChay, doiChuyen,
+  listReopenCandidates, reopenProduction, pauseLenhChay, doiChuyen, listLichSuHoanTat,
   listUndoStartCandidates, undoStartProduction,
   traVeKyThuat,
   traVeKeHoachSx,

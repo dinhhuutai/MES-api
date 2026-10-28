@@ -141,6 +141,12 @@ const replan = asyncHandler(async (req, res) =>
 const replanDetail = asyncHandler(async (req, res) =>
   ok(res, await service.getReplanDetail(req.params.lenhId)));
 
+// Sửa kế hoạch lệnh từ sidebar "Danh sách release" (28/10/2026) — CHÍNH `replan` với `choDaChay` (như Quản trị phần in:
+//   lệnh đã xác nhận chạy vẫn sửa được thông tin kế hoạch). Lý do bắt buộc. ERP: hủy lượt kế hoạch cũ rồi gửi lượt mới
+//   (`release1Erp.xepHang` nguồn REPLAN).
+const releaseListSuaKeHoach = asyncHandler(async (req, res) =>
+  ok(res, await service.suaKeHoachTuDsRelease(req.params.lenhId, req.body || {}, req.user.id), 'Đã sửa kế hoạch — đang báo ERP (hủy kế hoạch cũ, gửi kế hoạch mới)'));
+
 // Cùng bộ tham số lọc với Lập kế hoạch lại (`f_<khóa>` + `tuNgay`/`denNgay`).
 const giaCongList = dsChung('planning.giacong',
   (q) => ({ ...replanOpts(q), ...getPaging(q, { tranToiDa: TRAN_TAI_HET }) }), (o) => service.listGiaCong(o));
@@ -290,14 +296,21 @@ const listCaTuan = asyncHandler(async (req, res) => ok(res, await service.listCa
 const upsertCaTuan = asyncHandler(async (req, res) =>
   ok(res, await service.upsertCaTuan(req.body, req.user.id), 'Đã lưu cài đặt ca tuần'));
 
+// BTP khác kế hoạch (mig 120) — trang Hệ thống: tìm phần in, bật/tắt cờ theo đợt vải.
+const btpKhacKhTim = asyncHandler(async (req, res) => ok(res, await service.timBtpKhacKh(req.query.q || '')));
+const btpKhacKhDat = asyncHandler(async (req, res) =>
+  ok(res, await service.datBtpKhacKh(req.params.dotVaiId, req.body || {}, req.user.id),
+    req.body && req.body.bat ? 'Đã bật BTP khác KH — đợt quay về Release 1' : 'Đã tắt BTP khác KH'));
+
 module.exports = {
+  btpKhacKhTim, btpKhacKhDat,
   listCaTuan, upsertCaTuan,
   release1Candidates, autoPlanCandidates, createRelease1, release1TraVeKyThuat, createDotSanXuat, release1History, releaseList, releaseSets, releaseSet,
   gopCandidates, gopDotVai, gopHistory,
   testRunCandidates, lenhDetail, recordTestRun,
   confirmCNSP, confirmQA, ownerChoIn, cancelCNSP, cancelQA, confirmCNSPBatch, confirmQABatch,
   release2Candidates, approveRelease2, approveRelease2Batch, skipTestRun, testRunHistory,
-  replanCandidates, replanIds, replanMaQuet, replan, replanDetail, replanBatch, planHistory,
+  replanCandidates, replanIds, replanMaQuet, replan, replanDetail, replanBatch, planHistory, releaseListSuaKeHoach,
   giaCongList, giaCongToOqc, giaCongHistory, giaCongTemCancelable, giaCongTemHuy, giaCongTraLai,
   keHoachTamList, keHoachTamSet, keHoachTamConfirm, keHoachTamUpdate, keHoachTamDelete, keHoachTamHistory, keHoachTamDone, keHoachTamTheoDoi,
   keHoachTamHuyCandidates, keHoachTamHuy,

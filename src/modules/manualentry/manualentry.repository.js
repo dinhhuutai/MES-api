@@ -1,6 +1,7 @@
 'use strict';
 
 const { query } = require('../../config/db');
+const { coBtpSql, conRelease } = require('../../utils/btpKhacKh');
 const AppError = require('../../utils/AppError');
 const { mauTim } = require('../../utils/timKiem');
 const { chuanHoaDsMa } = require('../../utils/maPhanIn');
@@ -154,6 +155,7 @@ async function searchVaiVe(q, limit = 40) {
   const lim = Math.max(1, Math.min(Number(limit) || 40, 100));
   const { rows } = await query(
     `SELECT dv.id, dv.ma_dot_vai, dv.so_luong_vai_ve, dv.ngay_vai_ve, dv.han_giao_hang, dv.trang_thai,
+            ${coBtpSql('dv')} AS btp_khac_kh,
             pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim,
             mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
             COALESCE((SELECT SUM(COALESCE(lsd.so_luong,0)) FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id
@@ -183,7 +185,7 @@ async function searchVaiVe(q, limit = 40) {
   rels.forEach((r) => { (byDot[r.dot_vai_ve_id] = byDot[r.dot_vai_ve_id] || []).push(r); });
   return rows.map((r) => ({
     ...r,
-    con_release: Math.max(0, (r.so_luong_vai_ve || 0) - r.da_release),
+    con_release: conRelease(r.so_luong_vai_ve, r.da_release, r.btp_khac_kh), // BTP khác KH (mig 120) ⇒ 2 đầu
     releases: byDot[r.id] || [],
   }));
 }
