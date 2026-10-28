@@ -447,6 +447,7 @@ async function suaKeHoachLenh(phanInId, lenhId, body = {}, actorId) {
   const kq = await planningService.replan(lenhId, {
     chuyenId: body.chuyenId || null, ngayKeHoach: body.ngayKeHoach, tgBdKh: body.tgBdKh || null, tgKtKh: body.tgKtKh || null,
     slRelease: body.slRelease || null, thoIn: body.thoIn, lyDo: LY(ly),
+    btp: typeof body.btp === 'boolean' ? body.btp : undefined,
   }, actorId, { choDaChay: true, nguon: 'QUAN_TRI_PHAN_IN' });
   await repo.ghiAudit('lenh_san_xuat', lenhId, 'QUAN_TRI_SUA_KE_HOACH',
     { chuyen_id: l.chuyen_id, ngay_ke_hoach: l.ngay_ke_hoach, tg_bd_kh: l.tg_bd_kh, tg_kt_kh: l.tg_kt_kh, tho_in_kh: l.tho_in_kh, so_luong_release: l.so_luong_release },

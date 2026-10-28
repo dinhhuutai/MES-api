@@ -240,6 +240,8 @@ const dsTemDaIn = (laGiaCong) => asyncHandler(async (req, res) => {
     // Khu chuyền (26/10/2026) — chip loại ⇒ `loaiChuyen`, chip khu ⇒ `maChuyen` (danh sách mã, ngăn dấu phẩy).
     loaiChuyen: /^[A-Z_]{1,30}$/i.test(q.loaiChuyen || '') ? q.loaiChuyen : '',
     maChuyenDs: String(q.maChuyen || '').slice(0, 400),
+    // "Tem của tôi" (28/10/2026): `cuaToi=1` ⇒ chỉ tem do CHÍNH người đang đăng nhập in (id lấy từ token, không từ query).
+    cuaToi: ['1', 'true'].includes(String(q.cuaToi || '')) ? req.user.id : '',
     page, limit, offset,
   }, laGiaCong));
 });

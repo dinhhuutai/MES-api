@@ -169,6 +169,18 @@ async function getPrintedTotal(phieuId, client = null) {
   return rows[0].printed;
 }
 
+// Như `getPrintedTotal` nhưng TÁCH tem "BTP trước" (29/10/2026 — trần in tem: tem BTP trước có trần riêng, xem
+// `production.service kiemTranIn`). `thuong` = tem không tích BTP trước, `btp` = tem tích BTP trước.
+async function getPrintedTach(phieuId, client = null) {
+  const { rows } = await (client || { query }).query(
+    `SELECT COALESCE(SUM(so_luong) FILTER (WHERE NOT COALESCE(btp_truoc, false)), 0)::int AS thuong,
+            COALESCE(SUM(so_luong) FILTER (WHERE COALESCE(btp_truoc, false)), 0)::int AS btp
+       FROM tem WHERE phieu_san_xuat_id = $1 AND trang_thai <> 'HUY'`.replace(/\s+/g, ' '),
+    [phieuId]
+  );
+  return { thuong: rows[0].thuong, btp: rows[0].btp };
+}
+
 // Xe phơi mặc định (xe hoạt động đầu tiên) — dùng khi in tem tự đưa vào xe.
 async function getDefaultXePhoi() {
   const { rows } = await query(
@@ -613,7 +625,7 @@ async function getPhieuById(phieuId) {
 
 async function getTemsByPhieu(phieuId) {
   const { rows } = await query(
-    `SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.created_date,
+    `SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.created_date, COALESCE(t.btp_truoc, false) AS btp_truoc,
             (SELECT COALESCE(MAX(lt.so_lan_in),1) FROM log_tem lt WHERE lt.tem_id = t.id)::int AS so_lan_in,
             (COALESCE(t.sl_kcs_dat,0) + COALESCE(t.sl_kcs_sua,0) + COALESCE(t.sl_kcs_huy,0)
               + COALESCE(t.sl_oqc_dat,0) + COALESCE(t.sl_da_giao,0)) > 0 AS da_kiem,
@@ -704,6 +716,7 @@ async function listReopenableTem({ search = '', offset = 0, limit = 50 }) {
 async function getTemForReopen(temId) {
   const { rows } = await query(
     `SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.tem_goc_id, t.phieu_san_xuat_id, t.updated_date,
+            COALESCE(t.btp_truoc, false) AS btp_truoc,
             ps.lenh_san_xuat_id, ps.trang_thai AS phieu_trang_thai, ls.ma_lenh_san_xuat, ls.trang_thai AS lenh_trang_thai,
             COALESCE(t.sl_kcs_dat,0) + COALESCE(t.sl_kcs_sua,0) + COALESCE(t.sl_kcs_huy,0)
               + COALESCE(t.sl_oqc_dat,0) + COALESCE(t.sl_da_giao,0) AS so_da_kiem,
@@ -814,10 +827,13 @@ async function listTemDaIn({
   khach = '', don = '', maHang = '', codePhan = '', maTem = '', chuyen = '', chuyenId = '',
   loaiChuyen = '', maChuyenDs = '',
   mauVai = '', kichVai = '', kichPhim = '', maLenh = '', maLo = '', nhaGiaCong = '', trangThai = [],
-  offset = 0, limit = 20,
+  cuaToi = '', offset = 0, limit = 20,
 }) {
   const dk = [];
   const p = [];
+  // TEM CỦA TÔI (28/10/2026) — tem do CHÍNH tài khoản đang xem in ra (`tem.created_by` = người bấm In tem lần đầu;
+  //   in lại chỉ ghi `log_tem`). `cuaToi` = id người dùng do controller lấy từ `req.user`, không nhận từ query.
+  if (cuaToi) { p.push(cuaToi); dk.push(`t.created_by = $${p.length}::uuid`); }
   // Ô CHỌN chuyền (21/10/2026) — khớp ĐÚNG chuyền chạy phiếu (ô chữ `chuyen` khớp gần đúng: "M1" ra cả M10A).
   if (chuyenId && /^[0-9a-f-]{36}$/i.test(String(chuyenId))) { p.push(chuyenId); dk.push(`cs.id = $${p.length}::uuid`); }
   const them = (val, bieuThuc) => {
@@ -887,8 +903,8 @@ async function listTemDaIn({
            t.sl_oqc_dat, t.sl_da_giao, t.sl_chenh_lech,
            ls.id AS lenh_id, ls.ma_lenh_san_xuat, ps.id AS phieu_id,
            cs.ma_chuyen, cs.ten_chuyen, lc.ma_loai AS ma_loai_chuyen,
-           info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan,
-           info.mau_vai, info.kich_vai, info.kich_phim, info.tinh_chat_in,
+           info.phan_in_id, info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan,
+           info.mau_vai, info.kich_vai, info.kich_phim, info.tinh_chat_in, info.mau_in, info.do_in,
            info.so_luong_don_hang, info.han_giao_hang, info.nha_gia_cong,
            (SELECT nd.ho_ten FROM log_tem lt LEFT JOIN nguoi_dung nd ON nd.id = lt.nguoi_in_id
              WHERE lt.tem_id = t.id ORDER BY lt.tg_in LIMIT 1) AS nguoi_in,
@@ -1087,6 +1103,7 @@ async function docTemSuaTx(client, temId) {
   const cotLo = (await temCoCot('ma_lo')) ? 't.ma_lo' : 'NULL::text AS ma_lo';
   const { rows } = await client.query(
     `SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.phieu_san_xuat_id, t.tem_goc_id, t.ma_ngay_ca, ${cotLo},
+            COALESCE(t.btp_truoc, false) AS btp_truoc,
             to_char(t.ngay_ca, 'YYYY-MM-DD') AS ngay_ca,
             to_char(t.gio_sx_bd, 'HH24:MI') AS gio_sx_bd, to_char(t.gio_sx_kt, 'HH24:MI') AS gio_sx_kt,
             ps.lenh_san_xuat_id, ls.ma_lenh_san_xuat, ls.trang_thai AS lenh_trang_thai,
@@ -2617,7 +2634,7 @@ module.exports = {
   vaiHuyCoCotTem, vaiTemSql, docVaiChoTem, ghiVaiChoTem, vaiCuaTem, vaiErpCuaTem, logSuaVaiTem,
   temCoCot,
   getVuotContext, listUnreleasedDotVaiForPhanIn, incLenhRelease, insertVuotHistory,
-  listProductionCandidates, getPrintedTotal, getDefaultXePhoi, nextMaPhieu, createPhieu, setLenhChuyen, setLenhTrangThai, getLenhBasic,
+  listProductionCandidates, getPrintedTotal, getPrintedTach, getDefaultXePhoi, nextMaPhieu, createPhieu, setLenhChuyen, setLenhTrangThai, getLenhBasic,
   setPhieuChuyen, getChuyenById, logDoiChuyen,
   getLenhDotVaiList, phanInRowsByLenh, insertVaiHuy, listVaiHuyByLenh,
   getActivePhieu, getPhieuById, getTemsByPhieu, getTemContext, cancelTem, getTemLabelData, caPartsForTem, docDauCa, ghiDauCa,

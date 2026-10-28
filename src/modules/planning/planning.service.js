@@ -30,7 +30,7 @@ const { isKhuonOptional } = require('../../utils/tech');
 const { ngayHomNayVN } = require('../../utils/khoangNgay');
 const { trongGioHanhChinh } = require('../../utils/gioHanhChinh'); // Test Run ngoài giờ ⇒ QA kiêm Release 2
 const { khoaNgc, tenNgc } = require('../../utils/nhaGiaCong'); // đợt khác nhà gia công không gom (27/10/2026)
-const { coCotBtp, batCoTx } = require('../../utils/btpKhacKh'); // BTP khác kế hoạch (mig 120, 28/10/2026)
+const { coCotBtp, datSoDauTx, coDauCho } = require('../../utils/btpKhacKh'); // BTP khác kế hoạch (mig 120, 28/10/2026)
 
 const TEST_TRAM = 'TEST_RUN';
 const CNSP_CP = 'TEST_CNSP';
@@ -377,9 +377,10 @@ async function kiemLaiConReleaseTx(client, nhomLenh, chat) {
   return out;
 }
 
-// `btpKhacKh` (mig 120, 28/10/2026): ô tích "BTP khác KH" — in BTP 2 đầu tấm vải ở 2 kế hoạch khác nhau ⇒ bật cờ cho
-//   mọi đợt của lượt (cả đợt vào lệnh lẫn đợt lưu kế hoạch tạm) ⇒ đợt release được 2 × SL vải, ở lại Release 1 sau đầu
-//   1 (luật `utils/btpKhacKh.js`). Bật TRONG transaction tạo lệnh. Chưa chạy mig ⇒ bỏ qua, trả `btp_chua_luu`.
+// `btpKhacKh` (mig 120, 28/10/2026): ô tích "BTP khác KH" — in BTP nhiều đầu tấm vải ở các kế hoạch khác nhau ⇒ THÊM 1
+//   ĐẦU cho mọi đợt của lượt (cả đợt vào lệnh lẫn đợt lưu kế hoạch tạm) — 29/10/2026: tích ở lần 2, 3… thêm đầu 3, 4…
+//   ⇒ đợt ở lại Release 1 với còn = SL vải cho đầu kế (luật `utils/btpKhacKh.js`). Ghi TRONG transaction tạo lệnh (sau
+//   khi gắn đợt vào lệnh ⇒ phần vừa release đã tính). Chưa chạy mig ⇒ bỏ qua, trả `btp_chua_luu`.
 async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach, tgBdKh, tgKtKh, thoIn, btpKhacKh }, actorId, opts = {}) {
   if (!Array.isArray(dotVaiIds) || dotVaiIds.length === 0) {
     throw new AppError('Chọn ít nhất một đợt vải', { status: 422, errorCode: 'NO_DOT_VAI' });
@@ -442,7 +443,7 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
     tamCount += 1;
     tamIds.push(dvId);
   }
-  if (batBtp && tamIds.length) await batCoTx(null, tamIds, actorId, { nguon: 'KE_HOACH_TAM' });
+  if (batBtp && tamIds.length) await datSoDauTx(null, tamIds, actorId, { them: true, nguon: 'KE_HOACH_TAM' });
   const btpTra = { btp_khac_kh: batBtp, btp_chua_luu: btpChuaLuu };
   if (readyIds.length === 0) {
     sockets.emit('dashboard:refresh', {});
@@ -506,7 +507,7 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
           tongSL: nhom.reduce((s, p) => s + p.qty, 0), ngayKeHoach,
           tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null, thoInKh,
         }, actorId);
-        if (batBtp) await batCoTx(client, nhom.map((p) => p.dvId), actorId, { nguon: 'RELEASE_1' });
+        if (batBtp) await datSoDauTx(client, nhom.map((p) => p.dvId), actorId, { them: true, nguon: 'RELEASE_1' });
         out.push({ ...c, dot_vai_id: nhom[0].dvId, dot_vai_ids: nhom.map((p) => p.dvId), so_dot_vai: nhom.length });
       }
       return out;
@@ -539,7 +540,7 @@ async function createRelease1({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach
         tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null, thoInKh,
       }, actorId);
       for (const p of nhom) await repo.addLenhDotVai(client, id, p.dvId, actorId, p.qty);
-      if (batBtp) await batCoTx(client, nhom.map((p) => p.dvId), actorId, { nguon: 'RELEASE_1' });
+      if (batBtp) await datSoDauTx(client, nhom.map((p) => p.dvId), actorId, { them: true, nguon: 'RELEASE_1' });
       out.push({ id, ma_lenh_san_xuat: maLenh, trang_thai: trangThai, so_dot_vai: nhom.length,
         dot_vai_id: nhom[0].dvId, dot_vai_ids: nhom.map((p) => p.dvId) });
     }
@@ -2053,7 +2054,10 @@ function gioCua(v) {
 //   lệnh in trong xưởng ĐÃ xác nhận chạy (có phiếu) — chỉ sửa THÔNG TIN kế hoạch: chuyền KH (trong xưởng, không qua gia
 //   công) · ngày · giờ · SL release từng đợt (vẫn trần theo vải + không dưới SL đã in — `updateReleaseTx`) · thợ in KH.
 //   KHÔNG đổi chặng (`changMoi` = null khi có phiếu), chuyền chạy thật của phiếu không đụng (đổi máy dùng "Đổi chuyền").
-async function replan(lenhId, { chuyenId, ngayKeHoach, lyDo, tgBdKh, tgKtKh, slRelease, thoIn }, actorId, opts = {}) {
+// `btp` (29/10/2026, người dùng: "thêm nút BTP ở Lập lại kế hoạch và Sửa kế hoạch — tích thì hiện lại ở Release 1, bỏ thì
+//   mất"): `true` = THÊM 1 ĐẦU BTP cho mọi đợt của lệnh (đợt hiện lại ở Release 1 với còn = SL vải) · `false` = BỎ đầu đang
+//   chờ (đợt rời Release 1) · không gửi = giữ nguyên. Luật `utils/btpKhacKh.datSoDauTx`; chưa mig 120 ⇒ trả `btp_chua_luu`.
+async function replan(lenhId, { chuyenId, ngayKeHoach, lyDo, tgBdKh, tgKtKh, slRelease, thoIn, btp }, actorId, opts = {}) {
   if (!ngayKeHoach) throw new AppError('Chọn ngày sản xuất theo kế hoạch', { status: 422, errorCode: 'NO_NGAY' });
   // Lý do KHÔNG bắt buộc (chốt 2026-08-14) — dời ngày/chuyền là việc điều độ hằng ngày, bắt nhập lý do
   // mỗi lần chỉ khiến người dùng gõ cho có. Vẫn ghi vào audit khi có nhập.
@@ -2143,13 +2147,22 @@ async function replan(lenhId, { chuyenId, ngayKeHoach, lyDo, tgBdKh, tgKtKh, slR
   const coTho = guiTho && (await coCotThoInKh());
   const thoMoi = coTho ? chuanHoaThoIn(thoIn) : undefined;
   const doiTho = coTho && (thoMoi || null) !== (lenh.tho_in_kh || null);
+  // BTP — chỉ khi bên gọi GỬI `btp` boolean và DB đã có cột (dò TRƯỚC transaction).
+  const guiBtp = typeof btp === 'boolean';
+  const coBtp = guiBtp && (await coCotBtp());
 
   let slMoi = slCu;
+  let btpDoi = [];
   await withTransaction(async (client) => {
     await repo.updateLenhPlan(client, lenhId,
       { chuyenId: newChuyen, ngayKeHoach, tgBdKh: bdMoi, tgKtKh: ktMoi, thoInKh: doiTho ? thoMoi : undefined }, actorId);
     if (changMoi) await repo.setLenhTrangThaiTx(client, lenhId, changMoi, actorId);
     if (items.length) slMoi = await repo.updateReleaseTx(client, lenhId, items, actorId);
+    // Sau khi ghi SL release mới ⇒ "phần đã lập" tính đúng số mới.
+    if (coBtp) {
+      btpDoi = await datSoDauTx(client, dsDot.map((d) => d.dot_vai_id), actorId,
+        { them: btp, nguon: opts.nguon || 'REPLAN', lyDo: lyDoSach });
+    }
     await repo.logPlanChange(client, lenhId, 'REPLAN',
       { chuyen_id: lenh.chuyen_id || null, ngay_ke_hoach: toDateStr(lenh.ngay_ke_hoach),
         gio_bd: gioCua(lenh.tg_bd_kh), gio_kt: gioCua(lenh.tg_kt_kh),
@@ -2159,6 +2172,7 @@ async function replan(lenhId, { chuyenId, ngayKeHoach, lyDo, tgBdKh, tgKtKh, slR
         gio_bd: gioCua(bdMoi), gio_kt: gioCua(ktMoi),
         ...(items.length ? { so_luong_release: slMoi } : {}),
         ...(doiTho ? { tho_in_kh: thoMoi } : {}),
+        ...(btpDoi.length ? { btp: btp ? 'THEM_DAU' : 'BO_DAU', btp_dot: btpDoi } : {}),
         ...(opts.nguon ? { nguon: opts.nguon } : {}) },
       actorId);
   });
@@ -2169,9 +2183,11 @@ async function replan(lenhId, { chuyenId, ngayKeHoach, lyDo, tgBdKh, tgKtKh, slR
   // Báo ERP kế hoạch MỚI của lệnh — `replanBatch` gọi hàm này từng lệnh, hàng chờ của `release1Erp` gom
   //   lại nên phần in inset vẫn đi chung 1 lượt.
   release1Erp.xepHang([lenhId], actorId, 'REPLAN');
+  if (btpDoi.length) sockets.emit('ready:confirmed', { dotVaiIds: btpDoi.map((d) => d.id), btp: true });
   return {
     id: lenhId, so_luong_release: slMoi, trang_thai: changMoi || lenh.trang_thai,
     ...(guiTho && !coTho ? { tho_in_chua_luu: true } : {}),
+    ...(guiBtp ? { btp_doi: btpDoi, ...(coBtp ? {} : { btp_chua_luu: true }) } : {}),
   };
 }
 
@@ -2216,6 +2232,7 @@ async function suaKeHoachTuDsRelease(lenhId, body = {}, actorId) {
   return replan(lenhId, {
     chuyenId: body.chuyenId || null, ngayKeHoach: body.ngayKeHoach, tgBdKh: body.tgBdKh || null, tgKtKh: body.tgKtKh || null,
     slRelease: body.slRelease || null, thoIn: body.thoIn, lyDo: ly,
+    btp: typeof body.btp === 'boolean' ? body.btp : undefined,
   }, actorId, { choDaChay: true, nguon: 'DS_RELEASE' });
 }
 
@@ -2427,13 +2444,16 @@ async function testCnspDone(date) { return attachPhanInList(await attachTestRuns
 async function testQaDone(date) { return attachPhanInList(await attachTestRuns(await repo.testDoneByDate(date, QA_CP)), 'lenh_id'); }
 
 // ─── BTP KHÁC KẾ HOẠCH (mig 120, 28/10/2026) — trang *Hệ thống › BTP khác kế hoạch* ───────────────────────────────
-// Người lập kế hoạch QUÊN tích "BTP khác KH" lúc Release 1 ⇒ đợt đã release đủ SL rời màn ⇒ ở đây tìm phần in, bật cờ
-// cho đợt ⇒ đợt quay về Release 1 với "Còn release" = SL vải cho đầu 2. Tắt chỉ khi CHƯA lập kế hoạch đầu 2 (đã
-// release ≤ SL vải) — đã lập thì phải hủy lệnh đầu 2 trước (tắt lúc đó là release vượt SL vải).
+// Người lập kế hoạch QUÊN tích "BTP khác KH" lúc Release 1 ⇒ đợt đã release đủ SL rời màn ⇒ ở đây tìm phần in, THÊM 1
+// ĐẦU cho đợt ⇒ đợt quay về Release 1 với "Còn release" = SL vải cho đầu kế. BỎ = bỏ đầu đang chờ (không bao giờ hạ dưới
+// phần đã lập — lệnh đã tạo giữ nguyên). Luật: `utils/btpKhacKh.js` (29/10/2026: nhiều đầu, không còn cờ 2 đầu).
 const UUID_BTP = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 async function timBtpKhacKh(q) {
   const [coCot, rows] = await Promise.all([coCotBtp(), repo.timBtpKhacKh(q)]);
-  return { co_cot: coCot, rows };
+  return {
+    co_cot: coCot,
+    rows: rows.map((r) => ({ ...r, btp_cho: coDauCho(r.so_luong_vai_ve, r.da_release + r.sl_ke_hoach_tam, r.so_dau_btp) })),
+  };
 }
 
 async function datBtpKhacKh(dotVaiId, { bat, lyDo } = {}, actorId) {
@@ -2449,23 +2469,17 @@ async function datBtpKhacKh(dotVaiId, { bat, lyDo } = {}, actorId) {
     const d = await repo.docDotBtpTx(client, dotVaiId);
     if (!d) throw new AppError('Không tìm thấy đợt vải', { status: 404, errorCode: 'NOT_FOUND' });
     if (['DA_HUY', 'DA_GOP'].includes(d.trang_thai)) throw new AppError(`Đợt ${d.ma_dot_vai} đã hủy / gộp`, { status: 409, errorCode: 'WRONG_STAGE' });
-    if (!!d.btp_khac_kh === muonBat) return { ...d, doi: false };
-    if (muonBat) {
-      await batCoTx(client, [d.id], actorId, { nguon: 'HE_THONG', lyDo: ly });
-    } else {
-      if (d.da_release > d.so_luong) {
-        throw new AppError(`Đợt ${d.ma_dot_vai} đã lập kế hoạch cả đầu 2 (đã release ${d.da_release} / SL vải ${d.so_luong}) — hủy lệnh của đầu 2 trước rồi mới tắt`,
-          { status: 409, errorCode: 'DA_LAP_DAU_2' });
-      }
-      await repo.tatBtpTx(client, d.id, actorId, ly);
-    }
-    return { ...d, doi: true };
+    const doi = await datSoDauTx(client, [d.id], actorId, { them: muonBat, nguon: 'HE_THONG', lyDo: ly });
+    return { ...d, doi: doi.length > 0, so_dau_moi: doi.length ? doi[0].moi : d.so_dau_btp };
   });
   if (kq.doi) {
     sockets.emit('workflow:updated', { dotVaiId: kq.id, btpKhacKh: muonBat });
     sockets.emit('dashboard:refresh', {});
   }
-  return { dot_vai_id: kq.id, ma_dot_vai: kq.ma_dot_vai, ma_phan: kq.ma_phan, btp_khac_kh: muonBat, da_doi: kq.doi };
+  return {
+    dot_vai_id: kq.id, ma_dot_vai: kq.ma_dot_vai, ma_phan: kq.ma_phan, btp_khac_kh: kq.so_dau_moi > 1,
+    so_dau_btp: kq.so_dau_moi, da_doi: kq.doi,
+  };
 }
 
 module.exports = {

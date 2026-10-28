@@ -47,6 +47,8 @@ async function getRun(lenhId) {
   const phieu = await repo.getActivePhieu(lenhId);
   const tems = phieu ? await repo.getTemsByPhieu(phieu.id) : [];
   const printed = tems.reduce((s, t) => s + (t.trang_thai === 'HUY' ? 0 : (Number(t.so_luong) || 0)), 0);
+  // Phần đã in là tem BTP trước — trần riêng (29/10/2026, `kiemTranIn`); FE tính "còn in được" theo ô BTP trước.
+  const printedBtp = tems.reduce((s, t) => s + (t.trang_thai === 'HUY' || !t.btp_truoc ? 0 : (Number(t.so_luong) || 0)), 0);
   const [ngungList, ngungActive, dotVai, vaiHuy, phanCong] = phieu
     ? await Promise.all([repo.listNgungByPhieu(phieu.id), repo.getActiveNgung(phieu.id),
                          repo.getLenhDotVaiList(lenhId), repo.listVaiHuyByLenh(lenhId),
@@ -68,7 +70,7 @@ async function getRun(lenhId) {
   });
   // Số vải hủy / thiếu CHỜ gắn vào tem in kế tiếp của phiếu (21/10/2026). Lỗi đọc ⇒ null (không chặn sidebar).
   const vaiCho = phieu ? await repo.docVaiChoTem(phieu.id).catch(() => null) : null;
-  return { lenh, phieu, tems, printed, ngung_list: ngungList, ngung_active: ngungActive,
+  return { lenh, phieu, tems, printed, printed_btp: printedBtp, ngung_list: ngungList, ngung_active: ngungActive,
            dot_vai: dotVai, vai_huy: vaiHuy, vai_cho_tem: vaiTrong(vaiCho) ? null : vaiCho,
            phan_cong: phieu ? await phanCongHienThi(lenh, phieu, phanCong) : phanCong,
            goi_y_tem: await goiYTemMeta(lenhId, phieu?.id),
@@ -263,17 +265,31 @@ const khoaVaiCho = (phieuId) => `vai_cho_tem|${phieuId}`;
 // KIỂM LẠI TRẦN 110% TRONG TRANSACTION IN TEM (21/10/2026): kiểm ở đầu hàm chạy NGOÀI transaction ⇒ 2 máy in cùng
 // phiếu cùng lúc cùng thấy "còn in được" và cùng tạo tem, vượt trần. Giữ khóa theo phiếu (cùng khóa với số vải chờ —
 // advisory lock lồng trong 1 phiên được) rồi đọc lại tổng đã in: lượt sau CHỜ lượt trước commit rồi mới tính.
+// TRẦN IN TEM + BTP TRƯỚC (29/10/2026, người dùng: "kế hoạch không bấm BTP khác KH mà in luôn 2 đầu trên cùng 1 máy ⇒
+//   tem có tích BTP trước thì cộng thêm số lượng tem này vào mức tối đa có thể in"): tem BTP trước (đầu 1) và tem còn
+//   lại (đầu 2 / thường) có 2 TRẦN RIÊNG, mỗi trần = 110% SL release ⇒ in BTP trước 1000 thì phần thường vẫn còn đủ trần
+//   như chưa in gì (= trần cộng thêm đúng số tem BTP trước). Không có tem BTP trước ⇒ đúng luật 110% cũ.
+//   `daIn` / `them` = { thuong, btp } (hoặc 1 số = toàn tem thường). Nguồn DUY NHẤT — gương FE `gomPhanSanXuat.conDuocIn`.
+const tachSl = (v) => (typeof v === 'number' ? { thuong: v, btp: 0 } : { thuong: Number(v?.thuong) || 0, btp: Number(v?.btp) || 0 });
+function kiemTranIn(target, daIn, them, { tienTo = 'Vượt quá 110% SL release', duoi = '' } = {}) {
+  if (!(target > 0)) return;
+  const max = Math.floor(target * 1.1);
+  const d = tachSl(daIn);
+  const t = tachSl(them);
+  for (const [k, nhan] of [['thuong', ''], ['btp', ' (tem BTP trước)']]) {
+    if (t[k] > 0 && d[k] + t[k] > max) {
+      throw new AppError(
+        `${tienTo}${nhan}${duoi} (tối đa ${max}, đã in ${d[k]}, còn được in ${Math.max(0, max - d[k])}, đang nhập ${t[k]})`,
+        { status: 422, errorCode: 'OVER_LIMIT' }
+      );
+    }
+  }
+}
+
 async function kiemTran110Tx(client, phieuId, target, them) {
   await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [khoaVaiCho(phieuId)]);
   if (!(target > 0)) return;
-  const printed = await repo.getPrintedTotal(phieuId, client);
-  const max = Math.floor(target * 1.1);
-  if (printed + them > max) {
-    throw new AppError(
-      `Vượt quá 110% SL release — máy khác vừa in tem cho lệnh này (tối đa ${max}, đã in ${printed}, còn được in ${Math.max(0, max - printed)})`,
-      { status: 422, errorCode: 'OVER_LIMIT' }
-    );
-  }
+  kiemTranIn(target, await repo.getPrintedTach(phieuId, client), them, { duoi: ' — máy khác vừa in tem cho lệnh này' });
 }
 const vaiTrong = (v) => !v || (!(v.huy > 0) && !(v.thieu > 0));
 
@@ -528,7 +544,8 @@ async function suaTem(temId, body = {}, actorId) {
       const them = doi.soLuong - Number(t.so_luong);
       if (them > 0) {
         const lenh = await repo.getLenhBasic(t.lenh_san_xuat_id);
-        await kiemTran110Tx(client, t.phieu_san_xuat_id, Number(lenh?.so_luong_release) || 0, them);
+        await kiemTran110Tx(client, t.phieu_san_xuat_id, Number(lenh?.so_luong_release) || 0,
+          t.btp_truoc ? { btp: them } : them);
       }
     }
     if (Object.keys(doi).length) await repo.capNhatTemSuaTx(client, temId, doi, actorId);
@@ -1210,19 +1227,11 @@ async function printTem(phieuId, soLuong, actorId, body) {
   await kiemThoInPhanCong(phieu, actorId); // chưa phân công thợ in (ca này) ⇒ không in; có ⇒ áp phân công đầu ca
   const caIn = await kiemNgayCaChungTu(phieu, body); // thiếu Ngày ca / Ngày chứng từ ⇒ không in (nhập đầu ca)
 
-  // Luật: tổng đã in không vượt quá 110% SL release của lệnh.
+  // Luật: tổng đã in không vượt quá 110% SL release của lệnh — tem BTP trước có trần riêng (`kiemTranIn`).
   const lenh = await repo.getLenhBasic(phieu.lenh_san_xuat_id);
   const target = Number(lenh?.so_luong_release) || 0;
-  if (target > 0) {
-    const printed = await repo.getPrintedTotal(phieuId);
-    const max = Math.floor(target * 1.1);
-    if (printed + qty > max) {
-      throw new AppError(
-        `Vượt quá 110% SL release (tối đa ${max}, đã in ${printed}, còn được in ${Math.max(0, max - printed)})`,
-        { status: 422, errorCode: 'OVER_LIMIT' }
-      );
-    }
-  }
+  const them = meta.btpTruoc ? { btp: qty } : qty;
+  if (target > 0) kiemTranIn(target, await repo.getPrintedTach(phieuId), them);
 
   // In tem xong tự đưa vào xe phơi mặc định + bắt đầu đếm ngược ngay.
   const xe = await repo.getDefaultXePhoi();
@@ -1238,7 +1247,7 @@ async function printTem(phieuId, soLuong, actorId, body) {
   let newTemId;
   let vaiCho = null; // số vải hủy / thiếu đang CHỜ của phiếu — gắn vào tem này (21/10/2026)
   await withTransaction(async (client) => {
-    await kiemTran110Tx(client, phieuId, target, qty);
+    await kiemTran110Tx(client, phieuId, target, them);
     newTemId = await repo.createTem(client, { phieuId, maTem, soLuong: qty, ...meta }, actorId);
     await repo.logTemPrint(client, { temId: newTemId, maTem, actorId });
     await repo.addTemToXe(client, { temId: newTemId, xeId: xe.id, soLuongPhoi: qty, phut: dryMin }, actorId);
@@ -1311,19 +1320,23 @@ async function printTemBatch(phieuId, items, actorId, body) {
   const vaiList = vaiRaw.map((v) => ({ ...v, dotVaiId: v.dotVaiId || dotMacDinh })).filter((v) => v.dotVaiId);
   // ⚠ 07/10/2026 in NHIỀU TEM cùng lúc (ô "Số tem"): 1 đợt có thể có N dòng trong lượt ⇒ trần 110% từng đợt
   //   so với TỔNG SL các tem của đợt đó trong lượt, không phải từng tem (N tem nhỏ lách được trần).
+  // BTP trước tính trần RIÊNG (29/10/2026 — `kiemTranIn`): khóa `<đợt>|btp` / `<đợt>|thuong`.
+  const laBtp = (it) => (it.btpTruoc !== undefined ? it.btpTruoc : !!meta.btpTruoc);
   const tongTheoDot = new Map();
   for (const it of list) {
     if (!it.dotVaiId) continue;
     const d = byId.get(it.dotVaiId);
     if (!d) throw new AppError('Đợt vải không thuộc đợt sản xuất này', { status: 422, errorCode: 'BAD_DOT_VAI' });
-    tongTheoDot.set(it.dotVaiId, (tongTheoDot.get(it.dotVaiId) || 0) + it.soLuong);
+    const k = `${it.dotVaiId}|${laBtp(it) ? 'btp' : 'thuong'}`;
+    tongTheoDot.set(k, (tongTheoDot.get(k) || 0) + it.soLuong);
   }
-  for (const [dotVaiId, slDot] of tongTheoDot) {
+  for (const [k, slDot] of tongTheoDot) {
+    const [dotVaiId, loai] = k.split('|');
     const d = byId.get(dotVaiId);
     const capDot = Math.floor((Number(d.sl_vao_sx) || 0) * 1.1);
     if (capDot > 0 && slDot > capDot) {
       throw new AppError(
-        `Phần in ${d.ma_phan}: vượt 110% SL vào sản xuất của đợt (tối đa ${capDot}, nhập ${slDot})`,
+        `Phần in ${d.ma_phan}: vượt 110% SL vào sản xuất của đợt${loai === 'btp' ? ' (tem BTP trước)' : ''} (tối đa ${capDot}, nhập ${slDot})`,
         { status: 422, errorCode: 'OVER_LIMIT_DOT' }
       );
     }
@@ -1331,16 +1344,12 @@ async function printTemBatch(phieuId, items, actorId, body) {
 
   const lenh = await repo.getLenhBasic(phieu.lenh_san_xuat_id);
   const target = Number(lenh?.so_luong_release) || 0;
-  const tong = list.reduce((s, x) => s + x.soLuong, 0);
+  const them = list.reduce((s, x) => {
+    if (laBtp(x)) s.btp += x.soLuong; else s.thuong += x.soLuong;
+    return s;
+  }, { thuong: 0, btp: 0 });
   if (target > 0) {
-    const printed = await repo.getPrintedTotal(phieuId);
-    const max = Math.floor(target * 1.1);
-    if (printed + tong > max) {
-      throw new AppError(
-        `Vượt quá 110% SL release của đợt SX (tối đa ${max}, đã in ${printed}, còn được in ${Math.max(0, max - printed)}, đang nhập ${tong})`,
-        { status: 422, errorCode: 'OVER_LIMIT' }
-      );
-    }
+    kiemTranIn(target, await repo.getPrintedTach(phieuId), them, { tienTo: 'Vượt quá 110% SL release của đợt SX' });
   }
 
   const xe = await repo.getDefaultXePhoi();
@@ -1356,7 +1365,7 @@ async function printTemBatch(phieuId, items, actorId, body) {
   const out = [];
   let vaiCho = null; // số chờ của phiếu (ô Vải hủy / thiếu sidebar 1 lệnh) — dùng khi bảng in KHÔNG nhập hủy/thiếu
   await withTransaction(async (client) => {
-    await kiemTran110Tx(client, phieuId, target, tong);
+    await kiemTran110Tx(client, phieuId, target, them);
     for (const [i, it] of list.entries()) {
       const maTem = maTemList[i];
       // GC màu vải nhập RIÊNG từng dòng ở modal gom set → ưu tiên `it.gcMauVai`; không có thì dùng ô chung.
@@ -1728,14 +1737,9 @@ async function reopenPrintTem(temId, lyDo, actorId) {
   const lenh = await repo.getLenhBasic(tem.lenh_san_xuat_id);
   const target = Number(lenh?.so_luong_release) || 0;
   if (target > 0) {
-    const printed = await repo.getPrintedTotal(tem.phieu_san_xuat_id);
-    const max = Math.floor(target * 1.1);
-    if (printed + Number(tem.so_luong || 0) > max) {
-      throw new AppError(
-        `Mở lại tem sẽ vượt 110% SL release (tối đa ${max}, đang in ${printed}, tem ${tem.so_luong}) — hủy bớt tem in bù trước`,
-        { status: 422, errorCode: 'OVER_LIMIT' }
-      );
-    }
+    const sl = Number(tem.so_luong || 0);
+    kiemTranIn(target, await repo.getPrintedTach(tem.phieu_san_xuat_id), tem.btp_truoc ? { btp: sl } : sl,
+      { tienTo: 'Mở lại tem sẽ vượt 110% SL release', duoi: ' — hủy bớt tem in bù trước' });
   }
   // Trạng thái trả về: ảnh chụp lúc hủy (từ 14/10/2026) — tem hủy trước đó thì SUY: có phiên phơi bị gỡ cùng lúc hủy
   //   ⇒ đang phơi · đã phơi xong ⇒ đã khô · còn lại ⇒ mới in.
