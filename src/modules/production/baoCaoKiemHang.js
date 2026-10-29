@@ -9,6 +9,7 @@
 //   · Gửi 1 dòng (IPS), không `--` trong chuỗi SQL. Cache RAM 15s theo khoảng ngày.
 
 const { query } = require('../../config/db');
+const { nhoDoc } = require('../../utils/cacheDoc');
 const { dungBaoCaoKiemHang } = require('../../utils/baoCaoKiemHang');
 const { thoInPhieuSql } = require('../../utils/thoIn');
 const { coCotThoInKh } = require('../../utils/thoInKeHoach');
@@ -68,19 +69,12 @@ async function docLuot(tuNgay, denNgay) {
 }
 
 const CACHE_MS = 15000;
-const cache = new Map(); // `tu|den` → { het, hua }
 
-// Lưu PROMISE ⇒ nhiều người mở cùng lúc chỉ chạy 1 lượt; lỗi thì bỏ cache ngay.
-async function baoCaoKiemHang(tuNgay, denNgay) {
-  const k = `${tuNgay}|${denNgay}`;
-  const now = Date.now();
-  const c = cache.get(k);
-  if (c && c.het > now) return c.hua;
-  const hua = docLuot(tuNgay, denNgay).then((rows) => dungBaoCaoKiemHang({ tuNgay, denNgay, rows }));
-  cache.set(k, { het: now + CACHE_MS, hua });
-  hua.catch(() => cache.delete(k));
-  if (cache.size > 40) cache.delete(cache.keys().next().value);
-  return hua;
+// Nhiều người mở cùng lúc chỉ chạy 1 lượt. Cache theo PHIÊN BẢN DỮ LIỆU (`utils/cacheDoc`, 29/10/2026) — mọi thao tác ghi
+//   xóa ngay ⇒ trang tải lại theo socket thấy số mới (cache riêng 15 s cũ trả số cũ).
+function baoCaoKiemHang(tuNgay, denNgay) {
+  return nhoDoc('bao-cao-kiem-hang', { tuNgay, denNgay },
+    () => docLuot(tuNgay, denNgay).then((rows) => dungBaoCaoKiemHang({ tuNgay, denNgay, rows })), CACHE_MS);
 }
 
 // `docLuot` dùng lại ở Báo cáo phân loại lỗi (`./baoCaoPhanLoaiLoi.js`) — cùng tập tem + cùng SL kiểm.

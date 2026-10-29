@@ -4,7 +4,8 @@
 // Luật + cách dựng 2 bảng: `utils/baoCaoSanXuat.js` (hàm thuần). Ở đây chỉ ĐỌC, ưu tiên TỐC ĐỘ:
 //   · 2 lượt chờ nối tiếp: (1) phiếu chạm ngày D + loại ca các tuần  →  (2) tem · lệnh · phần in · chuyền ·
 //     tổ chạy SONG SONG theo id phiếu/lệnh đã có. Mọi câu gửi 1 dòng (IPS), không `--` trong chuỗi SQL.
-//   · Cache trong RAM 15s theo ngày (FE nghe socket `production:updated` tự tải lại — 15s là độ trễ tối đa).
+//   · Cache theo phiên bản dữ liệu (`utils/cacheDoc`, hạn 15 s) — in tem / mọi thao tác ghi xóa ngay; FE nghe socket
+//     `production:updated` tự tải lại ⇒ máy khác in tem là số cộng thêm sau ~1–2 s.
 // ⚠ Dò cột trước khi dùng (khuôn `phieuCoCotToIn`): `phieu_san_xuat.to_in_id` (084) · `tem.ngay_ca` (066) ·
 //   `tem.dot_vai_ve_id` (095) · `tem.tem_goc_id` (091) — thiếu cột thì lùi về giá trị rỗng, không lỗi.
 
@@ -13,6 +14,7 @@ const { dungBaoCaoSanXuat, khoaTuanIso, suyLoaiCaTuTem } = require('../../utils/
 const { NHOM_CA_RIENG, NHOM_CA_KHAC, khoaNhomCa, loaiCaChiTiet } = require('../../utils/ca');
 const { thoInPhieuSql } = require('../../utils/thoIn');
 const { coCotThoInKh } = require('../../utils/thoInKeHoach');
+const { nhoDoc } = require('../../utils/cacheDoc');
 
 const daCo = new Map();
 async function coCot(bang, cot) {
@@ -153,7 +155,6 @@ async function loaiCaCuaNgay(ngay) {
 const duyNhat = (arr) => [...new Set(arr.filter(Boolean).map(String))];
 
 const CACHE_MS = 15000;
-const cache = new Map(); // ngay → { het, hua }
 
 async function dungMoi(ngay) {
   const [coTo, coNgayCa, coDot, coGoc] = await Promise.all([
@@ -181,16 +182,13 @@ async function dungMoi(ngay) {
   return { ...kq, loai_ca_da_cai: daCai };
 }
 
-// Lưu PROMISE (không lưu kết quả) ⇒ nhiều người mở cùng lúc chỉ chạy 1 lượt; lỗi thì bỏ cache ngay.
-async function baoCaoNgay(ngay) {
-  const now = Date.now();
-  const c = cache.get(ngay);
-  if (c && c.het > now) return c.hua;
-  const hua = dungMoi(ngay);
-  cache.set(ngay, { het: now + CACHE_MS, hua });
-  hua.catch(() => cache.delete(ngay));
-  if (cache.size > 40) cache.delete(cache.keys().next().value);
-  return hua;
+// Nhiều người mở cùng lúc chỉ chạy 1 lượt (giữ PROMISE); lỗi thì bỏ cache ngay.
+// ⚠ 29/10/2026 (người dùng hỏi "máy khác in tem thì bên đây có cộng thêm không"): cache RIÊNG 15 s cũ KHÔNG bị xóa khi
+//   in tem ⇒ trang nghe socket tải lại sau 1,2 s vẫn nhận số CŨ, số mới chỉ hiện ở sự kiện kế tiếp sau 15 s (in xong mà
+//   không ai làm gì nữa là đứng luôn). Nay dùng cache theo PHIÊN BẢN DỮ LIỆU (`utils/cacheDoc`) — mọi thao tác ghi / socket
+//   làm nó hết hiệu lực ngay.
+function baoCaoNgay(ngay) {
+  return nhoDoc('bao-cao-san-xuat', { ngay }, () => dungMoi(ngay), CACHE_MS);
 }
 
 // `coCot` dùng chung với Báo cáo dừng chuyền (`./baoCaoDungChuyen.js`).

@@ -20,8 +20,9 @@ const { coCot, PHIEU_THAT, TEM_THAT, TEM_CUA_NGAY, MOC_TEM } = require('./baoCao
 const { PHAN_INFO_LATERAL } = require('../planning/planning.repository');
 const { chuyenCoCotTo } = require('../chuyen/chuyen.repository');
 
+const { nhoDoc } = require('../../utils/cacheDoc');
+
 const CACHE_MS = 15000;
-const cache = new Map();
 
 async function docLenh(ngay, { coNgayCa, coGoc }) {
   const den = coNgayCa ? MOC_TEM('t.gio_sx_kt') : 't.created_date';
@@ -68,9 +69,13 @@ async function docTo() {
   return rows;
 }
 
-async function theoDoiTo(ngay) {
-  const c = cache.get(ngay);
-  if (c && Date.now() - c.tg < CACHE_MS) return c.data;
+// Cache theo PHIÊN BẢN DỮ LIỆU (`utils/cacheDoc`, 29/10/2026) — in tem / mọi thao tác ghi xóa ngay (cache riêng 15 s cũ
+//   trả số cũ khi trang tải lại theo socket).
+function theoDoiTo(ngay) {
+  return nhoDoc('theo-doi-to', { ngay }, () => dungTheoDoiTo(ngay), CACHE_MS);
+}
+
+async function dungTheoDoiTo(ngay) {
   const [coNgayCa, coGoc, coTo] = await Promise.all([
     coCot('tem', 'ngay_ca'), coCot('tem', 'tem_goc_id'), chuyenCoCotTo(),
   ]);
@@ -82,10 +87,7 @@ async function theoDoiTo(ngay) {
     la_ke_hoach: l.la_ke_hoach && coChuyen.has(l.chuyen_kh_id),
     tt: (l.tt || []).filter((x) => coChuyen.has(x.chuyen_id)),
   })).filter((l) => l.la_ke_hoach || l.tt.length);
-  const data = { ngay, co_cot_to: coTo, to, chuyen, lenh: lenhSach };
-  cache.set(ngay, { tg: Date.now(), data });
-  if (cache.size > 40) cache.delete(cache.keys().next().value);
-  return data;
+  return { ngay, co_cot_to: coTo, to, chuyen, lenh: lenhSach };
 }
 
 module.exports = { theoDoiTo };

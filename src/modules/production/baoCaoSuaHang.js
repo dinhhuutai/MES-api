@@ -11,6 +11,7 @@
 //   · Gửi 1 dòng (IPS), không `--` trong chuỗi SQL. Cache RAM 15s theo khoảng ngày.
 
 const { query } = require('../../config/db');
+const { nhoDoc } = require('../../utils/cacheDoc');
 const { dungBaoCaoSuaHang } = require('../../utils/baoCaoSuaHang');
 const { MOC_VAO_TEM } = require('../../utils/siSoTram');
 const { coPhanLoaiLoi } = require('./baoCaoKiemHang');
@@ -88,20 +89,13 @@ async function docSlaSua() {
 }
 
 const CACHE_MS = 15000;
-const cache = new Map(); // `tu|den` → { het, hua }
 
-// Lưu PROMISE ⇒ nhiều người mở cùng lúc chỉ chạy 1 lượt; lỗi thì bỏ cache ngay.
-async function baoCaoSuaHang(tuNgay, denNgay) {
-  const k = `${tuNgay}|${denNgay}`;
-  const now = Date.now();
-  const c = cache.get(k);
-  if (c && c.het > now) return c.hua;
-  const hua = Promise.all([docTem(tuNgay, denNgay), docSlaSua()])
-    .then(([rows, slaPhut]) => dungBaoCaoSuaHang({ tuNgay, denNgay, slaPhut, rows }));
-  cache.set(k, { het: now + CACHE_MS, hua });
-  hua.catch(() => cache.delete(k));
-  if (cache.size > 40) cache.delete(cache.keys().next().value);
-  return hua;
+// Nhiều người mở cùng lúc chỉ chạy 1 lượt. Cache theo PHIÊN BẢN DỮ LIỆU (`utils/cacheDoc`, 29/10/2026) — mọi thao tác ghi
+//   xóa ngay ⇒ trang tải lại theo socket thấy số mới.
+function baoCaoSuaHang(tuNgay, denNgay) {
+  return nhoDoc('bao-cao-sua-hang', { tuNgay, denNgay },
+    () => Promise.all([docTem(tuNgay, denNgay), docSlaSua()])
+      .then(([rows, slaPhut]) => dungBaoCaoSuaHang({ tuNgay, denNgay, slaPhut, rows })), CACHE_MS);
 }
 
 module.exports = { baoCaoSuaHang };
