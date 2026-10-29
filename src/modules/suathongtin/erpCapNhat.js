@@ -134,11 +134,12 @@ async function capNhatMotPhanIn(pin, dong, actorId) {
     const moi = {
       khach: E.clean(moiNhat.customer_name), don_hang: E.clean(moiNhat.order_name), ma_hang: E.clean(moiNhat.item_name),
       mau_vai: E.clean(moiNhat.fabric_color), kich_vai: E.clean(moiNhat.fabric_size), kich_phim: E.clean(moiNhat.film_size),
+      mau_in: E.erpMauIn(moiNhat),
       so_luong_don_hang: soHoacNull(moiNhat.order_qty), tinh_chat_in: E.erpTinhChatIn(moiNhat),
     };
     const cuMap = {
       khach: cu.ma_khach_hang, don_hang: cu.ma_don_hang, ma_hang: cu.ma_hang, mau_vai: cu.mau_vai,
-      kich_vai: cu.kich_vai, kich_phim: cu.kich_phim, so_luong_don_hang: cu.so_luong_don_hang, tinh_chat_in: cu.tinh_chat_in,
+      kich_vai: cu.kich_vai, kich_phim: cu.kich_phim, mau_in: cu.mau_in, so_luong_don_hang: cu.so_luong_don_hang, tinh_chat_in: cu.tinh_chat_in,
     };
     // Trường ERP gửi RỖNG thì KHÔNG coi là "sửa thành rỗng" (khỏi xóa mất dữ liệu đang đúng).
     const doi = Object.keys(moi).filter((k) => moi[k] != null && moi[k] !== '' && khacNhau(moi[k], cuMap[k]));

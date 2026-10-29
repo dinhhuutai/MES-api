@@ -212,8 +212,9 @@ async function doDaiCotBarcode(client) {
 //   thà cắt bớt + cảnh báo. Với mig 089 (255 ⇒ 21 mã) thì thực tế không bao giờ chạm (tối đa đang là 3).
 // ⚠⚠ KHÓA ERP (mig 116, `utils/khoaErp.js`): phần in admin đã sửa tay ⇒ `ON CONFLICT … DO UPDATE … WHERE NOT khoa_erp`
 //   ⇒ KHÔNG ghi đè gì. Khi đó Postgres không trả dòng nào ở `RETURNING` ⇒ tra lại id theo mã (`idTheoMa`).
-async function upsertPhanIn(client, { maHangId, maPhan, mauVai, kichVai, kichPhim, soLuongDonHang, tinhChatIn, barcode, ddhSubId }) {
-  const base = [maHangId, maPhan, mauVai || null, kichVai || null, kichPhim || null, soLuongDonHang ?? null, tinhChatIn || null];
+// `mauIn` = ERP `mauin` (29/10/2026) → `phan_in.mau_in` — COALESCE như tính chất in: lượt ERP không gửi thì GIỮ giá trị cũ.
+async function upsertPhanIn(client, { maHangId, maPhan, mauVai, kichVai, kichPhim, mauIn, soLuongDonHang, tinhChatIn, barcode, ddhSubId }) {
+  const base = [maHangId, maPhan, mauVai || null, kichVai || null, kichPhim || null, soLuongDonHang ?? null, tinhChatIn || null, mauIn || null];
   const chanKhoa = (await coCotKhoaErp(client)) ? 'WHERE NOT phan_in.khoa_erp' : '';
   const idTheoMa = async () => (await client.query('SELECT id FROM phan_in WHERE ma_phan = $1', [maPhan])).rows[0].id;
   if (await hasBarcodeCol(client)) {
@@ -235,12 +236,13 @@ async function upsertPhanIn(client, { maHangId, maPhan, mauVai, kichVai, kichPhi
                    WHERE btrim(mv.v) <> ''
                    GROUP BY btrim(mv.v) ORDER BY min(mv.o) LIMIT ${pLimit}), '${NGAN_CACH}') END`;
     const { rows } = await client.query(
-      `INSERT INTO phan_in (ma_hang_id, ma_phan, mau_vai, kich_vai, kich_phim, so_luong_don_hang, tinh_chat_in, barcode${coSub ? ', ddh_sub_id' : ''})
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8${coSub ? ',$9' : ''})
+      `INSERT INTO phan_in (ma_hang_id, ma_phan, mau_vai, kich_vai, kich_phim, so_luong_don_hang, tinh_chat_in, mau_in, barcode${coSub ? ', ddh_sub_id' : ''})
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9${coSub ? ',$10' : ''})
        ON CONFLICT (ma_phan) DO UPDATE SET
          mau_vai = EXCLUDED.mau_vai, kich_vai = EXCLUDED.kich_vai, kich_phim = EXCLUDED.kich_phim,
          so_luong_don_hang = EXCLUDED.so_luong_don_hang,
          tinh_chat_in = COALESCE(EXCLUDED.tinh_chat_in, phan_in.tinh_chat_in),
+         mau_in = COALESCE(EXCLUDED.mau_in, phan_in.mau_in),
          barcode = ${gopSql},
          ${coSub ? 'ddh_sub_id = COALESCE(EXCLUDED.ddh_sub_id, phan_in.ddh_sub_id),' : ''}
          updated_date = CURRENT_TIMESTAMP
@@ -260,12 +262,13 @@ async function upsertPhanIn(client, { maHangId, maPhan, mauVai, kichVai, kichPhi
     return rows[0].id;
   }
   const { rows } = await client.query(
-    `INSERT INTO phan_in (ma_hang_id, ma_phan, mau_vai, kich_vai, kich_phim, so_luong_don_hang, tinh_chat_in)
-     VALUES ($1,$2,$3,$4,$5,$6,$7)
+    `INSERT INTO phan_in (ma_hang_id, ma_phan, mau_vai, kich_vai, kich_phim, so_luong_don_hang, tinh_chat_in, mau_in)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
      ON CONFLICT (ma_phan) DO UPDATE SET
        mau_vai = EXCLUDED.mau_vai, kich_vai = EXCLUDED.kich_vai, kich_phim = EXCLUDED.kich_phim,
        so_luong_don_hang = EXCLUDED.so_luong_don_hang,
        tinh_chat_in = COALESCE(EXCLUDED.tinh_chat_in, phan_in.tinh_chat_in),
+       mau_in = COALESCE(EXCLUDED.mau_in, phan_in.mau_in),
        updated_date = CURRENT_TIMESTAMP
      ${chanKhoa}
      RETURNING id`,
@@ -367,7 +370,7 @@ async function anhChupPhanInTheoMa(maPhans = []) {
   const sql = `
     SELECT pin.id, pin.ma_phan, pin.dang_hoat_dong, pin.ma_hang_id,
            mh.ma_hang, dh.ma_don_hang, kh.ma_khach_hang, kh.ten_khach_hang,
-           pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.so_luong_don_hang, pin.tinh_chat_in,
+           pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.mau_in, pin.so_luong_don_hang, pin.tinh_chat_in,
            pin.barcode, ${coSub ? 'pin.ddh_sub_id' : 'NULL::text AS ddh_sub_id'},
            (SELECT h.phuong_an_in FROM hskt_phan_in hp JOIN ho_so_ky_thuat h ON h.id = hp.hskt_id
              WHERE hp.phan_in_id = pin.id AND hp.dang_hoat_dong AND h.dang_hoat_dong
@@ -401,17 +404,17 @@ async function dotVaiDaCo(maDotVais = []) {
 //   (19 code phần có >1 đơn: job mà đổi thì phần in lật đơn qua lại mỗi 5 phút, đúng kiểu vòng lặp
 //   Pain 04/08/2026). `barcode` KHÔNG đụng ở đây — nó GỘP DỒN qua `upsertPhanIn` như thường lệ.
 // ⚠ Ghi audit `ERP_CAP_NHAT_CODE_PHAN` kèm snapshot CŨ đủ để hoàn tác bằng tay.
-async function ganLaiPhanIn(client, { maPhan, maHangId, mauVai, kichVai, kichPhim, soLuongDonHang, tinhChatIn, ddhSubId }, cu, moiHienThi, actorId) {
+async function ganLaiPhanIn(client, { maPhan, maHangId, mauVai, kichVai, kichPhim, mauIn, soLuongDonHang, tinhChatIn, ddhSubId }, cu, moiHienThi, actorId) {
   const coSub = await coCotSubPhanIn(client);
   const p = [maPhan, maHangId, mauVai || null, kichVai || null, kichPhim || null, soLuongDonHang ?? null,
-    tinhChatIn || null, actorId || null];
+    tinhChatIn || null, actorId || null, mauIn || null];
   if (coSub) p.push(ddhSubId || null);
   // Phần in đang khóa ERP (mig 116) ⇒ không gán lại (trả null như "không có phần in" — bên gọi đã chặn trước).
   const chanKhoa = (await coCotKhoaErp(client)) ? 'AND NOT khoa_erp' : '';
   const { rows } = await client.query(
     `UPDATE phan_in SET ma_hang_id = $2, mau_vai = $3, kich_vai = $4, kich_phim = $5,
-            so_luong_don_hang = $6, tinh_chat_in = COALESCE($7, tinh_chat_in),
-            ${coSub ? 'ddh_sub_id = COALESCE($9, ddh_sub_id),' : ''}
+            so_luong_don_hang = $6, tinh_chat_in = COALESCE($7, tinh_chat_in), mau_in = COALESCE($9, mau_in),
+            ${coSub ? 'ddh_sub_id = COALESCE($10, ddh_sub_id),' : ''}
             updated_by = $8, updated_date = CURRENT_TIMESTAMP
       WHERE ma_phan = $1 ${chanKhoa} RETURNING id`.replace(/\s+/g, ' '),
     p

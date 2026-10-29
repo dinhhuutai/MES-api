@@ -62,6 +62,8 @@ function field(r, ...names) {
 }
 // Tính chất in: trường ERP đúng là `tinhchatin` (field() không phân biệt hoa/thường & gạch dưới).
 const erpTinhChatIn = (r) => clean(field(r, 'tinhchatin', 'tinh_chat_in')) || null;
+// Màu in (ERP `mauin`, gửi từ 29/10/2026 — đi cùng màu vải / kích vải / kích phim) → `phan_in.mau_in` (có từ mig 001).
+const erpMauIn = (r) => clean(field(r, 'mauin', 'mau_in')) || null;
 // Mã vạch đợt vải từ ERP — trường `IDDotReady` (đổi tên từ `maquet` cũ) → phan_in.barcode (quét ở READY).
 const erpBarcode = (r) => clean(field(r, 'IDDotReady', 'iddotready', 'maquet', 'ma_quet', 'barCode', 'barcode', 'ma_vach', 'mavach')) || null;
 // Mã vạch HSKT (ERP BarcodeHKT) → ho_so_ky_thuat.barcode_hskt (quét HSKT).
@@ -230,7 +232,7 @@ async function processRow(r, maPhan, maDotVai, loaiDotVaiId, tgChuyenReady) {
     const mhId = await repo.upsertMaHang(client, { donHangId: donId, maHang: clean(r.item_name), tenMaHang: clean(r.item_name) });
     const pinId = await repo.upsertPhanIn(client, {
       maHangId: mhId, maPhan,
-      mauVai: clean(r.fabric_color), kichVai: clean(r.fabric_size), kichPhim: clean(r.film_size),
+      mauVai: clean(r.fabric_color), kichVai: clean(r.fabric_size), kichPhim: clean(r.film_size), mauIn: erpMauIn(r),
       soLuongDonHang: r.order_qty ?? null,
       tinhChatIn: erpTinhChatIn(r),
       // `phan_in.barcode` = ERP `BarcodePTHDH` (mã vạch của CHÍNH phần in). Không phải IDDotReady —
@@ -559,7 +561,7 @@ function moTaDongErp(p, daCo) {
     ddh_id: erpDdhId(r), ddh_sub_id: erpDdhSubId(r), pain: erpPain(r), loaikd: clean(r.loaikd) || null,
     so_luong: r.received_qty ?? null, so_luong_don_hang: r.order_qty ?? null,
     ngay_nhan_vai: erpNgayVaiVe(r), han_giao: toDate(r.due_date),
-    mau_vai: clean(r.fabric_color), kich_vai: clean(r.fabric_size), kich_phim: clean(r.film_size),
+    mau_vai: clean(r.fabric_color), kich_vai: clean(r.fabric_size), kich_phim: clean(r.film_size), mau_in: erpMauIn(r),
     tinh_chat_in: erpTinhChatIn(r), barcode_phan_in: erpBarcodePhanIn(r) || null,
     kt_can_kiem_tra: erpKtCanKiemTra(r), tao_luc: r.created_date || r.erp_datetime || null,
   };
@@ -645,12 +647,12 @@ async function ganLaiTheoDong(ma, r, actorId) {
   if (await dangKhoa(cu.id)) return { ma, doi: false, khoa_erp: true, ly_do: 'Phần in đang khóa đồng bộ ERP (Quản trị phần in)' };
   const moi = {
     khach: clean(r.customer_name), don_hang: clean(r.order_name), ma_hang: clean(r.item_name),
-    mau_vai: clean(r.fabric_color), kich_vai: clean(r.fabric_size), kich_phim: clean(r.film_size),
+    mau_vai: clean(r.fabric_color), kich_vai: clean(r.fabric_size), kich_phim: clean(r.film_size), mau_in: erpMauIn(r),
     so_luong_don_hang: r.order_qty ?? null, tinh_chat_in: erpTinhChatIn(r), ddh_sub_id: erpDdhSubId(r),
   };
   const cuGon = {
     ma_hang_id: cu.ma_hang_id, khach: cu.ma_khach_hang, don_hang: cu.ma_don_hang, ma_hang: cu.ma_hang,
-    mau_vai: cu.mau_vai, kich_vai: cu.kich_vai, kich_phim: cu.kich_phim,
+    mau_vai: cu.mau_vai, kich_vai: cu.kich_vai, kich_phim: cu.kich_phim, mau_in: cu.mau_in,
     so_luong_don_hang: cu.so_luong_don_hang, tinh_chat_in: cu.tinh_chat_in, ddh_sub_id: cu.ddh_sub_id,
   };
   await withTransaction(async (client) => {
@@ -660,7 +662,7 @@ async function ganLaiTheoDong(ma, r, actorId) {
     });
     const mhId = await repo.upsertMaHang(client, { donHangId: donId, maHang: moi.ma_hang, tenMaHang: moi.ma_hang });
     await repo.ganLaiPhanIn(client, {
-      maPhan: cu.ma_phan, maHangId: mhId, mauVai: moi.mau_vai, kichVai: moi.kich_vai, kichPhim: moi.kich_phim,
+      maPhan: cu.ma_phan, maHangId: mhId, mauVai: moi.mau_vai, kichVai: moi.kich_vai, kichPhim: moi.kich_phim, mauIn: moi.mau_in,
       soLuongDonHang: moi.so_luong_don_hang, tinhChatIn: moi.tinh_chat_in, ddhSubId: moi.ddh_sub_id,
     }, cuGon, { ...moi, ma_hang_id: mhId }, actorId);
   });
@@ -705,6 +707,6 @@ module.exports = {
   // ĐÚNG hàm đọc trường ERP + gán lại đơn/mã hàng mà đồng bộ chính đang dùng, đừng chép luật ra chỗ mới.
   _erp: {
     fetchErp, ganLaiTheoDong, clean, toDate, LOAIKD_MAP,
-    erpTinhChatIn, erpBarcode, erpBarcodePhanIn, erpNhaGiaCong, erpNgayVaiVe, erpDdhSubId, erpDuAn, erpInset,
+    erpTinhChatIn, erpMauIn, erpBarcode, erpBarcodePhanIn, erpNhaGiaCong, erpNgayVaiVe, erpDdhSubId, erpDuAn, erpInset,
   },
 };
