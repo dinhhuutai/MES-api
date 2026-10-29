@@ -221,7 +221,11 @@ async function recordKcs(temId, body, actorId) {
 
   const dat = num(body.soLuongDat);                          // đạt → chờ OQC
   const hu = num(body.soLuongHu);                            // hư (khuyết tật) → TOÀN BỘ vào chờ sửa
-  const mau = num(body.soLuongMau);                          // mẫu: ghi nhận tham khảo, KHÔNG tính vào SL kiểm
+  // MẪU (29/10/2026, người dùng: "số lượng mẫu vẫn tính vào tổng — 616 = đạt 615 + mẫu 1 là ok"): mẫu lấy ra khỏi lô ⇒
+  //   TÍNH vào vế cân đối và TRỪ khỏi tổng cần kiểm của tem: sổ cái `tem.sl_chenh_lech` cộng `dư − thiếu − mẫu`. Cột
+  //   `kcs.so_luong_chenh_lech` của LƯỢT vẫn chỉ là dư − thiếu (hành trình / lịch sử / ERP thiếu đọc như cũ) — Hủy xác
+  //   nhận KCS cộng trả mẫu (`mauTruTong`). KHÔNG vào SL kiểm / đạt / hư, không gửi ERP. Không migration.
+  const mau = num(body.soLuongMau);
   const thieu = num(body.soLuongThieu);
   const du = num(body.soLuongDu);
   const chenh = du - thieu;                                  // dư(+)/thiếu(−) → đổi TỔNG CẦN KIỂM = so_luong + Σchênh
@@ -236,10 +240,12 @@ async function recordKcs(temId, body, actorId) {
   const huyTrucTiep = num(body.soLuongHuy);
   const huyTaiKcs = (hu - quyetDinhSua) + huyTrucTiep;       // phần hư không sửa + hủy trực tiếp → loại
 
-  // SL kiểm được lần này = đạt + hư + hủy. Mẫu không tính.
+  // SL kiểm được lần này = đạt + hư + hủy (mẫu không vào SL kiểm, nhưng vào TỔNG cân đối `tong`).
   const kiem = dat + hu + huyTrucTiep;
   if (kiem <= 0) throw new AppError('Nhập số lượng kiểm (đạt/hư)', { status: 422, errorCode: 'EMPTY' });
+  const tong = kiem + mau;
   const conSauChenh = conKcs + chenh; // dư làm tăng, thiếu làm giảm phần còn được kiểm
+  const chenhSoCai = chenh - mau;     // ghi SỔ CÁI tem: mẫu lấy ra khỏi lô (lượt giữ `chenh`)
 
   // ⚠⚠ CÂN ĐỐI BẮT BUỘC: **SL cần kiểm + dư − thiếu = đạt + hư** — lệch dù 1 pcs là KHÔNG lưu.
   //   Trước đây chỉ chặn "vượt SL còn lại", nhập THIẾU thì lặng lẽ coi là "kiểm lần sau" nên số đạt/hư
@@ -250,13 +256,13 @@ async function recordKcs(temId, body, actorId) {
   //   và đạt + hư < SL cần kiểm ⇒ TỰ coi là lượt một phần — phần còn lại giữ `con_kcs` > 0 ⇒ tem ở lại màn KCS (sổ cái →
   //   `DA_KHO`), phần đạt lên OQC ngay. Có nhập thiếu/dư = lượt CHỐT ⇒ vẫn cân đối tuyệt đối như trên. Vượt cần kiểm mà
   //   không nhập dư ⇒ vẫn chặn. (Chốt 04/09 "nhập thiếu là chặn" nay chỉ còn ở lượt có thiếu/dư — người dùng chấp nhận.)
-  const motPhan = !thieu && !du && kiem < conKcs;
-  if (!motPhan && kiem !== conSauChenh) {
-    const lech = kiem - conSauChenh;
+  const motPhan = !thieu && !du && tong < conKcs;
+  if (!motPhan && tong !== conSauChenh) {
+    const lech = tong - conSauChenh;
     throw new AppError(
       `Chênh lệch ${lech > 0 ? '+' : ''}${lech} — phải bằng 0 mới lưu được. `
       + `Cần kiểm ${conKcs}${du ? ` + dư ${du}` : ''}${thieu ? ` − thiếu ${thieu}` : ''} = ${conSauChenh}, `
-      + `đã nhập đạt ${dat} + hư ${hu}${huyTrucTiep ? ` + hủy ${huyTrucTiep}` : ''} = ${kiem}`,
+      + `đã nhập đạt ${dat} + hư ${hu}${huyTrucTiep ? ` + hủy ${huyTrucTiep}` : ''}${mau ? ` + mẫu ${mau}` : ''} = ${tong}`,
       { status: 422, errorCode: 'LECH_CAN_DOI' }
     );
   }
@@ -265,7 +271,7 @@ async function recordKcs(temId, body, actorId) {
     soLuongKiem: kiem, soLuongMau: mau, soLuongDat: dat, soLuongLoi: hu,
     soLuongHuy: huyTaiKcs, soLuongChenhLech: chenh,
     ketQua: (hu > 0 || huyTrucTiep > 0) ? 'CO_LOI' : 'DAT',
-    ghiChu: motPhan ? [`[Kiểm một phần ${kiem}/${conKcs}]`, body.ghiChu].filter(Boolean).join(' ') : body.ghiChu,
+    ghiChu: motPhan ? [`[Kiểm một phần ${tong}/${conKcs}]`, body.ghiChu].filter(Boolean).join(' ') : body.ghiChu,
   };
 
   let kcsId = null;
@@ -279,7 +285,7 @@ async function recordKcs(temId, body, actorId) {
     }
     kcsId = await repo.insertKcs(client, temId, data, actorId);
     // Cộng dồn sổ cái: đạt → chờ OQC; quyết định sửa → chờ sửa; (hư không sửa + hủy) → loại; chênh lệch → tổng cần kiểm.
-    await repo.addKcsLedger(client, temId, { dat, sua: quyetDinhSua, huy: huyTaiKcs, chenh }, actorId);
+    await repo.addKcsLedger(client, temId, { dat, sua: quyetDinhSua, huy: huyTaiKcs, chenh: chenhSoCai }, actorId);
     await repo.recomputeTemStage(client, temId, actorId);
   });
   await tracking.moveByTem(temId, 'KIEM', actorId);
@@ -288,7 +294,7 @@ async function recordKcs(temId, body, actorId) {
   sockets.emit('dashboard:refresh', {});
   // Đẩy kết quả kiểm sang ERP (/gui-erp-kiem-pham) — NGẦM, không bao giờ chặn việc xác nhận KCS.
   if (kcsId) kiemPhamErp.guiNgam(kcsId, temId, { dat, hu, thieu }, actorId);
-  const conLai = conSauChenh - kiem; // = 0 khi cân đối; > 0 ở lượt "kiểm một phần" (27/10/2026)
+  const conLai = conSauChenh - tong; // = 0 khi cân đối; > 0 ở lượt "kiểm một phần" (27/10/2026)
   return { tem_id: temId, next: 'KCS', so_luong_dat: dat, so_luong_sua: quyetDinhSua, so_luong_huy: huyTaiKcs, con_kcs: conLai };
 }
 
@@ -677,6 +683,11 @@ async function listCancelOqc(date) { return repo.listCancelOqc(date); }
 
 const N = (v) => Number(v) || 0;
 
+// Mẫu của lượt KCS đã bị trừ khỏi tổng cần kiểm ở SỔ CÁI tem chưa — chỉ lượt ghi từ 29/10/2026 (luật mẫu vào tổng).
+//   Lượt cũ (prod 29/10: 2 lượt có mẫu — 04/09 không trừ, 27/10 người kiểm tự nhập thiếu 3 thay mẫu 3) không trừ.
+const MAU_TRU_TONG_TU = new Date('2026-10-29T00:00:00+07:00').getTime();
+const mauTruTong = (r) => (r && new Date(r.created_date).getTime() >= MAU_TRU_TONG_TU ? N(r.so_luong_mau) : 0);
+
 async function cancelKcs(kcsId, lyDo, actorId) {
   const r = await repo.getCancelKcsRow(kcsId);
   if (!r) throw new AppError('Bản ghi KCS không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
@@ -684,7 +695,8 @@ async function cancelKcs(kcsId, lyDo, actorId) {
   const dat = N(r.so_luong_dat);
   const sua = N(r.so_luong_kiem) - N(r.so_luong_dat) - N(r.so_luong_huy); // = quyết định sửa lần đó
   const huy = N(r.so_luong_huy);
-  const chenh = N(r.so_luong_chenh_lech);
+  // Lượt từ 29/10/2026: mẫu đã trừ khỏi tổng cần kiểm ở sổ cái (xem `recordKcs`) ⇒ đảo luôn phần đó.
+  const chenh = N(r.so_luong_chenh_lech) - mauTruTong(r);
   const newDat = N(r.sl_kcs_dat) - dat;
   const newSua = N(r.sl_kcs_sua) - sua;
   const newHuy = N(r.sl_kcs_huy) - huy;

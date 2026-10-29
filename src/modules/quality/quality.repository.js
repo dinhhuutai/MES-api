@@ -1159,6 +1159,7 @@ const CANCEL_TARGET_TEM_COLS =
 async function getCancelKcsRow(id) {
   const { rows } = await query(
     `SELECT x.id, x.tem_id, x.so_luong_kiem, x.so_luong_dat, x.so_luong_loi, x.so_luong_huy, x.so_luong_chenh_lech,
+            COALESCE(x.so_luong_mau, 0) AS so_luong_mau, x.created_date,
             ${CANCEL_TARGET_TEM_COLS}, ${cancelledQc('x', 'kcs')} AS da_huy
      FROM kcs x JOIN tem t ON t.id = x.tem_id WHERE x.id = $1`.replace(/\s+/g, ' '),
     [id]
