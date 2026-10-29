@@ -2504,6 +2504,28 @@ async function releaseListByDate(date, mode = 'KE_HOACH', denNgay = null) {
   return rows;
 }
 
+// SL ĐÃ IN / SL GIAO THEO CODE PHẦN (29/10/2026, người dùng: "phải lấy theo code phần — đợt vải trước của phần đó đã in
+//   hay đã giao thì phải hiện ở đây, đang toàn bộ bằng 0"): Σ tem của MỌI lệnh còn sống chứa phần in (cả đợt trước) —
+//   đã in = tem GỐC chưa hủy (`so_luong`), giao = `sl_da_giao` mọi tem chưa hủy. Cùng cách `production/dsReleaseSx` (lệnh
+//   gom set cũ: tem của lệnh tính cho mọi phần in của lệnh — tem không lưu phần in).
+async function daInGiaoTheoPhanIn(pinIds) {
+  if (!pinIds || !pinIds.length) return new Map();
+  const { rows } = await query(
+    `WITH p AS (SELECT DISTINCT dv.phan_in_id, lsd.lenh_san_xuat_id AS lenh_id
+                  FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+                  JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
+                 WHERE ls.trang_thai <> 'HUY' AND dv.phan_in_id = ANY($1::uuid[]))
+     SELECT p.phan_in_id,
+            COALESCE(SUM(t.so_luong) FILTER (WHERE t.tem_goc_id IS NULL), 0)::int AS da_in,
+            COALESCE(SUM(t.sl_da_giao), 0)::int AS da_giao
+       FROM p JOIN phieu_san_xuat ps ON ps.lenh_san_xuat_id = p.lenh_id
+       JOIN tem t ON t.phieu_san_xuat_id = ps.id AND t.trang_thai <> 'HUY'
+      GROUP BY p.phan_in_id`.replace(/\s+/g, ' '),
+    [pinIds]
+  );
+  return new Map(rows.map((r) => [r.phan_in_id, r]));
+}
+
 // ----- Trả về Kỹ thuật (Release 1 → READY) -----
 async function phanInIdByDotVai(dotVaiId) {
   const { rows } = await query('SELECT phan_in_id FROM dot_vai_ve WHERE id = $1', [dotVaiId]);
@@ -2585,7 +2607,7 @@ async function docDotBtpTx(client, dotVaiId) {
 module.exports = {
   // Mảnh SQL thông tin phần in đại diện của lệnh (alias `ls`) — dùng lại ở `production/theoDoiTo.js` (21/10/2026).
   PHAN_INFO_LATERAL,
-  releaseListByDate,
+  releaseListByDate, daInGiaoTheoPhanIn,
   phanInIdByDotVai, dotVaiReleasedOne, auditTraVeKyThuat,
   listCaTuan, caModeMap, upsertCaTuan, caTuanCoLoaiChuyen,
   listRelease1Candidates, phanInDangOGnTheoDot, release1HistoryByDate, nextMaLenh, nextMaLenhTx, createLenh,

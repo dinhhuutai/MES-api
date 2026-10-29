@@ -86,7 +86,9 @@ const { danhSachFinish } = require('./danhSachFinish');
 const oqcFinishList = asyncHandler(async (req, res) => {
   const { tu, den } = khoangNgayTuQuery(req.query, 62);
   const heThong = ['1', 'true'].includes(String(req.query.heThong || '').trim());
-  return ok(res, await danhSachFinish(tu, den, heThong));
+  // `nguon=SX` (29/10/2026, Xác nhận chạy): finish = đã in + vải hư/thiếu ≥ SLNV — xem `danhSachFinish.js D_SAN_XUAT`.
+  const nguon = String(req.query.nguon || '').toUpperCase() === 'SX' ? 'SX' : 'OQC';
+  return ok(res, await danhSachFinish(tu, den, heThong, nguon));
 });
 const inlineDone = asyncHandler(async (req, res) => ok(res, await service.inlineDone(req.query.date || today())));
 

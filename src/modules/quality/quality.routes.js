@@ -31,7 +31,8 @@ router.post('/sua/:temId', rbac('SUA'), c.recordSua);
 router.get('/oqc/candidates', rbac('OQC'), c.oqcCandidates);
 router.get('/oqc/history', rbac('OQC'), c.oqcHistory);
 router.get('/oqc/done', rbac('OQC'), c.oqcDone);
-router.get('/oqc/finish-list', rbac('OQC'), c.oqcFinishList);
+// Danh sách finish: 29/10/2026 chuyển nút từ màn OQC sang Xác nhận chạy › "Danh sách & theo dõi" ⇒ mở cho Sản xuất.
+router.get('/oqc/finish-list', rbac('OQC', 'PROD_RUN', 'PROD_MONITOR'), c.oqcFinishList);
 router.post('/oqc/:temId/tra-ve', rbac('OQC'), c.oqcReturn);
 router.post('/oqc/:temId', rbac('OQC'), c.recordOqc);
 

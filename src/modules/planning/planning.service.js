@@ -2350,6 +2350,10 @@ async function releaseList(date, mode = 'KE_HOACH', denNgay = null) {
     repo.releaseListByDate(date, mode, denNgay),
     repo.caModeMap().catch(() => new Map()),
   ]);
+  // SL đã in / SL giao THEO CODE PHẦN (mọi lệnh sống của phần in, cả đợt vải trước — 29/10/2026) ⇒ `sl_da_in_pin` /
+  //   `sl_da_giao_pin` ở MỌI dòng. `sl_da_in` (của chính lệnh) giữ cho cột "SL IN" + các cột sau sản xuất.
+  const theoPin = mode === 'IN_TEM' ? new Map()
+    : await repo.daInGiaoTheoPhanIn([...new Set(raw.map((r) => r.phan_in_id))]);
   // CA KẾ HOẠCH của lệnh (26/10/2026 — ô lọc Ca ở Danh sách release): ca chứa GIỜ BẮT ĐẦU KH theo loại ca của tuần ×
   //   loại chuyền — CHÍNH luật `Ngayca` gửi ERP (`utils/ca.js ngayCaKeHoach`). Lệnh chưa có giờ BĐ KH ⇒ '' (không ca).
   const HAU = { HC: 'HC', C1: 'CA1', C2: 'CA2', C3: 'CA3', D1: 'D1', D2: 'D2' };
@@ -2369,6 +2373,8 @@ async function releaseList(date, mode = 'KE_HOACH', denNgay = null) {
       ca_kh: caKh(r),
       sl_da_in: mucLenh(r.sl_da_in),
       sl_da_giao: mucLenh(r.sl_da_giao),
+      sl_da_in_pin: theoPin.get(r.phan_in_id)?.da_in ?? 0,
+      sl_da_giao_pin: theoPin.get(r.phan_in_id)?.da_giao ?? 0,
       sl_dat: mucLenh(r.sl_dat),
       sl_sua_dat: mucLenh(r.sl_sua_dat),
       sl_huy: mucLenh(r.sl_huy),

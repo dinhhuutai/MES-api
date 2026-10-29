@@ -9,6 +9,7 @@
 // Gửi 1 dòng (IPS), không `--` trong chuỗi SQL. Cache RAM 15s theo tham số.
 
 const { query } = require('../../config/db');
+const { nhoDoc } = require('../../utils/cacheDoc');
 const { conKcsSql, CON_OQC, notCancelledQc } = require('./quality.repository');
 const { DAU_HE_THONG, dungDanhSachFinish } = require('../../utils/danhSachFinish');
 
@@ -42,11 +43,49 @@ async function coPhanLoaiLoi() {
   return _coPll;
 }
 
-async function docDong(tuNgay, denNgay, gomHeThong) {
+// ─── CHẾ ĐỘ SẢN XUẤT (29/10/2026 — nút "Danh sách finish" ở Xác nhận chạy › Danh sách & theo dõi; người dùng chốt:
+//   "điều kiện finish là SL đã in + SL vải hư, vải thiếu ≥ SLNV") ─────────────────────────────────────────────────────
+// Tập dòng = phần in mà Σ (tem GỐC chưa hủy + sổ `vai_huy` hủy + thiếu) ≥ SLNV (vải nhận mọi đợt sống), và THỜI ĐIỂM
+//   ĐẠT điều kiện (lần cuối tổng lũy kế vượt từ < SLNV lên ≥ SLNV — sổ vải có dòng âm khi sửa) nằm trong [tuNgay, denNgay].
+//   "Ngày cập nhật DS" = ngày đạt điều kiện. Các cột còn lại (SLIN, Sgiao, Tồn cuối…) + khối mục tiêu GIỮ NGUYÊN như màn OQC.
+//   Tem script `HT-` chỉ tính khi bật ô "gồm hàng hệ thống" (như lượt OQC hệ thống ở chế độ OQC).
+//   Phần in của tem = `PIN_CUA_TEM` (lệnh gom set cũ ⇒ phần in đầu); dòng `vai_huy` có `phan_in_id` thì đúng phần in đó.
+const D_SAN_XUAT = `ev AS MATERIALIZED (
+      SELECT ${PIN_CUA_TEM} AS phan_in_id, t.created_date AS tg, COALESCE(t.so_luong, 0) AS sl,
+             ${LENH_DOT} AS lenh_dot, COALESCE(ps.chuyen_id, ls.chuyen_id) AS chuyen_id
+        FROM tem t JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+       WHERE t.trang_thai <> 'HUY' AND t.tem_goc_id IS NULL AND ($3::boolean OR t.ma_tem NOT LIKE 'HT-%')
+      UNION ALL
+      SELECT COALESCE(vh.phan_in_id, (SELECT zd.phan_in_id FROM dot_vai_ve zd WHERE zd.id = vh.dot_vai_ve_id)),
+             vh.created_date, COALESCE(vh.so_luong, 0), NULL::uuid, NULL::uuid
+        FROM vai_huy vh),
+    ung AS MATERIALIZED (
+      SELECT u.phan_in_id, ${SLNV('u.phan_in_id')} AS slnv
+        FROM (SELECT DISTINCT phan_in_id FROM ev WHERE tg >= ${T0} AND tg < ${T1} AND phan_in_id IS NOT NULL) u),
+    lk AS (
+      SELECT ev.*, sum(ev.sl) OVER (PARTITION BY ev.phan_in_id ORDER BY ev.tg ROWS UNBOUNDED PRECEDING) AS cum, ung.slnv
+        FROM ev JOIN ung ON ung.phan_in_id = ev.phan_in_id),
+    fx AS (
+      SELECT phan_in_id, max(tg) FILTER (WHERE cum >= slnv AND cum - sl < slnv) AS tg_finish,
+             sum(sl) AS tong, max(slnv) AS slnv
+        FROM lk GROUP BY phan_in_id),
+    d AS MATERIALIZED (
+      SELECT to_char((fx.tg_finish ${VN})::date, 'YYYY-MM-DD') AS ngay, fx.phan_in_id,
+        array_remove(array_agg(DISTINCT ev.lenh_dot), NULL) AS lenh_dots,
+        COALESCE(json_agg(DISTINCT jsonb_build_object('ma_chuyen', cs.ma_chuyen, 'ten_chuyen', cs.ten_chuyen, 'ma_loai_chuyen', lc.ma_loai))
+          FILTER (WHERE cs.id IS NOT NULL), '[]') AS chuyen,
+        string_agg(DISTINCT cs.ma_chuyen, ', ') AS ma_chuyen
+        FROM fx JOIN ev ON ev.phan_in_id = fx.phan_in_id
+        LEFT JOIN chuyen_san_xuat cs ON cs.id = ev.chuyen_id LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
+       WHERE fx.slnv > 0 AND fx.tong >= fx.slnv AND fx.tg_finish >= ${T0} AND fx.tg_finish < ${T1}
+       GROUP BY fx.phan_in_id, fx.tg_finish)`;
+
+async function docDong(tuNgay, denNgay, gomHeThong, nguon = 'OQC') {
   const pll = (await coPhanLoaiLoi())
     ? `UNION ALL SELECT p.tem_id, COALESCE(p.updated_date, p.created_date) FROM phan_loai_loi p WHERE COALESCE(p.sl_huy_luc_luu, 0) > 0`
     : '';
-  const sql = `WITH o AS MATERIALIZED (
+  const sanXuat = nguon === 'SX';
+  const dOqc = `o AS MATERIALIZED (
       SELECT x.tem_id, to_char((x.created_date ${VN})::date, 'YYYY-MM-DD') AS ngay FROM oqc x
        WHERE x.created_date >= ${T0} AND x.created_date < ${T1} AND COALESCE(x.sl_qua_giao, 0) > 0
          AND ${notCancelledQc('x', 'oqc')} AND ($3::boolean OR x.ghi_chu IS NULL OR x.ghi_chu NOT LIKE $4)),
@@ -60,7 +99,8 @@ async function docDong(tuNgay, denNgay, gomHeThong) {
           FILTER (WHERE cs.id IS NOT NULL), '[]') AS chuyen,
         string_agg(DISTINCT cs.ma_chuyen, ', ') AS ma_chuyen
         FROM op LEFT JOIN chuyen_san_xuat cs ON cs.id = op.chuyen_id LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
-       WHERE op.phan_in_id IS NOT NULL GROUP BY op.phan_in_id),
+       WHERE op.phan_in_id IS NOT NULL GROUP BY op.phan_in_id)`;
+  const sql = `WITH ${sanXuat ? D_SAN_XUAT : dOqc},
     ta AS MATERIALIZED (
       SELECT z.* FROM (SELECT t.id, t.so_luong, t.sl_chenh_lech, t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy, t.sl_sua_dat,
             t.sl_sua_huy, t.sl_oqc_dat, t.sl_sua_tach, t.tem_goc_id, ${PIN_CUA_TEM} AS phan_in_id
@@ -96,7 +136,9 @@ async function docDong(tuNgay, denNgay, gomHeThong) {
     FROM d JOIN phan_in pin ON pin.id = d.phan_in_id ${JOIN_PIN}
     LEFT JOIN ag ON ag.phan_in_id = d.phan_in_id
     LEFT JOIN kq ON kq.phan_in_id = d.phan_in_id`;
-  const { rows } = await query(sql.replace(/\s+/g, ' '), [tuNgay, denNgay, !!gomHeThong, DAU_HE_THONG]);
+  // Chế độ SX không dùng $4 (dấu lượt OQC hệ thống) — gửi thừa tham số là Postgres báo "could not determine data type".
+  const thamSo = sanXuat ? [tuNgay, denNgay, !!gomHeThong] : [tuNgay, denNgay, !!gomHeThong, DAU_HE_THONG];
+  const { rows } = await query(sql.replace(/\s+/g, ' '), thamSo);
   return rows;
 }
 
@@ -119,20 +161,15 @@ async function docMucTieu(ngay) {
 }
 
 const CACHE_MS = 15000;
-const cache = new Map(); // `tu|den|he` → { het, hua }
 
-// Lưu PROMISE ⇒ nhiều người mở cùng lúc chỉ chạy 1 lượt; lỗi thì bỏ cache ngay.
-async function danhSachFinish(tuNgay, denNgay, gomHeThong = false) {
-  const k = `${tuNgay}|${denNgay}|${gomHeThong ? 1 : 0}`;
-  const now = Date.now();
-  const c = cache.get(k);
-  if (c && c.het > now) return c.hua;
-  const hua = Promise.all([docDong(tuNgay, denNgay, gomHeThong), docMucTieu(denNgay)])
-    .then(([rows, mucTieu]) => dungDanhSachFinish({ tuNgay, denNgay, gomHeThong, rows, mucTieu }));
-  cache.set(k, { het: now + CACHE_MS, hua });
-  hua.catch(() => cache.delete(k));
-  if (cache.size > 40) cache.delete(cache.keys().next().value);
-  return hua;
+// Nhiều người mở cùng lúc chỉ chạy 1 lượt. Cache theo PHIÊN BẢN DỮ LIỆU (`utils/cacheDoc`, 29/10/2026) — mọi thao tác ghi
+//   xóa ngay. `nguon`: 'OQC' (finish = OQC cho qua giao) · 'SX' (finish = đã in + vải hư/thiếu ≥ SLNV — Xác nhận chạy).
+function danhSachFinish(tuNgay, denNgay, gomHeThong = false, nguon = 'OQC') {
+  const ng = nguon === 'SX' ? 'SX' : 'OQC';
+  return nhoDoc('danh-sach-finish', { tuNgay, denNgay, he: gomHeThong ? 1 : 0, ng },
+    () => Promise.all([docDong(tuNgay, denNgay, gomHeThong, ng), docMucTieu(denNgay)])
+      .then(([rows, mucTieu]) => ({ ...dungDanhSachFinish({ tuNgay, denNgay, gomHeThong, rows, mucTieu }), nguon: ng })),
+    CACHE_MS);
 }
 
 module.exports = { danhSachFinish };
