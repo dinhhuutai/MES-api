@@ -6,6 +6,7 @@ const { ok, created } = require('../../utils/response');
 const { getPaging, TRAN_TAI_HET } = require('../../utils/pagination');
 const { ngayHomNayVN } = require('../../utils/khoangNgay');
 const { nhoDoc } = require('../../utils/cacheDoc');
+const { thamSoLichSu } = require('../../utils/lichSuTim');
 
 // Danh sách các màn dòng chảy dùng chung kết quả giữa mọi người xem cùng tham số (`utils/cacheDoc.js` — mọi thao
 // tác ghi làm cache hết hiệu lực ngay). Hàm dựng tham số chỉ đọc `req.query`, không đọc người gọi.
@@ -31,10 +32,9 @@ const release1TraVeKyThuat = asyncHandler(async (req, res) =>
 const createDotSanXuat = asyncHandler(async (req, res) =>
   created(res, await service.createDotSanXuat(req.body, req.user.id), 'Đã tạo đợt sản xuất'));
 
-const release1History = asyncHandler(async (req, res) => {
-  const date = req.query.date || ngayHomNayVN();
-  return ok(res, await service.release1History(date));
-});
+// Sidebar Lịch sử: có ngày ⇒ theo ngày; không ngày + `q` ⇒ tìm mọi ngày theo code phần / mã (`utils/lichSuTim`).
+const release1History = asyncHandler(async (req, res) =>
+  ok(res, await service.release1History(thamSoLichSu(req.query))));
 
 const releaseList = asyncHandler(async (req, res) => {
   const date = req.query.date || ngayHomNayVN();
@@ -111,10 +111,8 @@ const skipTestRun = asyncHandler(async (req, res) => {
     : 'Đã bỏ Test Run — đợt sản xuất vào chờ sản xuất');
 });
 
-const testRunHistory = asyncHandler(async (req, res) => {
-  const date = req.query.date || ngayHomNayVN();
-  return ok(res, await service.testRunHistory(date));
-});
+const testRunHistory = asyncHandler(async (req, res) =>
+  ok(res, await service.testRunHistory(thamSoLichSu(req.query))));
 
 // Bộ lọc màn Lập kế hoạch lại: `f_<khóa>` (khóa = FILTER_FIELDS FE) + `tuNgay`/`denNgay` (YYYY-MM-DD).
 const REPLAN_LOC = ['maLenh', 'codePhan', 'khach', 'don', 'maHang', 'mauVai', 'kichVai', 'kichPhim', 'chuyen', 'nhaGiaCong'];
@@ -172,7 +170,7 @@ const giaCongToOqc = asyncHandler(async (req, res) => {
 });
 
 const giaCongHistory = asyncHandler(async (req, res) =>
-  ok(res, await service.giaCongHistory(req.query.date)));
+  ok(res, await service.giaCongHistory(thamSoLichSu(req.query))));
 
 const giaCongTemCancelable = asyncHandler(async (req, res) => {
   const { page, limit, offset } = getPaging(req.query);
@@ -205,7 +203,7 @@ const keHoachTamDelete = asyncHandler(async (req, res) =>
 
 // Lịch sử thao tác + Đã hoàn thành (đã xác nhận Release 1) của Kế hoạch tạm — theo ngày (giờ VN).
 const keHoachTamHistory = asyncHandler(async (req, res) =>
-  ok(res, await service.keHoachTamHistory(req.query.date || ngayHomNayVN())));
+  ok(res, await service.keHoachTamHistory(thamSoLichSu(req.query))));
 
 const keHoachTamDone = asyncHandler(async (req, res) =>
   ok(res, await service.keHoachTamDone(req.query.date || ngayHomNayVN())));
@@ -224,10 +222,8 @@ const keHoachTamHuy = asyncHandler(async (req, res) =>
 const replanBatch = asyncHandler(async (req, res) =>
   ok(res, await service.replanBatch(req.body.lenhIds, req.body, req.user.id), 'Lập lại kế hoạch hàng loạt'));
 
-const planHistory = asyncHandler(async (req, res) => {
-  const date = req.query.date || ngayHomNayVN();
-  return ok(res, await service.planHistory(date));
-});
+const planHistory = asyncHandler(async (req, res) =>
+  ok(res, await service.planHistory(thamSoLichSu(req.query))));
 
 // HỦY TÙY CHỌN (mọi trạng thái, kể cả lệnh đã in tem) — chỉ mở cho quyền `LENH_CANCEL_ANY` (mig 065).
 // ⚠ Kiểm quyền Ở SERVER: FE gửi `moRong`/`force` gì cũng vô nghĩa nếu user không có quyền.

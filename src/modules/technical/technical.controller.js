@@ -7,6 +7,7 @@ const { ok } = require('../../utils/response');
 const { getPaging, TRAN_TAI_HET } = require('../../utils/pagination');
 const { ngayHomNayVN } = require('../../utils/khoangNgay');
 const { nhoDoc } = require('../../utils/cacheDoc');
+const { thamSoLichSu } = require('../../utils/lichSuTim');
 
 // Map mục kỹ thuật → quyền tương ứng (xác nhận theo từng bộ phận).
 const ITEM_PERM = { KHUON: 'READY_KHUON', FILM: 'READY_FILM', MUC: 'READY_MUC', HSKT: 'READY_HSKT' };
@@ -42,9 +43,9 @@ const detail = asyncHandler(async (req, res) => ok(res,
   await service.getDetail(req.params.phanInId, dsDot(req.query.dotVaiIds))));
 
 const history = asyncHandler(async (req, res) => {
-  const date = req.query.date || ngayHomNayVN();
   const scope = req.query.scope === 'qc' ? 'qc' : 'tech';
-  return ok(res, await service.history(date, scope));
+  // Không ngày + `q` ⇒ tìm mọi ngày theo code phần (`utils/lichSuTim`).
+  return ok(res, await service.history(thamSoLichSu(req.query), scope));
 });
 
 const done = asyncHandler(async (req, res) => {

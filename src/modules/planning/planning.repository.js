@@ -11,6 +11,7 @@ const { lenhPhanInMatch } = require('../../utils/search');
 // Hiển thị theo PHƯƠNG ÁN IN — cấu hình động từng trang (mig 067), mặc định BẬT HẾT = không lọc.
 const { dkTrang } = require('../../utils/phuongAnIn');
 const { mauTim } = require('../../utils/timKiem');
+const LS = require('../../utils/lichSuTim');
 // ⚠⚠ "Đã Ready" theo ĐỢT VẢI (16/09/2026) — badge Đã/Chờ Ready ở Release 1 & Kế hoạch tạm, và luật
 //   "đợt đã QC → release ngay / chưa QC → kế hoạch tạm". Trước đây hỏi ở MỨC PHẦN IN nên mọi dòng đợt
 //   vải của cùng phần in dùng CHUNG một badge: đợt mới về là đợt cũ đang chờ release cũng tụt xuống
@@ -558,7 +559,8 @@ async function logGomSetReleased(client, setId, chiTiet, actorId) {
 }
 
 // Lịch sử Release 1 theo ngày (giờ VN) — lệnh sản xuất được tạo trong ngày (mỗi đợt vải 1 dòng).
-async function release1HistoryByDate(date) {
+async function release1HistoryByDate(lsIn) {
+  const ls = LS.chuan(lsIn);
   const sql = `
     SELECT ls.created_date AS tg, nd.ho_ten AS nguoi,
            ls.ma_lenh_san_xuat AS ma_lenh, cs.ten_chuyen, cs.ma_chuyen,
@@ -570,9 +572,9 @@ async function release1HistoryByDate(date) {
     JOIN phan_in pin ON pin.id = dv.phan_in_id
     LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
     LEFT JOIN nguoi_dung nd ON nd.id = ls.created_by
-    WHERE (ls.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
-    ORDER BY ls.created_date DESC, pin.ma_phan, dv.ma_dot_vai`;
-  const { rows } = await query(sql, [date]);
+    WHERE ${LS.ngayHoacTim(ls, 'ls.created_date', '$1', 'pin.ma_phan ~* $1 OR pin.barcode ~* $1 OR ls.ma_lenh_san_xuat ~* $1 OR dv.ma_dot_vai ~* $1')}
+    ORDER BY ls.created_date DESC, pin.ma_phan, dv.ma_dot_vai${LS.gioiHan(ls)}`;
+  const { rows } = await query(sql, [LS.giaTri(ls)]);
   return rows;
 }
 
@@ -950,7 +952,8 @@ async function listGiaCongLenh({ search = '', offset = 0, limit = 50, loc = {}, 
 // payload → NULL, FE lùi về SL release như trước.
 // ⚠ KHÔNG đặt comment `--` trong chuỗi SQL bên dưới: nó bị `.replace(/\s+/g,' ')` gộp 1 dòng (IPS-safe)
 // nên mọi thứ sau `--` sẽ thành comment → syntax error.
-async function listGiaCongHistory(date) {
+async function listGiaCongHistory(lsIn) {
+  const ls = LS.chuan(lsIn);
   const sql = `
     SELECT a.thoi_gian AS tg, nd.ho_ten AS nguoi,
            ls.id AS lenh_id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.created_date,
@@ -1002,9 +1005,9 @@ async function listGiaCongHistory(date) {
     LEFT JOIN tem tg13 ON a.hanh_dong = 'GIA_CONG_CHUYEN_OQC' AND tg13.ma_tem = a.gia_tri_moi->>'ma_tem'
     WHERE a.ten_bang = 'lenh_san_xuat'
       AND a.hanh_dong IN ('GIA_CONG_CHUYEN_OQC','OQC_TRA_VE_GIA_CONG','GIA_CONG_TRA_LAI')
-      AND (a.thoi_gian AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
-    ORDER BY a.thoi_gian DESC`;
-  const { rows } = await query(sql.replace(/\s+/g, ' '), [date]);
+      AND ${LS.ngayHoacTim(ls, 'a.thoi_gian', '$1', `ls.ma_lenh_san_xuat ~* $1 OR (a.gia_tri_moi->>'ma_tem') ~* $1 OR ${LS.lenhKhop('ls.id', '$1')}`)}
+    ORDER BY a.thoi_gian DESC${LS.gioiHan(ls)}`;
+  const { rows } = await query(sql.replace(/\s+/g, ' '), [LS.giaTri(ls)]);
   return rows;
 }
 
@@ -1241,7 +1244,8 @@ async function logKeHoachTam(hanhDong, dotVaiId, payload, actorId) {
 }
 
 // Nguồn dùng chung cho Lịch sử + Đã hoàn thành của Kế hoạch tạm (lọc theo ngày giờ VN).
-const KHT_HISTORY_FROM = `
+// `ls` (01/11/2026): { date } như cũ, hoặc { tim } ⇒ mọi ngày, khớp code phần / mã TDTHĐH / mã lệnh (sidebar Lịch sử).
+const khtHistoryFrom = (ls = { date: true }) => `
   FROM audit_log a
   LEFT JOIN nguoi_dung nd ON nd.id = a.nguoi_thuc_hien_id
   LEFT JOIN dot_vai_ve dv ON dv.id::text = a.id_ban_ghi
@@ -1251,9 +1255,11 @@ const KHT_HISTORY_FROM = `
   LEFT JOIN khach_hang kh ON kh.id = dh.khach_hang_id
   LEFT JOIN chuyen_san_xuat cs ON cs.id::text = (a.gia_tri_moi->>'chuyen_id')
   WHERE a.ten_bang = 'ke_hoach_tam'
-    AND (a.thoi_gian AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date`;
+    AND ${LS.ngayHoacTim(ls, 'a.thoi_gian', '$1', "pin.ma_phan ~* $1 OR pin.barcode ~* $1 OR (a.gia_tri_moi->>'ma_lenh') ~* $1")}`;
+const KHT_HISTORY_FROM = khtHistoryFrom();
 
-async function keHoachTamHistoryByDate(date) {
+async function keHoachTamHistoryByDate(lsIn) {
+  const ls = LS.chuan(lsIn);
   const sql = `
     SELECT a.thoi_gian AS tg, nd.ho_ten AS nguoi, a.hanh_dong,
            pin.ma_phan, pin.mau_vai, dv.ma_dot_vai, cs.ten_chuyen,
@@ -1262,9 +1268,9 @@ async function keHoachTamHistoryByDate(date) {
            (a.gia_tri_moi->>'ma_lenh') AS ma_lenh,
            (a.gia_tri_moi->>'gio_bd') AS gio_bd, (a.gia_tri_moi->>'gio_kt') AS gio_kt,
            (a.gia_tri_moi->>'tho_in') AS tho_in, (a.gia_tri_moi->>'ly_do') AS ly_do
-    ${KHT_HISTORY_FROM}
-    ORDER BY a.thoi_gian DESC`;
-  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [date]);
+    ${khtHistoryFrom(ls)}
+    ORDER BY a.thoi_gian DESC${LS.gioiHan(ls)}`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [LS.giaTri(ls)]);
   return rows;
 }
 
@@ -2012,10 +2018,11 @@ async function logPlanChange(client, lenhId, hanhDong, giaTriCu, giaTriMoi, acto
 }
 
 // Lịch sử kế hoạch theo ngày (giờ VN): duyệt Release 2 + lập kế hoạch lại.
-async function planHistoryByDate(date) {
+async function planHistoryByDate(lsIn) {
+  const ls = LS.chuan(lsIn);
   const { rows } = await query(
     `SELECT a.thoi_gian AS tg, nd.ho_ten AS nguoi, a.hanh_dong,
-            ls.ma_lenh_san_xuat AS ma_lenh,
+            ls.ma_lenh_san_xuat AS ma_lenh, ${LS.maPhanLenhSql('ls.id')} AS ma_phan,
             csc.ten_chuyen AS ten_chuyen_cu, csm.ten_chuyen AS ten_chuyen_moi,
             a.gia_tri_cu->>'ngay_ke_hoach' AS ngay_cu,
             a.gia_tri_moi->>'ngay_ke_hoach' AS ngay_moi,
@@ -2028,9 +2035,9 @@ async function planHistoryByDate(date) {
      LEFT JOIN chuyen_san_xuat csc ON csc.id = (a.gia_tri_cu->>'chuyen_id')::uuid
      LEFT JOIN chuyen_san_xuat csm ON csm.id = (a.gia_tri_moi->>'chuyen_id')::uuid
      WHERE a.ten_bang = 'lenh_san_xuat' AND a.hanh_dong IN ('RELEASE_2','REPLAN')
-       AND (a.thoi_gian AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
-     ORDER BY a.thoi_gian DESC`,
-    [date]
+       AND ${LS.ngayHoacTim(ls, 'a.thoi_gian', '$1', `ls.ma_lenh_san_xuat ~* $1 OR ${LS.lenhKhop('ls.id', '$1')}`)}
+     ORDER BY a.thoi_gian DESC${LS.gioiHan(ls)}`.replace(/\s+/g, ' '),
+    [LS.giaTri(ls)]
   );
   return rows;
 }
@@ -2173,17 +2180,19 @@ async function setLenhTrangThai(client, lenhId, trangThai, actorId) {
 }
 
 // Lịch sử xác nhận Test Run theo ngày (giờ VN) — từ lich_su_trang_thai (TEST_CNSP/TEST_QA, mức lệnh).
-async function testRunHistoryByDate(date) {
+async function testRunHistoryByDate(lsIn) {
+  const ls = LS.chuan(lsIn);
+  const khop = `ls.ma_lenh_san_xuat ~* $1 OR ${LS.lenhKhop('ls.id', '$1')}`;
   const sql = `
     SELECT l.tg_thuc_hien AS tg, nd.ho_ten AS nguoi, l.ly_do AS hanh_dong,
-           ls.ma_lenh_san_xuat AS doi_tuong, kq.gia_tri_text AS chi_tiet
+           ls.ma_lenh_san_xuat AS doi_tuong, kq.gia_tri_text AS chi_tiet, ${LS.maPhanLenhSql('ls.id')} AS ma_phan
     FROM lich_su_trang_thai l
     JOIN ket_qua_checkpoint kq ON kq.id = l.ket_qua_checkpoint_id
     JOIN checkpoint cp ON cp.id = kq.checkpoint_id
     JOIN lenh_san_xuat ls ON ls.id = kq.lenh_san_xuat_id
     LEFT JOIN nguoi_dung nd ON nd.id = l.nguoi_thuc_hien_id
     WHERE cp.ma_checkpoint IN ('TEST_CNSP', 'TEST_QA')
-      AND (l.tg_thuc_hien AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
+      AND ${LS.ngayHoacTim(ls, 'l.tg_thuc_hien', '$1', khop)}
     UNION ALL
     SELECT a.thoi_gian AS tg, nd.ho_ten AS nguoi, 'Không test run' AS hanh_dong,
            ls.ma_lenh_san_xuat || COALESCE(' · ' || (SELECT string_agg(DISTINCT pin.ma_phan, ', ')
@@ -2191,15 +2200,16 @@ async function testRunHistoryByDate(date) {
              JOIN phan_in pin ON pin.id = dv.phan_in_id WHERE lsd.lenh_san_xuat_id = ls.id), '') AS doi_tuong,
            NULLIF(concat_ws(' · ', 'Lý do: ' || NULLIF(a.gia_tri_moi->>'ly_do', ''),
              'Cộng vào lệnh đang chạy ' || NULLIF(a.gia_tri_moi->>'cong_vao_lenh', ''),
-             CASE WHEN COALESCE(a.gia_tri_moi->>'cong_vao_lenh', '') = '' THEN 'Vào chờ sản xuất' END), '') AS chi_tiet
+             CASE WHEN COALESCE(a.gia_tri_moi->>'cong_vao_lenh', '') = '' THEN 'Vào chờ sản xuất' END), '') AS chi_tiet,
+           NULL::text AS ma_phan
       FROM audit_log a
       JOIN lenh_san_xuat ls ON ls.id::text = a.id_ban_ghi
       LEFT JOIN nguoi_dung nd ON nd.id = a.nguoi_thuc_hien_id
      WHERE a.ten_bang = 'lenh_san_xuat' AND a.hanh_dong = 'RELEASE_2'
        AND COALESCE((a.gia_tri_moi->>'bo_test_run')::boolean, false)
-       AND (a.thoi_gian AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
-    ORDER BY 1 DESC`;
-  const { rows } = await query(sql, [date]);
+       AND ${LS.ngayHoacTim(ls, 'a.thoi_gian', '$1', khop)}
+    ORDER BY 1 DESC${LS.gioiHan(ls)}`;
+  const { rows } = await query(sql, [LS.giaTri(ls)]);
   return rows;
 }
 

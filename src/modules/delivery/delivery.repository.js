@@ -6,6 +6,7 @@ const { dkTrang } = require('../../utils/phuongAnIn');
 const { lenhPhanInMatch } = require('../../utils/search');
 const { timTem } = require('../../utils/temPrefix');
 const { mauTim } = require('../../utils/timKiem');
+const LS = require('../../utils/lichSuTim');
 // Đồng hồ SLA màn Giao đo theo CHÍNH tem (mốc OQC cho qua giao) + SLA trạm FINISH — cùng nguồn dải Theo dõi /
 // bảng theo dõi Dashboard (02/10/2026; bản cũ lấy `ton_tram` của cả lệnh — xem `quality.repository temCtx`).
 const { MOC_VAO_TEM } = require('../../utils/siSoTram');
@@ -491,33 +492,39 @@ async function listGiaoHang({ search = '', trangThai = '', ngayTu = '', ngayDen 
 //   · XÁC NHẬN GIAO ← `audit_log` `XAC_NHAN_GIAO`
 //   · HỦY PHIẾU     ← `audit_log` `HUY_PHIEU_GIAO`
 // ⚠ `id_ban_ghi` của `audit_log` là VARCHAR ⇒ so `gh.id::text`.
-async function historyGiaoByDate(date) {
-  const VN = "AT TIME ZONE 'Asia/Ho_Chi_Minh'";
+// `lsIn` = ngày HOẶC { date, tim } (`utils/lichSuTim`): không ngày ⇒ tìm mọi ngày theo mã phiếu / mã tem / code phần
+//   của tem trong phiếu. `ma_phan` (01/11/2026) = code phần các tem của phiếu ⇒ ô tìm sidebar khớp được code phần.
+async function historyGiaoByDate(lsIn) {
+  const ls = LS.chuan(lsIn);
+  const khop = `gh.ma_phieu_giao ~* $1 OR gh.id IN (SELECT gk.giao_hang_id FROM giao_hang_tem gk JOIN tem t ON t.id = gk.tem_id WHERE ${LS.temKhop('t', '$1')})`;
+  const maPhan = `(SELECT string_agg(DISTINCT mp.ma_phan, ', ') FROM giao_hang_tem gm JOIN tem t ON t.id = gm.tem_id CROSS JOIN LATERAL (SELECT ${LS.maPhanTemSql('t')} AS ma_phan) mp WHERE gm.giao_hang_id = gh.id)`;
   const sql =
     `SELECT * FROM (
        SELECT gh.id, gh.trang_thai AS trang_thai_phieu, gh.created_date AS tg, nd.ho_ten AS nguoi, 'Tạo phiếu giao' AS hanh_dong,
               gh.ma_phieu_giao AS doi_tuong,
               concat_ws(' · ', kh.ten_khach_hang, dh.ma_don_hang,
-                (SELECT count(*)::text || ' tem' FROM giao_hang_tem gt WHERE gt.giao_hang_id = gh.id)) AS chi_tiet
+                (SELECT count(*)::text || ' tem' FROM giao_hang_tem gt WHERE gt.giao_hang_id = gh.id)) AS chi_tiet,
+              ${maPhan} AS ma_phan
          FROM giao_hang gh
          LEFT JOIN don_hang dh ON dh.id = gh.don_hang_id
          LEFT JOIN khach_hang kh ON kh.id = dh.khach_hang_id
          LEFT JOIN nguoi_dung nd ON nd.id = gh.created_by
-        WHERE ((gh.created_date ${VN})::date) = $1::date
+        WHERE ${LS.ngayHoacTim(ls, 'gh.created_date', '$1', khop)}
        UNION ALL
        SELECT gh.id, gh.trang_thai, a.thoi_gian, nd.ho_ten,
               CASE a.hanh_dong WHEN 'XAC_NHAN_GIAO' THEN 'Xác nhận giao' ELSE 'Hủy phiếu giao' END,
               gh.ma_phieu_giao,
               COALESCE(a.gia_tri_moi->>'ly_do',
                        concat_ws(' · ', 'SL ' || COALESCE(a.gia_tri_moi->>'tong_sl',''),
-                                 COALESCE(a.gia_tri_moi->>'so_tem','') || ' tem'))
+                                 COALESCE(a.gia_tri_moi->>'so_tem','') || ' tem')),
+              ${maPhan}
          FROM audit_log a
          JOIN giao_hang gh ON gh.id::text = a.id_ban_ghi
          LEFT JOIN nguoi_dung nd ON nd.id = a.nguoi_thuc_hien_id
         WHERE a.ten_bang = 'giao_hang' AND a.hanh_dong IN ('XAC_NHAN_GIAO','HUY_PHIEU_GIAO')
-          AND ((a.thoi_gian ${VN})::date) = $1::date
-     ) z ORDER BY z.tg DESC`;
-  const { rows } = await query(sql.replace(/\s+/g, ' '), [date]);
+          AND ${LS.ngayHoacTim(ls, 'a.thoi_gian', '$1', khop)}
+     ) z ORDER BY z.tg DESC${LS.gioiHan(ls)}`;
+  const { rows } = await query(sql.replace(/\s+/g, ' '), [LS.giaTri(ls)]);
   return rows;
 }
 

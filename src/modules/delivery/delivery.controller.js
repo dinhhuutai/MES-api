@@ -4,6 +4,7 @@ const service = require('./delivery.service');
 const asyncHandler = require('../../utils/asyncHandler');
 const { ok, created } = require('../../utils/response');
 const { nhoDoc } = require('../../utils/cacheDoc');
+const { thamSoLichSu } = require('../../utils/lichSuTim');
 
 // Tem chờ giao dùng chung kết quả giữa mọi người xem (`utils/cacheDoc.js` — ghi là hết hiệu lực ngay).
 const temSanSang = asyncHandler(async (req, res) => {
@@ -15,7 +16,8 @@ const tonKcs = asyncHandler(async (req, res) => ok(res, await service.listTonKcs
 const list = asyncHandler(async (req, res) => ok(res, await service.listGiaoHang(req.query)));
 
 // Sidebar Lịch sử / Đã hoàn thành của màn *Danh sách tem giao* (khuôn chung các màn xác nhận).
-const history = asyncHandler(async (req, res) => ok(res, await service.historyGiao(req.query.date)));
+// Không ngày + `q` ⇒ tìm mọi ngày theo mã phiếu / mã tem / code phần (`utils/lichSuTim`).
+const history = asyncHandler(async (req, res) => ok(res, await service.historyGiao(thamSoLichSu(req.query))));
 const done = asyncHandler(async (req, res) => ok(res, await service.doneGiao(req.query.date)));
 
 // Hủy phiếu giao — tab ở *Hệ thống → Hủy lệnh xác nhận*.

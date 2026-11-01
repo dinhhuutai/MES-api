@@ -13,6 +13,7 @@ const { slaReadySql, slaQcReadySql, slaReadyHanSql, canhBaoReadyHanSql, giaHanTr
 // Phần in đang được trả về GIAO NHẬN sửa thông tin ⇒ rời màn READY cho tới khi GN xác nhận lại.
 const { CHO_GN_SQL } = require('../../utils/traVeGn');
 const { mauTim } = require('../../utils/timKiem');
+const LS = require('../../utils/lichSuTim');
 const { sqlKhopMa } = require('../../utils/maPhanIn');
 
 // Đọc cấu hình READY (version + trạm + checkpoint) trong 1 query (giảm round-trip tới DB ở xa).
@@ -261,7 +262,8 @@ async function countReadyItems({ khuonId, filmId, mucId, qcId }) {
 }
 
 // Lịch sử xác nhận theo ngày (giờ VN). scope: 'tech' (4 mục) | 'qc' (QC_XAC_NHAN).
-async function historyByDate(date, maList) {
+async function historyByDate(lsIn, maList) {
+  const ls = LS.chuan(lsIn);
   const sql = `
     SELECT l.tg_thuc_hien AS tg, nd.ho_ten AS nguoi, l.ly_do AS hanh_dong,
            pin.ma_phan, mh.ma_hang, kh.ten_khach_hang, kq.gia_tri_text AS chi_tiet
@@ -275,9 +277,9 @@ async function historyByDate(date, maList) {
     JOIN khach_hang kh ON kh.id = dh.khach_hang_id
     LEFT JOIN nguoi_dung nd ON nd.id = l.nguoi_thuc_hien_id
     WHERE t.ma_tram = 'READY' AND cp.ma_checkpoint = ANY($2)
-      AND (l.tg_thuc_hien AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
-    ORDER BY l.tg_thuc_hien DESC`;
-  const { rows } = await query(sql, [date, maList]);
+      AND ${LS.ngayHoacTim(ls, 'l.tg_thuc_hien', '$1', LS.phanInKhop('kq.phan_in_id', '$1'))}
+    ORDER BY l.tg_thuc_hien DESC${LS.gioiHan(ls)}`;
+  const { rows } = await query(sql, [LS.giaTri(ls), maList]);
   return rows;
 }
 

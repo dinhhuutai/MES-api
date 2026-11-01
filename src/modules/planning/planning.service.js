@@ -28,6 +28,7 @@ const release1Erp = require('./release1Erp');
 // Khách gia công (II/AD) miễn Khuôn — nhãn cột Khuôn của Danh sách release.
 const { isKhuonOptional } = require('../../utils/tech');
 const { ngayHomNayVN } = require('../../utils/khoangNgay');
+const { TOI_DA_TIM: TOI_DA_TIM_LS } = require('../../utils/lichSuTim');
 const { trongGioHanhChinh } = require('../../utils/gioHanhChinh'); // Test Run ngoài giờ ⇒ QA kiêm Release 2
 const { khoaNgc, tenNgc } = require('../../utils/nhaGiaCong'); // đợt khác nhà gia công không gom (27/10/2026)
 const { coCotBtp, datSoDauTx, coDauCho } = require('../../utils/btpKhacKh'); // BTP khác kế hoạch (mig 120, 28/10/2026)
@@ -689,6 +690,7 @@ async function release1History(date) {
     repo.release1HistoryByDate(date),
     repo.keHoachTamHistoryByDate(date),
   ]);
+  // `date` có thể là { tim } (tìm mọi ngày, `utils/lichSuTim`): 2 nguồn mỗi nguồn ≤ 500 lượt ⇒ gộp xong cắt lại.
   // ⚠ LỊCH SỬ thì GIỮ cả lệnh đã hủy (thao tác đó CÓ xảy ra) nhưng phải ghi rõ "đã hủy" — khác
   //   "Đã hoàn thành" (`release1DoneByDate`) vốn đã LOẠI hẳn lệnh hủy vì thao tác bị hoàn tác.
   const lenh = rows.map((r) => ({
@@ -704,10 +706,11 @@ async function release1History(date) {
     tg: r.tg,
     nguoi: r.nguoi || '—',
     hanh_dong: KHT_LABEL[r.hanh_dong] || r.hanh_dong,
-    doi_tuong: r.ma_lenh || r.ma_phan || '',
+    doi_tuong: r.ma_lenh || r.ma_phan || '', ma_phan: r.ma_phan || '',
     chi_tiet: khtChiTiet(r),
   }));
-  return [...lenh, ...tam].sort((a, b) => new Date(b.tg) - new Date(a.tg));
+  const tatCa = [...lenh, ...tam].sort((a, b) => new Date(b.tg) - new Date(a.tg));
+  return date && typeof date === 'object' && !date.date ? tatCa.slice(0, TOI_DA_TIM_LS) : tatCa;
 }
 
 // ----- RELEASE SET (gom set → 1 lệnh sản xuất chung) -----
@@ -1651,7 +1654,7 @@ async function keHoachTamHistory(date) {
     tg: r.tg,
     nguoi: r.nguoi || '—',
     hanh_dong: KHT_LABEL[r.hanh_dong] || r.hanh_dong,
-    doi_tuong: r.ma_lenh || r.ma_phan || '',
+    doi_tuong: r.ma_lenh || r.ma_phan || '', ma_phan: r.ma_phan || '',
     chi_tiet: khtChiTiet(r),
   }));
 }
@@ -2282,7 +2285,7 @@ async function planHistory(date) {
       tg: r.tg,
       nguoi: r.nguoi || '—',
       hanh_dong: isReplan ? 'Lập kế hoạch lại' : 'Duyệt Release 2',
-      doi_tuong: r.ma_lenh || '',
+      doi_tuong: r.ma_lenh || '', ma_phan: r.ma_phan || '',
       chi_tiet: chiTiet,
     };
   });
@@ -2294,7 +2297,7 @@ async function testRunHistory(date) {
     tg: r.tg,
     nguoi: r.nguoi || '—',
     hanh_dong: r.hanh_dong || 'Xác nhận test',
-    doi_tuong: r.doi_tuong || '',
+    doi_tuong: r.doi_tuong || '', ma_phan: r.ma_phan || '',
     chi_tiet: r.chi_tiet || '',
   }));
 }

@@ -7,6 +7,7 @@ const { lenhPhanInMatch } = require('../../utils/search');
 const { timTem } = require('../../utils/temPrefix');
 const { mauTim } = require('../../utils/timKiem');
 const { MOC_VAO_TEM } = require('../../utils/siSoTram');
+const LS = require('../../utils/lichSuTim');
 
 // SỔ CÁI SỐ LƯỢNG tem (migration 043): SL còn lại từng công đoạn (dùng cho lọc + hiển thị).
 // con_kcs tính theo TỔNG CẦN KIỂM = so_luong + sl_chenh_lech (dư/thiếu — mig 044).
@@ -544,7 +545,8 @@ async function insertQcInlineLoi(client, qcId, { loaiLoiId, soLuong, ghiChu }, a
   );
 }
 
-async function inlineHistoryByDate(date) {
+async function inlineHistoryByDate(lsIn) {
+  const ls = LS.chuan(lsIn);
   const { rows } = await query(
     `SELECT q.created_date AS tg, nd.ho_ten AS nguoi, q.ket_qua, q.lan_kiem,
             q.so_luong_mau, q.so_luong_loi, q.nguyen_nhan, q.khac_phuc,
@@ -557,9 +559,9 @@ async function inlineHistoryByDate(date) {
      JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
      LEFT JOIN nguoi_dung nd ON nd.id = q.created_by
      ${PHAN_INFO_LATERAL}
-     WHERE (q.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
-     ORDER BY q.created_date DESC`,
-    [date]
+     WHERE ${LS.ngayHoacTim(ls, 'q.created_date', '$1', `ps.ma_phieu_san_xuat ~* $1 OR ls.ma_lenh_san_xuat ~* $1 OR ${LS.lenhKhop('ls.id', '$1')}`)}
+     ORDER BY q.created_date DESC${LS.gioiHan(ls)}`,
+    [LS.giaTri(ls)]
   );
   return rows;
 }
@@ -754,8 +756,6 @@ async function setGiaoDacBietActive(id, active, actorId) {
 }
 
 // ----- Lịch sử theo ngày (giờ VN) cho KCS / Sửa / OQC -----
-const HIST_DATE = `(x.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date`;
-
 // Hành trình 1 tem: gộp KCS / Sửa / OQC / Giao theo thời gian (n1..n5 số, txt phụ chú).
 async function temTimeline(temId) {
   const sql = `SELECT loai, tg, nguoi, n1, n2, n3, n4, n5, txt FROM (
@@ -771,38 +771,48 @@ async function temTimeline(temId) {
   return rows;
 }
 
-async function kcsHistoryByDate(date) {
+// `ls` = ngày (chuỗi) HOẶC { date, tim } (`utils/lichSuTim`): không ngày ⇒ tìm mọi ngày theo mã tem / code phần.
+// `ma_phan` (01/11/2026) = code phần của tem ⇒ ô tìm của sidebar khớp được code phần (trước chỉ có mã tem).
+const histTemWhere = (ls) => LS.ngayHoacTim(ls, 'x.created_date', '$1', LS.temKhop('t', '$1'));
+
+async function kcsHistoryByDate(lsIn) {
+  const ls = LS.chuan(lsIn);
   const { rows } = await query(
     `SELECT x.id AS luot_id, t.id AS tem_id, x.created_date AS tg, nd.ho_ten AS nguoi, x.ket_qua,
-            x.so_luong_dat, x.so_luong_loi, x.so_luong_huy, x.so_luong_chenh_lech, t.ma_tem
+            x.so_luong_dat, x.so_luong_loi, x.so_luong_huy, x.so_luong_chenh_lech, t.ma_tem,
+            ${LS.maPhanTemSql('t')} AS ma_phan
      FROM kcs x JOIN tem t ON t.id = x.tem_id
      LEFT JOIN nguoi_dung nd ON nd.id = x.created_by
-     WHERE ${HIST_DATE} AND ${notCancelledQc('x', 'kcs')} ORDER BY x.created_date DESC`,
-    [date]
+     WHERE ${histTemWhere(ls)} AND ${notCancelledQc('x', 'kcs')} ORDER BY x.created_date DESC${LS.gioiHan(ls)}`.replace(/\s+/g, ' '),
+    [LS.giaTri(ls)]
   );
   return rows;
 }
 
-async function suaHistoryByDate(date) {
+async function suaHistoryByDate(lsIn) {
+  const ls = LS.chuan(lsIn);
   const { rows } = await query(
     `SELECT x.id AS luot_id, t.id AS tem_id, x.created_date AS tg, nd.ho_ten AS nguoi,
-            x.so_luong_sua, x.so_luong_sua_dat, x.so_luong_sua_huy, t.ma_tem
+            x.so_luong_sua, x.so_luong_sua_dat, x.so_luong_sua_huy, t.ma_tem,
+            ${LS.maPhanTemSql('t')} AS ma_phan
      FROM sua x JOIN tem t ON t.id = x.tem_id
      LEFT JOIN nguoi_dung nd ON nd.id = x.created_by
-     WHERE ${HIST_DATE} AND ${notCancelledQc('x', 'sua')} ORDER BY x.created_date DESC`,
-    [date]
+     WHERE ${histTemWhere(ls)} AND ${notCancelledQc('x', 'sua')} ORDER BY x.created_date DESC${LS.gioiHan(ls)}`.replace(/\s+/g, ' '),
+    [LS.giaTri(ls)]
   );
   return rows;
 }
 
-async function oqcHistoryByDate(date) {
+async function oqcHistoryByDate(lsIn) {
+  const ls = LS.chuan(lsIn);
   const { rows } = await query(
     `SELECT x.id AS luot_id, t.id AS tem_id, x.created_date AS tg, nd.ho_ten AS nguoi, x.ket_qua,
-            x.so_luong_dat, x.so_luong_loi, x.so_luong_kiem, x.nguon, x.sl_qua_giao, t.ma_tem
+            x.so_luong_dat, x.so_luong_loi, x.so_luong_kiem, x.nguon, x.sl_qua_giao, t.ma_tem,
+            ${LS.maPhanTemSql('t')} AS ma_phan
      FROM oqc x JOIN tem t ON t.id = x.tem_id
      LEFT JOIN nguoi_dung nd ON nd.id = x.created_by
-     WHERE ${HIST_DATE} AND ${notCancelledQc('x', 'oqc')} ORDER BY x.created_date DESC`,
-    [date]
+     WHERE ${histTemWhere(ls)} AND ${notCancelledQc('x', 'oqc')} ORDER BY x.created_date DESC${LS.gioiHan(ls)}`.replace(/\s+/g, ' '),
+    [LS.giaTri(ls)]
   );
   return rows;
 }

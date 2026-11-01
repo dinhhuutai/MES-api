@@ -7,6 +7,7 @@ const { ok } = require('../../utils/response');
 const AppError = require('../../utils/AppError');
 const { ngayHomNayVN } = require('../../utils/khoangNgay');
 const { nhoDoc } = require('../../utils/cacheDoc');
+const { thamSoLichSu } = require('../../utils/lichSuTim');
 
 // Gom bộ lọc chung cho danh sách tem KCS/Sửa/OQC (có khoảng ngày ngayTu/ngayDen).
 const candFilters = (q) => {
@@ -68,9 +69,10 @@ const qcTraVeHistory = asyncHandler(async (req, res) =>
 
 const today = () => ngayHomNayVN();
 const temHanhTrinh = asyncHandler(async (req, res) => ok(res, await service.temHanhTrinh(req.params.temId)));
-const kcsHistory = asyncHandler(async (req, res) => ok(res, await service.kcsHistory(req.query.date || today())));
-const suaHistory = asyncHandler(async (req, res) => ok(res, await service.suaHistory(req.query.date || today())));
-const oqcHistory = asyncHandler(async (req, res) => ok(res, await service.oqcHistory(req.query.date || today())));
+// Sidebar Lịch sử: có ngày ⇒ theo ngày; không ngày + `q` ⇒ tìm mọi ngày theo mã tem / code phần (`utils/lichSuTim`).
+const kcsHistory = asyncHandler(async (req, res) => ok(res, await service.kcsHistory(thamSoLichSu(req.query))));
+const suaHistory = asyncHandler(async (req, res) => ok(res, await service.suaHistory(thamSoLichSu(req.query))));
+const oqcHistory = asyncHandler(async (req, res) => ok(res, await service.oqcHistory(thamSoLichSu(req.query))));
 
 const kcsDone = asyncHandler(async (req, res) => ok(res, await service.kcsDone(req.query.date || today())));
 const suaDone = asyncHandler(async (req, res) => ok(res, await service.suaDone(req.query.date || today())));
@@ -95,7 +97,7 @@ const inlineDone = asyncHandler(async (req, res) => ok(res, await service.inline
 // QC in-line
 const inlineCandidates = asyncHandler(async (req, res) => ok(res, await service.listInlineCandidates(req.query.search || '')));
 const inlineLoaiLoi = asyncHandler(async (req, res) => ok(res, await service.listLoaiLoi()));
-const inlineHistory = asyncHandler(async (req, res) => ok(res, await service.inlineHistory(req.query.date || today())));
+const inlineHistory = asyncHandler(async (req, res) => ok(res, await service.inlineHistory(thamSoLichSu(req.query))));
 const recordInline = asyncHandler(async (req, res) =>
   ok(res, await service.recordQcInline(req.params.phieuId, req.body, req.user.id), 'Đã ghi nhận QC in-line'));
 

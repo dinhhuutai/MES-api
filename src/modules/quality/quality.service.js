@@ -644,7 +644,7 @@ async function kcsHistory(date) {
       id: r.luot_id, tem_id: r.tem_id, // khóa của nút "Hủy" ở panel Lịch sử (14/10/2026)
       tg: r.tg, nguoi: r.nguoi || '—',
       hanh_dong: `KCS${r.ket_qua ? ' · ' + r.ket_qua : ''}`,
-      doi_tuong: r.ma_tem || '',
+      doi_tuong: r.ma_tem || '', ma_phan: r.ma_phan || '',
       chi_tiet: `Đạt ${q0(r.so_luong_dat)} · Hư ${q0(r.so_luong_loi)} · Hủy ${q0(r.so_luong_huy)}${chenh}`,
     };
   });
@@ -655,7 +655,7 @@ async function suaHistory(date) {
   return rows.map((r) => ({
     id: r.luot_id, tem_id: r.tem_id,
     tg: r.tg, nguoi: r.nguoi || '—', hanh_dong: 'Sửa',
-    doi_tuong: r.ma_tem || '',
+    doi_tuong: r.ma_tem || '', ma_phan: r.ma_phan || '',
     chi_tiet: `Sửa ${q0(r.so_luong_sua)} · Đạt ${q0(r.so_luong_sua_dat)} · Hủy ${q0(r.so_luong_sua_huy)}`,
   }));
 }
@@ -668,7 +668,7 @@ async function oqcHistory(date) {
     id: r.luot_id, tem_id: r.tem_id,
     tg: r.tg, nguoi: r.nguoi || '—',
     hanh_dong: `OQC${r.ket_qua ? ' · ' + r.ket_qua : ''}`,
-    doi_tuong: `${pre(r.nguon)}${r.ma_tem || ''}`,
+    doi_tuong: `${pre(r.nguon)}${r.ma_tem || ''}`, ma_phan: r.ma_phan || '',
     // Thêm NGUỒN (KCS/Sửa) + SL từ nguồn đó chuyền qua giao (sl_qua_giao).
     chi_tiet: `Nguồn ${src(r.nguon)} · Bốc mẫu ${q0(r.so_luong_kiem)} · Đạt ${q0(r.so_luong_dat)} · Qua giao ${q0(r.sl_qua_giao)}`,
   }));
