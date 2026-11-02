@@ -1423,6 +1423,27 @@ async function caPartsForTem(temId) {
 // đúng khách/đơn/mã hàng/màu/kích của phần in đó thay vì phần in đại diện (PHAN_INFO_LATERAL LIMIT 1).
 // ⚠ Bảng `tem` KHÔNG lưu đợt vải (theo chốt "giữ schema như cũ") ⇒ chỉ nhãn IN NGAY LÚC ĐÓ mới đúng
 // phần in; in lại từ danh sách "Tem đã in" (không truyền dotVaiId) sẽ hiện phần in đại diện.
+// NGÀY CHỨNG TỪ của tem (trường tem `ngay_ct`, 02/11/2026): tem không có cột này ⇒ lấy dòng audit MỚI NHẤT mang ngày CT:
+// `NGAY_CT_TEM` (ghi cùng transaction in tem — vì lượt báo ERP chạy NGẦM, lúc in nhãn có thể chưa có dòng ERP) ·
+// `SUA_TEM` (Sửa tem đổi ngày CT) · `ERP_GHI_IN_TEM(_LOI)` (tem in trước đó + "Sửa & gửi"; `gui.Ngayct` có 2 dạng
+// `YYYY/MM/DD…` và `YYYY-MM-DDT…Z` = giờ VN). Tem 17 lấy của TEM GỐC. Trả chuỗi không múi giờ ⇒ JS đọc đúng 00:00 local.
+const NGAY_CT_TEM_SQL = `(SELECT replace(left(COALESCE(a.gia_tri_moi->>'ngay_ct', a.gia_tri_moi->'gui'->>'Ngayct', a.gia_tri_moi->'payload'->>'Ngayct'), 10), '/', '-') || 'T00:00:00'
+  FROM audit_log a WHERE a.ten_bang = 'tem' AND a.id_ban_ghi = COALESCE(t.tem_goc_id, t.id)::text
+    AND a.hanh_dong IN ('NGAY_CT_TEM', 'SUA_TEM', 'ERP_GHI_IN_TEM', 'ERP_GHI_IN_TEM_LOI')
+    AND COALESCE(a.gia_tri_moi->>'ngay_ct', a.gia_tri_moi->'gui'->>'Ngayct', a.gia_tri_moi->'payload'->>'Ngayct') IS NOT NULL
+  ORDER BY a.thoi_gian DESC LIMIT 1)`;
+
+// Ghi ngày CT người in vừa nhập, TRONG transaction in tem. Không có giá trị (đường không qua guard) ⇒ bỏ qua.
+async function logNgayCtTem(client, temId, ngayCt, actorId) {
+  const v = String(ngayCt || '').trim().slice(0, 10);
+  if (!v) return;
+  await client.query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('tem', $1, 'NGAY_CT_TEM', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`,
+    [String(temId), JSON.stringify({ ngay_ct: v }), actorId]
+  );
+}
+
 async function getTemLabelData(temId, dotVaiId = null) {
   const INFO = dotVaiId
     ? `
@@ -1456,7 +1477,7 @@ async function getTemLabelData(temId, dotVaiId = null) {
             info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan,
             info.mau_vai, info.kich_vai, info.kich_phim, info.so_luong_don_hang,
             info.nha_gia_cong, info.so_luong_vai_ve, info.bo_phan_bh,
-            t.gc_mau_vai, t.ma_ngay_ca, t.ngay_ca,
+            t.gc_mau_vai, t.ma_ngay_ca, t.ngay_ca, ${NGAY_CT_TEM_SQL} AS ngay_ct,
             to_char(t.gio_sx_bd, 'HH24:MI') AS gio_sx_bd,
             to_char(t.gio_sx_kt, 'HH24:MI') AS gio_sx_kt,
             ${PCT_CHUYEN_TRUONG} AS chuyen_truong, ndct.ho_ten AS ca_truong,
@@ -2637,7 +2658,7 @@ module.exports = {
   listProductionCandidates, getPrintedTotal, getPrintedTach, getDefaultXePhoi, nextMaPhieu, createPhieu, setLenhChuyen, setLenhTrangThai, getLenhBasic,
   setPhieuChuyen, getChuyenById, logDoiChuyen,
   getLenhDotVaiList, phanInRowsByLenh, insertVaiHuy, listVaiHuyByLenh,
-  getActivePhieu, getPhieuById, getTemsByPhieu, getTemContext, cancelTem, getTemLabelData, caPartsForTem, docDauCa, ghiDauCa,
+  getActivePhieu, getPhieuById, getTemsByPhieu, getTemContext, cancelTem, getTemLabelData, logNgayCtTem, caPartsForTem, docDauCa, ghiDauCa,
   docPhanCongDauCa, ghiPhanCongDauCa, phieuDangChayCuaChuyen,
   listCancelableTem, listTemDaIn, getTemForCancel, logTemCancel, logCloseProduction,
   docTemSuaTx, capNhatTemSuaTx, logSuaTemTx, docLenhGopTx, gopLenhTx, logGopLenhTx, doiMaLoTheoNgayCaTx, ghiPhanCongTemTx,

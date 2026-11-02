@@ -140,6 +140,9 @@ const TRUONG_TEM = Object.freeze([
   { ma: 'gio_sx_bd', ten: 'Giờ SX từ', kieu: 'chu', nhom: 'Thời gian' },
   { ma: 'gio_sx_kt', ten: 'Giờ SX đến', kieu: 'chu', nhom: 'Thời gian' },
   { ma: 'ngay_ca', ten: 'Ngày ca', kieu: 'ngay', nhom: 'Thời gian' },
+  // NGÀY CHỨNG TỪ người in nhập ở ô In tem (02/11/2026). Không lưu trên `tem` — đọc `audit_log` qua `getTemLabelData`.
+  // Có ở tem SX / KCS in tem giao; tem Sửa (17) lấy của TEM GỐC; tem Gia công (13) RỖNG (không có ô nhập).
+  { ma: 'ngay_ct', ten: 'Ngày chứng từ', kieu: 'ngay', nhom: 'Thời gian' },
 ]);
 
 // Định dạng ngày chọn được (áp cho ô có trường kiểu `ngay`).

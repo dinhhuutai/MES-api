@@ -1249,6 +1249,7 @@ async function printTem(phieuId, soLuong, actorId, body) {
     await kiemTran110Tx(client, phieuId, target, them);
     newTemId = await repo.createTem(client, { phieuId, maTem, soLuong: qty, ...meta }, actorId);
     await repo.logTemPrint(client, { temId: newTemId, maTem, actorId });
+    await repo.logNgayCtTem(client, newTemId, body?.ngayCt, actorId);
     await repo.addTemToXe(client, { temId: newTemId, xeId: xe.id, soLuongPhoi: qty, phut: dryMin }, actorId);
     vaiCho = await nhanVaiChoTx(client, phieuId, actorId, { temId: newTemId });
   });
@@ -1376,6 +1377,7 @@ async function printTemBatch(phieuId, items, actorId, body) {
         ...(it.btpCuoi !== undefined ? { btpCuoi: it.btpCuoi } : {}),
       }, actorId);
       await repo.logTemPrint(client, { temId, maTem, actorId });
+      await repo.logNgayCtTem(client, temId, body?.ngayCt, actorId);
       await repo.addTemToXe(client, { temId, xeId: xe.id, soLuongPhoi: it.soLuong, phut: dryMin }, actorId);
       const d = it.dotVaiId ? byId.get(it.dotVaiId) : null;
       out.push({

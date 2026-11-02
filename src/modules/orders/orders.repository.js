@@ -180,11 +180,14 @@ async function listVaiVe({ search = '', filters = {}, stage = '', offset = 0, li
 
 // Ledger theo TỪNG ĐỢT SẢN XUẤT (lệnh non-HUY) của các phần in trong 1 trang "Tất cả" — query RIÊNG (IPS-safe).
 // 1 lệnh gom set nhiều phần in → xuất hiện dưới mỗi phần in (ledger ở mức lệnh, không tách — theo giới hạn đã ghi).
+// `chuyen_in_tt` = chuyền THỰC TẾ (`phieu_san_xuat.chuyen_id`, không phải chuyền kế hoạch của lệnh; bỏ phiếu HUY và phiếu
+// do script hệ thống ghi) — lệnh chưa bấm chạy ⇒ NULL; ngừng rồi chạy lại ở máy khác ⇒ nhiều mã, ngăn dấu phẩy.
 async function dotSanXuatLedger(phanInIds) {
   if (!phanInIds || phanInIds.length === 0) return {};
   const sql = `
     SELECT sub.phan_in_id::text AS phan_in_id, sub.lenh_id::text AS lenh_id, sub.ma_lenh_san_xuat, sub.giai_doan,
            sub.ma_dot_vai, sub.so_dot_vai, sub.dot_vai_list, sub.ngay_vai_ve, sub.han_giao_hang,
+           (SELECT string_agg(DISTINCT cs.ma_chuyen, ', ') FROM phieu_san_xuat ps JOIN chuyen_san_xuat cs ON cs.id=ps.chuyen_id WHERE ps.lenh_san_xuat_id=sub.lenh_id AND ps.trang_thai<>'HUY' AND COALESCE(ps.ghi_chu,'') NOT LIKE '[HỆ THỐNG%') AS chuyen_in_tt,
            COALESCE((SELECT SUM(tm.so_luong) FROM tem tm JOIN phieu_san_xuat ps ON ps.id=tm.phieu_san_xuat_id WHERE ps.lenh_san_xuat_id=sub.lenh_id AND tm.trang_thai<>'HUY'),0)::int AS sl_in,
            COALESCE((SELECT SUM(tm.sl_kcs_dat) FROM tem tm JOIN phieu_san_xuat ps ON ps.id=tm.phieu_san_xuat_id WHERE ps.lenh_san_xuat_id=sub.lenh_id AND tm.trang_thai<>'HUY'),0)::int AS sl_kcs_dat,
            COALESCE((SELECT SUM(tm.sl_kcs_sua) FROM tem tm JOIN phieu_san_xuat ps ON ps.id=tm.phieu_san_xuat_id WHERE ps.lenh_san_xuat_id=sub.lenh_id AND tm.trang_thai<>'HUY'),0)::int AS sl_sua,
