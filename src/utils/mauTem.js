@@ -31,8 +31,11 @@ const VI_TRI_IN = Object.freeze([
   },
   {
     ma: 'KCS_IN_TEM_GIAO', ten: 'KCS — In tem giao', mau_goc: 'TEM_KCS_GIAO',
-    mo_ta: 'Nút "In tem" trong sidebar Đã hoàn thành của màn KCS (tem 15 — KCS đạt)',
+    mo_ta: 'Nút "In tem" (1 tem hoặc tích nhiều tem) trong sidebar Đã hoàn thành của màn KCS (tem 15 — KCS đạt)',
     man_hinh: 'Chất lượng > KCS', hai_khung_khac_nhau: false, tien_to: { trai: 15, phai: 15 },
+    // 02/11/2026: chưa gắn mẫu riêng ⇒ in Y HỆT tem 15 = KHUNG TRÁI của mẫu đang gắn cho SX_IN_TEM (FE
+    // `printTemLabel specKcsGiao.theoViTri`). Gắn mẫu riêng thì mẫu riêng thắng.
+    theo_vi_tri: { ma: 'SX_IN_TEM', khung: 'trai', ten: 'Giống tem 15 (khung trái mẫu "Sản xuất — In tem")' },
   },
   {
     ma: 'SUA_IN_TEM_OQC', ten: 'Sửa — In tem OQC', mau_goc: 'TEM_OQC_SUA',
