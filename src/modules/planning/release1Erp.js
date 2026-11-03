@@ -45,7 +45,7 @@ const { apiBat } = require('../../utils/caiDatApi');
 const { capIdMes } = require('../../utils/idMes');
 const { ngayGioErp } = require('../../utils/erpNgayGio');
 const { goiErp, tenDangNhap, catChuoi } = require('../../utils/erpApiChung');
-const { ngayCaKeHoach } = require('../../utils/ca');
+const { ngayCaKeHoach, loaiChuyenTinhCa } = require('../../utils/ca');
 const { chuanMaChuyen } = require('../../utils/maChuyen');
 
 const MA_API = 'ERP_GUI_RELEASE_1';
@@ -169,7 +169,7 @@ function taoBody(lo, { idMes, nhanvien, nguon, loaiCa }) {
     BarcodeHKT: catChuoi(d.barcode_hskt, 20),
     Pain: Number(d.pain) || 0,
     DsRelease: catChuoi(lo.map((x) => x.s).join(','), DAI_DS),
-    Ngayca: catChuoi(ngayCaKeHoach(d.tu_gio, d.ngay_ke_hoach, loaiCa, d.loai_chuyen), 20),
+    Ngayca: catChuoi(ngayCaKeHoach(d.tu_gio, d.ngay_ke_hoach, loaiCa, loaiChuyenTinhCa(d.loai_chuyen, d.ma_chuyen)), 20),
     Nguon: nguon,
   };
 }
@@ -404,7 +404,7 @@ async function guiLai(gui, { idBanGhi = null, actorId = null } = {}) {
   // Dòng gửi trước 07/10/2026 chưa có `Ngayca` (proc nay bắt buộc `@pNgayca`) ⇒ suy từ CHÍNH giờ/ngày kế hoạch
   //   trong thân cũ — vẫn là kế hoạch của lượt đó, không đọc lại lệnh.
   if (body.Ngayca == null) {
-    body.Ngayca = catChuoi(ngayCaKeHoach(body.Tugio, body.Ngaykehoach, await napLoaiCa(), body.Loaichuyen), 20);
+    body.Ngayca = catChuoi(ngayCaKeHoach(body.Tugio, body.Ngaykehoach, await napLoaiCa(), loaiChuyenTinhCa(body.Loaichuyen, body.banin)), 20);
   }
   return goi(body, { idBanGhi, maTem, actorId, moTa: `gửi lại · lệnh ${maTem}` });
 }

@@ -15,16 +15,24 @@
 // ⚠ Lỗi thì XÓA cache ngay (`_promise = null`) để lần sau thử lại, không giữ promise hỏng.
 // ─────────────────────────────────────────────────────────────────────────────
 const dashboardRepo = require('../modules/dashboard/dashboard.repository');
+const { phienBanHienTai } = require('./cacheDoc');
 
 // 5s: đủ để gộp một đợt broadcast (job phơi khô bắn mỗi 60s, người dùng bấm rải rác) mà số liệu
 // vẫn coi như realtime với mắt người.
 const TTL_MS = 5000;
+// Không có thao tác ghi nào kể từ lúc tính (cùng phiên bản dữ liệu, `utils/cacheDoc.js`) thì dữ liệu chỉ đổi theo đồng hồ
+// SLA (đơn vị phút) ⇒ dùng lại tới 30 giây thay vì tính lại mỗi 5 giây. Có ghi thì vẫn tính lại như cũ.
+const TUOI_TOI_DA_KHONG_GHI_MS = 30000;
 let _promise = null;
 let _at = 0;
+let _pb = -1;
 
 function flowRowsCached() {
-  if (_promise && Date.now() - _at < TTL_MS) return _promise;
+  const tuoi = Date.now() - _at;
+  if (_promise && tuoi < TTL_MS) return _promise;
+  if (_promise && _pb === phienBanHienTai() && tuoi < TUOI_TOI_DA_KHONG_GHI_MS) return _promise;
   _at = Date.now();
+  _pb = phienBanHienTai();
   _promise = dashboardRepo.flowRows('').catch((e) => { _promise = null; throw e; });
   return _promise;
 }

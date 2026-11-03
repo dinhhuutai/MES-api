@@ -5,7 +5,7 @@
 
 const { query } = require('../../config/db');
 const { mauTim } = require('../../utils/timKiem');
-const { MAN, LOAI_NGAY, O_SI_SO, VN, DV, OPEN_PIN_SQL } = require('../../utils/siSoTram');
+const { MAN, LOAI_NGAY, O_SI_SO, VN, DV, OPEN_PIN_SQL, OPEN_PIN_BANG } = require('../../utils/siSoTram');
 const { DO_SL } = require('../../utils/bangTheoDoi');
 const { slaReadySql, slaQcReadySql, slaTestRunSql, mocDoReadySql, hanBat, gioSxKhSql, TRA_VE_KT_GIA_HAN_PHUT, giaHanTestRunLaiSql } = require('../../utils/slaTheoGio');
 const { MOC_XAC_NHAN_LAI_KH_SQL } = require('../../utils/traVeKeHoach');
@@ -141,7 +141,7 @@ function nguon(maTrang) {
 function chonDonVi(m, donVi) {
   const ma = m.donVis[donVi] ? donVi : m.macDinh;
   const d = m.donVis[ma];
-  return { ma, nhan: d.nhan, sql: d.sql, do: d.do || null, donViSo: d.donViSo || null };
+  return { ma, nhan: d.nhan, sql: d.sql, sqlDem: d.sqlDem || null, do: d.do || null, donViSo: d.donViSo || null };
 }
 
 // 4 ô trong 1 LƯỢT QUERY — mạng tới DB là nút cổ chai (~25ms/lượt, DATABASE.md §7) nên đừng bắn 4 lần.
@@ -156,7 +156,9 @@ async function demSiSo(maTrang, { tu, den, loc, locTrang, donVi }) {
   const dem = Object.keys(O_SI_SO).map((k) => (dv.do
     ? `COALESCE(sum(${dv.do}) FILTER (WHERE ${dkO(k)}), 0)::int AS ${k}`
     : `count(*) FILTER (WHERE ${dkO(k)})::int AS ${k}`)).join(', ');
-  const sql = `WITH ${CTE_KY}, ${cteQ(dv.sql)} SELECT ${dem} FROM q WHERE ${NEN}${dk}`;
+  // Không lọc gì ⇒ 4 ô chỉ đọc `tg_vao`/`tg_ra`, dùng bản đếm gọn (`utils/siSoTram.js demGon`).
+  const nguonQ = !dk && !dv.do && dv.sqlDem ? dv.sqlDem : dv.sql;
+  const sql = `WITH ${CTE_KY}, ${cteQ(nguonQ)} SELECT ${dem} FROM q WHERE ${NEN}${dk}`;
   const { rows } = await query(sql.replace(/\s+/g, ' '), [tu, den, ...params]);
   const r = rows[0] || {};
   return {
@@ -419,7 +421,7 @@ const conCuaDong = (dong, slaPhut) => (slaPhut == null || !NGHEN_CON[dong.ma]
   : NGHEN_CON[dong.ma](Number(slaPhut)));
 
 async function motDongBang(dong, slaPhut, { tu, den }) {
-  const sqlPin = pinSqlCuaDong(dong);
+  const sqlPin = dong.nguonPin === 'OPEN' ? OPEN_PIN_BANG : nguon(dong.man).donVis.pin.sqlBang;
   const slSql = DO_SL[dong.sl].sql;
   const cum = (ten, dk) => `count(*) FILTER (WHERE ${dk})::int AS ${ten}_phan,
     COALESCE(sum(${slSql}) FILTER (WHERE ${dk}), 0)::int AS ${ten}_sl`;

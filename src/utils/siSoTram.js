@@ -524,6 +524,17 @@ const gomTheo = (khoa, alias, trong, canPinIds = true) => `SELECT ${khoa} AS ${a
 // và KHÔNG sinh `pin_ids`/`so_phan_in` ⇒ câu SQL của đường phần in **y hệt trước 21/08/2026**.
 const gomTheoPin = (trong) => gomTheo('x.phan_in_id', 'phan_in_id', trong, false);
 
+// BẢN ĐẾM GỌN của 4 ô sĩ số (03/11/2026, chỉ `demSiSo` dùng, khi KHÔNG lọc gì và đơn vị đếm đối tượng).
+// 4 ô chỉ cần `tg_vao`/`tg_ra`, mà `q` là CTE MATERIALIZED nên bản đủ cột phải tính tên khách, phương án in, gom set,
+// `string_agg`… cho MỌI phần in rồi bỏ đi. Cùng số dòng với bản đủ cột vì `manTheoPin`/`manTheoDonVi` chỉ thêm:
+// JOIN theo FK NOT NULL (phan_in → ma_hang → don_hang → khach_hang) và LEFT JOIN LATERAL trả tối đa 1 dòng.
+// ⚠ Thêm INNER JOIN có điều kiện lọc vào 2 hàm đó thì phải thêm vào đây, không thì số 4 ô lệch với modal chi tiết.
+const demGon = (khoa, trong) => `SELECT ${khoa} AS id, min(x.tg_vao) AS tg_vao,
+  CASE WHEN count(*) FILTER (WHERE x.tg_ra IS NULL) = 0 THEN max(x.tg_ra) END AS tg_ra
+  FROM (SELECT * FROM (${trong}) x0 OFFSET 0) x
+  WHERE ${khoa} IS NOT NULL AND x.phan_in_id IS NOT NULL AND x.tg_vao IS NOT NULL
+  GROUP BY ${khoa}`;
+
 // Bộ cột hiển thị chuẩn — MỌI màn trả CÙNG bộ này ⇒ FE dựng 1 bảng + 1 hàm Excel.
 // ⚠ `so_phan_in` LUÔN = 1: đơn vị đếm nay là PHẦN IN nên badge "gom set N" không còn nghĩa; số
 //   lệnh/tem của phần in đọc được ở cột Mã đợt SX / Mã tem (đã `string_agg`).
@@ -595,6 +606,15 @@ const manTheoPin = (trong, { traVe = TV.KHONG } = {}) => `SELECT pin.id, ${COT_P
   JOIN phan_in pin ON pin.id = g.phan_in_id
   ${JOIN_PIN} ${LAT_DOT_CUA_PIN('pin.id')} ${LAT_HSKT('pin.id')} ${LAT_QC_DONE} ${LAT_MA_SET}`;
 
+// Bản cột tối thiểu cho 1 DÒNG bảng theo dõi (`siso.repository motDongBang`, 03/11/2026): chỉ các cột mà điều kiện ô + biểu
+// thức SL (`utils/bangTheoDoi.js DO_SL`) đọc. Bỏ phương án in · qc_done · gom set · trả về (nặng, bảng này không dùng).
+// ⚠ Thêm cột `q.xxx` vào `DO_SL` thì phải thêm vào đây. `dsDongBang` (modal chi tiết) vẫn dùng bản đủ cột.
+const manTheoPinBang = (trong) => `SELECT pin.id, kh.ten_khach_hang, g.ma_lenh_san_xuat, g.ma_tem, g.tg_vao, g.tg_ra,
+  dvs.so_luong_vai_ve
+  FROM (${gomTheoPin(trong)}) g
+  JOIN phan_in pin ON pin.id = g.phan_in_id
+  ${JOIN_PIN} ${LAT_DOT_CUA_PIN('pin.id')}`;
+
 // ─── HÀNG "OPEN" CỦA BẢNG THEO DÕI DASHBOARD (02/10/2026) ─────────────────────────────────────
 // Đầu vào mỗi ngày = đợt vải ERP đưa lên MES (`tg_chuyen_ready`). Đợt vào THẲNG READY nên mỗi đợt là một
 // khoảng RỖNG `[lên MES, lên MES]` ⇒ Nhận = Xong, Tồn đầu = Tồn cuối = 0 (người dùng chốt).
@@ -615,6 +635,7 @@ const OPEN_TRONG = `SELECT dv.phan_in_id, COALESCE(dv.tg_chuyen_ready, dv.create
           AND (EXISTS (SELECT 1 FROM phan_in_ghi_chu xg WHERE xg.phan_in_id = dv.phan_in_id AND xg.loai = 'BAT_THUONG')
                OR EXISTS (SELECT 1 FROM qc_tra_ve xq WHERE xq.phan_in_id = dv.phan_in_id AND xq.loai = 'TRA_VE_GN'))))`;
 const OPEN_PIN_SQL = manTheoPin(OPEN_TRONG);
+const OPEN_PIN_BANG = manTheoPinBang(OPEN_TRONG);
 
 // ─── TẦNG NGOÀI CHO ĐƠN VỊ KHÁC PHẦN IN (đợt vải · lệnh SX · tem) — 21/08/2026 ───────────────
 // ⚠⚠ TRẢ ĐÚNG BỘ CỘT NHƯ `manTheoPin` (xem `COT_DS` ở siso.repository) ⇒ repository/service/FE
@@ -710,6 +731,9 @@ const man = (ten, quyen, trong, { traVe = TV.KHONG, dv = ['pin'], macDinh = 'pin
     sql: DON_VI[k].khoa === 'x.phan_in_id'
       ? manTheoPin(trong, { traVe })
       : manTheoDonVi(DON_VI[k].khoa, trong, { traVe, laDotVai: k === 'dot_vai' }),
+    // Đơn vị CỘNG số lượng cần cột của phần in ⇒ không có bản gọn.
+    sqlDem: DON_VI[k].do ? null : demGon(DON_VI[k].khoa, trong),
+    sqlBang: k === 'pin' ? manTheoPinBang(trong) : null,
   }])),
 });
 
@@ -807,4 +831,4 @@ const O_SI_SO = {
 // gian ở từng trạm bằng ĐÚNG các nguồn mốc vào/ra này, để 2 tính năng không thể lệch luật.
 // ⚠ `NGUON_LENH`/`NGUON_TEM` nay trả thêm `dv.ma_dot_vai` (trang đó cần hiện đợt vải của từng lệnh/tem);
 //   `gomTheo`/`manTheoDonVi` SELECT cột tường minh nên thêm cột KHÔNG ảnh hưởng sĩ số/báo cáo.
-module.exports = { MAN, LOAI_NGAY, O_SI_SO, VN, CP_PHAN_IN, nguonPhanIn, DV, MOC_VAO_TEM, OPEN_PIN_SQL };
+module.exports = { MAN, LOAI_NGAY, O_SI_SO, VN, CP_PHAN_IN, nguonPhanIn, DV, MOC_VAO_TEM, OPEN_PIN_SQL, OPEN_PIN_BANG };

@@ -114,8 +114,12 @@ async function caInTemHienTai(lenhId, phieuId, gSan = null, modeSan = null) {
   return { khoa: `${khoaNhomCa(g.loai_chuyen) || 'CHUNG'}|${ca.khoa}`, ma_ca: ca.ma, ngay: ca.ngay };
 }
 
-// Gợi ý cho lượt in kế tiếp: "ngày ca" + "ngày chứng từ" = giá trị ĐÃ NHẬP ĐẦU CA của lượt ca hiện tại (chưa ai
-// nhập ⇒ '' — FE để trống, bắt nhập) · "từ giờ / đến giờ" như cũ. Lỗi gì cũng trả null — không chặn màn Sản xuất.
+// Mã ngày ca nhập có cùng NGÀY với lượt ca đang chạy không (khác ⇒ tem in bù cho ngày khác).
+const ngayCaThuocLuot = (ma, ca) => !!ca && !!ca.ngay && String(ma || '').trim().slice(0, 6) === ca.ngay;
+
+// Gợi ý cho lượt in kế tiếp: "ngày ca" = giá trị ĐÃ NHẬP ĐẦU CA của lượt ca hiện tại (chưa ai nhập ⇒ '' — FE để trống,
+// bắt nhập) · "từ giờ / đến giờ" như cũ. Lỗi gì cũng trả null — không chặn màn Sản xuất.
+// ⚠ KHÔNG trả ngày chứng từ (03/11/2026, người dùng chốt): ô đó luôn mặc định hôm nay ở FE, không kế thừa theo ca.
 async function goiYTemMeta(lenhId, phieuId) {
   try {
     const [g, modeMap] = await Promise.all([repo.goiYTemMeta(lenhId, phieuId), planningRepo.caModeMap()]);
@@ -126,7 +130,8 @@ async function goiYTemMeta(lenhId, phieuId) {
     const nho = ca ? await repo.docDauCa(ca.khoa).catch(() => null) : null;
     return {
       // Giá trị đầu ca nhớ TRƯỚC 21/10/2026 có thể sai dạng (vd `2610520D1`) ⇒ không điền lại, để người in nhập lại.
-      ngay_ca: (nho && maNgayCaHopLe(nho.ngay_ca) && nho.ngay_ca) || '', ngay_ct: (nho && nho.ngay_ct) || '', khoa_ca: ca ? ca.khoa : '',
+      // Dòng nhớ cũ mang ngày của hôm khác (tem in bù trước 03/11/2026) cũng không điền lại — xem `nhoDauCa`.
+      ngay_ca: (nho && maNgayCaHopLe(nho.ngay_ca) && ngayCaThuocLuot(nho.ngay_ca, ca) && nho.ngay_ca) || '', khoa_ca: ca ? ca.khoa : '',
       // Hôm nay chưa có mốc nào (tem trước / giờ chạy phiếu) ⇒ "Từ giờ" = giờ bắt đầu CA hiện tại.
       gio_bd: g.gio_bd || gioBatDauCa(g.gio, g.phut, mode), gio_kt: g.gio_kt || '',
     };
@@ -144,7 +149,7 @@ async function kiemNgayCaChungTu(phieu, body) {
   const ngayCt = String((body && body.ngayCt) || '').trim();
   if (!ngayCa || !ngayCt) {
     const thieu = [!ngayCa && 'Ngày ca', !ngayCt && 'Ngày chứng từ'].filter(Boolean).join(' và ');
-    throw new AppError(`Chưa nhập ${thieu} — nhập 1 lần đầu ca rồi mới in tem được`, { status: 422, errorCode: 'THIEU_NGAY_CA' });
+    throw new AppError(`Chưa nhập ${thieu} — nhập đủ rồi mới in tem được`, { status: 422, errorCode: 'THIEU_NGAY_CA' });
   }
   // 21/10/2026: mã ngày ca phải đúng 8 ký tự YYMMDD + ca (vd 261021HC) — xem `utils/ca.js maNgayCaHopLe`.
   if (!maNgayCaHopLe(ngayCa)) throw new AppError(NGAY_CA_SAI, { status: 422, errorCode: 'NGAY_CA_SAI' });
@@ -238,15 +243,19 @@ async function apPhanCongDauCa(phieu, nho, actorId) {
   return true;
 }
 
-// In tem xong ⇒ nhớ 2 giá trị cho các lượt in sau của lượt ca (chỉ ghi khi KHÁC giá trị đang nhớ). Phụ — không ném lỗi.
+// In tem xong ⇒ nhớ NGÀY CA cho các lượt in sau của lượt ca (chỉ ghi khi KHÁC giá trị đang nhớ). Phụ — không ném lỗi.
+// Ngày chứng từ không nhớ (03/11/2026): ngày của từng tem vẫn ghi riêng ở `repo.logNgayCtTem` + lượt báo ERP.
+// ⚠ TEM IN BÙ (ngày ca khác ngày của lượt ca đang chạy) KHÔNG nhớ (03/11/2026, người dùng chốt — sự cố sáng 03/11: tem in
+//   bù gõ `261102D1` thành giá trị đầu ca của lượt `261103HC`, người sau tự điền ngày hôm qua). Tem đó vẫn in đúng số đã gõ.
 async function nhoDauCa(ca, body, actorId) {
   if (!ca) return;
   try {
-    const ngayCa = String(body.ngayCa).trim(); const ngayCt = String(body.ngayCt).trim();
+    const ngayCa = String(body.ngayCa).trim();
+    if (!ngayCaThuocLuot(ngayCa, ca)) return;
     const nho = await repo.docDauCa(ca.khoa);
-    if (nho && nho.ngay_ca === ngayCa && nho.ngay_ct === ngayCt) return;
-    await repo.ghiDauCa(ca.khoa, { ngayCa, ngayCt }, actorId);
-  } catch (e) { console.error(`[dau-ca] ✗ Không nhớ được ngày ca / ngày chứng từ đầu ca (${ca.khoa}): ${e.message}`); }
+    if (nho && nho.ngay_ca === ngayCa) return;
+    await repo.ghiDauCa(ca.khoa, { ngayCa }, actorId);
+  } catch (e) { console.error(`[dau-ca] ✗ Không nhớ được ngày ca đầu ca (${ca.khoa}): ${e.message}`); }
 }
 
 // ─── VẢI HỦY / VẢI THIẾU THEO TEM (21/10/2026, người dùng chốt) ──────────────────────────────────────────────────

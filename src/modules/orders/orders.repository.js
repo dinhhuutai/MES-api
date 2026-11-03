@@ -110,7 +110,31 @@ async function listVaiVe({ search = '', filters = {}, stage = '', offset = 0, li
     ? `${VAIVE_SORT[sortKey]} ${sortDir === 'desc' ? 'DESC' : 'ASC'} NULLS LAST, ${DEFAULT_ORDER}`
     : DEFAULT_ORDER;
   // 1 query duy nhất: tổng số phần in qua COUNT(*) OVER(). Gửi SQL 1 dòng (IPS-safe).
+  // Chọn trang TRƯỚC rồi mới tính LATERAL đợt vải + sổ cái tem (03/11/2026): COUNT OVER + ORDER BY buộc mọi phần in khớp
+  //   lọc chạy qua hàng rào LIMIT, bản cũ vì thế chạy 2 LATERAL cho ~8.400 phần in để lấy 20 dòng. Riêng 4 cột sắp xếp
+  //   theo sổ cái tem (`SAP_THEO_TEM`) phải tính hết mới sắp được ⇒ giữ đường cũ.
+  const SAP_THEO_TEM = ['slIn', 'kiemDat', 'sua', 'suaDat'].includes(sortKey);
+  const SAP_THEO_DOT = ['slVai', 'ngayVai', 'hanGiao'].includes(sortKey);
+  const LAT_DVJ = `LEFT JOIN LATERAL (
+      SELECT count(*)::int AS so_dot,
+             COALESCE(SUM(dv.so_luong_vai_ve),0)::int AS tong_vai,
+             min(dv.ngay_vai_ve) AS ngay_vai_min, min(dv.han_giao_hang) AS han_min,
+             min(dv.created_date) AS created_min,
+             COALESCE(json_agg(json_build_object(
+               'dot_vai_id', dv.id, 'ma_dot_vai', dv.ma_dot_vai, 'so_luong_vai_ve', dv.so_luong_vai_ve,
+               'ngay_vai_ve', dv.ngay_vai_ve, 'han_giao_hang', dv.han_giao_hang
+             ) ORDER BY dv.ngay_vai_ve NULLS LAST, dv.ma_dot_vai), '[]') AS dot_vai
+      FROM dot_vai_ve dv WHERE dv.phan_in_id = pin.id AND dv.trang_thai <> 'DA_GOP'
+    ) dvj ON true`;
+  const CHON_TRANG = `WITH trang AS MATERIALIZED (
+      SELECT pin.id, COUNT(*) OVER()::int AS total_count, row_number() OVER (ORDER BY ${orderBy}) AS stt
+      ${BASE_JOINS} ${SAP_THEO_DOT ? LAT_DVJ : ''}
+      WHERE ${cond.join(' AND ')}
+      ORDER BY ${orderBy}
+      LIMIT ${limitP} OFFSET ${offsetP}
+    )`;
   const sql = `
+    ${SAP_THEO_TEM ? '' : CHON_TRANG}
     SELECT pin.id AS phan_in_id, pin.ma_phan,
            (SELECT string_agg(DISTINCT dvb.barcode, ', ') FROM dot_vai_ve dvb WHERE dvb.phan_in_id = pin.id AND dvb.barcode IS NOT NULL) AS barcode,
            pin.barcode AS barcode_phan_in,
@@ -123,19 +147,12 @@ async function listVaiVe({ search = '', filters = {}, stage = '', offset = 0, li
            dvj.so_dot, dvj.dot_vai,
            dvj.created_min AS tg_len_mes,
            ts.pcs_in, ts.so_tem, ts.sl_dat, ts.sl_sua, ts.sl_sua_dat, ts.tems,
-           COUNT(*) OVER()::int AS total_count
-    ${BASE_JOINS}
-    LEFT JOIN LATERAL (
-      SELECT count(*)::int AS so_dot,
-             COALESCE(SUM(dv.so_luong_vai_ve),0)::int AS tong_vai,
-             min(dv.ngay_vai_ve) AS ngay_vai_min, min(dv.han_giao_hang) AS han_min,
-             min(dv.created_date) AS created_min,
-             COALESCE(json_agg(json_build_object(
-               'dot_vai_id', dv.id, 'ma_dot_vai', dv.ma_dot_vai, 'so_luong_vai_ve', dv.so_luong_vai_ve,
-               'ngay_vai_ve', dv.ngay_vai_ve, 'han_giao_hang', dv.han_giao_hang
-             ) ORDER BY dv.ngay_vai_ve NULLS LAST, dv.ma_dot_vai), '[]') AS dot_vai
-      FROM dot_vai_ve dv WHERE dv.phan_in_id = pin.id AND dv.trang_thai <> 'DA_GOP'
-    ) dvj ON true
+           ${SAP_THEO_TEM ? 'COUNT(*) OVER()::int' : 'trang.total_count'} AS total_count
+    ${SAP_THEO_TEM ? BASE_JOINS : `FROM trang JOIN phan_in pin ON pin.id = trang.id
+      JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+      JOIN don_hang dh ON dh.id = mh.don_hang_id
+      JOIN khach_hang kh ON kh.id = dh.khach_hang_id`}
+    ${LAT_DVJ}
     LEFT JOIN LATERAL (
       WITH tp AS (
         SELECT tm.id, tm.ma_tem, tm.so_luong, tm.trang_thai, tm.created_date,
@@ -171,9 +188,7 @@ async function listVaiVe({ search = '', filters = {}, stage = '', offset = 0, li
         ), '[]') AS tems
       FROM tp
     ) ts ON true
-    WHERE ${cond.join(' AND ')}
-    ORDER BY ${orderBy}
-    LIMIT ${limitP} OFFSET ${offsetP}`;
+    ${SAP_THEO_TEM ? `WHERE ${cond.join(' AND ')} ORDER BY ${orderBy} LIMIT ${limitP} OFFSET ${offsetP}` : 'ORDER BY trang.stt'}`;
   const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), params);
   const total = rows.length ? rows[0].total_count : 0;
   return { rows, total };

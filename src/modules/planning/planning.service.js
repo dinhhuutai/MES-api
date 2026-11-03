@@ -16,7 +16,7 @@ const { kiemCap } = require('../../utils/phuongAnChuyen'); // luật PA in ↔ l
 const { tinhNangBat } = require('../../utils/caiDatTinhNang'); // công tắc bật/tắt luật trên (mig 087)
 const { coCotThoInKh, chuanHoaThoIn } = require('../../utils/thoInKeHoach'); // thợ in kế hoạch (mig 111)
 const { LOAI_TRA_VE_KH } = require('../../utils/traVeKeHoach'); // Test Run trả về Kế hoạch (giữ lệnh)
-const { NHOM_CA_RIENG, ngayCaKeHoach } = require('../../utils/ca'); // nhóm cài ca riêng được (mig 112; KHAC = chuyền khác, 09/10/2026)
+const { NHOM_CA_RIENG, ngayCaKeHoach, loaiChuyenTinhCa } = require('../../utils/ca'); // nhóm cài ca riêng được (mig 112; KHAC = chuyền khác, 09/10/2026)
 const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
 const erpRepo = require('../erpsync/erpsync.repository'); // reopenReadyForPhanIn (mở lại READY)
@@ -2363,7 +2363,7 @@ async function releaseList(date, mode = 'KE_HOACH', denNgay = null) {
   const caKh = (r) => {
     if (!r.tg_bd_kh) return '';
     const vn = new Date(new Date(r.tg_bd_kh).getTime() + 7 * 3600 * 1000).toISOString().slice(0, 16).replace('T', ' ');
-    return HAU[String(ngayCaKeHoach(vn, null, modeMap, r.ma_loai_chuyen || null)).slice(-2)] || '';
+    return HAU[String(ngayCaKeHoach(vn, null, modeMap, loaiChuyenTinhCa(r.ma_loai_chuyen || null, r.ma_chuyen))).slice(-2)] || '';
   };
   const daThay = new Set();
   const items = raw.map((r) => {

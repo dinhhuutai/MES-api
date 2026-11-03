@@ -25,6 +25,7 @@ const { khoaNgcLenhSql, khoaNgcSql } = require('../../utils/nhaGiaCong'); // đ�
 // Mốc tuyệt đối của giờ SX nhập ở ô In tem (ngày ca + giờ, ca đêm qua nửa đêm +1 ngày) — dùng chung Báo cáo sản xuất.
 const { MOC_TEM } = require('./baoCaoSanXuat');
 const { chuanMaChuyen, chuanMaChuyenSql } = require('../../utils/maChuyen');
+const { loaiChuyenTinhCaSql } = require('../../utils/ca');
 const { laTemSuaSql } = require('../../utils/temCon');
 
 const PHAN_AGG = `(SELECT string_agg(DISTINCT pin.ma_phan, ', ')
@@ -889,10 +890,19 @@ async function listTemDaIn({
   const WHERE_GOC = `
     WHERE COALESCE(lc.ma_loai,'') ${laGiaCong ? '=' : '<>'} 'GIA_CONG'
       ${dk.length ? `AND ${dk.join(' AND ')}` : ''}`;
-  const FROM = `${JOIN_GOC} ${WHERE_GOC}`;
+  // Câu đếm + bước chọn trang chỉ kèm `info` khi có điều kiện lọc đọc nó (03/11/2026): LEFT JOIN LATERAL … LIMIT 1 trả đúng
+  //   1 dòng nên bỏ đi không đổi số dòng, mà giữ lại là ~11.000 tem mỗi tem 1 lượt tra phần in để lấy 20 dòng.
+  const JOIN_KHUNG = dk.some((x) => /\binfo\./.test(x)) ? JOIN_GOC : JOIN_GOC.replace(PHAN_INFO_LATERAL, '');
+  const FROM = `${JOIN_KHUNG} ${WHERE_GOC}`;
   const cotMaLo = (await temCoCot('ma_lo')) ? 't.ma_lo' : 'NULL::text AS ma_lo';   // mig 114
   const { soVai, ERP_VAI_LATERAL } = await vaiTemSql();
+  // Chọn trang TRƯỚC (chỉ khóa + cột sắp xếp), rồi mới tính nhãn phần in · sự kiện hủy · số ERP cho đúng các tem của trang.
   const dataSql = `
+    WITH trang AS MATERIALIZED (
+      SELECT t.id, row_number() OVER (ORDER BY t.created_date DESC, t.id) AS stt ${FROM}
+      ORDER BY t.created_date DESC, t.id
+      LIMIT $${p.length + 1} OFFSET $${p.length + 2}
+    )
     SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.created_date, t.ma_ngay_ca, t.ngay_ca, ${cotMaLo},
            ${soVai('HUY', 'Soluongloi')} AS sl_vai_huy_tem, ${soVai('THIEU', 'SOLUONGTHIEU')} AS sl_vai_thieu_tem,
            (COALESCE(t.sl_kcs_dat,0) + COALESCE(t.sl_kcs_sua,0) + COALESCE(t.sl_kcs_huy,0)
@@ -914,12 +924,10 @@ async function listTemDaIn({
               FROM audit_log a WHERE a.ten_bang = 'tem' AND a.id_ban_ghi = t.id::text
                AND a.hanh_dong IN ('ERP_GHI_IN_TEM', 'ERP_GHI_IN_TEM_LOI')
              ORDER BY (a.hanh_dong = 'ERP_GHI_IN_TEM') DESC, a.thoi_gian DESC LIMIT 1) AS ngay_ct
-    ${JOIN_GOC}
+    ${JOIN_GOC.replace('FROM tem t', 'FROM trang JOIN tem t ON t.id = trang.id')}
     ${SU_KIEN_CUOI_LATERAL}
     ${ERP_VAI_LATERAL}
-    ${WHERE_GOC}
-    ORDER BY t.created_date DESC
-    LIMIT $${p.length + 1} OFFSET $${p.length + 2}`;
+    ORDER BY trang.stt`;
   const countSql = `SELECT count(*)::int AS total ${FROM}`;
   const [data, count] = await Promise.all([
     query(dataSql.replace(/\s+/g, ' '), [...p, limit, offset]),
@@ -1408,7 +1416,7 @@ async function caPartsForTem(temId) {
             EXTRACT(MINUTE  FROM t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS ca_phut,
             EXTRACT(ISOYEAR FROM t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS ca_nam,
             EXTRACT(WEEK    FROM t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS ca_tuan,
-            lc.ma_loai AS loai_chuyen
+            ${loaiChuyenTinhCaSql('lc.ma_loai', 'cs.ma_chuyen')} AS loai_chuyen
      FROM tem t
      LEFT JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
      LEFT JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
@@ -1678,7 +1686,7 @@ async function goiYTemMeta(lenhId, phieuId) {
                AND (t.created_date ${VN})::date = (now() ${VN})::date
              ORDER BY t.created_date DESC LIMIT 1),
       b AS (SELECT (now() ${VN})::date AS ngay, (now() ${VN}) AS tg),
-      lc AS (SELECT lc.ma_loai FROM lenh_san_xuat ls
+      lc AS (SELECT ${loaiChuyenTinhCaSql('lc.ma_loai', 'cs.ma_chuyen')} AS ma_loai FROM lenh_san_xuat ls
                LEFT JOIN phieu_san_xuat psc ON psc.id = $2::uuid
                JOIN chuyen_san_xuat cs ON cs.id = COALESCE(psc.chuyen_id, ls.chuyen_id)
                JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id WHERE ls.id = $1)
@@ -1697,16 +1705,17 @@ async function goiYTemMeta(lenhId, phieuId) {
   return rows[0] || null;
 }
 
-// ─── "NHẬP ĐẦU CA": Ngày ca + Ngày chứng từ của màn In tem (13/10/2026, người dùng chốt) ───────────────────────
-// 2 ô này KHÔNG còn điền sẵn theo giờ: người in nhập 1 LẦN ĐẦU CA, các lượt in sau trong ca điền lại giá trị đó, hết
-// ca thì trống lại. Nơi nhớ = `audit_log` (không migration; có sẵn index `(ten_bang, id_ban_ghi)`):
+// ─── "NHẬP ĐẦU CA": Ngày ca của màn In tem (13/10/2026, người dùng chốt) ───────────────────────────────────────
+// Ô này KHÔNG điền sẵn theo giờ: người in nhập 1 LẦN ĐẦU CA, các lượt in sau trong ca điền lại giá trị đó, hết ca thì
+// trống lại. Nơi nhớ = `audit_log` (không migration; có sẵn index `(ten_bang, id_ban_ghi)`):
 //   ten_bang 'ca_in_tem' · id_ban_ghi = KHÓA LƯỢT CA `<nhóm ca>|<YYMMDD><mã ca>` (vd `MAY|261013C2`, nhóm ca =
 //   `utils/ca.js khoaNhomCa` — Máy / Bàn / Robot / Khác cài ca riêng nên nhớ riêng) · hanh_dong 'DAU_CA_IN_TEM' ·
-//   gia_tri_moi { ngay_ca, ngay_ct }. Dòng MỚI NHẤT của khóa là giá trị đang nhớ (sửa giữa ca ⇒ thêm dòng mới).
+//   gia_tri_moi { ngay_ca }. Dòng MỚI NHẤT của khóa là giá trị đang nhớ (sửa giữa ca ⇒ thêm dòng mới).
+// ⚠ Dòng trước 03/11/2026 còn khóa `ngay_ct` — không ai đọc nữa: Ngày chứng từ không còn kế thừa theo ca.
 const BANG_DAU_CA = 'ca_in_tem';
 async function docDauCa(khoa) {
   const { rows } = await query(
-    `SELECT a.gia_tri_moi->>'ngay_ca' AS ngay_ca, a.gia_tri_moi->>'ngay_ct' AS ngay_ct, a.thoi_gian, nd.ho_ten AS nguoi
+    `SELECT a.gia_tri_moi->>'ngay_ca' AS ngay_ca, a.thoi_gian, nd.ho_ten AS nguoi
        FROM audit_log a LEFT JOIN nguoi_dung nd ON nd.id = a.nguoi_thuc_hien_id
       WHERE a.ten_bang = '${BANG_DAU_CA}' AND a.id_ban_ghi = $1 AND a.hanh_dong = 'DAU_CA_IN_TEM'
       ORDER BY a.thoi_gian DESC LIMIT 1`.replace(/\s+/g, ' '),
@@ -1714,11 +1723,11 @@ async function docDauCa(khoa) {
   );
   return rows[0] || null;
 }
-async function ghiDauCa(khoa, { ngayCa, ngayCt }, actorId) {
+async function ghiDauCa(khoa, { ngayCa }, actorId) {
   await query(
     `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
      VALUES ('${BANG_DAU_CA}', $1, 'DAU_CA_IN_TEM', $2::jsonb, $3, CURRENT_TIMESTAMP, $3)`.replace(/\s+/g, ' '),
-    [String(khoa), JSON.stringify({ ngay_ca: ngayCa, ngay_ct: ngayCt }), actorId]
+    [String(khoa), JSON.stringify({ ngay_ca: ngayCa }), actorId]
   );
 }
 
@@ -1809,7 +1818,7 @@ async function duLieuGhiInTem(capTem = [], ngayCt = null) {
            (SELECT tg.ma_tem FROM tem tg WHERE tg.id = t.tem_goc_id) AS ma_tem_goc,
            CASE WHEN t.tem_goc_id IS NOT NULL THEN t.sl_kcs_dat ELSE t.so_luong END AS so_luong,
            info.ma_phan,
-           ls.ma_lenh_san_xuat, cs.ma_chuyen, lc.ma_loai AS loai_chuyen,
+           ls.ma_lenh_san_xuat, cs.ma_chuyen, ${loaiChuyenTinhCaSql('lc.ma_loai', 'cs.ma_chuyen')} AS loai_chuyen,
            ${coTo ? 'ti.ma_to' : 'NULL::varchar'} AS ma_to,
            ${PCT_CHUYEN_TRUONG} AS chuyen_truong, ndct.ho_ten AS ca_truong, ndct.ten_dang_nhap AS ca_truong_msnv,
            ${PCT_THO_IN(',')} AS tho_in,

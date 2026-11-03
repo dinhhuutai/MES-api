@@ -11,15 +11,17 @@ const pool = new Pool({
   user: env.db.user,
   password: env.db.password,
   ssl: env.db.ssl ? { rejectUnauthorized: false } : false,
-  // Dashboard bắn ~13 query song song (summary 11 + activity + stage-counts); pool nhỏ → query xếp hàng
-  // và có thể timeout khi DB ở xa → trang kẹt "Đang tải". Nới pool để đủ chỗ cho các màn nặng.
+  // Dashboard bắn ~13 query song song (summary 11 + activity + stage-counts); pool nhỏ → query xếp hàng.
   max: 25,
-  // ⚠⚠ GIỮ KẾT NỐI LÂU: BE và DB ở 2 nơi, **bắt tay lần đầu tốn ~175 ms** (query thường chỉ ~25 ms).
-  //   Với 30 giây như bản cũ, chỉ cần xưởng ngơi tay nửa phút là kết nối bị đóng và người bấm tiếp
-  //   theo phải trả nguyên 175 ms. Nâng lên 5 phút + `keepAlive` để NAT/firewall không cắt ngầm.
+  // Giữ kết nối 5 phút: mở kết nối mới trên Windows tốn một tiến trình Postgres mới.
   idleTimeoutMillis: 5 * 60 * 1000,
   keepAlive: true,
   connectionTimeoutMillis: 15000,
+  application_name: 'thla-mes-api',
+  // ⚠ Chặn câu chạy mất kiểm soát chiếm hết pool (sự cố 03/11/2026: 24/25 kết nối kẹt nhiều phút ở 1 câu). FE đã bỏ cuộc
+  //   sau 45 giây (`axiosClient`), Postgres vẫn chạy tiếp nếu không chặn ở đây. Đổi được bằng biến môi trường.
+  statement_timeout: Number(process.env.PG_STATEMENT_TIMEOUT_MS) || 120000,
+  idle_in_transaction_session_timeout: Number(process.env.PG_IDLE_TX_TIMEOUT_MS) || 300000,
 });
 
 pool.on('error', (err) => {

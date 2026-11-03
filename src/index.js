@@ -13,6 +13,10 @@ const { startCleanupJob } = require('./jobs/cleanup.job');
 const { startDryingJob } = require('./jobs/drying.job');
 
 const server = http.createServer(app);
+// Reverse proxy (IIS ARR) dùng lại kết nối tới Node. Node mặc định đóng kết nối rảnh sau 5 giây ⇒ ARR gửi đúng lúc đó sẽ
+// nhận lỗi 502.3 ngẫu nhiên. Giữ lâu hơn phía proxy; `headersTimeout` phải lớn hơn `keepAliveTimeout`.
+server.keepAliveTimeout = 65000;
+server.headersTimeout = 66000;
 const io = new Server(server, {
   cors: {
     origin: [

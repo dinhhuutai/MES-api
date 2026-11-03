@@ -169,7 +169,7 @@ async function caPartsForTems(temIds) {
             EXTRACT(MINUTE  FROM t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS ca_phut,
             EXTRACT(ISOYEAR FROM t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS ca_nam,
             EXTRACT(WEEK    FROM t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS ca_tuan,
-            lc.ma_loai AS loai_chuyen
+            ${require('../../utils/ca').loaiChuyenTinhCaSql('lc.ma_loai', 'cs.ma_chuyen')} AS loai_chuyen
      FROM tem t
      LEFT JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
      LEFT JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id

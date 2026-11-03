@@ -1,5 +1,7 @@
 'use strict';
 
+const { chuanMaChuyen, chuanMaChuyenSql } = require('./maChuyen');
+
 // Suy CA SẢN XUẤT từ giờ:phút (giờ VN) + loại ca của tuần.
 //   NGAN: Ca 1 06-14 · Ca 2 14-22 · Ca 3 22-06
 //   DAI : Ca 1 06-18 · Ca 2 18-06
@@ -38,6 +40,13 @@ function khoaNhomCa(loaiChuyen) {
   if (!lc) return '';
   return LOAI_CHUYEN_CA.includes(lc) ? lc : NHOM_CA_KHAC;
 }
+// ⚠⚠ CHUYỀN CHẠY THEO CA CỦA MÁY dù loại chuyền là Bàn (03/11/2026, người dùng chốt "1A1B thuộc bên máy"; đo prod
+//   21 ngày tới 03/11: 1A1B 91 tem ca Dài / 2 tem HC, như Máy): loại ca + khóa nhớ đầu ca + phân công đầu ca tính theo MÁY.
+//   CHỈ phần CA — `loai_chuyen` trong DB, chip, nhóm dây chuyền báo cáo, `Loaichuyen` gửi ERP vẫn là Bàn.
+//   Mọi chỗ suy ca từ 1 chuyền cụ thể phải đi qua 2 hàm dưới; thêm chuyền = thêm vào danh sách (mã chuẩn ERP).
+const CHUYEN_THEO_CA_MAY = ['1A1B'];
+const loaiChuyenTinhCa = (maLoai, maChuyen) => (CHUYEN_THEO_CA_MAY.includes(chuanMaChuyen(maChuyen)) ? 'MAY' : maLoai);
+const loaiChuyenTinhCaSql = (loaiSql, maSql) => `CASE WHEN ${chuanMaChuyenSql(maSql)} IN (${CHUYEN_THEO_CA_MAY.map((m) => `'${m}'`).join(', ')}) THEN 'MAY' ELSE ${loaiSql} END`;
 // ⚠⚠ THỪA HƯỞNG TUẦN TRƯỚC (21/10/2026, người dùng chốt "cài đặt ca cho thừa hưởng từ tuần trước, khi nào thay đổi
 //   thì mới vào cài đặt sửa lại"): tuần CHƯA cài cho nhóm ⇒ lấy tuần GẦN NHẤT TRƯỚC ĐÓ có cài cho nhóm; chưa từng cài ⇒
 //   mặc định (Ngắn / Hành chính cho Khác). "Có cài cho nhóm" của 1 tuần: Máy/Bàn/Robot = riêng của loại HOẶC chung
@@ -198,6 +207,6 @@ const HAU_TO_CA = { HC: 'HC', CA1: 'C1', CA2: 'C2', CA3: 'C3', D1: 'D1', D2: 'D2
 module.exports = {
   HAU_TO_CA,
   caFromHour, caFromParts, maCa, maNgayCa, ngayTuMaNgayCa, gioBatDauCa, khoaTuanIso, ngayCaKeHoach, caDangChay,
-  loaiCaCua, loaiCaChiTiet, khoaNhomCa, LOAI_CHUYEN_CA, NHOM_CA_RIENG, NHOM_CA_KHAC, CA_KHAC_MAC_DINH,
+  loaiCaCua, loaiCaChiTiet, khoaNhomCa, loaiChuyenTinhCa, loaiChuyenTinhCaSql, LOAI_CHUYEN_CA, NHOM_CA_RIENG, NHOM_CA_KHAC, CA_KHAC_MAC_DINH,
   maNgayCaHopLe, NGAY_CA_SAI,
 };

@@ -19,7 +19,7 @@
 //     ⚠ Đo prod 02/10/2026: 3/6 bản ghi treo `DANG_NGUNG` từ tháng 8 (không ai bấm hoạt động lại) — đếm
 //       thô tới bây giờ là mỗi bản ghi ~70.000 phút, làm hỏng mọi con số tổng.
 
-const { caFromHour } = require('./ca');
+const { caFromHour, loaiChuyenTinhCa } = require('./ca');
 
 const PHUT = 60 * 1000;
 const VN_LECH = 7 * 3600 * 1000; // giờ VN = UTC+7, không có giờ mùa hè
@@ -60,7 +60,7 @@ function dungBaoCaoDungChuyen({ tuNgay, denNgay, rows = [], loaiCaNgay = () => '
       soPhut = Math.max(0, Math.round((Math.min(...chan) - bd) / PHUT));
     }
     const { nguyenNhan, ghiChu } = tachLyDo(r.ly_do, r.ten_ly_do);
-    const loaiCa = loaiCaNgay(r.ngay_sx, r.ma_loai_chuyen) || 'NGAN'; // mig 112: ca theo loại chuyền
+    const loaiCa = loaiCaNgay(r.ngay_sx, loaiChuyenTinhCa(r.ma_loai_chuyen, r.ma_chuyen)) || 'NGAN'; // mig 112: ca theo loại chuyền
     return {
       id: r.id,
       ngay_sx: r.ngay_sx,

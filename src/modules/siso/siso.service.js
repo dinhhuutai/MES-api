@@ -133,21 +133,23 @@ async function tomTatNgayGiao(maTrang, o, q) {
 // ⚠ Cache giữ PROMISE (gộp cả những lượt gọi tới lúc query đang chạy) và **XÓA NGAY KHI LỖI** —
 //   giữ promise reject lại là mọi lượt trong 30s kế tiếp cùng hỏng theo (bài học `metrics.js`).
 // ⚠ Khóa cache gồm kỳ báo cáo: xem ngày khác nhau là 2 tập số khác nhau.
+// ⚠ 03/11/2026: chuyển sang `nhoCham` — hết 30 giây vẫn trả số cũ ngay rồi tính nền, người xem không phải chờ ~5 giây mỗi
+//   nửa phút (cũ quá 90 giây thì mới chờ tính mới). Dùng chung hàng đợi tối đa 2 lượt với dải "Theo dõi".
 const TTL_BANG_MS = 30000;
-const _nhoBang = new Map();
 
 function bangCached(tu, den) {
-  const khoa = `${tu}|${den}`;
-  const cu = _nhoBang.get(khoa);
-  if (cu && Date.now() - cu.at < TTL_BANG_MS) return cu.p;
-  const p = tinhBang(tu, den).catch((e) => { _nhoBang.delete(khoa); throw e; });
-  _nhoBang.set(khoa, { at: Date.now(), p });
-  // Dọn khóa cũ — người dùng đổi ngày nhiều lần thì Map không phình mãi.
-  if (_nhoBang.size > 8) {
-    [..._nhoBang.entries()].filter(([, v]) => Date.now() - v.at > TTL_BANG_MS)
-      .forEach(([k]) => _nhoBang.delete(k));
-  }
-  return p;
+  return nhoCham('siso.bang', { tu, den }, () => tinhBang(tu, den), TTL_BANG_MS);
+}
+
+// Chạy tối đa `n` việc cùng lúc, giữ thứ tự kết quả. Một lỗi thì cả lượt lỗi, như `Promise.all`.
+async function chayToiDa(ds, n, lam) {
+  const kq = new Array(ds.length);
+  let ke = 0;
+  const tho = async () => {
+    while (ke < ds.length) { const i = ke; ke += 1; kq[i] = await lam(ds[i]); } // eslint-disable-line no-await-in-loop
+  };
+  await Promise.all(Array.from({ length: Math.min(n, ds.length) }, tho));
+  return kq;
 }
 
 const slaCua = (dong, slaRows) => {
@@ -164,8 +166,8 @@ const pct = (tu, mau) => (mau > 0 ? Math.round((tu / mau) * 1000) / 10 : null);
 
 async function tinhBang(tu, den) {
   const slaRows = await repo.dsSlaHienHanh();
-  // ⚠ 10 dòng ĐỘC LẬP ⇒ chạy SONG SONG (mạng tới DB ~25ms/lượt là nút cổ chai — CLAUDE.md §11.5).
-  const so = await Promise.all(BANG_THEO_DOI.map((d) => repo.motDongBang(d, slaCua(d, slaRows), { tu, den })));
+  // ⚠ 11 dòng nặng (~1 giây CPU mỗi dòng): tính nền nên không chạy hết cùng lúc, để chừa nhân CPU cho người đang thao tác.
+  const so = await chayToiDa(BANG_THEO_DOI, 4, (d) => repo.motDongBang(d, slaCua(d, slaRows), { tu, den }));
   const rows = BANG_THEO_DOI.map((d, i) => {
     const r = so[i];
     const n = (k) => Number(r[k]) || 0;

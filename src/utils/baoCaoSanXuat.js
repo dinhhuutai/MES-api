@@ -51,7 +51,7 @@
 //   · Loại dữ liệu do SCRIPT hệ thống ghi (`chay_den_giao_ton_san_xuat_truoc_0110.sql`, 02/10/2026 20:33):
 //     phiếu `ghi_chu` mở đầu `[HỆ THỐNG` (4.626 phiếu) + tem `HT-…` (4.657 tem) — không phải sản xuất thật.
 
-const { caFromHour, khoaTuanIso, khoaNhomCa } = require('./ca');
+const { caFromHour, khoaTuanIso, khoaNhomCa, loaiChuyenTinhCa } = require('./ca');
 const { dsThoPhanCong, dsThoBaoCaoSanXuat } = require('./thoIn');
 
 // ⚠ 26/10/2026 (người dùng: "cài ca dài thì bảng phải là HC, D1, D2; ca ngắn HC, CA1, CA2, CA3"): ca DÀI có cột
@@ -219,7 +219,9 @@ function dungBaoCaoSanXuat({
   const lenhById = new Map(lenhs.map((l) => [String(l.id), l]));
   const chuyenById = new Map(chuyens.map((c) => [String(c.id), c]));
   const toById = new Map(tos.map((t) => [String(t.id), t]));
-  const loaiCaPhieu = (p) => loaiCaCuaLoai((chuyenById.get(String(p.chuyen_id)) || {}).ma_loai || null);
+  // Loại ca theo chuyền (1A1B chạy ca của Máy — `loaiChuyenTinhCa`); nhóm dây chuyền của dòng vẫn theo `ma_loai`.
+  const loaiCaChuyen = (c) => loaiCaCuaLoai(loaiChuyenTinhCa(c.ma_loai || null, c.ma_chuyen));
+  const loaiCaPhieu = (p) => loaiCaChuyen(chuyenById.get(String(p.chuyen_id)) || {});
   const khungTheoLoai = new Map();
   const khungPhieu = (p) => {
     const lca = loaiCaPhieu(p);
@@ -419,7 +421,7 @@ function dungBaoCaoSanXuat({
       const c = chuyenById.get(String(phieu.chuyen_id)) || {};
       dong2.set(k, {
         ma_chuyen: c.ma_chuyen || '—', ten_chuyen: c.ten_chuyen || null, nhom: nhomCuaLoai(c.ma_loai),
-        loai_ca: loaiCaCuaLoai(c.ma_loai || null),
+        loai_ca: loaiCaChuyen(c),
         ma_phan: pin.ma_phan, khach: pin.ten_khach_hang || null, po: pin.ma_don_hang || null,
         ma_hang: pin.ma_hang || null, mau_vai: pin.mau_vai || null, kich_vai: pin.kich_vai || null,
         kich_phim: pin.kich_phim || null, tho: ds[0], tho_ds: ds.join(', '),

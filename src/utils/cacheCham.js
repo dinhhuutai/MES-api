@@ -13,6 +13,7 @@ const { khoaOn } = require('./cacheDoc');
 const TOI_DA_SONG_SONG = 2;
 const TTL_MAC_DINH = 60000;
 const TOI_DA_MUC = 300;
+const HE_SO_QUA_CU = 3; // số cũ hơn 3 × ttl thì không trả ngay nữa
 
 const _nho = new Map(); // khoa → { at, co, gt, dang }
 const _hang = [];
@@ -46,8 +47,12 @@ function nhoCham(nhom, thamSo, tinh, ttlMs = TTL_MAC_DINH) {
     return m.dang;
   };
   if (!m.co) return tinhLai();
+  const tuoi = Date.now() - m.at;
+  // Lâu không ai hỏi ⇒ số đã quá cũ, chờ tính mới; tính hỏng mới dùng tạm số cũ. Không có chặn này thì người mở màn đầu
+  // tiên sau giờ nghỉ nhận số của mấy tiếng trước, và FE chỉ tải lại khi có socket tiếp theo.
+  if (tuoi >= ttlMs * HE_SO_QUA_CU) return tinhLai().catch(() => m.gt);
   // Lỗi lúc tính nền thì giữ số cũ, lượt sau hết hạn sẽ thử lại.
-  if (Date.now() - m.at >= ttlMs) tinhLai().catch(() => {});
+  if (tuoi >= ttlMs) tinhLai().catch(() => {});
   return Promise.resolve(m.gt);
 }
 
