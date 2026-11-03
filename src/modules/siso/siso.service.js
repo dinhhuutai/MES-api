@@ -4,7 +4,7 @@ const repo = require('./siso.repository');
 const { MAN, LOAI_NGAY, O_SI_SO } = require('../../utils/siSoTram');
 const { BANG_THEO_DOI, DO_SL } = require('../../utils/bangTheoDoi');
 const AppError = require('../../utils/AppError');
-const { nhoDoc } = require('../../utils/cacheDoc');
+const { nhoCham } = require('../../utils/cacheCham');
 
 // Ngày mặc định = HÔM NAY theo giờ VN (server có thể chạy múi giờ khác — đừng dùng new Date() trần).
 const homNayVN = () => new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(0, 10);
@@ -69,10 +69,11 @@ async function siSo(maTrang, q) {
   // ⚠ Đơn vị đếm do FE gửi (`donVi`); lạ / màn không hỗ trợ ⇒ repo tự lùi về mặc định của màn.
   const dv = repo.chonDonVi(m, q.donVi);
   // ⚠ 21/10/2026: dải này nằm trên 12 màn và tải lại theo socket mỗi lần CÓ NGƯỜI xác nhận ở bất kỳ đâu (đo prod
-  //   1–2,7 s/câu) ⇒ dùng chung kết quả giữa mọi người xem cùng màn + cùng bộ lọc (`utils/cacheDoc.js` — mọi thao
-  //   tác ghi làm cache hết hiệu lực ngay, nên số không bao giờ cũ hơn lần xác nhận gần nhất).
+  //   1–2,7 s/câu) ⇒ dùng chung kết quả giữa mọi người xem cùng màn + cùng bộ lọc.
+  // ⚠ 03/11/2026 (sự cố prod, 19 câu chạy cùng lúc): đổi sang `utils/cacheCham.js` — số có thể cũ tối đa ~1 phút, tối đa
+  //   2 câu song song. Bản cũ xóa cache sau mọi thao tác ghi nên lúc đông gần như không dùng lại được.
   const thamSo = { tu, den, loc: layLoc(q), locTrang: layLocTrang(q), donVi: dv.ma };
-  const so = await nhoDoc(`siso.${maTrang}`, thamSo, () => repo.demSiSo(maTrang, thamSo));
+  const so = await nhoCham(`siso.${maTrang}`, thamSo, () => repo.demSiSo(maTrang, thamSo));
   // ⚠ Bất biến PHẢI đúng theo mô hình khoảng [tg_vao, tg_ra). Lệch = có mục `tg_ra < tg_vao`
   //   (dữ liệu bẩn) lọt qua — trả cờ để FE hiện dấu hỏi thay vì im lặng cho số sai.
   const can = so.ton_dau + so.nhan - so.lam_duoc === so.ton_cuoi;

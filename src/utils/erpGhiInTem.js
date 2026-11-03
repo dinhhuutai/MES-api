@@ -51,6 +51,19 @@ async function ghiChuaCoMaErp(maApi, { idBanGhi = '-', maTem = null, actorId = n
   return { ok: false, chua_co_ma: true, error: loi };
 }
 
+// Bước báo ERP của 1 tem hỏng GIỮA CHỪNG (đọc dữ liệu tem lỗi · không cấp được IDMES · lỗi ngoài dự kiến — 03/11/2026):
+// để lại 1 dòng LỖI thay vì chỉ in log, nếu không tem này không có gì trên Lịch sử API và không gửi lại được.
+// `gui` giữ các số "Gửi lại" không suy ra được từ tem (Ngày CT · SL báo · hủy · thiếu). Chưa cấp IDMES ⇒ ID kết nối `CHO-…`
+// (`guiLai.idMesCu` hiểu là chưa có số, cấp số mới lúc gửi lại).
+async function ghiChuaGuiDuoc(maApi, { temId, maTem = null, idMes = null, ngayCt = null, soLuong = null, huy = 0, thieu = 0, loi, actorId = null }) {
+  if (!(await apiBat(maApi))) return;
+  await ghiLog(maApi, {
+    thanhCong: false, idBanGhi: temId, idMes: idMes ?? taoIdKetNoi('CHO'), maTem, url: null,
+    gui: { BarcodeIn: maTem, Ngayct: ngayCt, Soluong: soLuong, Soluongloi: huy || 0, SOLUONGTHIEU: thieu || 0 },
+    loi: `CHƯA GỬI ĐƯỢC ERP — ${loi}`, actorId,
+  });
+}
+
 // Độ dài tối đa của từng trường chuỗi, theo đúng khai báo tham số của proc `MES_spr_MES2SF0`.
 const DAI_TOI_DA = {
   Ngayca: 20,
@@ -370,5 +383,5 @@ async function ghiInTem(row, { maApi = 'ERP_GHI_IN_TEM' } = {}) {
 }
 
 module.exports = {
-  ghiInTem, chuanHoa, taoPayload, THU_TU_TRUONG, DAI_TOI_DA, KENH, laMaTemErp, ghiChuaCoMaErp,
+  ghiInTem, chuanHoa, taoPayload, THU_TU_TRUONG, DAI_TOI_DA, KENH, laMaTemErp, ghiChuaCoMaErp, ghiChuaGuiDuoc,
 };

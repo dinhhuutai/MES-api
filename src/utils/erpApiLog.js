@@ -69,6 +69,32 @@ function gonPhanHoi(v) {
   } catch { return String(v).slice(0, DAI_TOI_DA_PHAN_HOI); }
 }
 
+// ⚠⚠ MẤT DÒNG LỊCH SỬ (03/11/2026, ca thật 6 tem — ERP CÓ phiếu mà MES không có dòng nào): câu INSERT hỏng thì bản cũ
+//   chỉ in log máy chủ rồi thôi; lúc pool kẹt (`config/db` chờ kết nối tối đa 15 s) là mất luôn. Hệ quả không chỉ là
+//   thiếu 1 dòng: không có nút "Gửi lại", Sửa tem báo `CHUA_GUI_ERP`, hủy tem không có IDMES để báo ERP nên ERP giữ
+//   phiếu của tem đã hủy. Nay lần đầu hỏng ⇒ thử lại Ở NỀN (không `await`: nhiều chỗ gọi `ghiLog` nằm trong luồng
+//   người đang bấm, vd xin mã tem), dòng giữ đúng giờ của lượt gọi. Hết lượt thử ⇒ in NGUYÊN dòng ra log để còn bù tay.
+const THU_LAI_MS = [5000, 15000, 30000, 60000, 120000];
+const SQL_GHI = `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+   VALUES ($1, $2, $3, $4::jsonb, $5, COALESCE($6::timestamptz, CURRENT_TIMESTAMP), $5)`.replace(/\s+/g, ' ');
+
+function thuLaiNen(thamSo, maApi, lan = 0) {
+  if (lan >= THU_LAI_MS.length) {
+    console.error(`[erp-api-log] ✗ BỎ CUỘC sau ${lan + 1} lần, MẤT dòng lịch sử ${maApi}: ${JSON.stringify(thamSo)}`);
+    return;
+  }
+  const hen = setTimeout(async () => {
+    try {
+      await query(SQL_GHI, thamSo);
+      console.warn(`[erp-api-log] ✓ Đã ghi bù lịch sử ${maApi} (tem/bản ghi ${thamSo[1]}) ở lần thử lại ${lan + 1}`);
+    } catch (e) {
+      console.error(`[erp-api-log] ✗ Thử lại ${lan + 1} vẫn không ghi được lịch sử ${maApi}: ${e.message}`);
+      thuLaiNen(thamSo, maApi, lan + 1);
+    }
+  }, THU_LAI_MS[lan]);
+  if (hen.unref) hen.unref();
+}
+
 /**
  * Ghi 1 lượt gọi API ERP.
  * @param {string} maApi      'ERP_BARCODE_TEM' | 'ERP_GHI_IN_TEM'
@@ -91,11 +117,10 @@ function gonPhanHoi(v) {
  *  - actorId   {string}
  */
 async function ghiLog(maApi, o = {}) {
+  let thamSo = null;
+  const luc = new Date().toISOString();
   try {
-    await query(
-      `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
-       VALUES ($1, $2, $3, $4::jsonb, $5, CURRENT_TIMESTAMP, $5)`.replace(/\s+/g, ' '),
-      [
+    thamSo = [
         TEN_BANG[maApi] || 'erp_api',
         String(o.idBanGhi || '-'),
         o.thanhCong ? maApi : `${maApi}_LOI`,
@@ -120,13 +145,15 @@ async function ghiLog(maApi, o = {}) {
           // Các lần thử HỎNG trong lượt (26/10/2026, `utils/erpThuLai.ghiLanLoi`): [{ lan, tg, ms, timeout, loi }].
           //   Dòng thành công có mảng này ⇒ "thành công ở lần thử `so_lan_thu`, các lần trước lỗi".
           ...(o.cacLanLoi && o.cacLanLoi.length ? { cac_lan_loi: o.cacLanLoi } : {}),
-        }),
+        // jsonb từ chối ký tự NUL (lỗi 22P05, thử lại bao nhiêu cũng hỏng) — phản hồi ERP có NUL thì bỏ ký tự đó.
+        }).replace(/(?<!\\)\\u0000/g, ''),
         o.actorId || null,
-      ]
-    );
+    ];
+    await query(SQL_GHI, [...thamSo, null]);
   } catch (e) {
-    console.error(`[erp-api-log] ✗ Không ghi được lịch sử ${maApi}: ${e.message}`);
+    console.error(`[erp-api-log] ✗ Không ghi được lịch sử ${maApi}: ${e.message}${thamSo ? ' — sẽ thử lại ở nền' : ''}`);
+    if (thamSo) thuLaiNen([...thamSo, luc], maApi);
   }
 }
 
-module.exports = { ghiLog, TEN_BANG };
+module.exports = { ghiLog, TEN_BANG, THU_LAI_MS };

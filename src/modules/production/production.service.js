@@ -19,7 +19,7 @@ const {
   caFromParts, ngayTuMaNgayCa, gioBatDauCa, loaiCaCua, khoaNhomCa, caDangChay, maNgayCaHopLe, NGAY_CA_SAI,
 } = require('../../utils/ca');
 const { layBarcodeTem, layNhieuBarcodeTem } = require('../../utils/erpTemBarcode');
-const { ghiInTem, taoPayload, laMaTemErp, ghiChuaCoMaErp } = require('../../utils/erpGhiInTem');
+const { ghiInTem, taoPayload, laMaTemErp, ghiChuaCoMaErp, ghiChuaGuiDuoc } = require('../../utils/erpGhiInTem');
 const { apiChoPhepPhanIn } = require('../../utils/caiDatApi');
 const { tenNgc } = require('../../utils/nhaGiaCong'); // tách lệnh theo nhà gia công (27/10/2026)
 const { coCotThoInKh, chuanHoaThoIn } = require('../../utils/thoInKeHoach');
@@ -1163,9 +1163,11 @@ const temMeta = (b = {}) => {
 // `maApi` (27/09/2026): tem 13 gia công gửi kênh `ERP_GUI_TEM_GIA_CONG` (`/gui-du-lieu-tem-gia-cong`
 // → proc JQ6). Cùng 20 trường, cùng vòng lặp ⇒ MỖI TEM 1 LƯỢT GỌI + 1 IDMES RIÊNG (in 2 tem = gọi 2 lần).
 async function guiGhiInTem(items, actorId, ngayCt = null, { maApi = 'ERP_GHI_IN_TEM' } = {}) {
+  const list = (items || []).filter((x) => x && x.temId);
+  if (!list.length) return;
+  const xong = new Set(); // tem đã có kết quả (gửi xong / đã có dòng / cố ý bỏ qua) — catch chỉ ghi lỗi cho tem còn lại
+  let dangGui = null;     // { temId, idMes, maTem } của tem đang xử lý — hỏng giữa chừng thì giữ được IDMES đã cấp
   try {
-    const list = (items || []).filter((x) => x && x.temId);
-    if (!list.length) return;
     const rows = await repo.duLieuGhiInTem(list.map((x) => ({ temId: x.temId, dotVaiId: x.dotVaiId || null })), ngayCt);
     const theoTem = new Map(rows.map((r) => [r.tem_id, r]));
 
@@ -1173,6 +1175,11 @@ async function guiGhiInTem(items, actorId, ngayCt = null, { maApi = 'ERP_GHI_IN_
       const r = theoTem.get(it.temId);
       if (!r) {
         console.error(`[ghi-in-tem] ✗ Không đọc được dữ liệu tem ${it.temId} — bỏ qua lời gọi ERP`);
+        xong.add(it.temId);
+        await ghiChuaGuiDuoc(maApi, {
+          temId: it.temId, ngayCt, soLuong: it.soLuong ?? null, huy: it.soLuongHuy, thieu: it.soLuongThieu,
+          loi: 'Không đọc được dữ liệu tem', actorId,
+        });
         continue;
       }
       // Lệnh thường không truyền `dotVaiId` ⇒ lấy đợt đại diện. Prod hiện không có ca 1 phần in mà
@@ -1185,16 +1192,20 @@ async function guiGhiInTem(items, actorId, ngayCt = null, { maApi = 'ERP_GHI_IN_
       // ⚠ Bỏ qua IM LẶNG (chốt với người dùng): không gọi ERP, KHÔNG ghi audit_log — giống hệt lúc
       //   tắt hẳn API. In nhiều mà ghi log "đã bỏ qua" thì `audit_log` phình rất nhanh.
       // (Bộ lọc code phần chỉ khai cho ERP_GHI_IN_TEM — kênh khác không lọc.)
-      if (maApi === 'ERP_GHI_IN_TEM' && !(await apiChoPhepPhanIn('ERP_GHI_IN_TEM', r.ma_phan))) continue;
+      if (maApi === 'ERP_GHI_IN_TEM' && !(await apiChoPhepPhanIn('ERP_GHI_IN_TEM', r.ma_phan))) { xong.add(it.temId); continue; }
       // ⚠ CHỜ CÓ MÃ TEM ERP CẤP mới gửi (30/09/2026) — tem mang mã MES tự sinh (`TEM…`, API xin số tắt)
       //   thì KHÔNG gửi, chỉ ghi 1 dòng lỗi ở Lịch sử API. Kiểm TRƯỚC khi cấp IDMES.
       if (!laMaTemErp(r.ma_tem)) {
+        xong.add(it.temId);
         await ghiChuaCoMaErp(maApi, { idBanGhi: it.temId, maTem: r.ma_tem, actorId });
         continue;
       }
 
+      dangGui = { temId: it.temId, maTem: r.ma_tem, idMes: null };
       const idMes = await repo.capIdMes();
-      if (idMes == null) return; // hỏng khâu cấp số thì các tem sau cũng vậy — dừng luôn cho khỏi spam log
+      // Hỏng khâu cấp số thì các tem sau cũng vậy ⇒ dừng; catch ghi 1 dòng lỗi cho từng tem chưa gửi.
+      if (idMes == null) throw new Error('Không cấp được IDMES');
+      dangGui.idMes = idMes;
 
       // Dựng 20 trường ở NGUỒN CHUNG `utils/erpGhiInTem.taoPayload` (dùng chung với sửa đạt tem 17).
       // Bên gọi truyền `soLuong` khi SL tem ≠ SL cần báo — tem gia công lưu `so_luong = đạt + hủy`
@@ -1203,12 +1214,22 @@ async function guiGhiInTem(items, actorId, ngayCt = null, { maApi = 'ERP_GHI_IN_
         idMes, soLuong: it.soLuong, soLuongHuy: it.soLuongHuy, soLuongThieu: it.soLuongThieu,
       });
       const kq = await ghiInTem(payload, { maApi });
+      xong.add(it.temId); // từ đây ERP đã được gọi (hoặc API tắt) — dòng kết quả do `logGhiInTem` lo, có thử lại
       if (kq.bo_qua) continue; // tắt ở Cài đặt API — không ghi audit lỗi
       // ⚠ Truyền cả `kq.data` (phản hồi ERP) để lịch sử hiện được "gửi gì → nhận gì" trong 1 màn.
       await repo.logGhiInTem(it.temId, kq.ok, kq.body, kq.error, actorId, kq.data, maApi, kq);
     }
   } catch (e) {
     console.error(`[ghi-in-tem] ✗ Lỗi ngoài dự kiến khi báo ERP: ${e.message}`);
+    // Tem chưa kịp gửi ⇒ để lại 1 dòng LỖI ở Lịch sử API (có nút Gửi lại) — bản cũ không để lại gì.
+    for (const it of list) {
+      if (xong.has(it.temId)) continue;
+      const cungTem = dangGui && dangGui.temId === it.temId ? dangGui : null;
+      await ghiChuaGuiDuoc(maApi, {
+        temId: it.temId, maTem: cungTem && cungTem.maTem, idMes: cungTem && cungTem.idMes,
+        ngayCt, soLuong: it.soLuong ?? null, huy: it.soLuongHuy, thieu: it.soLuongThieu, loi: e.message, actorId,
+      }).catch(() => {});
+    }
   }
 }
 
