@@ -112,6 +112,46 @@ async function returnOqcTemCon(temCon, lyDo, actorId) {
   return { tem_id: gocId, tem_con_id: temCon.id, nguon: 'SUA', so_luong: qty, next: 'TRA_VE_SUA' };
 }
 
+// OQC trả về TEM 17 CỦA LƯỢT KCS MỘT PHẦN (mig 122) ⇒ số lượng quay lại CHƯA KIỂM của TEM GỐC, tem 17 bị hủy.
+//   Đảo đúng các bút toán lúc tách, rồi trừ lượt KCS đã sinh ra nó để lần kiểm lại không bị đếm đôi (cùng lý do
+//   `dieuChinhKcsSauTraVe`). KHÔNG tự hủy tem sửa như lần trả về tem gốc: chỉ phần này kiểm lại, phần hư của lượt
+//   vẫn chờ sửa bình thường.
+async function returnOqcTemConKcs(temCon, lyDo, actorId) {
+  const gocId = temCon.tem_goc_id;
+  const qty = Number(temCon.con_oqc) || 0;
+  if (qty <= 0) {
+    throw new AppError('Tem 17 không còn phần chờ OQC để trả về', { status: 409, errorCode: 'NO_OQC' });
+  }
+  let dieuChinh = [];
+  await withTransaction(async (client) => {
+    const moi = await repo.getTemLedger(temCon.id, { client, khoa: true });
+    if ((Number(moi.con_oqc) || 0) !== qty) {
+      throw new AppError(`Tem ${temCon.ma_tem} vừa được người khác xác nhận OQC — tải lại danh sách rồi nhập lại`,
+        { status: 409, errorCode: 'DA_DOI' });
+    }
+    const goc = await repo.getTemLedger(gocId, { client, khoa: true });
+    await repo.congSlTemCon(client, temCon.id, -qty, actorId);
+    await repo.huyTemConNeuRong(client, temCon.id, actorId);
+    await repo.reduceKcsDat(client, gocId, qty, actorId);
+    await repo.congKcsTach(client, gocId, -qty, actorId);
+    dieuChinh = await repo.dieuChinhKcsSauTraVe(client, gocId,
+      { dat: qty, maTem: goc.ma_tem, lyDo, chiLuotId: temCon.kcs_tach_id }, actorId);
+    await repo.recomputeTemStageMany(client, [temCon.id, gocId], actorId);
+  });
+  for (const k of dieuChinh) {
+    if (!k.da_huy) kiemPhamErp.guiLaiSauDieuChinhNgam(k, gocId, actorId);
+  }
+  // Badge + lý do nằm trên TEM GỐC — dòng hiện ở màn KCS.
+  await repo.insertQcTraVe({ loai: 'OQC', temId: gocId, lyDo }, actorId);
+  await tracking.moveByTem(gocId, 'KIEM', actorId);
+  sockets.emit('quality:updated', { temId: gocId, stage: 'OQC', next: 'TRA_VE_KCS' });
+  sockets.emit('dashboard:refresh', {});
+  return {
+    tem_id: gocId, tem_con_id: temCon.id, nguon: 'KCS', so_luong: qty, next: 'TRA_VE_KCS', tem_sua_huy: null,
+    kcs_dieu_chinh: dieuChinh.map((k) => ({ id: k.id, da_huy: k.da_huy, tra_dat: k.tra_dat, tra_hu: k.tra_hu })),
+  };
+}
+
 async function returnOqcToKcs(temId, body, actorId) {
   const nguon = body.nguon === 'SUA' ? 'SUA' : 'KCS';
   const tram = nguon === 'SUA' ? 'Sửa' : 'KCS';
@@ -139,7 +179,10 @@ async function returnOqcToKcs(temId, body, actorId) {
   //   thường thì `reduceKcsDat` sẽ trừ số lượng mà **KHÔNG trả nó về đâu cả** — `con_kcs` của tem con
   //   bị kẹp 0 (`conKcsSql`) nên hàng BIẾN MẤT KHỎI SỔ CÁI, không ai thấy để xử lý.
   //   Đúng nghĩa nghiệp vụ: hàng đã sửa mà OQC đánh rớt thì phải quay lại **CHỜ SỬA của tem GỐC**.
-  if (tem.tem_goc_id) return returnOqcTemCon(tem, lyDo, actorId);
+  //   Tem 17 của KCS một phần (mig 122) chưa từng qua Sửa ⇒ về CHƯA KIỂM của tem gốc.
+  if (tem.tem_goc_id) {
+    return tem.kcs_tach_id ? returnOqcTemConKcs(tem, lyDo, actorId) : returnOqcTemCon(tem, lyDo, actorId);
+  }
 
   // Phần chờ OQC tách theo nguồn (mig 047 bắt buộc ⇒ 2 sub-counter luôn có giá trị).
   const con = Number(nguon === 'SUA' ? tem.con_oqc_sua : tem.con_oqc_kcs) || 0;
@@ -274,7 +317,15 @@ async function recordKcs(temId, body, actorId) {
     ghiChu: motPhan ? [`[Kiểm một phần ${tong}/${conKcs}]`, body.ghiChu].filter(Boolean).join(' ') : body.ghiChu,
   };
 
+  // ⚠⚠ KCS MỘT PHẦN ⇒ PHẦN ĐẠT THÀNH TEM 17 RIÊNG (mig 122, người dùng chốt 03/11/2026: "KCS kiểm trước khoảng 1 nửa số
+  //   lượng để giao gấp trước thì tem đó qua OQC thành tem 17"). Lượt chốt phần còn lại vẫn đi bằng tem 15.
+  //   Xin mã TRƯỚC transaction (luật `layBarcodeTem*`, như `recordSua`). `null` = API xin mã 17 đang TẮT hoặc chưa chạy
+  //   mig ⇒ giữ hành vi cũ: phần đạt đi bằng tem 15. ERP lỗi ⇒ `layBarcodeTem17` ném lỗi, KHÔNG lưu lượt kiểm — người dùng
+  //   bấm lại (nếu lưu xong đi bằng tem 15 thì nhãn giấy sai mà không ai biết).
+  const maTem17 = motPhan && dat > 0 && await repo.coKcsTach() ? await layBarcodeTem17(actorId) : null;
+
   let kcsId = null;
+  let temConId = null;
   await withTransaction(async (client) => {
     // ⚠ Khóa tem + đọc lại (21/10/2026): kiểm ở trên chạy NGOÀI transaction ⇒ 2 người lưu cùng lúc cùng thấy
     //   "còn 500" và cùng cộng 500 (tem 500 thành 1.000 đạt). Số đổi giữa chừng ⇒ người sau phải tải lại.
@@ -286,7 +337,13 @@ async function recordKcs(temId, body, actorId) {
     kcsId = await repo.insertKcs(client, temId, data, actorId);
     // Cộng dồn sổ cái: đạt → chờ OQC; quyết định sửa → chờ sửa; (hư không sửa + hủy) → loại; chênh lệch → tổng cần kiểm.
     await repo.addKcsLedger(client, temId, { dat, sua: quyetDinhSua, huy: huyTaiKcs, chenh: chenhSoCai }, actorId);
-    await repo.recomputeTemStage(client, temId, actorId);
+    if (maTem17) {
+      temConId = await repo.taoTemConKcs(client, {
+        temGocId: temId, phieuId: tem.phieu_san_xuat_id, maTem: maTem17, soLuong: dat, kcsId,
+      }, actorId);
+      await repo.congKcsTach(client, temId, dat, actorId);
+    }
+    await repo.recomputeTemStageMany(client, [temId, temConId].filter(Boolean), actorId);
   });
   await tracking.moveByTem(temId, 'KIEM', actorId);
   await repo.resolveReturns('OQC', temId); // KCS làm lại xong → tắt cờ "bị OQC trả về"
@@ -295,7 +352,10 @@ async function recordKcs(temId, body, actorId) {
   // Đẩy kết quả kiểm sang ERP (/gui-erp-kiem-pham) — NGẦM, không bao giờ chặn việc xác nhận KCS.
   if (kcsId) kiemPhamErp.guiNgam(kcsId, temId, { dat, hu, thieu }, actorId);
   const conLai = conSauChenh - tong; // = 0 khi cân đối; > 0 ở lượt "kiểm một phần" (27/10/2026)
-  return { tem_id: temId, next: 'KCS', so_luong_dat: dat, so_luong_sua: quyetDinhSua, so_luong_huy: huyTaiKcs, con_kcs: conLai };
+  return {
+    tem_id: temId, next: 'KCS', so_luong_dat: dat, so_luong_sua: quyetDinhSua, so_luong_huy: huyTaiKcs, con_kcs: conLai,
+    tem_con_id: temConId, ma_tem_17: maTem17,
+  };
 }
 
 // ----- GỘP TEM (KCS) — do in dư tem vì nhập thiếu SL: dồn SL các tem về tem ĐẦU TIÊN, hủy các tem còn lại -----
@@ -645,7 +705,8 @@ async function kcsHistory(date) {
       tg: r.tg, nguoi: r.nguoi || '—',
       hanh_dong: `KCS${r.ket_qua ? ' · ' + r.ket_qua : ''}`,
       doi_tuong: r.ma_tem || '', ma_phan: r.ma_phan || '',
-      chi_tiet: `Đạt ${q0(r.so_luong_dat)} · Hư ${q0(r.so_luong_loi)} · Hủy ${q0(r.so_luong_huy)}${chenh}`,
+      chi_tiet: `Đạt ${q0(r.so_luong_dat)} · Hư ${q0(r.so_luong_loi)} · Hủy ${q0(r.so_luong_huy)}${chenh}`
+        + (r.ma_tem_17 ? ` · Kiểm một phần → tem 17 ${r.ma_tem_17}` : ''),
     };
   });
 }
@@ -703,7 +764,21 @@ async function cancelKcs(kcsId, lyDo, actorId) {
   if (newDat < 0 || newSua < 0 || newHuy < 0) {
     throw new AppError('Không thể đảo sổ cái (số liệu đã đổi) — không hủy được lần KCS này', { status: 409, errorCode: 'LEDGER' });
   }
-  if (newDat + N(r.sl_sua_dat) < N(r.sl_oqc_dat)) {
+  // ⚠ Lượt kiểm một phần (mig 122): phần đạt nằm trên TEM 17 của lượt ⇒ kiểm + đảo cả tem đó.
+  const temCon = dat > 0 ? await repo.temConCuaLuotKcs(kcsId) : null;
+  if (temCon) {
+    const slCon = N(temCon.sl_kcs_dat);
+    if (slCon < dat) {
+      throw new AppError('Không đủ số lượng trên tem 17 để đảo — không hủy được lần KCS này', { status: 409, errorCode: 'LEDGER' });
+    }
+    if (slCon - dat < N(temCon.sl_oqc_dat)) {
+      throw new AppError(`Tem 17 ${temCon.ma_tem} của lần KCS này đã qua OQC — hủy xác nhận OQC trước`, { status: 409, errorCode: 'CONSUMED_OQC' });
+    }
+  }
+  // Sau khi đảo, tem gốc vẫn phải đủ hàng cho phần OQC đã ghi. Phần đã tách sang tem con không còn ở tem gốc ⇒ phải trừ
+  //   (thiếu là hủy được lượt chốt dù hàng của nó đã qua OQC, vì phần đạt của lượt tách vẫn nằm trong `sl_kcs_dat`).
+  const tachMoi = N(r.sl_sua_tach) - (temCon ? dat : 0);
+  if (newDat + N(r.sl_sua_dat) - tachMoi < N(r.sl_oqc_dat)) {
     throw new AppError('Phần đạt của lần KCS này đã đi tiếp OQC — hủy xác nhận OQC trước', { status: 409, errorCode: 'CONSUMED_OQC' });
   }
   if (newSua < N(r.sl_sua_dat) + N(r.sl_sua_huy)) {
@@ -711,7 +786,12 @@ async function cancelKcs(kcsId, lyDo, actorId) {
   }
   await withTransaction(async (client) => {
     await repo.addKcsLedger(client, r.tem_id, { dat: -dat, sua: -sua, huy: -huy, chenh: -chenh }, actorId);
-    await repo.recomputeTemStage(client, r.tem_id, actorId);
+    if (temCon) {
+      await repo.congKcsTach(client, r.tem_id, -dat, actorId);
+      await repo.congSlTemCon(client, temCon.id, -dat, actorId);
+      await repo.huyTemConNeuRong(client, temCon.id, actorId);
+    }
+    await repo.recomputeTemStageMany(client, [r.tem_id, temCon && temCon.id].filter(Boolean), actorId);
   });
   await repo.logCancelQc('kcs', kcsId, r.tem_id, r.ma_tem, lyDo, actorId);
   // Báo ERP hủy phiếu kiểm phẩm của lượt này theo IDMES — chạy ngầm (14/10/2026, `utils/erpHuy.js`).
@@ -844,7 +924,11 @@ async function temHanhTrinh(temId) {
 }
 
 // ----- Danh sách "đã hoàn thành" theo ngày (cho DonePanel bên trái) -----
-async function kcsDone(date) { return repo.temDoneByDate('kcs', date); }
+// Lượt kiểm một phần (mig 122): sidebar hiện + tìm theo mã tem 17 của lượt, giữ mã tem 15 ở `ma_tem_goc`.
+async function kcsDone(date) {
+  const rows = await repo.temDoneByDate('kcs', date);
+  return rows.map((r) => (r.ma_tem_17 ? { ...r, ma_tem_goc: r.ma, ma: r.ma_tem_17 } : r));
+}
 // Kèm trạng thái gửi ERP sửa đạt (`erp_sua_dat`: 'OK' | 'LOI' | null) của TỪNG lượt — nguồn cho nút
 // "Gửi lại ERP" ở sidebar. Lỗi đọc trạng thái bị NUỐT: đây là thông tin thêm, không được chặn sidebar.
 async function suaDone(date) {

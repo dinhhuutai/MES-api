@@ -7,6 +7,7 @@ const { tachDsMa, soMaVuaCot, NGAN_CACH } = require('../../utils/maPhanIn');
 const { coCotGia, TEN_COT: TEN_COT_GIA } = require('../../utils/giaPhanIn');
 // Khóa đồng bộ ERP của phần in admin đã sửa tay (mig 116) — xem đầu file utils/khoaErp.js.
 const { coCotKhoaErp, khongKhoaSql, dangKhoa } = require('../../utils/khoaErp');
+const { chuanMauMuc, MAU_IN_KHOA_SQL } = require('../../utils/mauMuc');
 
 // ----- Log đồng bộ -----
 async function createSyncLog({ nguon, fromDate, tuDong }, actorId) {
@@ -212,11 +213,63 @@ async function doDaiCotBarcode(client) {
 //   thà cắt bớt + cảnh báo. Với mig 089 (255 ⇒ 21 mã) thì thực tế không bao giờ chạm (tối đa đang là 3).
 // ⚠⚠ KHÓA ERP (mig 116, `utils/khoaErp.js`): phần in admin đã sửa tay ⇒ `ON CONFLICT … DO UPDATE … WHERE NOT khoa_erp`
 //   ⇒ KHÔNG ghi đè gì. Khi đó Postgres không trả dòng nào ở `RETURNING` ⇒ tra lại id theo mã (`idTheoMa`).
+// Dò cột `phan_in.mau_in_khoa` (mig 121). Chỉ nhớ khi ĐÃ có ⇒ chạy mig xong nhận ngay, không cần khởi động lại backend.
+let _coCotMauInKhoa = false;
+async function coCotMauInKhoa(client) {
+  if (_coCotMauInKhoa) return true;
+  const { rows } = await client.query(
+    "SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'phan_in' AND column_name = 'mau_in_khoa'");
+  _coCotMauInKhoa = rows.length > 0;
+  return _coCotMauInKhoa;
+}
+
+// CHỌN PHẦN IN CHO 1 DÒNG ERP THEO MÀU MỰC (mig 121) — trả màu mực dùng để upsert ⇒ `ON CONFLICT (ma_phan, mau_in_khoa)` trúng
+// đúng dòng (hoặc tạo dòng mới). Luật (⚠ đợt đã có KHÔNG bao giờ bị chuyển sang phần in khác):
+//   1. Đợt đã có trong MES ⇒ ở lại phần in của nó. ERP đổi màu (sửa dòng đơn) ⇒ đổi màu phần in đó, trừ khi màu mới đã thuộc
+//      phần in khác cùng code phần hoặc phần in đang khóa ERP ⇒ giữ màu cũ.
+//   2. Đợt MỚI, ERP không gửi màu ⇒ vào phần in cũ nhất của code phần (chưa có thì tạo, chưa có màu).
+//   3. Đợt MỚI có màu: khớp màu ⇒ vào phần in đó; có phần in CHƯA CÓ MÀU (dữ liệu trước khi ERP gửi `mauin`) ⇒ phần in đó NHẬN
+//      màu này, không tách; còn lại ⇒ tạo PHẦN IN MỚI — đây là ca "cùng code phần, khác màu mực".
+// Khóa các dòng cùng code phần (FOR UPDATE) để 2 lượt đồng bộ không cùng nhận màu cho 1 dòng.
+async function chotMauMuc(client, { maPhan, mauIn, maDotVai }) {
+  const { rows: ds } = await client.query(
+    `SELECT p.id, p.mau_in, COALESCE((to_jsonb(p)->>'khoa_erp')::boolean, false) AS khoa
+       FROM phan_in p WHERE p.ma_phan = $1 ORDER BY p.created_date, p.id FOR UPDATE`, [maPhan]);
+  const khoa = chuanMauMuc(mauIn);
+  const doiMau = (id) => client.query(
+    'UPDATE phan_in SET mau_in = $2, updated_date = CURRENT_TIMESTAMP WHERE id = $1', [id, mauIn]);
+  const { rows: dot } = maDotVai
+    ? await client.query('SELECT phan_in_id FROM dot_vai_ve WHERE ma_dot_vai = $1', [maDotVai]) : { rows: [] };
+  const cuaDot = dot[0] && ds.find((x) => x.id === dot[0].phan_in_id);
+  if (cuaDot) {
+    if (khoa && chuanMauMuc(cuaDot.mau_in) !== khoa && !cuaDot.khoa && !ds.some((x) => chuanMauMuc(x.mau_in) === khoa)) {
+      await doiMau(cuaDot.id);
+      return mauIn;
+    }
+    return cuaDot.mau_in;
+  }
+  if (!khoa) return ds[0] ? ds[0].mau_in : null;
+  if (ds.some((x) => chuanMauMuc(x.mau_in) === khoa)) return mauIn;
+  const chuaCoMau = ds.find((x) => !chuanMauMuc(x.mau_in));
+  if (chuaCoMau) await doiMau(chuaCoMau.id);
+  return mauIn;
+}
+
 // `mauIn` = ERP `mauin` (29/10/2026) → `phan_in.mau_in` — COALESCE như tính chất in: lượt ERP không gửi thì GIỮ giá trị cũ.
-async function upsertPhanIn(client, { maHangId, maPhan, mauVai, kichVai, kichPhim, mauIn, soLuongDonHang, tinhChatIn, barcode, ddhSubId }) {
+// ⚠⚠ MÀU MỰC (mig 121, 03/11/2026): CÙNG code phần KHÁC màu mực = 2 PHẦN IN RIÊNG — xem `chotMauMuc`. Chưa chạy mig ⇒ `mau_in_khoa`
+//   chưa có ⇒ chạy y như cũ (1 code phần 1 phần in).
+async function upsertPhanIn(client, { maHangId, maPhan, mauVai, kichVai, kichPhim, mauIn: mauInErp, soLuongDonHang, tinhChatIn, barcode, ddhSubId, maDotVai }) {
+  const coKhoaMau = await coCotMauInKhoa(client);
+  const mauIn = coKhoaMau ? await chotMauMuc(client, { maPhan, mauIn: mauInErp, maDotVai }) : mauInErp;
+  const dichConflict = coKhoaMau ? '(ma_phan, mau_in_khoa)' : '(ma_phan)';
   const base = [maHangId, maPhan, mauVai || null, kichVai || null, kichPhim || null, soLuongDonHang ?? null, tinhChatIn || null, mauIn || null];
   const chanKhoa = (await coCotKhoaErp(client)) ? 'WHERE NOT phan_in.khoa_erp' : '';
-  const idTheoMa = async () => (await client.query('SELECT id FROM phan_in WHERE ma_phan = $1', [maPhan])).rows[0].id;
+  const idTheoMa = async () => (await client.query(
+    coKhoaMau
+      ? `SELECT id FROM phan_in WHERE ma_phan = $1 AND mau_in_khoa = ${MAU_IN_KHOA_SQL('$2::text')}`
+      : 'SELECT id FROM phan_in WHERE ma_phan = $1',
+    coKhoaMau ? [maPhan, mauIn || null] : [maPhan]
+  )).rows[0].id;
   if (await hasBarcodeCol(client)) {
     // `ddh_sub_id` (mig 088) — thêm vào cùng nhánh có `barcode` vì 2 trường đi liền nhau: subID chính
     // là 3 số cuối của `BarcodePTHDH`. Thiếu migration ⇒ bỏ hẳn cột khỏi câu SQL, sync chạy như cũ.
@@ -238,7 +291,7 @@ async function upsertPhanIn(client, { maHangId, maPhan, mauVai, kichVai, kichPhi
     const { rows } = await client.query(
       `INSERT INTO phan_in (ma_hang_id, ma_phan, mau_vai, kich_vai, kich_phim, so_luong_don_hang, tinh_chat_in, mau_in, barcode${coSub ? ', ddh_sub_id' : ''})
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9${coSub ? ',$10' : ''})
-       ON CONFLICT (ma_phan) DO UPDATE SET
+       ON CONFLICT ${dichConflict} DO UPDATE SET
          mau_vai = EXCLUDED.mau_vai, kich_vai = EXCLUDED.kich_vai, kich_phim = EXCLUDED.kich_phim,
          so_luong_don_hang = EXCLUDED.so_luong_don_hang,
          tinh_chat_in = COALESCE(EXCLUDED.tinh_chat_in, phan_in.tinh_chat_in),
@@ -264,7 +317,7 @@ async function upsertPhanIn(client, { maHangId, maPhan, mauVai, kichVai, kichPhi
   const { rows } = await client.query(
     `INSERT INTO phan_in (ma_hang_id, ma_phan, mau_vai, kich_vai, kich_phim, so_luong_don_hang, tinh_chat_in, mau_in)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-     ON CONFLICT (ma_phan) DO UPDATE SET
+     ON CONFLICT ${dichConflict} DO UPDATE SET
        mau_vai = EXCLUDED.mau_vai, kich_vai = EXCLUDED.kich_vai, kich_phim = EXCLUDED.kich_phim,
        so_luong_don_hang = EXCLUDED.so_luong_don_hang,
        tinh_chat_in = COALESCE(EXCLUDED.tinh_chat_in, phan_in.tinh_chat_in),
@@ -404,9 +457,9 @@ async function dotVaiDaCo(maDotVais = []) {
 //   (19 code phần có >1 đơn: job mà đổi thì phần in lật đơn qua lại mỗi 5 phút, đúng kiểu vòng lặp
 //   Pain 04/08/2026). `barcode` KHÔNG đụng ở đây — nó GỘP DỒN qua `upsertPhanIn` như thường lệ.
 // ⚠ Ghi audit `ERP_CAP_NHAT_CODE_PHAN` kèm snapshot CŨ đủ để hoàn tác bằng tay.
-async function ganLaiPhanIn(client, { maPhan, maHangId, mauVai, kichVai, kichPhim, mauIn, soLuongDonHang, tinhChatIn, ddhSubId }, cu, moiHienThi, actorId) {
+async function ganLaiPhanIn(client, { phanInId, maHangId, mauVai, kichVai, kichPhim, mauIn, soLuongDonHang, tinhChatIn, ddhSubId }, cu, moiHienThi, actorId) {
   const coSub = await coCotSubPhanIn(client);
-  const p = [maPhan, maHangId, mauVai || null, kichVai || null, kichPhim || null, soLuongDonHang ?? null,
+  const p = [phanInId, maHangId, mauVai || null, kichVai || null, kichPhim || null, soLuongDonHang ?? null,
     tinhChatIn || null, actorId || null, mauIn || null];
   if (coSub) p.push(ddhSubId || null);
   // Phần in đang khóa ERP (mig 116) ⇒ không gán lại (trả null như "không có phần in" — bên gọi đã chặn trước).
@@ -416,7 +469,7 @@ async function ganLaiPhanIn(client, { maPhan, maHangId, mauVai, kichVai, kichPhi
             so_luong_don_hang = $6, tinh_chat_in = COALESCE($7, tinh_chat_in), mau_in = COALESCE($9, mau_in),
             ${coSub ? 'ddh_sub_id = COALESCE($10, ddh_sub_id),' : ''}
             updated_by = $8, updated_date = CURRENT_TIMESTAMP
-      WHERE ma_phan = $1 ${chanKhoa} RETURNING id`.replace(/\s+/g, ' '),
+      WHERE id = $1 ${chanKhoa} RETURNING id`.replace(/\s+/g, ' '),
     p
   );
   if (!rows[0]) return null;

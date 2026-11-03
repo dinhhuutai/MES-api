@@ -47,12 +47,15 @@ const { query } = require('../../config/db');
 const erp = require('../../utils/erpApiChung');
 const sockets = require('../../sockets');
 const repo = require('./suathongtin.repository');
+const { khopMauMuc, mauMucErp } = require('../../utils/mauMuc');
 
 const H = { HUY: 'GN_ERP_HUY', VANG: 'GN_ERP_VANG', NHAN_LAI: 'GN_ERP_NHAN_LAI' };
 const GIU_NGAY = 60; // chỉ theo dõi lượt hủy trong 60 ngày gần nhất
 
 const hoa = (v) => String(v == null ? '' : v).trim().toUpperCase();
 const khoaCap = (codePhan, idDot) => `${hoa(codePhan)}|${hoa(idDot)}`;
+// Dòng ERP thuộc phần in của lượt: cùng code phần CHƯA ĐỦ — khác màu mực là phần in khác (mig 121).
+const dongCuaLuot = (r, L) => khopMauMuc(mauMucErp(r), L.mau_in);
 const ghi = (luotId, hanhDong, moi, actorId = null) => repo.ghiAudit({ query: (sql, p) => query(sql, p) }, luotId, hanhDong, moi, actorId);
 // Mốc ERP của dòng → 'YYYY-MM-DD HH:mm:ss' GIỜ VN (ERP gửi giờ VN dán nhãn Z — đo prod 07/10/2026).
 const mocErp = (r) => {
@@ -163,7 +166,7 @@ async function napDangTheoDoi() {
   }
   if (!luot.length) return [];
   const [{ rows: qs }, { rows: dots }] = await Promise.all([
-    query(`SELECT q.id::text AS luot_id, q.da_xu_ly, q.phan_in_id, pin.ma_phan FROM qc_tra_ve q
+    query(`SELECT q.id::text AS luot_id, q.da_xu_ly, q.phan_in_id, pin.ma_phan, pin.mau_in FROM qc_tra_ve q
              JOIN phan_in pin ON pin.id = q.phan_in_id WHERE q.id = ANY($1::uuid[])`.replace(/\s+/g, ' '),
     [luot.map((l) => l.luot_id)]),
     query("SELECT id::text AS id, ma_dot_vai FROM dot_vai_ve WHERE id = ANY($1::uuid[]) AND trang_thai NOT IN ('DA_GOP','DA_HUY')",
@@ -258,11 +261,11 @@ async function truocDongBo({ rows = [], prepared = [], theoDoiVang = false } = {
     if (!theoCap.has(k)) theoCap.set(k, []);
     theoCap.get(k).push(p);
   }
-  const coMat = new Set(rows.map((r) => khoaCap(r.code_part, idDotErp(r))));
+  const coMatCua = (L, keys) => rows.some((r) => keys.includes(khoaCap(r.code_part, idDotErp(r))) && dongCuaLuot(r, L));
   for (const L of ds) {
     try {
       const keys = [...new Set(L.cap.map((c) => khoaCap(L.ma_phan, c.id_dot_ready)))];
-      if (!keys.some((k) => coMat.has(k))) {
+      if (!coMatCua(L, keys)) {
         // Vắng cả lượt ⇒ ERP đã gỡ các đợt khỏi danh sách ready (hoặc chúng đã rơi khỏi cửa sổ).
         if (theoDoiVang && rows.length && !L.vang) {
           await ghi(L.luot_id, H.VANG, { ma_phan: L.ma_phan, so_cap: L.cap.length });
@@ -270,14 +273,14 @@ async function truocDongBo({ rows = [], prepared = [], theoDoiVang = false } = {
         continue;
       }
       // Dòng đã bị bước (1) loại (khóa cũ đã thay) thì không xét lại.
-      const dong = [...new Set(keys.flatMap((k) => theoCap.get(k) || []))].filter((p) => !boQua.has(p));
+      const dong = [...new Set(keys.flatMap((k) => theoCap.get(k) || []))].filter((p) => !boQua.has(p) && dongCuaLuot(p.r, L));
       if (!dong.length) continue; // chỉ có dòng bị bỏ qua (loaikd / tính chất in ngoài phạm vi)
       const guiLai = L.vang || dong.some((p) => mocErp(p.r) > L.tg_huy_vn);
       if (!guiLai) { dong.forEach((p) => boQua.add(p)); continue; }
       const nhan = await ghepVaDoiKhoa(L, dong);
       if (!nhan.length) continue;
       await ghi(L.luot_id, H.NHAN_LAI, { ma_phan: L.ma_phan, cap: nhan });
-      traLai.push({ L, dongR: rows.filter((r) => hoa(r.code_part) === hoa(L.ma_phan)) });
+      traLai.push({ L, dongR: rows.filter((r) => hoa(r.code_part) === hoa(L.ma_phan) && dongCuaLuot(r, L)) });
     } catch (e) {
       console.error(`[gn-erp] ✗ Nhận lại đợt từ ERP lỗi (${L.ma_phan}): ${e.message}`);
     }
@@ -354,7 +357,7 @@ async function thayDotCu({ prepared = [], boQua, traLai }) {
   for (const L of cho) {
     if (daXetPin.has(L.phan_in_id)) { daThay.add(L.luot_id); continue; } // phần in có 2 lượt chờ (dữ liệu cũ)
     try {
-      const dongMoi = (theoMa.get(hoa(L.ma_phan)) || []).filter((p) => !daCo.has(p.maDotVai) && !boQua.has(p));
+      const dongMoi = (theoMa.get(hoa(L.ma_phan)) || []).filter((p) => !daCo.has(p.maDotVai) && !boQua.has(p) && dongCuaLuot(p.r, L));
       if (!dongMoi.length) continue;
       daXetPin.add(L.phan_in_id);
       const pv = L.tra_ve && Array.isArray(L.tra_ve.dot_vai_ids) ? L.tra_ve.dot_vai_ids : null;

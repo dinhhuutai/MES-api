@@ -25,6 +25,7 @@ const { khoaNgcLenhSql, khoaNgcSql } = require('../../utils/nhaGiaCong'); // đ�
 // Mốc tuyệt đối của giờ SX nhập ở ô In tem (ngày ca + giờ, ca đêm qua nửa đêm +1 ngày) — dùng chung Báo cáo sản xuất.
 const { MOC_TEM } = require('./baoCaoSanXuat');
 const { chuanMaChuyen, chuanMaChuyenSql } = require('../../utils/maChuyen');
+const { laTemSuaSql } = require('../../utils/temCon');
 
 const PHAN_AGG = `(SELECT string_agg(DISTINCT pin.ma_phan, ', ')
     FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
@@ -1804,7 +1805,7 @@ async function duLieuGhiInTem(capTem = [], ngayCt = null) {
   const sql = `
     WITH inp AS (SELECT * FROM unnest($1::uuid[], $2::uuid[]) AS x(tem_id, dot_vai_id))
     SELECT t.id AS tem_id, t.ma_tem, t.ma_ngay_ca, t.gc_mau_vai,
-           (t.tem_goc_id IS NOT NULL) AS la_tem_sua,
+           ${laTemSuaSql('t')} AS la_tem_sua,
            (SELECT tg.ma_tem FROM tem tg WHERE tg.id = t.tem_goc_id) AS ma_tem_goc,
            CASE WHEN t.tem_goc_id IS NOT NULL THEN t.sl_kcs_dat ELSE t.so_luong END AS so_luong,
            info.ma_phan,

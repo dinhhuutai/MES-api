@@ -129,7 +129,8 @@ async function capNhatMotPhanIn(pin, dong, actorId) {
   const moiNhat = [...(cuaMinh.length ? cuaMinh : dong)].sort((a, b) => mocDong(b).localeCompare(mocDong(a)))[0];
 
   // 1) Mức phần in qua `ganLaiTheoDong` — chỉ gọi khi có trường thật sự khác.
-  const [cu] = await erpRepo.anhChupPhanInTheoMa([pin.ma_phan]);
+  // 1 code phần có thể có nhiều phần in theo màu mực (mig 121) ⇒ lấy ĐÚNG phần in theo id.
+  const cu = (await erpRepo.anhChupPhanInTheoMa([pin.ma_phan])).find((x) => String(x.id) === String(pin.id));
   if (cu) {
     const moi = {
       khach: E.clean(moiNhat.customer_name), don_hang: E.clean(moiNhat.order_name), ma_hang: E.clean(moiNhat.item_name),
@@ -145,7 +146,7 @@ async function capNhatMotPhanIn(pin, dong, actorId) {
     const doi = Object.keys(moi).filter((k) => moi[k] != null && moi[k] !== '' && khacNhau(moi[k], cuMap[k]));
     const thieuMa = !moi.khach || !moi.don_hang || !moi.ma_hang;
     if (doi.length && !thieuMa) {
-      await E.ganLaiTheoDong(cu.ma_phan, moiNhat, actorId);
+      await E.ganLaiTheoDong(cu.ma_phan, moiNhat, actorId, { phanInId: cu.id });
       out.phan_in.push(...doi);
     } else if (doi.length && thieuMa) {
       out.ghi_chu = 'ERP thiếu khách/đơn/mã hàng — bỏ qua phần cập nhật phần in';

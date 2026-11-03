@@ -187,7 +187,7 @@ async function dotPhamVi(phanInId, { dotVaiIds = null, lenhId = null } = {}) {
 // (`TRA_VE_GN.dot_vai_ids`; lượt trước 11/10/2026 không có ⇒ null = mọi đợt chưa vào sản xuất).
 async function dangChoTatCa() {
   const sql = `
-    SELECT q.id::text AS luot_id, q.phan_in_id::text AS phan_in_id, pin.ma_phan, q.ly_do, q.checklist_list, q.created_date AS tg_tra_ve,
+    SELECT q.id::text AS luot_id, q.phan_in_id::text AS phan_in_id, pin.ma_phan, pin.mau_in, q.ly_do, q.checklist_list, q.created_date AS tg_tra_ve,
            (SELECT a.gia_tri_moi FROM audit_log a WHERE a.ten_bang = 'qc_tra_ve' AND a.id_ban_ghi = q.id::text
               AND a.hanh_dong = 'TRA_VE_GN' ORDER BY a.thoi_gian DESC LIMIT 1) AS tra_ve
       FROM qc_tra_ve q JOIN phan_in pin ON pin.id = q.phan_in_id

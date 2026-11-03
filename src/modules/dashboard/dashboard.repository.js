@@ -10,6 +10,7 @@ const { LENH_CHO_KH_SQL, MOC_TRA_VE_KH_SQL, LOAI_TRA_VE_KH } = require('../../ut
 const { dkTrang } = require('../../utils/phuongAnIn');
 const { maTemUngVien } = require('../../utils/temPrefix');
 const { mauTim } = require('../../utils/timKiem');
+const { kcsTachIdSql, slKcsTachSql } = require('../../utils/temCon');
 
 // "Đủ mục KT" (READY) trong flowRows: dùng cờ hk/hf/hm của CTE `kt` + tên khách của đợt (b.ten_khach_hang).
 // Khách II/AD: Khuôn không bắt buộc (chỉ cần Film + Mực). Xem utils/tech.js.
@@ -346,7 +347,7 @@ async function chartDetail() {
   const dkPain = await dkTrang('DB_TONG_QUAN', 'pin', 'pin.id');
   // OQC: chờ = tem đã tới OQC chưa kiểm (con_oqc); đã xác nhận = đã qua OQC (sổ cái sl_oqc_dat) — tách nguồn KCS(15-)/Sửa(17-).
   const oqcSql = `SELECT
-      COALESCE(SUM(GREATEST(COALESCE(t.sl_kcs_dat,0) - (COALESCE(t.sl_oqc_dat,0) - COALESCE(t.sl_oqc_dat_sua,0)),0)),0)::int AS kcs_cho,
+      COALESCE(SUM(GREATEST(COALESCE(t.sl_kcs_dat,0) - ${slKcsTachSql('t')} - (COALESCE(t.sl_oqc_dat,0) - COALESCE(t.sl_oqc_dat_sua,0)),0)),0)::int AS kcs_cho,
       COALESCE(SUM(GREATEST(COALESCE(t.sl_oqc_dat,0) - COALESCE(t.sl_oqc_dat_sua,0),0)),0)::int AS kcs_dat,
       COALESCE(SUM(GREATEST(COALESCE(t.sl_sua_dat,0) - COALESCE(t.sl_oqc_dat_sua,0),0)),0)::int AS sua_cho,
       COALESCE(SUM(COALESCE(t.sl_oqc_dat_sua,0)),0)::int AS sua_dat,
@@ -1056,7 +1057,7 @@ async function tinhTrangGraph(phanInId) {
     //   `sl_oqc_dat_sua` / OQC `nguon='SUA'` của tem gốc đứng ở 0 ⇒ bản cũ (chỉ tem gốc) vẽ nhánh Sửa dừng ở OQC = 0
     //   (ca thật LM-2609-003-A01-F04-C01). `da_tich_giao` (mig 092) đọc qua to_jsonb ⇒ thiếu cột thì NULL, không lỗi.
     query(
-      `SELECT DISTINCT ON (t.id) ps.lenh_san_xuat_id, t.id AS tem_id, t.tem_goc_id, t.ma_tem, t.so_luong, t.trang_thai,
+      `SELECT DISTINCT ON (t.id) ps.lenh_san_xuat_id, t.id AS tem_id, t.tem_goc_id, ${kcsTachIdSql('t')} AS kcs_tach_id, t.ma_tem, t.so_luong, t.trang_thai,
               t.created_date AS tg_tao, (to_jsonb(t)->>'da_tich_giao')::boolean AS da_tich_giao,
               t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy, t.sl_sua_dat, t.sl_sua_huy,
               t.sl_oqc_dat, t.sl_oqc_dat_sua, t.sl_da_giao, t.sl_da_giao_sua,
@@ -1132,7 +1133,7 @@ async function tinhTrangGraph(phanInId) {
     ),
     // Từng LẦN KIỂM KCS của tem (kiểm trước để giao trước) — để rẽ nhánh KCS con. Loại bản ghi đã hủy xác nhận.
     query(
-      `SELECT k.tem_id, k.so_luong_kiem, k.so_luong_dat, k.so_luong_loi, k.so_luong_huy,
+      `SELECT k.id, k.tem_id, k.so_luong_kiem, k.so_luong_dat, k.so_luong_loi, k.so_luong_huy,
               k.created_date AS tg, ku.ho_ten AS nguoi
        FROM kcs k LEFT JOIN nguoi_dung ku ON ku.id = k.created_by
        WHERE k.tem_id IN (

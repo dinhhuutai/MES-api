@@ -6,6 +6,7 @@ const { dkTrang } = require('../../utils/phuongAnIn');
 const { chipCondition, dominantStageScalar } = require('../../utils/stage');
 const { mauTim } = require('../../utils/timKiem');
 const { qcXacNhanPhanInSql, mocDotMucSql } = require('../../utils/tech');
+const { slKcsTachSql } = require('../../utils/temCon');
 
 const BASE_JOINS = `
   FROM phan_in pin
@@ -139,7 +140,7 @@ async function listVaiVe({ search = '', filters = {}, stage = '', offset = 0, li
       WITH tp AS (
         SELECT tm.id, tm.ma_tem, tm.so_luong, tm.trang_thai, tm.created_date,
                tm.sl_kcs_sua, tm.sl_kcs_dat, tm.sl_sua_dat, tm.sl_oqc_dat, tm.sl_oqc_dat_sua, tm.sl_da_giao,
-               tm.sl_sua_tach
+               tm.sl_sua_tach, ${slKcsTachSql('tm')} AS sl_kcs_tach
         FROM tem tm
         JOIN phieu_san_xuat ps ON ps.id=tm.phieu_san_xuat_id
         JOIN lenh_san_xuat ls ON ls.id=ps.lenh_san_xuat_id AND ls.trang_thai<>'HUY'
@@ -157,8 +158,8 @@ async function listVaiVe({ search = '', filters = {}, stage = '', offset = 0, li
             'tem_id', tp2.id, 'ma_tem', tp2.ma_tem, 'so_luong', tp2.so_luong, 'trang_thai', tp2.trang_thai,
             'kcs_dat', k.so_luong_dat, 'kcs_loi', k.so_luong_loi, 'sua_dat', s.so_luong_sua_dat, 'oqc_ket_qua', o.ket_qua,
             'sl_sua', tp2.sl_kcs_sua,
-            'con_oqc_kcs', (tp2.sl_kcs_dat - (tp2.sl_oqc_dat - tp2.sl_oqc_dat_sua)),
-            'con_oqc_sua', (tp2.sl_sua_dat - tp2.sl_oqc_dat_sua - tp2.sl_sua_tach),
+            'con_oqc_kcs', (tp2.sl_kcs_dat - tp2.sl_kcs_tach - (tp2.sl_oqc_dat - tp2.sl_oqc_dat_sua)),
+            'con_oqc_sua', (tp2.sl_sua_dat - tp2.sl_oqc_dat_sua - (tp2.sl_sua_tach - tp2.sl_kcs_tach)),
             'giao_kcs', (tp2.sl_oqc_dat - tp2.sl_oqc_dat_sua),
             'giao_sua', tp2.sl_oqc_dat_sua
           ) ORDER BY tp2.created_date, tp2.ma_tem)

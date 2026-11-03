@@ -66,7 +66,7 @@ async function listCandidates({
            -- (tương đương code phần) · barcode = mã ĐỢT VẢI (IDDotReady), dùng chung nhiều phần in.
            pin.barcode AS barcode_phan_in,
            (SELECT string_agg(DISTINCT dvb.barcode, ',') FROM dot_vai_ve dvb WHERE dvb.phan_in_id = pin.id AND dvb.barcode IS NOT NULL) AS barcode,
-           pin.mau_vai, pin.kich_vai, pin.kich_phim,
+           pin.mau_vai, pin.mau_in, pin.kich_vai, pin.kich_phim,
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
            (SELECT string_agg(DISTINCT gs.ma_set, ', ')
               FROM dot_vai_ve dv JOIN gom_set_dot_vai gsd ON gsd.dot_vai_ve_id = dv.id

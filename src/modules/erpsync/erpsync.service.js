@@ -14,6 +14,7 @@ const { dangKhoa } = require('../../utils/khoaErp');
 const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
 const gomRepo = require('../gomset/gomset.repository');
+const { chuanMauMuc } = require('../../utils/mauMuc');
 
 const NGUON = 'phieu_nhan_vai_60';          // API DUY NHẤT → đợt vải vào thẳng READY
 
@@ -64,6 +65,11 @@ function field(r, ...names) {
 const erpTinhChatIn = (r) => clean(field(r, 'tinhchatin', 'tinh_chat_in')) || null;
 // Màu in (ERP `mauin`, gửi từ 29/10/2026 — đi cùng màu vải / kích vải / kích phim) → `phan_in.mau_in` (có từ mig 001).
 const erpMauIn = (r) => clean(field(r, 'mauin', 'mau_in')) || null;
+// Trong các phần in cùng code phần (mig 121): đúng màu → chưa có màu → phần in đầu tiên.
+const phanInTheoMauMuc = (ds, mau) => {
+  const k = chuanMauMuc(mau);
+  return ds.find((x) => k && chuanMauMuc(x.mau_in) === k) || ds.find((x) => !chuanMauMuc(x.mau_in)) || ds[0] || null;
+};
 // Mã vạch đợt vải từ ERP — trường `IDDotReady` (đổi tên từ `maquet` cũ) → phan_in.barcode (quét ở READY).
 const erpBarcode = (r) => clean(field(r, 'IDDotReady', 'iddotready', 'maquet', 'ma_quet', 'barCode', 'barcode', 'ma_vach', 'mavach')) || null;
 // Mã vạch HSKT (ERP BarcodeHKT) → ho_so_ky_thuat.barcode_hskt (quét HSKT).
@@ -231,7 +237,7 @@ async function processRow(r, maPhan, maDotVai, loaiDotVaiId, tgChuyenReady) {
     });
     const mhId = await repo.upsertMaHang(client, { donHangId: donId, maHang: clean(r.item_name), tenMaHang: clean(r.item_name) });
     const pinId = await repo.upsertPhanIn(client, {
-      maHangId: mhId, maPhan,
+      maHangId: mhId, maPhan, maDotVai,
       mauVai: clean(r.fabric_color), kichVai: clean(r.fabric_size), kichPhim: clean(r.film_size), mauIn: erpMauIn(r),
       soLuongDonHang: r.order_qty ?? null,
       tinhChatIn: erpTinhChatIn(r),
@@ -604,9 +610,15 @@ async function xemTruocCodePhan({ codeParts, ngay } = {}, actorId) {
     repo.anhChupPhanInTheoMa(codes),
     repo.dotVaiDaCo(tatCa.map((p) => p.maDotVai)),
   ]);
-  const htTheoMa = new Map(hienTai.map((h) => [String(h.ma_phan).toUpperCase(), h]));
+  // 1 code phần có thể có nhiều phần in theo màu mực (mig 121) ⇒ nhóm lại, lấy đúng phần in theo màu của dòng ERP.
+  const htTheoMa = new Map();
+  hienTai.forEach((h) => {
+    const k = String(h.ma_phan).toUpperCase();
+    if (!htTheoMa.has(k)) htTheoMa.set(k, []);
+    htTheoMa.get(k).push(h);
+  });
 
-  const dong = new Map();                    // khóa dòng → dòng ERP gốc (để bước Cập nhật dùng lại)
+  const dong = new Map();                   // khóa dòng → dòng ERP gốc (để bước Cập nhật dùng lại)
   const items = codes.map((ma) => {
     const ps = tatCa.filter((p) => clean(p.r.code_part).toUpperCase() === ma);
     ps.forEach((p) => dong.set(p.maDotVai, { ma, r: p.r, skip: p.skip }));
@@ -615,9 +627,11 @@ async function xemTruocCodePhan({ codeParts, ngay } = {}, actorId) {
     // Mặc định chọn dòng MỚI NHẤT (ngày nhận vải, rồi mốc tạo bên ERP) — người dùng đổi được.
     const macDinh = [...dung].sort((a, b) => String(b.ngay_nhan_vai || '').localeCompare(String(a.ngay_nhan_vai || ''))
       || String(b.tao_luc || '').localeCompare(String(a.tao_luc || '')))[0];
-    const ht = htTheoMa.get(ma) || null;
+    const ht = phanInTheoMauMuc(htTheoMa.get(ma) || [], macDinh ? macDinh.mau_in : null);
     const soDon = new Set(dung.map((x) => x.don_hang)).size;
     const canhBao = [];
+    const soMau = new Set(dung.map((x) => chuanMauMuc(x.mau_in)).filter(Boolean)).size;
+    if (soMau > 1) canhBao.push(`ERP có ${soMau} MÀU MỰC cho code phần này — mỗi màu là 1 phần in riêng; dòng chọn chỉ gán lại phần in cùng màu`);
     if (!erp.length) canhBao.push('ERP không có dữ liệu cho code phần này từ ngày đã chọn');
     else if (!dung.length) canhBao.push('Mọi dòng ERP đều bị bỏ qua (loaikd / tính chất in ngoài phạm vi)');
     if (soDon > 1) canhBao.push(`ERP có ${soDon} ĐƠN HÀNG khác nhau cho code phần này — chọn đúng dòng làm chuẩn`);
@@ -640,8 +654,10 @@ async function xemTruocCodePhan({ codeParts, ngay } = {}, actorId) {
 
 // Gán lại 1 phần in theo dòng ERP đã chọn — upsert khách/đơn/mã hàng Y HỆT `processRow`, rồi đổi
 // `ma_hang_id` + quy cách. Trả { ma, doi, cu, moi }.
-async function ganLaiTheoDong(ma, r, actorId) {
-  const [cu] = await repo.anhChupPhanInTheoMa([ma]);
+// `phanInId` (tùy chọn): bên gọi đã biết chính xác phần in; không truyền ⇒ chọn theo màu mực của dòng (mig 121).
+async function ganLaiTheoDong(ma, r, actorId, { phanInId } = {}) {
+  const ds = await repo.anhChupPhanInTheoMa([ma]);
+  const cu = phanInId ? ds.find((x) => String(x.id) === String(phanInId)) : phanInTheoMauMuc(ds, erpMauIn(r));
   if (!cu) return { ma, doi: false, ly_do: 'Phần in chưa có trong MES' };
   // Admin đã sửa tay ở Quản trị phần in ⇒ đang KHÓA ERP (mig 116) — không gán lại, kể cả khách/đơn/mã hàng.
   if (await dangKhoa(cu.id)) return { ma, doi: false, khoa_erp: true, ly_do: 'Phần in đang khóa đồng bộ ERP (Quản trị phần in)' };
@@ -662,7 +678,7 @@ async function ganLaiTheoDong(ma, r, actorId) {
     });
     const mhId = await repo.upsertMaHang(client, { donHangId: donId, maHang: moi.ma_hang, tenMaHang: moi.ma_hang });
     await repo.ganLaiPhanIn(client, {
-      maPhan: cu.ma_phan, maHangId: mhId, mauVai: moi.mau_vai, kichVai: moi.kich_vai, kichPhim: moi.kich_phim, mauIn: moi.mau_in,
+      phanInId: cu.id, maHangId: mhId, mauVai: moi.mau_vai, kichVai: moi.kich_vai, kichPhim: moi.kich_phim, mauIn: moi.mau_in,
       soLuongDonHang: moi.so_luong_don_hang, tinhChatIn: moi.tinh_chat_in, ddhSubId: moi.ddh_sub_id,
     }, cuGon, { ...moi, ma_hang_id: mhId }, actorId);
   });

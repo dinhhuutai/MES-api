@@ -8,6 +8,7 @@ const { timTem } = require('../../utils/temPrefix');
 const { mauTim } = require('../../utils/timKiem');
 const { MOC_VAO_TEM } = require('../../utils/siSoTram');
 const LS = require('../../utils/lichSuTim');
+const { kcsTachIdSql, laTemSuaSql, slKcsTachSql } = require('../../utils/temCon');
 
 // SỔ CÁI SỐ LƯỢNG tem (migration 043): SL còn lại từng công đoạn (dùng cho lọc + hiển thị).
 // con_kcs tính theo TỔNG CẦN KIỂM = so_luong + sl_chenh_lech (dư/thiếu — mig 044).
@@ -30,11 +31,13 @@ const CON_SUA = '(t.sl_kcs_sua - (t.sl_sua_dat + t.sl_sua_huy))';
 const CON_OQC = '((t.sl_kcs_dat + t.sl_sua_dat) - t.sl_oqc_dat - t.sl_sua_tach)';
 const CON_GIAO = '(t.sl_oqc_dat - t.sl_da_giao)';
 // Tách theo NGUỒN ở OQC (mig 047): phần chờ OQC từ KCS-đạt (tem 15-) vs Sửa-đạt (tem 17-).
-const CON_OQC_KCS = '(t.sl_kcs_dat - (t.sl_oqc_dat - t.sl_oqc_dat_sua))';
-// ⚠⚠ TRỪ `sl_sua_tach` (mig 091): phần sửa-đạt đã TÁCH ra thành tem con thì tem GỐC không được hiện
+// ⚠⚠ TỪ MIG 122 (03/11/2026): `sl_sua_tach` = TỔNG phần đã tách sang tem con, gồm cả KCS kiểm một phần (`sl_kcs_tach`).
+//   `CON_OQC` ở trên đúng sẵn; 2 công thức theo NGUỒN phải chia lại phần tách về đúng nguồn của nó.
+const CON_OQC_KCS = `(t.sl_kcs_dat - ${slKcsTachSql('t')} - (t.sl_oqc_dat - t.sl_oqc_dat_sua))`;
+// ⚠⚠ TRỪ phần SỬA đã tách (mig 091): phần sửa-đạt đã TÁCH ra thành tem con thì tem GỐC không được hiện
 //   lại ở OQC nữa, nếu không **số lượng bị đếm 2 lần** (một ở tem gốc, một ở tem con).
 //   Dữ liệu trước mig 091 có `sl_sua_tach = 0` ⇒ công thức trả về ĐÚNG NHƯ CŨ, không nắn gì.
-const CON_OQC_SUA = '(t.sl_sua_dat - t.sl_oqc_dat_sua - t.sl_sua_tach)';
+const CON_OQC_SUA = `(t.sl_sua_dat - t.sl_oqc_dat_sua - (t.sl_sua_tach - ${slKcsTachSql('t')}))`;
 
 // Đánh dấu bản ghi KCS/Sửa/OQC đã bị HỦY XÁC NHẬN trong audit_log (không xóa cứng).
 // `table` là literal nội bộ ('kcs'|'sua'|'oqc'), không nhận từ user → nội suy an toàn.
@@ -61,7 +64,7 @@ const temCtx = (maTrang) => {
 const TEM_CTX = `
   SELECT t.id AS tem_id, t.ma_tem, t.so_luong, t.trang_thai, t.da_qua_phoi, t.sl_chenh_lech, t.created_date AS ngay_in_tem,
          t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy, t.sl_sua_dat, t.sl_sua_huy, t.sl_oqc_dat, t.sl_da_giao,
-         (t.tem_goc_id IS NOT NULL) AS la_tem_sua,
+         ${laTemSuaSql('t')} AS la_tem_sua,
          ${CON_KCS} AS con_kcs, ${CON_SUA} AS con_sua, ${CON_OQC} AS con_oqc, ${CON_GIAO} AS con_giao,
          ${CON_OQC_KCS} AS con_oqc_kcs, ${CON_OQC_SUA} AS con_oqc_sua,
          ls.ma_lenh_san_xuat, cs.ma_chuyen, cs.ten_chuyen,
@@ -195,6 +198,7 @@ async function prevConfirmerByTems(temIds) {
       (SELECT nd.ho_ten FROM (
          SELECT created_by AS uid, created_date AS tg FROM kcs WHERE tem_id = t.id
          UNION ALL SELECT created_by, created_date FROM sua WHERE tem_id = t.id
+         UNION ALL SELECT created_by, created_date FROM kcs WHERE id::text = ${kcsTachIdSql('t')}
        ) e JOIN nguoi_dung nd ON nd.id = e.uid ORDER BY e.tg DESC LIMIT 1) AS nguoi_kcs_sua,
       (SELECT nd.ho_ten FROM phieu_san_xuat ps JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
          JOIN nguoi_dung nd ON nd.id = ls.created_by WHERE ps.id = t.phieu_san_xuat_id) AS nguoi_release1,
@@ -217,6 +221,7 @@ async function tgKiemByTems(temIds) {
     SELECT t.id AS tem_id,
       COALESCE(
         CASE WHEN t.tem_goc_id IS NOT NULL THEN COALESCE(
+          (SELECT k.created_date FROM kcs k WHERE k.id::text = ${kcsTachIdSql('t')}),
           (SELECT max(s.created_date) FROM sua s WHERE s.tem_con_id = t.id AND ${notCancelledQc('s', 'sua')}),
           (SELECT max(s.created_date) FROM sua s WHERE s.tem_id = t.tem_goc_id AND ${notCancelledQc('s', 'sua')})) END,
         (SELECT max(k.created_date) FROM kcs k WHERE k.tem_id = t.id AND ${notCancelledQc('k', 'kcs')}),
@@ -236,14 +241,14 @@ async function getTemLedger(temId, { client = null, khoa = false } = {}) {
   const { rows } = await (client || { query }).query(
     `SELECT id, ma_tem, so_luong, trang_thai, da_qua_phoi, phieu_san_xuat_id, sl_chenh_lech,
             sl_kcs_dat, sl_kcs_sua, sl_kcs_huy, sl_sua_dat, sl_sua_huy, sl_oqc_dat, sl_da_giao,
-            sl_oqc_dat_sua, tem_goc_id, sl_sua_tach,
+            sl_oqc_dat_sua, tem_goc_id, sl_sua_tach, ${kcsTachIdSql('t')} AS kcs_tach_id,
             ${conKcsSql('')} AS con_kcs,
             (sl_kcs_sua - (sl_sua_dat+sl_sua_huy)) AS con_sua,
             ((sl_kcs_dat+sl_sua_dat) - sl_oqc_dat - sl_sua_tach) AS con_oqc,
-            (sl_kcs_dat - (sl_oqc_dat - sl_oqc_dat_sua)) AS con_oqc_kcs,
-            (sl_sua_dat - sl_oqc_dat_sua - sl_sua_tach) AS con_oqc_sua,
+            ${CON_OQC_KCS} AS con_oqc_kcs,
+            ${CON_OQC_SUA} AS con_oqc_sua,
             (sl_oqc_dat - sl_da_giao) AS con_giao
-     FROM tem WHERE id = $1${khoa ? ' FOR UPDATE' : ''}`,
+     FROM tem t WHERE id = $1${khoa ? ' FOR UPDATE' : ''}`,
     [temId]
   );
   return rows[0] || null;
@@ -282,11 +287,49 @@ async function addSuaLedger(client, temId, { dat = 0, huy = 0 }, actorId) {
 //   Đường CHÍNH để tìm tem con của một lượt sửa là `sua.tem_con_id` — đừng quay lại dùng hàm này.
 // ⚠ `ORDER BY created_date DESC` là BẮT BUỘC: không có nó thì Postgres trả dòng bất kỳ, và việc
 //   "cộng dồn vào tem con" ở nhánh lùi sẽ nhảy lung tung giữa các tem con.
+// ⚠ Chỉ tem con của SỬA: tem 17 của KCS một phần (mig 122) không được nhận thêm hàng sửa đạt.
 async function getTemConCuaGoc(temGocId, client) {
   const run = client ? client.query.bind(client) : query;
   const { rows } = await run(
-    'SELECT id, ma_tem, trang_thai, sl_kcs_dat, sl_oqc_dat, sl_da_giao FROM tem WHERE tem_goc_id = $1 ORDER BY created_date DESC LIMIT 1',
+    `SELECT id, ma_tem, trang_thai, sl_kcs_dat, sl_oqc_dat, sl_da_giao FROM tem t
+      WHERE tem_goc_id = $1 AND ${kcsTachIdSql('t')} IS NULL ORDER BY created_date DESC LIMIT 1`.replace(/\s+/g, ' '),
     [temGocId]
+  );
+  return rows[0] || null;
+}
+
+// ─── KCS KIỂM MỘT PHẦN ⇒ TEM 17 RIÊNG (mig 122, 03/11/2026) ───────────────────────────────────
+// Cùng khuôn tem con của Sửa: `so_luong = 0`, SL ở `sl_kcs_dat`, vào thẳng `CHO_OQC`. Khác ở `kcs_tach_id` (lượt sinh ra nó).
+// Dò cột trước khi ghi; thiếu cột ⇒ `recordKcs` giữ hành vi cũ (phần đạt đi bằng tem 15).
+async function coKcsTach() {
+  return (await coCotBang('tem', 'kcs_tach_id')) && (await coCotBang('tem', 'sl_kcs_tach'));
+}
+
+async function taoTemConKcs(client, { temGocId, phieuId, maTem, soLuong, kcsId }, actorId) {
+  const { rows } = await client.query(
+    `INSERT INTO tem (phieu_san_xuat_id, ma_tem, so_luong, trang_thai, sl_kcs_dat, tem_goc_id, kcs_tach_id, created_by)
+     VALUES ($1,$2,0,'CHO_OQC',$3,$4,$5,$6) RETURNING id`,
+    [phieuId, maTem, soLuong, temGocId, kcsId, actorId]
+  );
+  return rows[0].id;
+}
+
+// Tem GỐC: phần KCS đạt đã tách sang tem con. `sl_sua_tach` là TỔNG phần đã tách nên cộng cả 2 cột.
+async function congKcsTach(client, temId, delta, actorId) {
+  await client.query(
+    `UPDATE tem SET sl_sua_tach = sl_sua_tach + $2, sl_kcs_tach = sl_kcs_tach + $2,
+       updated_by=$3, updated_date=CURRENT_TIMESTAMP WHERE id=$1`,
+    [temId, delta, actorId]
+  );
+}
+
+// Tem 17 còn hiệu lực của 1 lượt KCS (NULL nếu lượt không tách hoặc tem con đã hủy).
+async function temConCuaLuotKcs(kcsId) {
+  if (!(await coKcsTach())) return null;
+  const { rows } = await query(
+    `SELECT id, ma_tem, trang_thai, sl_kcs_dat, sl_oqc_dat, sl_da_giao FROM tem
+      WHERE kcs_tach_id = $1 AND trang_thai <> 'HUY' LIMIT 1`.replace(/\s+/g, ' '),
+    [kcsId]
   );
   return rows[0] || null;
 }
@@ -362,22 +405,29 @@ async function reduceKcsDat(client, temId, qty, actorId) {
 // `so_luong_kiem`. Lượt về 0 pcs ⇒ đánh dấu HỦY XÁC NHẬN (`HUY_XAC_NHAN`, `nguon: 'OQC_TRA_VE_KCS'`) ⇒ mọi câu
 // đọc lọc `notCancelledQc` (lịch sử, đã hoàn thành, báo cáo, hành trình) tự bỏ nó. Số cũ giữ ở audit
 // `OQC_TRA_VE_KCS` (`gia_tri_cu`). Chạy TRONG transaction của lần trả về.
+// ⚠ MIG 122: phần ĐẠT của lượt kiểm một phần nằm trên TEM 17 của nó, không nằm trong tem gốc ⇒ lần trả về tem gốc KHÔNG
+//   được trừ vào đó. `chiLuotId` = trả về chính tem 17 ⇒ chỉ điều chỉnh đúng lượt đã sinh ra nó.
 // Trả [{ id, da_huy, so_luong_dat, so_luong_loi, so_luong_chenh_lech, tra_dat, tra_hu }].
-async function dieuChinhKcsSauTraVe(client, temId, { dat = 0, hu = 0, maTem = null, lyDo = null } = {}, actorId) {
+async function dieuChinhKcsSauTraVe(client, temId, { dat = 0, hu = 0, maTem = null, lyDo = null, chiLuotId = null } = {}, actorId) {
   let conDat = Math.max(0, Number(dat) || 0);
   let conHu = Math.max(0, Number(hu) || 0);
   if (conDat <= 0 && conHu <= 0) return [];
+  const dkTach = !chiLuotId && await coKcsTach()
+    ? "EXISTS (SELECT 1 FROM tem tc WHERE tc.kcs_tach_id = x.id AND tc.trang_thai <> 'HUY')"
+    : 'false';
   const { rows } = await client.query(
-    `SELECT x.id, x.so_luong_kiem, x.so_luong_dat, x.so_luong_loi, x.so_luong_huy, x.so_luong_chenh_lech
-       FROM kcs x WHERE x.tem_id = $1 AND ${notCancelledQc('x', 'kcs')}
-      ORDER BY x.created_date DESC, x.id DESC FOR UPDATE OF x`.replace(/\s+/g, ' '), [temId]);
+    `SELECT x.id, x.so_luong_kiem, x.so_luong_dat, x.so_luong_loi, x.so_luong_huy, x.so_luong_chenh_lech,
+            ${dkTach} AS dat_o_tem_con
+       FROM kcs x WHERE x.tem_id = $1 AND ${notCancelledQc('x', 'kcs')} ${chiLuotId ? 'AND x.id = $2' : ''}
+      ORDER BY x.created_date DESC, x.id DESC FOR UPDATE OF x`.replace(/\s+/g, ' '),
+    chiLuotId ? [temId, chiLuotId] : [temId]);
   const out = [];
   for (const r of rows) {
     if (conDat <= 0 && conHu <= 0) break;
     const n = (v) => Number(v) || 0;
     // Phần HƯ của lượt đang nằm ở "chờ sửa" = kiểm − đạt − hủy tại KCS (cùng công thức `cancelKcs`).
     const suaLuot = Math.max(0, n(r.so_luong_kiem) - n(r.so_luong_dat) - n(r.so_luong_huy));
-    const x = Math.min(conDat, n(r.so_luong_dat));
+    const x = r.dat_o_tem_con ? 0 : Math.min(conDat, n(r.so_luong_dat));
     const y = Math.min(conHu, suaLuot, n(r.so_luong_loi));
     if (x + y <= 0) continue;
     conDat -= x; conHu -= y;
@@ -780,6 +830,7 @@ async function kcsHistoryByDate(lsIn) {
   const { rows } = await query(
     `SELECT x.id AS luot_id, t.id AS tem_id, x.created_date AS tg, nd.ho_ten AS nguoi, x.ket_qua,
             x.so_luong_dat, x.so_luong_loi, x.so_luong_huy, x.so_luong_chenh_lech, t.ma_tem,
+            ${await sqlMa17CuaLuotKcs('x')} AS ma_tem_17,
             ${LS.maPhanTemSql('t')} AS ma_phan
      FROM kcs x JOIN tem t ON t.id = x.tem_id
      LEFT JOIN nguoi_dung nd ON nd.id = x.created_by
@@ -825,7 +876,7 @@ async function oqcHistoryByDate(lsIn) {
 // `.replace(/\s+/g,' ')` (IPS-safe) ⇒ `--` sẽ nuốt sạch phần SQL còn lại (§9).
 const TEM_INFO_LATERAL = `
   LEFT JOIN LATERAL (
-    SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim,
+    SELECT pin.id AS phan_in_id, kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim,
            pin.tinh_chat_in, dv.han_giao_hang,
            (SELECT string_agg(DISTINCT dvg.nha_gia_cong, ', ')
               FROM lenh_sx_dot_vai lsg JOIN dot_vai_ve dvg ON dvg.id = lsg.dot_vai_ve_id
@@ -918,14 +969,21 @@ async function cotOqcThem() {
            (SELECT ndk.ho_ten FROM kcs k LEFT JOIN nguoi_dung ndk ON ndk.id = k.created_by
              WHERE k.tem_id = COALESCE(t.tem_goc_id, t.id) AND ${notCancelledQc('k', 'kcs')}
              ORDER BY k.created_date DESC LIMIT 1) AS nguoi_kcs,
-           (SELECT pin2.so_luong_don_hang FROM phan_in pin2 WHERE pin2.ma_phan = info.ma_phan) AS so_luong_don_hang,
-           (SELECT pin2.mau_in FROM phan_in pin2 WHERE pin2.ma_phan = info.ma_phan) AS mau_in,
-           (SELECT pin2.do_in FROM phan_in pin2 WHERE pin2.ma_phan = info.ma_phan) AS do_in`,
+           (SELECT pin2.so_luong_don_hang FROM phan_in pin2 WHERE pin2.id = info.phan_in_id) AS so_luong_don_hang,
+           (SELECT pin2.mau_in FROM phan_in pin2 WHERE pin2.id = info.phan_in_id) AS mau_in,
+           (SELECT pin2.do_in FROM phan_in pin2 WHERE pin2.id = info.phan_in_id) AS do_in`,
     join: `LEFT JOIN phieu_san_xuat psq ON psq.id = t.phieu_san_xuat_id
            LEFT JOIN lenh_san_xuat lsq ON lsq.id = psq.lenh_san_xuat_id
            LEFT JOIN chuyen_san_xuat csq ON csq.id = COALESCE(psq.chuyen_id, lsq.chuyen_id)
            LEFT JOIN loai_chuyen lcq ON lcq.id = csq.loai_chuyen_id`,
   };
+}
+
+// Mảnh SQL: mã tem 17 còn hiệu lực của lượt KCS `a` (mig 122). Thiếu cột ⇒ NULL.
+async function sqlMa17CuaLuotKcs(a) {
+  return (await coKcsTach())
+    ? `(SELECT tc.ma_tem FROM tem tc WHERE tc.kcs_tach_id = ${a}.id AND tc.trang_thai <> 'HUY' LIMIT 1)`
+    : 'NULL::text';
 }
 
 // table ∈ 'kcs'|'sua'|'oqc' (nội bộ, không nhận từ user).
@@ -936,7 +994,7 @@ async function temDoneByDate(table, date) {
   // ⚠ `la_tem_sua` (mig 091): tem CON mang số lượng ở `sl_kcs_dat` nên `oqc.nguon` của nó là 'KCS';
   //   chỉ cột này mới phân biệt được để hiện đúng nhãn 17 (đừng suy từ chuỗi `ma_tem`).
   const oqcThem = table === 'oqc' ? await cotOqcThem() : { cot: '', join: '' };
-  const oqcCols = table === 'oqc' ? `, x.nguon, x.sl_qua_giao, (t.tem_goc_id IS NOT NULL) AS la_tem_sua${oqcThem.cot}` : '';
+  const oqcCols = table === 'oqc' ? `, x.nguon, x.sl_qua_giao, ${laTemSuaSql('t')} AS la_tem_sua${oqcThem.cot}` : '';
   // Sửa: + SL sửa hủy, + `sua_id` (khóa để ghi người sửa) và NGƯỜI SỬA (mig 080 — thiếu cột thì trả NULL).
   // ⚠⚠ `ma_tem_17` = mã THẬT của tem con (nhãn sửa đạt). Từ 06/09/2026 mã này do ERP cấp riêng
   //   (`/barcode-tem-17`) nên **KHÔNG suy được** bằng `temCode(ma_goc, 17)` ở FE nữa — trang Sửa
@@ -949,10 +1007,13 @@ async function temDoneByDate(table, date) {
     : 'NULL::text';
   const suaCols = table === 'sua'
     ? `, x.so_luong_sua_huy, x.id AS sua_id, ${await coCotNguoiSua() ? 'x.nguoi_sua, x.nguoi_sua_id' : 'NULL::text AS nguoi_sua, NULL::uuid AS nguoi_sua_id'}`
-      + `, COALESCE(${ma17}, (SELECT tc2.ma_tem FROM tem tc2 WHERE tc2.tem_goc_id = t.id ORDER BY tc2.created_date LIMIT 1)) AS ma_tem_17`
+      + `, COALESCE(${ma17}, (SELECT tc2.ma_tem FROM tem tc2 WHERE tc2.tem_goc_id = t.id AND ${kcsTachIdSql('tc2')} IS NULL ORDER BY tc2.created_date LIMIT 1)) AS ma_tem_17`
     : '';
   // KCS: + `kcs_id` (khóa ghi người kiểm) + NGƯỜI KIỂM đã nhập lúc in (03/11/2026 — xem `luuNguoiKiemKcs`).
-  const kcsCols = table === 'kcs' ? ', x.id AS kcs_id, nkk.nguoi_kiem, nkk.nguoi_kiem_id' : '';
+  // + `ma_tem_17` (mig 122) = tem 17 của lượt kiểm một phần — nhãn in ra phải mang mã này, không phải mã tem 15.
+  const kcsCols = table === 'kcs'
+    ? `, x.id AS kcs_id, nkk.nguoi_kiem, nkk.nguoi_kiem_id, ${await sqlMa17CuaLuotKcs('x')} AS ma_tem_17`
+    : '';
   const kcsJoin = table === 'kcs'
     ? `LEFT JOIN LATERAL (SELECT a.gia_tri_moi->>'nguoi_kiem' AS nguoi_kiem, a.gia_tri_moi->>'nguoi_kiem_id' AS nguoi_kiem_id
                             FROM audit_log a
@@ -1199,6 +1260,7 @@ async function getCancelKcsRow(id) {
   const { rows } = await query(
     `SELECT x.id, x.tem_id, x.so_luong_kiem, x.so_luong_dat, x.so_luong_loi, x.so_luong_huy, x.so_luong_chenh_lech,
             COALESCE(x.so_luong_mau, 0) AS so_luong_mau, x.created_date,
+            COALESCE((to_jsonb(t)->>'sl_sua_tach')::int, 0) AS sl_sua_tach,
             ${CANCEL_TARGET_TEM_COLS}, ${cancelledQc('x', 'kcs')} AS da_huy
      FROM kcs x JOIN tem t ON t.id = x.tem_id WHERE x.id = $1`.replace(/\s+/g, ' '),
     [id]
@@ -1212,7 +1274,7 @@ async function getCancelSuaRow(id) {
   const { rows } = await query(
     `SELECT x.id, x.tem_id, x.so_luong_sua, x.so_luong_sua_dat, x.so_luong_sua_huy,
             ${co ? 'x.tem_con_id' : 'NULL::uuid AS tem_con_id'},
-            COALESCE((to_jsonb(t)->>'sl_sua_tach')::int, 0) AS sl_sua_tach,
+            COALESCE((to_jsonb(t)->>'sl_sua_tach')::int, 0) - ${slKcsTachSql('t')} AS sl_sua_tach,
             ${CANCEL_TARGET_TEM_COLS}, ${cancelledQc('x', 'sua')} AS da_huy
      FROM sua x JOIN tem t ON t.id = x.tem_id WHERE x.id = $1`.replace(/\s+/g, ' '),
     [id]
@@ -1416,6 +1478,7 @@ module.exports = {
   listKcsCand, listSuaCand, listOqcCand, caPartsForTems, prevConfirmerByTems, tgKiemByTems, getTemBasic, setTemTrangThai, setTemStatusQty,
   getTemLedger, addKcsLedger, addSuaLedger, addOqcLedger, addGiaoLedger, reduceKcsDat, reduceSuaDat,
   getTemConCuaGoc, getTemConById, coCotSuaTemCon, taoTemCon, congSlTemCon, congSuaTach, huyTemConNeuRong,
+  coKcsTach, taoTemConKcs, congKcsTach, temConCuaLuotKcs,
   recomputeTemStage, recomputeTemStageMany,
   temTimeline,
   nextMaTem, createChildTem, insertTemSplit, getTemForSplit,

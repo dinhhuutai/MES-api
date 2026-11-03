@@ -203,8 +203,12 @@ const MOC_VAO_TEM = {
   SUA: (t) => `COALESCE((SELECT min(zmt2.created_date) FROM kcs zmt2 WHERE zmt2.tem_id = ${t}.id
     AND COALESCE(zmt2.so_luong_loi,0) > 0), ${t}.created_date)`,
   // OQC: lần ĐẦU có hàng ĐẠT (KCS hoặc Sửa). Hàng GIA CÔNG không có dòng `kcs` (seed sẵn `sl_kcs_dat`) ⇒ mốc in tem.
+  // ⚠ Bỏ lượt KCS một phần đã tách sang tem 17 (mig 122): hàng lượt đó đi OQC trên tem 17 (mốc = lúc tạo tem 17). Không bỏ
+  //   thì phần còn lại của tem gốc bị đo từ lượt đầu ⇒ vừa kiểm xong đã "nghẽn" ở OQC.
   OQC: (t) => `COALESCE(LEAST(
-    (SELECT min(zmt3.created_date) FROM kcs zmt3 WHERE zmt3.tem_id = ${t}.id AND COALESCE(zmt3.so_luong_dat,0) > 0),
+    (SELECT min(zmt3.created_date) FROM kcs zmt3 WHERE zmt3.tem_id = ${t}.id AND COALESCE(zmt3.so_luong_dat,0) > 0
+      AND NOT EXISTS (SELECT 1 FROM tem zmtc WHERE zmtc.tem_goc_id = ${t}.id AND zmtc.trang_thai <> 'HUY'
+                        AND to_jsonb(zmtc)->>'kcs_tach_id' = zmt3.id::text)),
     (SELECT min(zmt4.created_date) FROM sua zmt4 WHERE zmt4.tem_id = ${t}.id AND COALESCE(zmt4.so_luong_sua_dat,0) > 0)),
     ${t}.created_date)`,
   // Giao: OQC cho qua giao lần ĐẦU (lùi về lượt OQC đầu).

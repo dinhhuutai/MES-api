@@ -14,6 +14,8 @@ const { MOC_VAO_TEM } = require('../../utils/siSoTram');
 const { coCotGia } = require('../../utils/giaPhanIn');
 // Sổ cái tem là NGUỒN LUẬT DUY NHẤT ở `quality.repository` — không chép biểu thức sang đây.
 const qaRepo = require('../quality/quality.repository');
+// Tem 17 của KCS một phần (mig 122) không phải hàng sửa — nhãn "Sửa" ở phiếu giao / Chờ GN tích đọc cờ này.
+const { laTemSuaSql } = require('../../utils/temCon');
 
 const DON_SUB = (col, alias) => `(SELECT string_agg(DISTINCT ${col}, ', ')
     FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
@@ -88,7 +90,7 @@ async function listTemGiao({ cheDo = 'SAN_SANG', search = '', filters = {}, ngay
   const sql =
     `SELECT t.id AS tem_id, t.ma_tem, t.so_luong, t.created_date AS ngay_in_tem, (t.sl_oqc_dat - t.sl_da_giao) AS con_giao,
             ${cotTich}
-            (t.tem_goc_id IS NOT NULL) AS la_tem_sua,
+            ${laTemSuaSql('t')} AS la_tem_sua,
             GREATEST(0, COALESCE(t.sl_oqc_dat_sua,0) - COALESCE(t.sl_da_giao_sua,0)) AS con_giao_sua,
             GREATEST(0, (COALESCE(t.sl_oqc_dat,0)-COALESCE(t.sl_oqc_dat_sua,0)) - (COALESCE(t.sl_da_giao,0)-COALESCE(t.sl_da_giao_sua,0))) AS con_giao_kcs,
             t.sl_oqc_dat, t.sl_da_giao, ls.ma_lenh_san_xuat,
@@ -143,7 +145,7 @@ async function listTonKcs() {
   const conGiao = `GREATEST(0, ${qaRepo.CON_GIAO})`;
   const sql = `
     SELECT x.* FROM (
-      SELECT t.id AS tem_id, t.ma_tem, (t.tem_goc_id IS NOT NULL) AS la_tem_sua, t.so_luong, t.trang_thai,
+      SELECT t.id AS tem_id, t.ma_tem, ${laTemSuaSql('t')} AS la_tem_sua, t.so_luong, t.trang_thai,
              CASE WHEN t.tem_goc_id IS NULL THEN GREATEST(0, ${qaRepo.CON_SUA}) ELSE 0 END AS cho_sua,
              GREATEST(0, ${qaRepo.CON_OQC}) AS cho_oqc,
              ${coTich ? `CASE WHEN NOT t.da_tich_giao THEN ${conGiao} ELSE 0 END` : '0'} AS cho_tich,
@@ -540,7 +542,7 @@ async function doneGiaoByDate(date) {
     `SELECT gh.id, gh.ma_phieu_giao AS ma, gh.ma_phieu_giao, gh.ngay_giao, gh.ghi_chu,
             dh.ma_don_hang, kh.ten_khach_hang,
             (SELECT COALESCE(json_agg(json_build_object(
-                      'ma_tem', t.ma_tem, 'la_tem_sua', (t.tem_goc_id IS NOT NULL), 'nguon', gt.nguon,
+                      'ma_tem', t.ma_tem, 'la_tem_sua', ${laTemSuaSql('t')}, 'nguon', gt.nguon,
                       'so_luong_giao', gt.so_luong_giao, 'ma_phan', i.ma_phan, 'ma_hang', i.ma_hang,
                       'mau_vai', i.mau_vai, 'kich_vai', i.kich_vai, 'kich_phim', i.kich_phim,
                       'tinh_chat_in', i.tinh_chat_in, 'han_giao_hang', i.han_giao_hang, 'ma_lenh_san_xuat', i.ma_lenh_san_xuat)
@@ -674,7 +676,7 @@ async function getGiaoHangTems(giaoHangId) {
     //   `sl_oqc_dat_sua`, nguồn KCS là phần còn lại — lấy nhầm là in ra số lớn hơn thực tế.
     `SELECT gt.id, gt.tem_id, gt.so_luong_giao, gt.nguon, gt.ghi_chu, ${colKlg}, t.ma_tem, t.trang_thai, t.gc_mau_vai,
             COALESCE(t.sl_oqc_dat,0) AS sl_oqc_dat, COALESCE(t.sl_oqc_dat_sua,0) AS sl_oqc_dat_sua,
-            (t.tem_goc_id IS NOT NULL) AS la_tem_sua,
+            ${laTemSuaSql('t')} AS la_tem_sua,
             ls.ma_lenh_san_xuat,
             (SELECT string_agg(DISTINCT pin.ma_phan, ', ')
                FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
