@@ -198,7 +198,7 @@ async function prevConfirmerByTems(temIds) {
       (SELECT nd.ho_ten FROM (
          SELECT created_by AS uid, created_date AS tg FROM kcs WHERE tem_id = t.id
          UNION ALL SELECT created_by, created_date FROM sua WHERE tem_id = t.id
-         UNION ALL SELECT created_by, created_date FROM kcs WHERE id::text = ${kcsTachIdSql('t')}
+         UNION ALL SELECT created_by, created_date FROM kcs WHERE t.tem_goc_id IS NOT NULL AND id = ${kcsTachIdSql('t')}::uuid
        ) e JOIN nguoi_dung nd ON nd.id = e.uid ORDER BY e.tg DESC LIMIT 1) AS nguoi_kcs_sua,
       (SELECT nd.ho_ten FROM phieu_san_xuat ps JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
          JOIN nguoi_dung nd ON nd.id = ls.created_by WHERE ps.id = t.phieu_san_xuat_id) AS nguoi_release1,
@@ -221,7 +221,7 @@ async function tgKiemByTems(temIds) {
     SELECT t.id AS tem_id,
       COALESCE(
         CASE WHEN t.tem_goc_id IS NOT NULL THEN COALESCE(
-          (SELECT k.created_date FROM kcs k WHERE k.id::text = ${kcsTachIdSql('t')}),
+          (SELECT k.created_date FROM kcs k WHERE k.id = ${kcsTachIdSql('t')}::uuid),
           (SELECT max(s.created_date) FROM sua s WHERE s.tem_con_id = t.id AND ${notCancelledQc('s', 'sua')}),
           (SELECT max(s.created_date) FROM sua s WHERE s.tem_id = t.tem_goc_id AND ${notCancelledQc('s', 'sua')})) END,
         (SELECT max(k.created_date) FROM kcs k WHERE k.tem_id = t.id AND ${notCancelledQc('k', 'kcs')}),
