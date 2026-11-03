@@ -78,6 +78,8 @@ const kcsDone = asyncHandler(async (req, res) => ok(res, await service.kcsDone(r
 const suaDone = asyncHandler(async (req, res) => ok(res, await service.suaDone(req.query.date || today())));
 const luuNguoiSua = asyncHandler(async (req, res) =>
   ok(res, await service.luuNguoiSua(req.body?.items, req.user.id), 'Đã lưu người sửa'));
+const luuNguoiKiemKcs = asyncHandler(async (req, res) =>
+  ok(res, await service.luuNguoiKiemKcs(req.body?.items, req.user.id), 'Đã lưu người kiểm'));
 const guiLaiErpSua = asyncHandler(async (req, res) =>
   ok(res, await service.guiLaiErpSua(req.params.suaId, req.user.id), 'Đã gửi sửa đạt sang ERP'));
 const oqcDone = asyncHandler(async (req, res) => ok(res, await service.oqcDone(req.query.date || today())));
@@ -147,7 +149,7 @@ module.exports = {
   plList, plTraTem, plChiTiet, plLuu, bpList, bpCreate, bpUpdate, bpToggle,
   kcsCandidates, recordKcs, gopTem, suaCandidates, recordSua, oqcCandidates, recordOqc,
   kcsHistory, suaHistory, oqcHistory,
-  kcsDone, suaDone, oqcDone, oqcFinishList, inlineDone, luuNguoiSua, guiLaiErpSua,
+  kcsDone, suaDone, oqcDone, oqcFinishList, inlineDone, luuNguoiSua, luuNguoiKiemKcs, guiLaiErpSua,
   inlineCandidates, inlineLoaiLoi, inlineHistory, recordInline,
   loaiLoiList, loaiLoiCreate, loaiLoiUpdate, loaiLoiToggle,
   giaoDacBietActive, giaoDacBietList, giaoDacBietCreate, giaoDacBietUpdate, giaoDacBietToggle,

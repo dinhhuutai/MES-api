@@ -15,6 +15,8 @@ router.get('/kcs/candidates', rbac('KCS'), c.kcsCandidates);
 router.get('/kcs/history', rbac('KCS'), c.kcsHistory);
 router.get('/kcs/done', rbac('KCS'), c.kcsDone);
 router.post('/kcs/gop-tem', rbac('KCS'), c.gopTem);
+// Ghi NGƯỜI KIỂM của các lượt KCS khi in tem ở sidebar "Đã hoàn thành" — route TĨNH, đặt TRƯỚC `/kcs/:temId`.
+router.post('/kcs/nguoi-kiem', rbac('KCS'), c.luuNguoiKiemKcs);
 router.post('/kcs/:temId', rbac('KCS'), c.recordKcs);
 
 router.get('/sua/candidates', rbac('SUA'), c.suaCandidates);

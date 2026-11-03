@@ -914,6 +914,30 @@ async function luuNguoiSua(items, actorId) {
   return { so_dong: daGhi.length };
 }
 
+// Ghi NGƯỜI KIỂM cho các lượt KCS được in (modal In tem của sidebar "Đã hoàn thành" màn KCS, 03/11/2026).
+// Tên BẮT BUỘC (cùng luật người sửa); `nguoiKiemId` tùy chọn — người chưa có tài khoản thì chỉ có tên.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const NGUOI_KIEM_TOI_DA = 150;
+async function luuNguoiKiemKcs(items, actorId) {
+  const ds = Array.isArray(items) ? items : [];
+  if (!ds.length) throw new AppError('Chưa chọn lượt KCS nào', { status: 422, errorCode: 'NO_ITEM' });
+  const theoLuot = new Map();
+  ds.forEach((x) => {
+    const kcsId = String(x?.kcsId || '');
+    if (!UUID_RE.test(kcsId)) throw new AppError('Lượt KCS không hợp lệ', { status: 422, errorCode: 'KCS_ID_SAI' });
+    const nguoiKiem = String(x?.nguoiKiem || '').trim();
+    if (!nguoiKiem) throw new AppError('Nhập tên người kiểm cho mọi dòng trước khi in', { status: 422, errorCode: 'NO_NGUOI_KIEM' });
+    if (nguoiKiem.length > NGUOI_KIEM_TOI_DA) {
+      throw new AppError(`Tên người kiểm dài quá ${NGUOI_KIEM_TOI_DA} ký tự`, { status: 422, errorCode: 'NGUOI_KIEM_QUA_DAI' });
+    }
+    theoLuot.set(kcsId, { kcsId, nguoiKiem, nguoiKiemId: UUID_RE.test(String(x?.nguoiKiemId || '')) ? x.nguoiKiemId : null });
+  });
+  const dong = [...theoLuot.values()];
+  const kq = await repo.luuNguoiKiemKcs(dong, actorId);
+  if (kq.ton_tai !== dong.length) throw new AppError('Có lượt KCS không còn tồn tại — tải lại danh sách', { status: 404, errorCode: 'NOT_FOUND' });
+  return { so_dong: dong.length, da_ghi: kq.da_ghi };
+}
+
 // ----- QC IN-LINE (kiểm tại chuyền — phiếu đang chạy) -----
 async function listInlineCandidates(search) { return repo.listInlineCandidates({ search }); }
 async function listLoaiLoi() { return repo.listLoaiLoiActive(); }
@@ -1006,7 +1030,7 @@ module.exports = {
   listCancelKcs, listCancelSua, listCancelOqc, cancelKcs, cancelSua, cancelOqc,
   listTemSuaCancelable, listTemSuaDeleted, huyTemSua, moTemSua,
   kcsHistory, suaHistory, oqcHistory, temHanhTrinh,
-  kcsDone, suaDone, oqcDone, inlineDone, luuNguoiSua, guiLaiErpSua,
+  kcsDone, suaDone, oqcDone, inlineDone, luuNguoiSua, luuNguoiKiemKcs, guiLaiErpSua,
   listInlineCandidates, listLoaiLoi, recordQcInline, inlineHistory,
   listLoaiLoiAll, createLoaiLoi, updateLoaiLoi, toggleLoaiLoi,
   listGiaoDacBiet, listGiaoDacBietAll, createGiaoDacBiet, updateGiaoDacBiet, toggleGiaoDacBiet,

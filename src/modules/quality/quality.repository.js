@@ -865,6 +865,26 @@ async function setNguoiSua(suaId, { nguoiSuaId, nguoiSua }, actorId) {
   return rowCount > 0;
 }
 
+// NGƯỜI KIỂM của 1 lượt KCS (03/11/2026, nhập ở modal In tem của sidebar "Đã hoàn thành" màn KCS) — KHÔNG migration:
+// nhớ ở `audit_log` `ten_bang='kcs'`, `id_ban_ghi` = lượt KCS, `hanh_dong='NGUOI_KIEM_KCS'`, DÒNG MỚI NHẤT là giá trị.
+// Chỉ ghi dòng có tên KHÁC giá trị đang nhớ (in lại nhiều lần không đẻ thêm dòng). Trả số lượt tồn tại + số dòng đã ghi.
+async function luuNguoiKiemKcs(items, actorId) {
+  const ids = items.map((x) => x.kcsId);
+  const { rows } = await query('SELECT count(*)::int AS n FROM kcs WHERE id = ANY($1::uuid[])', [ids]);
+  const { rowCount } = await query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     SELECT 'kcs', k.id::text, 'NGUOI_KIEM_KCS', jsonb_build_object('nguoi_kiem', u.ten, 'nguoi_kiem_id', u.uid), $4::uuid, CURRENT_TIMESTAMP, $4::uuid
+       FROM unnest($1::uuid[], $2::text[], $3::uuid[]) AS u(kcs_id, ten, uid)
+       JOIN kcs k ON k.id = u.kcs_id
+       LEFT JOIN LATERAL (SELECT a.gia_tri_moi->>'nguoi_kiem' AS ten FROM audit_log a
+                           WHERE a.ten_bang = 'kcs' AND a.id_ban_ghi = k.id::text AND a.hanh_dong = 'NGUOI_KIEM_KCS'
+                           ORDER BY a.thoi_gian DESC LIMIT 1) c ON true
+      WHERE c.ten IS DISTINCT FROM u.ten`.replace(/\s+/g, ' '),
+    [ids, items.map((x) => x.nguoiKiem), items.map((x) => x.nguoiKiemId), actorId || null]
+  );
+  return { ton_tai: rows[0].n, da_ghi: rowCount };
+}
+
 // Dò 1 cột (cache khi ĐÃ có) — cho các cột phụ của Excel "DANH SÁCH KIỂM TRA CHẤT LƯỢNG ĐẦU RA" (tem.ma_lo mig 114).
 const _coCotBang = {};
 async function coCotBang(bang, cot) {
@@ -931,15 +951,24 @@ async function temDoneByDate(table, date) {
     ? `, x.so_luong_sua_huy, x.id AS sua_id, ${await coCotNguoiSua() ? 'x.nguoi_sua, x.nguoi_sua_id' : 'NULL::text AS nguoi_sua, NULL::uuid AS nguoi_sua_id'}`
       + `, COALESCE(${ma17}, (SELECT tc2.ma_tem FROM tem tc2 WHERE tc2.tem_goc_id = t.id ORDER BY tc2.created_date LIMIT 1)) AS ma_tem_17`
     : '';
+  // KCS: + `kcs_id` (khóa ghi người kiểm) + NGƯỜI KIỂM đã nhập lúc in (03/11/2026 — xem `luuNguoiKiemKcs`).
+  const kcsCols = table === 'kcs' ? ', x.id AS kcs_id, nkk.nguoi_kiem, nkk.nguoi_kiem_id' : '';
+  const kcsJoin = table === 'kcs'
+    ? `LEFT JOIN LATERAL (SELECT a.gia_tri_moi->>'nguoi_kiem' AS nguoi_kiem, a.gia_tri_moi->>'nguoi_kiem_id' AS nguoi_kiem_id
+                            FROM audit_log a
+                           WHERE a.ten_bang = 'kcs' AND a.id_ban_ghi = x.id::text AND a.hanh_dong = 'NGUOI_KIEM_KCS'
+                           ORDER BY a.thoi_gian DESC LIMIT 1) nkk ON true`
+    : '';
   const sql = `
     SELECT x.created_date AS tg, nd.ho_ten AS nguoi, t.ma_tem AS ma, t.id AS tem_id,
-           x.${qtyCol} AS so_luong, x.${kiemCol} AS so_luong_kiem${oqcCols}${suaCols},
+           x.${qtyCol} AS so_luong, x.${kiemCol} AS so_luong_kiem${oqcCols}${suaCols}${kcsCols},
            info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan, info.mau_vai, info.kich_vai, info.kich_phim,
            info.tinh_chat_in, info.han_giao_hang
     FROM ${table} x JOIN tem t ON t.id = x.tem_id
     LEFT JOIN nguoi_dung nd ON nd.id = x.created_by
     ${TEM_INFO_LATERAL}
     ${oqcThem.join}
+    ${kcsJoin}
     WHERE (x.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
       AND ${notCancelledQc('x', table)}
     ORDER BY x.created_date DESC`;
@@ -1392,7 +1421,7 @@ module.exports = {
   nextMaTem, createChildTem, insertTemSplit, getTemForSplit,
   insertKcs, insertSua, nextOqcRound, insertOqc,
   kcsHistoryByDate, suaHistoryByDate, oqcHistoryByDate,
-  temDoneByDate, inlineDoneByDate, setNguoiSua,
+  temDoneByDate, inlineDoneByDate, setNguoiSua, luuNguoiKiemKcs,
   listInlineCandidates, getPhieuRun, nextInlineRound, insertQcInline, insertQcInlineLoi, inlineHistoryByDate,
   listLoaiLoiActive, listLoaiLoiAll, insertLoaiLoi, updateLoaiLoi, setLoaiLoiActive,
   listGiaoDacBietActive, listGiaoDacBietAll, insertGiaoDacBiet, updateGiaoDacBiet, setGiaoDacBietActive,

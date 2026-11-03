@@ -106,6 +106,10 @@ const TRUONG_TEM = Object.freeze([
   { ma: 'ty_le_sua_dat', ten: '% sửa đạt — tem Sửa', kieu: 'chu', nhom: 'Sửa' },
   { ma: 'nguoi_xn_sua', ten: 'Người xác nhận sửa (hệ thống) — tem Sửa', kieu: 'chu', nhom: 'Sửa' },
   { ma: 'tg_sua', ten: 'Giờ xác nhận sửa — tem Sửa', kieu: 'ngay', nhom: 'Sửa' },
+  // ─── NHÓM "KCS" — CHỈ CÓ GIÁ TRỊ Ở VỊ TRÍ IN `KCS_IN_TEM_GIAO` (03/11/2026) ─────
+  // Của ĐÚNG lượt KCS đang in (1 tem kiểm nhiều lượt) nên ghép ở trình duyệt (`KcsPage`), KHÔNG có trong `getTemLabelData`.
+  { ma: 'nguoi_kiem_kcs', ten: 'Người kiểm (nhập lúc in) — tem KCS giao', kieu: 'chu', nhom: 'KCS' },
+  { ma: 'tg_kiem_kcs', ten: 'Giờ xác nhận kiểm — tem KCS giao', kieu: 'ngay', nhom: 'KCS' },
   // ─── NHÓM "GIA CÔNG" — CHỈ CÓ GIÁ TRỊ Ở VỊ TRÍ IN `GIA_CONG_IN_TEM_VE` (tem 13 "TH VỀ") ────────
   // ⚠⚠ Tem 13 KHÔNG dựng từ bản ghi `tem` — nó ghép từ dữ liệu LỆNH GIA CÔNG ở trình duyệt
   //   (`GiaCongPage.buildVeLabel`), nên `getTemLabelData` KHÔNG hề biết mấy trường này. Nút in KHÁC
