@@ -320,8 +320,11 @@ function dungBaoCaoSanXuat({
 
   // 2. SL in thực tế từ tem.
   tems.forEach((t) => {
-    const p = phieuById.get(String(t.phieu_id));
-    if (!p) return;
+    const goc0 = phieuById.get(String(t.phieu_id));
+    if (!goc0) return;
+    // Tem đã sửa chuyền riêng (mig 124): chỉ SL in thực tế sang chuyền đó, giờ chạy + kế hoạch ở lại phiếu.
+    const khacChuyen = t.chuyen_rieng_id && String(t.chuyen_rieng_id) !== String(goc0.chuyen_id);
+    const p = khacChuyen ? { ...goc0, id: `${goc0.id}|${t.chuyen_rieng_id}`, chuyen_id: t.chuyen_rieng_id } : goc0;
     const ds = dsPin(p.lenh_id);
     const pin = (t.dot_vai_ve_id && ds.find((x) => (x.dot_ids || []).map(String).includes(String(t.dot_vai_ve_id)))) || ds[0];
     const ca = caCuaTem(t.ca_hint, t.gio, loaiCaPhieu(p));

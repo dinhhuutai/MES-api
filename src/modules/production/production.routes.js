@@ -41,6 +41,10 @@ router.post('/phieu/:phieuId/vai-huy', rbac('PROD_RUN'), c.addVaiHuy); // body.l
 router.post('/phieu/:phieuId/phan-cong', rbac('PROD_RUN'), c.savePhanCong);
 router.post('/phieu/:phieuId/ngung', rbac('PROD_RUN'), c.stopLine);
 router.post('/phieu/:phieuId/hoat-dong-lai', rbac('PROD_RUN'), c.resumeLine);
+// Hủy 1 lần ngừng chuyền (05/11/2026): sidebar Sản xuất chỉ cần quyền công đoạn; tab Hủy lệnh xác nhận đòi thêm `HUY_XAC_NHAN`.
+router.get('/huy-ngung/candidates', rbac('PROD_RUN'), c.ngungChoHuy);
+router.post('/huy-ngung/:ngungId', rbac('PROD_RUN'), rbac.huyXacNhan(), c.huyNgungChuyen);
+router.post('/huy-ngung/:ngungId/lich-su', rbac('PROD_RUN'), c.huyNgungChuyen);
 
 // DANH MỤC LÝ DO NGỪNG CHUYỀN (mig 076) — trang Sản xuất > Danh mục lý do ngừng chuyền.
 // ⚠ ĐỌC mở cho `PROD_RUN`: người đứng máy phải lấy được danh sách để chọn khi ngừng chuyền.

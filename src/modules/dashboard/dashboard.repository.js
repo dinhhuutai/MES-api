@@ -1,6 +1,7 @@
 'use strict';
 
 const { query } = require('../../config/db');
+const { chuyenTemSql } = require('../../utils/temChuyen');
 const ordersRepo = require('../orders/orders.repository');
 const { dotStageCase, readyFallback, ORDER_SQL_ARRAY } = require('../../utils/stage');
 const { techDoneSql, mocDotMucSql, qcDotSql, ktTraVeSql } = require('../../utils/tech');
@@ -1072,7 +1073,7 @@ async function tinhTrangGraph(phanInId) {
        JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id AND dv.phan_in_id = $1
        JOIN phieu_san_xuat ps ON ps.lenh_san_xuat_id = ls.id
        JOIN tem t ON t.phieu_san_xuat_id = ps.id AND t.trang_thai <> 'HUY'
-       LEFT JOIN chuyen_san_xuat cs ON cs.id = ps.chuyen_id
+       LEFT JOIN chuyen_san_xuat cs ON cs.id = ${await chuyenTemSql({ ls: null })}
        LEFT JOIN LATERAL (SELECT txp.tg_bd_phoi, txp.tg_kt_phoi FROM tem_xe_phoi txp WHERE txp.tem_id=t.id ORDER BY txp.tg_bd_phoi DESC NULLS LAST LIMIT 1) phoi ON true
        LEFT JOIN LATERAL (SELECT ku.ho_ten AS nguoi, kk.created_date AS tg FROM kcs kk LEFT JOIN nguoi_dung ku ON ku.id=kk.created_by WHERE kk.tem_id=t.id ORDER BY kk.created_date DESC LIMIT 1) k ON true
        LEFT JOIN LATERAL (SELECT su.ho_ten AS nguoi, ss.created_date AS tg FROM sua ss LEFT JOIN nguoi_dung su ON su.id=ss.created_by WHERE ss.tem_id=t.id ORDER BY ss.created_date DESC LIMIT 1) s ON true

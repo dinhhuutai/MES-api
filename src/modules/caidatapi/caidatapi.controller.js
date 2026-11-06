@@ -21,6 +21,8 @@ const lichSu = asyncHandler(async (req, res) => {
   return ok(res, await service.lichSu(req.params.ma, {
     date: q.date || '', search: q.search || '', page, limit, offset,
     loc: { codePhan: s('codePhan'), ngayCa: s('ngayCa'), chuyen: s('chuyen'), don: s('don'), maHang: s('maHang'), kich: s('kich'), mau: s('mau') },
+    // 06/11/2026: kết quả lần gửi mới nhất (LOI · TUNG_LOI · OK; mã lạ ⇒ không lọc) + số lượng đã gửi (`500` · `100-500` · `>500`).
+    ketQua: String(q.ketQua || '').toUpperCase(), soLuong: String(q.soLuong || '').slice(0, 30),
   }));
 });
 

@@ -24,6 +24,7 @@ const { query } = require('../../config/db');
 const env = require('../../config/env');
 const { ghiInTem, taoPayload, laMaTemErp, ghiChuaCoMaErp } = require('../../utils/erpGhiInTem');
 const { ghiLog } = require('../../utils/erpApiLog');
+const { ngayCtDaGui } = require('../../utils/erpNgayGio');
 const { thuCua } = require('../../utils/erpThuLai');
 const { capIdMes } = require('../../utils/idMes');
 const { maTemNhan } = require('../../utils/temPrefix');
@@ -62,7 +63,8 @@ async function dotVaiCuaTem(temId) {
 
 /**
  * Gửi 1 lượt OQC. Trả { ok, bo_qua?, ly_do?, error?, id_mes? }.
- * `opts` = { guiLai, idMes } — nút "Gửi lại ERP" ở Cài đặt API › Lịch sử: bỏ chặn "đã gửi" và DÙNG LẠI IDMES cũ.
+ * `opts` = { guiLai, idMes, ngayCt, ngayCa } — nút "Gửi lại ERP" ở Cài đặt API › Lịch sử: bỏ chặn "đã gửi", DÙNG LẠI IDMES cũ,
+ * giữ Ngày CT + mã ngày ca của lần gửi trước (dòng cũ không có Ngày CT ⇒ ngày của lượt OQC).
  */
 async function guiOqc(oqcId, actorId = null, opts = {}) {
   if (!oqcId) return { ok: false, bo_qua: true, ly_do: 'THIEU_DU_LIEU' };
@@ -73,7 +75,9 @@ async function guiOqc(oqcId, actorId = null, opts = {}) {
   if (quaGiao <= 0) return { ok: false, bo_qua: true, ly_do: 'KHONG_QUA_GIAO' };
   if (!opts.guiLai && await daGuiThanhCong(oqcId)) return { ok: true, bo_qua: true, ly_do: 'DA_GUI' };
 
-  const [r] = await prodRepo.duLieuGhiInTem([{ temId: o.tem_id, dotVaiId: await dotVaiCuaTem(o.tem_id) }]);
+  const moc = await mocXacNhanOqc(oqcId);
+  const ngayCt = opts.guiLai ? (opts.ngayCt || ngayCtDaGui(moc)) : null;
+  const [r] = await prodRepo.duLieuGhiInTem([{ temId: o.tem_id, dotVaiId: await dotVaiCuaTem(o.tem_id) }], ngayCt);
   if (!r) return { ok: false, bo_qua: true, ly_do: 'KHONG_DU_LIEU' };
   // Chờ có mã tem ERP cấp mới gửi (30/09/2026).
   if (!laMaTemErp(r.ma_tem)) return ghiChuaCoMaErp(MA_API, { idBanGhi: oqcId, maTem: r.ma_tem, actorId });
@@ -84,8 +88,7 @@ async function guiOqc(oqcId, actorId = null, opts = {}) {
 
   const payload = taoPayload(r, { idMes, soLuong: quaGiao, soLuongHuy: Number(o.so_luong_loi) || 0 });
   payload.BarcodeIn = maTemNhan(r.ma_tem, o.nguon === 'SUA' ? 17 : 15, null, r.la_tem_sua);
-  if (!payload.Ngayca) payload.Ngayca = await maNgayCaHomNay(r.loai_chuyen);
-  const moc = await mocXacNhanOqc(oqcId);
+  if (!payload.Ngayca) payload.Ngayca = opts.ngayCa || await maNgayCaHomNay(r.loai_chuyen);
   if (!payload.Tugio) payload.Tugio = moc;
   if (!payload.Dengio) payload.Dengio = moc;
   if (!payload.Ngayct) payload.Ngayct = moc ? moc.slice(0, 10) : null;

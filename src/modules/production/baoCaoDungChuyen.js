@@ -51,7 +51,7 @@ async function docLanDung(tuNgay, denNgay, { coLyDoId, coTo }) {
     LEFT JOIN nguoi_dung ndc ON ndc.id = n.created_by
     LEFT JOIN nguoi_dung ndu ON ndu.id = n.updated_by
     ${PHAN_IN_LENH}
-    WHERE n.tg_bd_ngung >= ${W0} AND n.tg_bd_ngung < ${W1}
+    WHERE n.tg_bd_ngung >= ${W0} AND n.tg_bd_ngung < ${W1} AND n.trang_thai <> 'HUY'
       AND COALESCE(n.ly_do, '') NOT LIKE $3`;
   const { rows } = await query(sql.replace(/\s+/g, ' '), [tuNgay, denNgay, TIEN_TO_BO_QUA]);
   return rows;

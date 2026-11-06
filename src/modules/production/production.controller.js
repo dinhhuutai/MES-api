@@ -130,6 +130,14 @@ const stopLine = asyncHandler(async (req, res) =>
     req.body.lyDoId || null, req.body.gioKt || null), 'Đã ngừng chuyền'));
 
 // ─── Danh mục lý do ngừng chuyền (mig 076) ───────────────────────────────────
+// Hủy 1 lần ngừng chuyền (05/11/2026) — sidebar Sản xuất + tab Hủy lệnh xác nhận.
+const ngungChoHuy = asyncHandler(async (req, res) => {
+  const { page, limit, offset } = getPaging(req.query);
+  return ok(res, await service.listNgungChoHuy({ search: req.query.search || '', page, limit, offset }));
+});
+const huyNgungChuyen = asyncHandler(async (req, res) =>
+  ok(res, await service.huyNgungChuyen(req.params.ngungId, (req.body && req.body.lyDo) || '', req.user.id), 'Đã hủy lần ngừng chuyền'));
+
 const lyDoNgungList = asyncHandler(async (req, res) =>
   ok(res, await service.dsLyDoNgung({ search: req.query.search || '', all: req.query.all === '1' })));
 const lyDoNgungCreate = asyncHandler(async (req, res) =>
@@ -237,6 +245,8 @@ const dsTemDaIn = (laGiaCong) => asyncHandler(async (req, res) => {
     mauVai: q.mauVai || '', kichVai: q.kichVai || '', kichPhim: q.kichPhim || '', maLenh: q.maLenh || '',
     maLo: String(q.maLo || '').slice(0, 40), nhaGiaCong: q.nhaGiaCong || '',
     trangThai: String(q.trangThai || '').split(',').map((x) => x.trim().toUpperCase()).filter((x) => /^[A-Z_]{2,20}$/.test(x)).slice(0, 10),
+    // SL in (06/11/2026): `500` · `100-500` · `>500`… — đọc ở `utils/locSoLuong.js`, sai dạng ⇒ không lọc.
+    soLuong: String(q.soLuong || '').slice(0, 30),
     // Khu chuyền (26/10/2026) — chip loại ⇒ `loaiChuyen`, chip khu ⇒ `maChuyen` (danh sách mã, ngăn dấu phẩy).
     loaiChuyen: /^[A-Z_]{1,30}$/i.test(q.loaiChuyen || '') ? q.loaiChuyen : '',
     maChuyenDs: String(q.maChuyen || '').slice(0, 400),
@@ -348,7 +358,7 @@ module.exports = {
   candidates, getRun, start, startBatch, chayDacBietCandidates, chayDacBiet, printTem, printTemBatch, reprintTem, temLabel, temLogs, finish, monitor,
   theoDoiTo,
   xePhoi, temChoPhoi, themTem, adjustPhoi, drying, confirmDry, kiemTruocKho, redry,
-  stopLine, resumeLine, addVaiHuy, xemVaiTem, suaVaiTheoTem, suaTem, gopLenh, tachLenhNgc, savePhanCong, vuotSanXuat,
+  stopLine, resumeLine, ngungChoHuy, huyNgungChuyen, addVaiHuy, xemVaiTem, suaVaiTheoTem, suaTem, gopLenh, tachLenhNgc, savePhanCong, vuotSanXuat,
   lyDoNgungList, lyDoNgungCreate, lyDoNgungUpdate, lyDoNgungToggle,
   toInList, toInCreate, toInUpdate, toInToggle, baoCaoSanXuat, baoCaoDungChuyen, baoCaoKiemHang, baoCaoSuaHang,
   baoCaoPhanLoaiLoi,

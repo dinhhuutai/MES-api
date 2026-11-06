@@ -15,6 +15,7 @@ const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
 const gomRepo = require('../gomset/gomset.repository');
 const { chuanMauMuc } = require('../../utils/mauMuc');
+const { normTcin, tapBoQua } = require('../../utils/tinhChatIn');
 
 const NGUON = 'phieu_nhan_vai_60';          // API DUY NHẤT → đợt vải vào thẳng READY
 
@@ -22,28 +23,6 @@ const NGUON = 'phieu_nhan_vai_60';          // API DUY NHẤT → đợt vải v
 // · 6I = mẫu số lượng (MAU_SO_LUONG, mig 070). Mọi loại khác → BỎ QUA. (Trước đây lọc theo khách hàng
 // 'SL' + blacklist 8I/2I; nay bỏ lọc khách, chuyển sang whitelist loaikd cho rõ ràng.) Thêm/bớt mã ở đây.
 const LAY_LOAIKD = new Set(['3I', '5I', '6I']);
-
-// TÍNH CHẤT IN (`Tinhchatin`) BỎ QUA — các công đoạn ép/ủi/lụa... không thuộc phạm vi MES này.
-// So khớp sau khi chuẩn hóa (bỏ hết khoảng trắng + viết hoa) nên "C + EP DECAL" == "C+EP DECAL".
-const BO_TINH_CHAT_IN_RAW = [
-  'C+EP DECAL', 'C+KIENG UI', 'DANKEO', 'DQ+EP DINH', 'DQ+EP KIENG', 'DQ+EP LUN', 'EP DC', 'EP DECAL',
-  'EP DIEN', 'EP DINH', 'EP DINH+LS', 'EP DQ', 'EP GAI XU', 'EP KEO', 'EP KIENG', 'EP LUN', 'EP LUN NHUA',
-  'EP LUN PHOI', 'EP LUN+EP NOI', 'EP NHIET', 'EP NHUA MAU', 'EP NHUNG', 'EP NOI', 'EP NOI SLC', 'EP NONG',
-  'EP NONG+LS', 'EP PET', 'EP PHOI', 'IN EP NHUNG', 'IN EP PHOI', 'KIENG UI', 'KIENG UI BONG', 'KIENG UI DQ',
-  'KIENG UI DQ+DQ', 'KIENG UI DQ+EP K', 'KIENG UI+KBONG', 'KIENGUICAO', 'LAZE+EP KIENG', 'LG', 'LG BONG',
-  'LG EP', 'LG MO', 'LG+EP NHUA', 'LS', 'LS+EP KIENG', 'RC+REP DC', 'RDQ+EP LUN', 'REP DECAL', 'REP DIEN',
-  'REP DINH', 'REP DQ', 'REP GAI XU', 'REP KEO', 'REP KIENG', 'REP LUN', 'REP LUN NHUA', 'REP LUN+EP NOI',
-  'REP NHIET', 'REP NHUA MAU', 'REP NHUNG', 'REP NOI', 'REP NOI SLC', 'REP NONG', 'REP PHOI', 'REP UI',
-  'RIN EP NHUNG', 'RIN EP PHOI', 'RKIENG UI', 'RKIENG UI BONG', 'RKIENG UI DQ', 'RKIENG UI DQ+EP K',
-  'RKIENG UI+KBONG', 'RLAZE+EP KIENG', 'RLG', 'RLG EP', 'RLG+EP NHUA', 'RLS', 'RLS+EP KIENG', 'RT+EP DC',
-  'RT+EP DIEN', 'RT+EP DINH', 'RT+EP LUN', 'RT+EP LUN PHOI', 'RT+EP NHUNG', 'RT+EP NOI', 'RT+EP NONG',
-  'RT+EP PHOI', 'RT+EP UI', 'RT+KIENG UI', 'RT+KIENG UI DQ', 'RT+LG EP', 'RTB+EP DINH', 'RTB+EP NHIET',
-  'T+DQ+EPLUN', 'T+EP DC', 'T+EP DIEN', 'T+EP DINH', 'T+EP KIENG', 'T+EP LUN', 'T+EP LUN PHOI', 'T+EP LUN+LS',
-  'T+EP NHUNG', 'T+EP NOI', 'T+EP NONG', 'T+EP PHOI', 'T+EP UI', 'T+KIENG UI', 'T+KIENG UI DQ', 'T+LG EP',
-  'T+LS', 'TB+EP DINH', 'TB+EP NHIET', 'TB+KIENGUIBONG', 'IN KIENG DQ'
-];
-const normTcin = (v) => String(v == null ? '' : v).toUpperCase().replace(/\s+/g, '');
-const BO_TINH_CHAT_IN = new Set(BO_TINH_CHAT_IN_RAW.map(normTcin));
 
 const md5 = (s) => crypto.createHash('md5').update(s).digest('hex');
 const clean = (v) => (v == null ? '' : String(v).trim());
@@ -329,10 +308,12 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
     const seen = new Map();
     // ⚠ `buildKeys` chạy trên TOÀN BỘ dòng rồi mới lọc phạm vi: khóa đợt vải phụ thuộc thứ tự xuất hiện
     //   trong nhóm trùng, lọc trước là có thể lệch khóa với lần job chạy ⇒ đẻ đợt vải trùng.
+    // Tính chất in bỏ qua = đọc từ *Hệ thống › Tính chất in* mỗi lượt (mig 123; `utils/tinhChatIn.js`).
+    const boTcin = await tapBoQua();
     const prepared = rows.map((r) => {
       const noCode = !clean(r.code_part);
       const isBoLoai = !LAY_LOAIKD.has(clean(r.loaikd).toUpperCase());
-      const isBoTcin = BO_TINH_CHAT_IN.has(normTcin(erpTinhChatIn(r)));
+      const isBoTcin = boTcin.has(normTcin(erpTinhChatIn(r)));
       const { maPhan, maDotVai } = buildKeys(r, seen);
       return { r, maPhan, maDotVai, skip: noCode || isBoLoai || isBoTcin, noCode, isBoLoai, isBoTcin };
     }).filter((p) => !chiCodePhan || chiCodePhan.has(clean(p.r.code_part).toUpperCase()));
@@ -595,13 +576,14 @@ async function xemTruocCodePhan({ codeParts, ngay } = {}, actorId) {
 
   const tapCode = new Set(codes);
   const seen = new Map();
+  const boTcin = await tapBoQua();
   const tatCa = duLieu.data.map((r) => {
     const { maPhan, maDotVai } = buildKeys(r, seen);
     return {
       r, maPhan, maDotVai,
       noCode: !clean(r.code_part),
       isBoLoai: !LAY_LOAIKD.has(clean(r.loaikd).toUpperCase()),
-      isBoTcin: BO_TINH_CHAT_IN.has(normTcin(erpTinhChatIn(r))),
+      isBoTcin: boTcin.has(normTcin(erpTinhChatIn(r))),
     };
   }).map((p) => ({ ...p, skip: p.noCode || p.isBoLoai || p.isBoTcin }))
     .filter((p) => tapCode.has(clean(p.r.code_part).toUpperCase()));

@@ -96,14 +96,16 @@ const MA_CO_LICH_SU = new Set([
   'ERP_GUI_HUY_IDMES', 'ERP_GUI_HUY_RELEASE_1',
 ]);
 
-async function lichSu(ma, { date, search, page, limit, offset, loc }) {
+async function lichSu(ma, { date, search, page, limit, offset, loc, ketQua, soLuong }) {
   if (!MA_CO_LICH_SU.has(ma)) {
     throw new AppError('API này chưa có lịch sử gọi', { status: 404, errorCode: 'NO_HISTORY' });
   }
   // ⚠ Thiếu bảng/lỗi đọc ⇒ trả rỗng thay vì ném lỗi: đây là màn TRA CỨU, hỏng nó không được
   //   chặn người dùng bật/tắt API (cùng tinh thần fail-open của `utils/caiDatApi`).
   try {
-    const { rows, total } = await repo.lichSu({ ma, date, search, offset, limit, loc });
+    const { rows, total } = await repo.lichSu({
+      ma, date, search, offset, limit, loc, ketQua: repo.KET_QUA.has(ketQua) ? ketQua : '', soLuong,
+    });
     return { items: rows, meta: buildMeta(page, limit, total) };
   } catch (e) {
     console.warn(`[cai-dat-api] Không đọc được lịch sử ${ma}: ${e.message}`);

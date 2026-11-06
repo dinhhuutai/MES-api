@@ -2235,8 +2235,9 @@ async function release1DoneByDate(date) {
     SELECT ls.created_date AS tg, nd.ho_ten AS nguoi,
            ls.ma_lenh_san_xuat || COALESCE(' → gộp vào ' || gv.vao_lenh, '') AS ma,
            ls.id AS lenh_id, ${SO_PHAN_IN_SQL},
-           ls.so_luong_release AS so_luong, ${DONE_INFO}
+           ls.so_luong_release AS so_luong, cs.ten_chuyen, ${DONE_INFO}
     FROM lenh_san_xuat ls
+    LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
     LEFT JOIN nguoi_dung nd ON nd.id = ls.created_by
     LEFT JOIN LATERAL (SELECT a.gia_tri_moi->>'vao_lenh' AS vao_lenh FROM audit_log a
                         WHERE a.ten_bang = 'lenh_san_xuat' AND a.id_ban_ghi = ls.id::text AND a.hanh_dong = 'GOP_VAO_LENH'
@@ -2254,9 +2255,10 @@ async function planDoneByDate(date, hanhDong) {
   const sql = `
     SELECT a.thoi_gian AS tg, nd.ho_ten AS nguoi, ls.ma_lenh_san_xuat AS ma,
            ls.id AS lenh_id, ${SO_PHAN_IN_SQL},
-           ls.so_luong_release AS so_luong, ${DONE_INFO}
+           ls.so_luong_release AS so_luong, cs.ten_chuyen, ${DONE_INFO}
     FROM audit_log a
     JOIN lenh_san_xuat ls ON ls.id = a.id_ban_ghi::uuid
+    LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
     LEFT JOIN nguoi_dung nd ON nd.id = a.nguoi_thuc_hien_id
     ${PHAN_INFO_LATERAL}
     WHERE a.ten_bang = 'lenh_san_xuat' AND a.hanh_dong = $2

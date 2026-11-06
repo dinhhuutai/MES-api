@@ -199,9 +199,23 @@ async function gomDoneByDate(date) {
            (SELECT count(*) FROM gom_set_dot_vai d WHERE d.gom_set_id = gs.id)::int AS so_dot_vai,
            (SELECT string_agg(DISTINCT pin.mau_vai, ', ')
               FROM gom_set_dot_vai d JOIN dot_vai_ve dv ON dv.id = d.dot_vai_ve_id
-              JOIN phan_in pin ON pin.id = dv.phan_in_id WHERE d.gom_set_id = gs.id) AS mau_list
+              JOIN phan_in pin ON pin.id = dv.phan_in_id WHERE d.gom_set_id = gs.id) AS mau_list,
+           ct.ma_don_hang, ct.kich_vai, ct.kich_phim, ct.ten_chuyen
     FROM audit_log a
     JOIN gom_set gs ON gs.id = a.id_ban_ghi::uuid
+    LEFT JOIN LATERAL (
+      SELECT string_agg(DISTINCT dh.ma_don_hang, ', ') AS ma_don_hang, string_agg(DISTINCT pin.kich_vai, ', ') AS kich_vai,
+             string_agg(DISTINCT pin.kich_phim, ', ') AS kich_phim, string_agg(DISTINCT cs.ten_chuyen, ', ') AS ten_chuyen
+        FROM gom_set_dot_vai d
+        JOIN dot_vai_ve dv ON dv.id = d.dot_vai_ve_id
+        JOIN phan_in pin ON pin.id = dv.phan_in_id
+        JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+        JOIN don_hang dh ON dh.id = mh.don_hang_id
+        LEFT JOIN lenh_sx_dot_vai lsd ON lsd.dot_vai_ve_id = dv.id
+        LEFT JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id AND ls.trang_thai <> 'HUY'
+        LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+       WHERE d.gom_set_id = gs.id
+    ) ct ON true
     LEFT JOIN nguoi_dung nd ON nd.id = a.nguoi_thuc_hien_id
     WHERE a.ten_bang = 'gom_set' AND a.hanh_dong IN ('CREATE_SET','RELEASE_SET')
       AND (a.thoi_gian AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date

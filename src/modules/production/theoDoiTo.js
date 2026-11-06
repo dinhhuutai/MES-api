@@ -16,6 +16,7 @@
 // Cache RAM 15s theo ngày (FE tự tải lại theo socket + mỗi 30s).
 
 const { query } = require('../../config/db');
+const { chuyenTemSql } = require('../../utils/temChuyen');
 const { coCot, PHIEU_THAT, TEM_THAT, TEM_CUA_NGAY, MOC_TEM } = require('./baoCaoSanXuat');
 const { PHAN_INFO_LATERAL } = require('../planning/planning.repository');
 const { chuyenCoCotTo } = require('../chuyen/chuyen.repository');
@@ -27,7 +28,7 @@ const CACHE_MS = 15000;
 async function docLenh(ngay, { coNgayCa, coGoc }) {
   const den = coNgayCa ? MOC_TEM('t.gio_sx_kt') : 't.created_date';
   const sql = `WITH tt AS (
-      SELECT ps.lenh_san_xuat_id AS lenh_id, COALESCE(ps.chuyen_id, ls.chuyen_id) AS chuyen_id,
+      SELECT ps.lenh_san_xuat_id AS lenh_id, ${await chuyenTemSql()} AS chuyen_id,
              EXTRACT(HOUR FROM (${den}) AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS gio, SUM(t.so_luong)::int AS sl
         FROM tem t
         JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id

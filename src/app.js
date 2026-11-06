@@ -28,6 +28,7 @@ const kpiReadyRoutes = require('./modules/kpiready/kpiready.routes');
 const thoiGianTramRoutes = require('./modules/thoigiantram/thoigiantram.routes');
 const erpsyncRoutes = require('./modules/erpsync/erpsync.routes');
 const hienThiPainRoutes = require('./modules/hienthipain/hienthipain.routes');
+const tinhChatInRoutes = require('./modules/tinhchatin/tinhchatin.routes');
 const caiDatApiRoutes = require('./modules/caidatapi/caidatapi.routes');
 const caiDatTinhNangRoutes = require('./modules/caidattinhnang/caidattinhnang.routes');
 const thongBaoRoutes = require('./modules/thongbao/thongbao.routes');
@@ -101,6 +102,8 @@ app.use('/api/thoi-gian-tram', thoiGianTramRoutes);
 app.use('/api/erp', erpsyncRoutes);
 // Hệ thống > Hiển thị theo phương án in (bật/tắt Máy/Bàn/Robot/Khác cho từng trang — mig 067)
 app.use('/api/hien-thi-pain', hienThiPainRoutes);
+// Hệ thống > Tính chất in (phân luồng + bỏ qua khi đồng bộ ERP — mig 123)
+app.use('/api/tinh-chat-in', tinhChatInRoutes);
 // Hệ thống > Cài đặt API (bật/tắt 3 API ERP ngay trên giao diện — mig 083)
 app.use('/api/cai-dat-api', caiDatApiRoutes);
 // Hệ thống > Cài đặt tính năng (bật/tắt luật nghiệp vụ: chặn Release 1 theo loại chuyền · duyệt

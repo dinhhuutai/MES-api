@@ -4,6 +4,7 @@ const { query } = require('../../config/db');
 const { coCotCodePhan } = require('../../utils/caiDatApi');
 const { mauTim } = require('../../utils/timKiem');
 const { chuanMaChuyen, chuanMaChuyenSql } = require('../../utils/maChuyen');
+const { docLocSoLuong, dkSoLuongSql } = require('../../utils/locSoLuong');
 
 // Lưu 1 dòng cấu hình. `ma_api` là PK nên upsert theo nó.
 // ⚠⚠ DÒ CỘT `code_phan` TRƯỚC rồi mới dựng câu INSERT (khuôn `temCoCot` mig 066) — cột này thêm SAU
@@ -146,21 +147,39 @@ function dkTruongSql(loc, p) {
   return coGui ? `(${ex} OR (${gui.join(' AND ')}))` : ex;
 }
 
-async function lichSu({ ma, date = '', search = '', offset = 0, limit = 20, loc = {} }) {
+// LỌC KẾT QUẢ + SỐ LƯỢNG (06/11/2026, người dùng: "lịch sử lọc theo số lượng in, lọc những IDMES gửi sang ERP bị lỗi")
+//   — xét LẦN GỬI MỚI NHẤT của lượt (đúng Kết quả + SL đang hiện trên dòng), khác lọc ngày / tìm / trường (lượt có ≥1 lần
+//   gửi khớp). `ketQua`: `LOI` = lần gửi mới nhất lỗi (badge đỏ + vàng) · `TUNG_LOI` = mới nhất thành công nhưng trước đó
+//   có lần lỗi (gửi lại / thử lại tự động — `cac_lan_loi`) · `OK` = mới nhất thành công. SL = `gui.Soluong` (dòng trước
+//   15/08/2026: `payload.Soluong`) — chỉ 5 kênh 20 tham số có (in tem: SL in · gia công / kiểm phẩm / sửa đạt: SL đạt ·
+//   OQC: SL qua giao); API khác lọc SL ra rỗng.
+const SO_LUONG_GUI = `COALESCE(a.gia_tri_moi->'gui'->>'Soluong', a.gia_tri_moi->'payload'->>'Soluong')`;
+const KET_QUA = new Set(['LOI', 'TUNG_LOI', 'OK']);
+
+async function lichSu({ ma, date = '', search = '', offset = 0, limit = 20, loc = {}, ketQua = '', soLuong = '' }) {
   const args = [ma, `${ma}_LOI`, date || '', mauTim(search), duoiMaTem(search)];
   const dkTruong = dkTruongSql(loc, args);
+  const dkLuot = [];
+  if (ketQua === 'LOI') dkLuot.push('d.hanh_dong = $2');
+  if (ketQua === 'OK') dkLuot.push('d.hanh_dong = $1');
+  if (ketQua === 'TUNG_LOI') dkLuot.push('d.hanh_dong = $1 AND d.co_loi');
+  const dkSl = dkSoLuongSql('d.sl', docLocSoLuong(soLuong), args);
+  if (dkSl) dkLuot.push(dkSl);
   const L = args.length;
   const sql = `
     WITH b AS MATERIALIZED (
       SELECT a.id, a.thoi_gian, a.hanh_dong, a.nguoi_thuc_hien_id, ${ID_MES} AS idm,
              (($3 = '' OR (a.thoi_gian AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $3::date)
               AND ($4 = '' OR ${ID_MES} ~* $4 OR ${MA_TEM} ~* $4 OR ($5 <> '' AND substr(${MA_TEM}, 3) = $5))
-              ${dkTruong ? `AND ${dkTruong}` : ''}) AS khop
+              ${dkTruong ? `AND ${dkTruong}` : ''}) AS khop,
+             (a.hanh_dong = $2 OR a.gia_tri_moi ? 'cac_lan_loi') AS co_loi,
+             CASE WHEN ${SO_LUONG_GUI} ~ '^-?[0-9]+([.][0-9]+)?$' THEN (${SO_LUONG_GUI})::numeric END AS sl
         FROM audit_log a WHERE a.hanh_dong IN ($1, $2)),
-    k AS (SELECT b.idm FROM b GROUP BY b.idm HAVING bool_or(b.khop)),
-    d AS (SELECT DISTINCT ON (b.idm) b.id, b.idm, b.thoi_gian FROM b JOIN k ON k.idm = b.idm
+    k AS (SELECT b.idm, bool_or(b.co_loi) AS co_loi FROM b GROUP BY b.idm HAVING bool_or(b.khop)),
+    d AS (SELECT DISTINCT ON (b.idm) b.id, b.idm, b.thoi_gian, b.hanh_dong, b.sl, k.co_loi FROM b JOIN k ON k.idm = b.idm
            ORDER BY b.idm, b.thoi_gian DESC, b.id DESC),
-    p AS (SELECT d.*, count(*) OVER () AS total FROM d ORDER BY d.thoi_gian DESC, d.id DESC LIMIT $${L + 1} OFFSET $${L + 2}),
+    p AS (SELECT d.*, count(*) OVER () AS total FROM d ${dkLuot.length ? `WHERE ${dkLuot.join(' AND ')}` : ''}
+           ORDER BY d.thoi_gian DESC, d.id DESC LIMIT $${L + 1} OFFSET $${L + 2}),
     g AS (
       SELECT b.idm, count(*)::int AS so_lan_gui, bool_or(b.hanh_dong = $1) AS co_thanh_cong,
              json_agg(json_build_object('id', x.id, 'thoi_gian', x.thoi_gian, 'thanh_cong', x.hanh_dong = $1,
@@ -172,7 +191,7 @@ async function lichSu({ ma, date = '', search = '', offset = 0, limit = 20, loc 
        GROUP BY b.idm)
     SELECT p.total::int AS _total, a.id, a.thoi_gian, a.hanh_dong, a.id_ban_ghi,
            (a.hanh_dong = $1) AS thanh_cong,
-           ${ID_MES} AS id_mes, ${MA_TEM} AS ma_tem,
+           ${ID_MES} AS id_mes, ${MA_TEM} AS ma_tem, ${SO_LUONG_GUI} AS so_luong,
            a.gia_tri_moi->>'url' AS url,
            a.gia_tri_moi->>'loi' AS loi,
            ${ERP_MESSAGE} AS erp_message,
@@ -198,4 +217,4 @@ async function lichSu({ ma, date = '', search = '', offset = 0, limit = 20, loc 
   return { rows: rows.map(({ _total, ...r }) => r), total };
 }
 
-module.exports = { luu, thongTinSua, lichSu };
+module.exports = { luu, thongTinSua, lichSu, KET_QUA };

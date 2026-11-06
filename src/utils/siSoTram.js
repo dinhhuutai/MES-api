@@ -538,7 +538,7 @@ const demGon = (khoa, trong) => `SELECT ${khoa} AS id, min(x.tg_vao) AS tg_vao,
 // Bộ cột hiển thị chuẩn — MỌI màn trả CÙNG bộ này ⇒ FE dựng 1 bảng + 1 hàm Excel.
 // ⚠ `so_phan_in` LUÔN = 1: đơn vị đếm nay là PHẦN IN nên badge "gom set N" không còn nghĩa; số
 //   lệnh/tem của phần in đọc được ở cột Mã đợt SX / Mã tem (đã `string_agg`).
-const COT_PIN_GOM = `kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, pin.ma_phan, pin.mau_vai,
+const COT_PIN_GOM = `kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, pin.ma_phan, pin.barcode AS barcode_phan_in, pin.mau_vai,
   pin.kich_vai, pin.kich_phim, pin.tinh_chat_in, pin.so_luong_don_hang,
   dvs.ten_loai_dot_vai, hs.phuong_an_in, dvs.nha_gia_cong, dvs.so_luong_vai_ve,
   dvs.han_giao_hang, dvs.ngay_vai_ve, dvs.tg_len_mes, dvs.ma_dot_vai,
@@ -654,6 +654,7 @@ const manTheoDonVi = (khoa, trong, { traVe = TV.KHONG, laDotVai = false } = {}) 
   string_agg(DISTINCT dh.ma_don_hang, ', ') AS ma_don_hang,
   string_agg(DISTINCT mh.ma_hang, ', ') AS ma_hang,
   string_agg(DISTINCT pin.ma_phan, ', ') AS ma_phan,
+  string_agg(DISTINCT pin.barcode, ', ') AS barcode_phan_in,
   string_agg(DISTINCT pin.mau_vai, ', ') AS mau_vai,
   string_agg(DISTINCT pin.kich_vai, ', ') AS kich_vai,
   string_agg(DISTINCT pin.kich_phim, ', ') AS kich_phim,

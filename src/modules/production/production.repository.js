@@ -1,6 +1,7 @@
 'use strict';
 
 const { query } = require('../../config/db');
+const { chuyenTemSql } = require('../../utils/temChuyen');
 const env = require('../../config/env');
 const { lenhPhanInMatch } = require('../../utils/search');
 // Hiển thị theo PHƯƠNG ÁN IN — cấu hình động từng trang (mig 067), mặc định BẬT HẾT = không lọc.
@@ -27,6 +28,7 @@ const { MOC_TEM } = require('./baoCaoSanXuat');
 const { chuanMaChuyen, chuanMaChuyenSql } = require('../../utils/maChuyen');
 const { loaiChuyenTinhCaSql } = require('../../utils/ca');
 const { laTemSuaSql } = require('../../utils/temCon');
+const { docLocSoLuong, dkSoLuongSql } = require('../../utils/locSoLuong');
 
 const PHAN_AGG = `(SELECT string_agg(DISTINCT pin.ma_phan, ', ')
     FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
@@ -310,7 +312,8 @@ async function setPhieuChuyen(client, phieuId, chuyenId, actorId) {
 // Chuyền đích có tồn tại & còn hoạt động không (chặn gán vào chuyền đã ngừng).
 async function getChuyenById(chuyenId) {
   const { rows } = await query(
-    'SELECT id, ma_chuyen, ten_chuyen, dang_hoat_dong FROM chuyen_san_xuat WHERE id = $1',
+    `SELECT cs.id, cs.ma_chuyen, cs.ten_chuyen, cs.dang_hoat_dong, lc.ma_loai AS ma_loai_chuyen
+       FROM chuyen_san_xuat cs LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id WHERE cs.id = $1`,
     [chuyenId]
   );
   return rows[0] || null;
@@ -689,7 +692,7 @@ async function listReopenableTem({ search = '', offset = 0, limit = 50 }) {
     FROM tem t
     JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
     JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
-    LEFT JOIN chuyen_san_xuat cs ON cs.id = ps.chuyen_id
+    LEFT JOIN chuyen_san_xuat cs ON cs.id = ${await chuyenTemSql({ ls: null })}
     ${SU_KIEN_CUOI_LATERAL}
     ${PHAN_INFO_LATERAL}
     WHERE t.trang_thai = 'HUY' AND ${MO_LAI_DUOC_SQL}
@@ -785,7 +788,7 @@ async function listCancelableTem({ search = '', offset = 0, limit = 50 }) {
     FROM tem t
     JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
     JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
-    LEFT JOIN chuyen_san_xuat cs ON cs.id = ps.chuyen_id
+    LEFT JOIN chuyen_san_xuat cs ON cs.id = ${await chuyenTemSql({ ls: null })}
     ${PHAN_INFO_LATERAL}
     WHERE t.trang_thai IN ('IN','DANG_PHOI','DA_KHO')
       AND COALESCE(t.sl_kcs_dat,0)=0 AND COALESCE(t.sl_kcs_sua,0)=0 AND COALESCE(t.sl_kcs_huy,0)=0
@@ -829,10 +832,14 @@ async function listTemDaIn({
   khach = '', don = '', maHang = '', codePhan = '', maTem = '', chuyen = '', chuyenId = '',
   loaiChuyen = '', maChuyenDs = '',
   mauVai = '', kichVai = '', kichPhim = '', maLenh = '', maLo = '', nhaGiaCong = '', trangThai = [],
-  cuaToi = '', offset = 0, limit = 20,
+  soLuong = '', cuaToi = '', offset = 0, limit = 20,
 }) {
   const dk = [];
   const p = [];
+  // SL IN (06/11/2026) — `500` · `100-500` · `>500`… (`utils/locSoLuong.js`), so đúng cột "SL in" của bảng (`tem.so_luong`;
+  //   tem 17 mang 0 — SL thật của nó ở `sl_kcs_dat`).
+  const dkSl = dkSoLuongSql('t.so_luong', docLocSoLuong(soLuong), p);
+  if (dkSl) dk.push(dkSl);
   // TEM CỦA TÔI (28/10/2026) — tem do CHÍNH tài khoản đang xem in ra (`tem.created_by` = người bấm In tem lần đầu;
   //   in lại chỉ ghi `log_tem`). `cuaToi` = id người dùng do controller lấy từ `req.user`, không nhận từ query.
   if (cuaToi) { p.push(cuaToi); dk.push(`t.created_by = $${p.length}::uuid`); }
@@ -884,7 +891,7 @@ async function listTemDaIn({
     FROM tem t
     JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
     JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
-    LEFT JOIN chuyen_san_xuat cs ON cs.id = COALESCE(ps.chuyen_id, ls.chuyen_id)
+    LEFT JOIN chuyen_san_xuat cs ON cs.id = ${await chuyenTemSql()}
     LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
     ${PHAN_INFO_LATERAL}`;
   const WHERE_GOC = `
@@ -1116,6 +1123,7 @@ async function docTemSuaTx(client, temId) {
             to_char(t.ngay_ca, 'YYYY-MM-DD') AS ngay_ca,
             to_char(t.gio_sx_bd, 'HH24:MI') AS gio_sx_bd, to_char(t.gio_sx_kt, 'HH24:MI') AS gio_sx_kt,
             ps.lenh_san_xuat_id, ls.ma_lenh_san_xuat, ls.trang_thai AS lenh_trang_thai,
+            ps.chuyen_id AS chuyen_phieu_id, ${await chuyenTemSql()} AS chuyen_id,
             (COALESCE(t.sl_kcs_dat,0) + COALESCE(t.sl_kcs_sua,0) + COALESCE(t.sl_kcs_huy,0)
               + COALESCE(t.sl_oqc_dat,0) + COALESCE(t.sl_da_giao,0)) > 0 AS da_kiem,
             EXISTS (SELECT 1 FROM kcs k WHERE k.tem_id = t.id) AS co_kcs
@@ -1138,8 +1146,14 @@ async function capNhatTemSuaTx(client, temId, d, actorId) {
   if ('maNgayCa' in d) { dat('ma_ngay_ca', d.maNgayCa); dat('ngay_ca', d.ngayCa, '::date'); }
   if ('gioBd' in d) dat('gio_sx_bd', d.gioBd, '::time');
   if ('gioKt' in d) dat('gio_sx_kt', d.gioKt, '::time');
+  if ('chuyenRiengId' in d) dat('chuyen_id', d.chuyenRiengId, '::uuid');
   if (!sets.length) return;
   await client.query(`UPDATE tem SET ${sets.join(', ')}, updated_date = CURRENT_TIMESTAMP, updated_by = $2 WHERE id = $1`, p);
+  // Tem 17 của tem này đi cùng chuyền (cùng phiếu, mỗi tem con mang giá trị riêng).
+  if ('chuyenRiengId' in d) {
+    await client.query('UPDATE tem SET chuyen_id = $2::uuid, updated_date = CURRENT_TIMESTAMP, updated_by = $3 WHERE tem_goc_id = $1',
+      [temId, d.chuyenRiengId, actorId]);
+  }
   if ('soLuong' in d) {
     await client.query(
       `UPDATE tem_xe_phoi SET so_luong_phoi = $2, updated_date = CURRENT_TIMESTAMP, updated_by = $3
@@ -1420,7 +1434,7 @@ async function caPartsForTem(temId) {
      FROM tem t
      LEFT JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
      LEFT JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
-     LEFT JOIN chuyen_san_xuat cs ON cs.id = COALESCE(ps.chuyen_id, ls.chuyen_id)
+     LEFT JOIN chuyen_san_xuat cs ON cs.id = ${await chuyenTemSql()}
      LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
      WHERE t.id = $1`.replace(/\s+/g, ' '),
     [temId]
@@ -1482,7 +1496,7 @@ async function getTemLabelData(temId, dotVaiId = null) {
   const { rows } = await query(
     `SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.created_date, ${cotMaLo} AS ma_lo, ${cotMaTo} AS ma_to,
             ${PCT_CA_ID} AS ca_truong_id, ${coTo ? PCT_TO_ID : 'NULL::uuid'} AS to_in_id, (pct.g IS NOT NULL) AS phan_cong_rieng,
-            ls.ma_lenh_san_xuat, cs.ma_chuyen, cs.ten_chuyen, ps.tg_bd AS tg_bd_in,
+            ls.ma_lenh_san_xuat, cs.id AS chuyen_id, cs.ma_chuyen, cs.ten_chuyen, ps.tg_bd AS tg_bd_in,
             info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan,
             info.mau_vai, info.kich_vai, info.kich_phim, info.so_luong_don_hang,
             info.nha_gia_cong, info.so_luong_vai_ve, info.bo_phan_bh,
@@ -1491,16 +1505,22 @@ async function getTemLabelData(temId, dotVaiId = null) {
             to_char(t.gio_sx_kt, 'HH24:MI') AS gio_sx_kt,
             ${PCT_CHUYEN_TRUONG} AS chuyen_truong, ndct.ho_ten AS ca_truong,
             ${PCT_THO_IN(', ')} AS tho_in,
-            (SELECT txp.tg_bd_phoi FROM tem_xe_phoi txp WHERE txp.tem_id = t.id ORDER BY txp.tg_bd_phoi DESC LIMIT 1) AS tg_bd_phoi,
-            (SELECT txp.tg_kt_phoi FROM tem_xe_phoi txp WHERE txp.tem_id = t.id ORDER BY txp.tg_bd_phoi DESC LIMIT 1) AS tg_kt_phoi,
+            phoi.tg_bd_phoi, phoi.tg_kt_phoi,
+            CASE WHEN phoi.tg_kt_phoi IS NULL THEN NULL
+                 ELSE GREATEST(0, ROUND(EXTRACT(EPOCH FROM (phoi.tg_kt_phoi - phoi.tg_bd_phoi)) / 60))::int END AS so_phut_phoi,
             (SELECT nd.ho_ten FROM log_tem lt LEFT JOIN nguoi_dung nd ON nd.id = lt.nguoi_in_id
              WHERE lt.tem_id = t.id ORDER BY lt.tg_in LIMIT 1) AS nguoi_in
      FROM tem t
      JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
      JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
-     LEFT JOIN chuyen_san_xuat cs ON cs.id = ps.chuyen_id
+     LEFT JOIN chuyen_san_xuat cs ON cs.id = ${await chuyenTemSql({ ls: null })}
      ${PCT_LATERAL}
      LEFT JOIN nguoi_dung ndct ON ndct.id = ${PCT_CA_ID}
+     LEFT JOIN LATERAL (
+       SELECT txp.tg_bd_phoi, txp.tg_kt_phoi FROM tem_xe_phoi txp
+        WHERE txp.tem_id = COALESCE(t.tem_goc_id, t.id)
+        ORDER BY txp.tg_bd_phoi DESC LIMIT 1
+     ) phoi ON true
      ${INFO}
      WHERE t.id = $1`,
     params
@@ -1814,6 +1834,7 @@ async function duLieuGhiInTem(capTem = [], ngayCt = null) {
   const sql = `
     WITH inp AS (SELECT * FROM unnest($1::uuid[], $2::uuid[]) AS x(tem_id, dot_vai_id))
     SELECT t.id AS tem_id, t.ma_tem, t.ma_ngay_ca, t.gc_mau_vai,
+           COALESCE(t.btp_truoc, false) AS btp_truoc, COALESCE(t.btp_cuoi, false) AS btp_cuoi,
            ${laTemSuaSql('t')} AS la_tem_sua,
            (SELECT tg.ma_tem FROM tem tg WHERE tg.id = t.tem_goc_id) AS ma_tem_goc,
            CASE WHEN t.tem_goc_id IS NOT NULL THEN t.sl_kcs_dat ELSE t.so_luong END AS so_luong,
@@ -1839,7 +1860,7 @@ async function duLieuGhiInTem(capTem = [], ngayCt = null) {
       JOIN tem t ON t.id = inp.tem_id
       JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
       JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
-      LEFT JOIN chuyen_san_xuat cs ON cs.id = COALESCE(ps.chuyen_id, ls.chuyen_id)
+      LEFT JOIN chuyen_san_xuat cs ON cs.id = ${await chuyenTemSql()}
       LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
       ${PCT_LATERAL}
       ${coTo ? `LEFT JOIN to_in ti ON ti.id = ${PCT_TO_ID}` : ''}
@@ -1977,7 +1998,7 @@ async function monitorRunning() {
             (SELECT COALESCE(SUM(
                CASE WHEN n.trang_thai='DA_HOAT_DONG_LAI' THEN COALESCE(n.so_phut,0)
                     ELSE GREATEST(0, ROUND(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - n.tg_bd_ngung))/60.0))::int END
-             ),0)::int FROM ngung_chuyen n WHERE n.phieu_san_xuat_id=ps.id) AS ngung_phut
+             ),0)::int FROM ngung_chuyen n WHERE n.phieu_san_xuat_id=ps.id AND n.trang_thai <> 'HUY') AS ngung_phut
      FROM phieu_san_xuat ps
      JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
      JOIN chuyen_san_xuat cs ON cs.id = ps.chuyen_id
@@ -2178,7 +2199,7 @@ async function listKiemTruocKho({ tuNgay, denNgay }) {
       JOIN tem t ON t.id = k.tem_id AND t.tem_goc_id IS NULL
       JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
       JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
-      LEFT JOIN chuyen_san_xuat cs ON cs.id = COALESCE(ps.chuyen_id, ls.chuyen_id)
+      LEFT JOIN chuyen_san_xuat cs ON cs.id = ${await chuyenTemSql()}
       LEFT JOIN nguoi_dung nk ON nk.id = k.created_by
       JOIN LATERAL (SELECT x.tg_bd_phoi, x.tg_kt_phoi FROM tem_xe_phoi x
                      WHERE x.tem_id = t.id AND x.trang_thai <> 'HUY' AND x.tg_bd_phoi <= k.created_date
@@ -2596,11 +2617,66 @@ async function resumeNgung(ngungId, actorId, gioKt = null) {
   return rowCount > 0;
 }
 
+// HỦY 1 LẦN NGỪNG CHUYỀN (05/11/2026) — ghi nhầm / lý do sai. Không xóa dòng (role không có DELETE): `trang_thai = 'HUY'`
+//   ⇒ các câu đọc lọc bỏ (sidebar · Theo dõi · Báo cáo dừng chuyền · metric). Lần đang ngừng bị hủy ⇒ chuyền hết trạng thái ngừng.
+async function listNgungChoHuy({ search = '', offset = 0, limit = 50 }) {
+  const tim = mauTim(search);
+  const NOI = `LEFT JOIN phieu_san_xuat ps ON ps.id = n.phieu_san_xuat_id
+    LEFT JOIN lenh_san_xuat ls ON ls.id = COALESCE(n.lenh_san_xuat_id, ps.lenh_san_xuat_id)
+    LEFT JOIN chuyen_san_xuat cs ON cs.id = COALESCE(n.chuyen_id, ps.chuyen_id, ls.chuyen_id)`;
+  const DIEU_KIEN = `WHERE n.trang_thai <> 'HUY'
+      AND ($1 = '' OR COALESCE(n.ly_do, '') ~* $1 OR ls.ma_lenh_san_xuat ~* $1 OR cs.ma_chuyen ~* $1 OR cs.ten_chuyen ~* $1
+           OR ${lenhPhanInMatch('ls.id', '$1')})`;
+  // Lọc + phân trang trên bảng gốc rồi mới dựng thông tin phần in cho các dòng của trang.
+  const dataSql = `WITH trang AS MATERIALIZED (
+      SELECT n.id FROM ngung_chuyen n ${NOI} ${DIEU_KIEN} ORDER BY n.tg_bd_ngung DESC, n.id LIMIT $2 OFFSET $3)
+    SELECT n.id, n.ly_do, n.tg_bd_ngung, n.tg_kt_ngung, n.so_phut, n.trang_thai, n.created_date,
+           n.phieu_san_xuat_id AS phieu_id, COALESCE(n.lenh_san_xuat_id, ps.lenh_san_xuat_id) AS lenh_id,
+           ps.ma_phieu_san_xuat, ps.trang_thai AS phieu_trang_thai, ls.ma_lenh_san_xuat,
+           cs.ma_chuyen, cs.ten_chuyen, nd.ho_ten AS nguoi,
+           info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan, info.mau_vai, info.kich_vai, info.kich_phim
+      FROM trang JOIN ngung_chuyen n ON n.id = trang.id
+      ${NOI}
+      LEFT JOIN nguoi_dung nd ON nd.id = n.created_by
+      ${PHAN_INFO_LATERAL}
+     ORDER BY n.tg_bd_ngung DESC, n.id`;
+  const [data, count] = await Promise.all([
+    query(dataSql.replace(/\s+/g, ' '), [tim, limit, offset]),
+    query(`SELECT count(*)::int AS total FROM ngung_chuyen n ${NOI} ${DIEU_KIEN}`.replace(/\s+/g, ' '), [tim]),
+  ]);
+  return { rows: data.rows, total: count.rows[0].total };
+}
+
+async function huyNgungTx(client, ngungId, lyDo, actorId) {
+  const { rows } = await client.query(
+    `SELECT n.id, n.ly_do, n.tg_bd_ngung, n.tg_kt_ngung, n.so_phut, n.trang_thai, n.phieu_san_xuat_id,
+            COALESCE(n.lenh_san_xuat_id, ps.lenh_san_xuat_id) AS lenh_id
+       FROM ngung_chuyen n LEFT JOIN phieu_san_xuat ps ON ps.id = n.phieu_san_xuat_id
+      WHERE n.id = $1 FOR UPDATE OF n`.replace(/\s+/g, ' '),
+    [ngungId]
+  );
+  const n = rows[0];
+  if (!n) return null;
+  if (n.trang_thai === 'HUY') return { ...n, da_huy: true };
+  await client.query(
+    "UPDATE ngung_chuyen SET trang_thai = 'HUY', updated_by = $2, updated_date = CURRENT_TIMESTAMP WHERE id = $1",
+    [ngungId, actorId]
+  );
+  await client.query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_cu, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('ngung_chuyen', $1, 'HUY_NGUNG_CHUYEN', $2::jsonb, $3::jsonb, $4, CURRENT_TIMESTAMP, $4)`.replace(/\s+/g, ' '),
+    [String(ngungId),
+      JSON.stringify({ trang_thai: n.trang_thai, ly_do: n.ly_do, tg_bd_ngung: n.tg_bd_ngung, tg_kt_ngung: n.tg_kt_ngung, so_phut: n.so_phut }),
+      JSON.stringify({ trang_thai: 'HUY', ly_do: lyDo, phieu_id: n.phieu_san_xuat_id, lenh_id: n.lenh_id }), actorId]
+  );
+  return n;
+}
+
 async function listNgungByPhieu(phieuId) {
   const { rows } = await query(
     `SELECT n.id, n.ly_do, n.tg_bd_ngung, n.tg_kt_ngung, n.so_phut, n.trang_thai, nd.ho_ten AS nguoi
      FROM ngung_chuyen n LEFT JOIN nguoi_dung nd ON nd.id = n.created_by
-     WHERE n.phieu_san_xuat_id = $1 ORDER BY n.tg_bd_ngung DESC`,
+     WHERE n.phieu_san_xuat_id = $1 AND n.trang_thai <> 'HUY' ORDER BY n.tg_bd_ngung DESC`,
     [phieuId]
   );
   return rows;
@@ -2684,7 +2760,7 @@ module.exports = {
   monitorRunning, monitorQueue, downstreamSlaAfterProduction, listXePhoi, listCurrentPhoi, listTemChoPhoi, addTemToXe, adjustPhoi,
   listDryingTems, confirmDry, phutKhoSomTx, listKiemTruocKho, getTemBasic,
   promoteFinishedDrying, redryTem, getDryMinForPhieu,
-  getActiveNgung, startNgung, resumeNgung, listNgungByPhieu,
+  getActiveNgung, startNgung, resumeNgung, listNgungByPhieu, listNgungChoHuy, huyNgungTx,
   listLyDoNgung, createLyDoNgung, updateLyDoNgung, setLyDoNgungActive, existsMaLyDoNgung, getLyDoNgung,
   docLenhTachTx, tachLenhNgcTx,
   listToIn, createToIn, updateToIn, setToInActive, existsMaToIn, getToIn, phieuCoCotToIn, dongBoToInTuCsx,

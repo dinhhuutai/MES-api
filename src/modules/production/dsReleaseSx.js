@@ -17,6 +17,7 @@
 //   `audit_log` `ten_bang='ds_release_sx_chuyen'`, `id_ban_ghi` = `<user_id>|<khu>`, dòng mới nhất là giá trị.
 
 const { query, withTransaction } = require('../../config/db');
+const { chuyenTemSql } = require('../../utils/temChuyen');
 const planningService = require('../planning/planning.service');
 
 const KHOA_DONG = 'ds_release_sx';
@@ -199,7 +200,7 @@ async function nhatKyIn(tuNgay, denNgay) {
       FROM tem t
       JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
       JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
-      LEFT JOIN chuyen_san_xuat cs ON cs.id = COALESCE(ps.chuyen_id, ls.chuyen_id)
+      LEFT JOIN chuyen_san_xuat cs ON cs.id = ${await chuyenTemSql()}
       LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
       ${coTo ? 'LEFT JOIN to_in ti ON ti.id = ps.to_in_id' : ''}
       ${ERP_VAI_LATERAL}

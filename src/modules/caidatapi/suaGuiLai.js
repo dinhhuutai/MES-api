@@ -44,14 +44,23 @@ function kenh20(ma, them = {}) {
   return {
     nhan: k.nhan, url: k.url, timeoutMs: k.timeoutMs, retry: k.retry,
     truong: [...THU_TU_TRUONG, ...(them.truong || [])],
-    so: SO_20, ngay: ['Ngayct', 'Tugio', 'Dengio'], kieuNgay: k.kieuNgay || 'Z',
+    so: [...SO_20, ...(them.so || [])], ngay: ['Ngayct', 'Tugio', 'Dengio'], kieuNgay: k.kieuNgay || 'Z',
     dai: { ...DAI_TOI_DA, ...(them.dai || {}) },
     khoa: ['IDMES'], guong: them.guong || {}, maTem: ['BarcodeIn'],
     // Sửa `Ngayca` phải đúng dạng mã ngày ca như ô In tem (21/10/2026, `utils/ca.js maNgayCaHopLe`).
     kiemTruong: { Ngayca: (s) => (maNgayCaHopLe(s) ? '' : NGAY_CA_SAI) },
     batBuoc: ['IDMES', 'BarcodeIn'],
     maHien: (b) => b.BarcodeIn,
+    ...(them.kiem ? { kiem: them.kiem } : {}),
   };
+}
+
+// 2 cờ đầu in của SF0 (05/11/2026): chỉ 3 tổ hợp 1/0 · 0/1 · 0/0 theo luật proc `MES_spr_MES2SF0`.
+function kiemDauBtp(b) {
+  const a = Number(b.Labtp || 0); const c = Number(b.LabtpCuoi || 0);
+  if (![0, 1].includes(a)) return { Labtp: 'Chỉ nhận 0 hoặc 1' };
+  if (![0, 1].includes(c)) return { LabtpCuoi: 'Chỉ nhận 0 hoặc 1' };
+  return a && c ? { LabtpCuoi: 'Không đặt cả Labtp và LabtpCuoi = 1 (1/0 = in 1 đầu · 0/1 = in đầu còn lại · 0/0 = in bình thường)' } : null;
 }
 
 function kiemDsRelease(b) {
@@ -67,7 +76,7 @@ function kiemDsRelease(b) {
 }
 
 const KENH = {
-  ERP_GHI_IN_TEM: kenh20('ERP_GHI_IN_TEM'),
+  ERP_GHI_IN_TEM: kenh20('ERP_GHI_IN_TEM', { truong: ['Labtp', 'LabtpCuoi'], so: ['Labtp', 'LabtpCuoi'], kiem: kiemDauBtp }),
   ERP_GUI_KIEM_PHAM: kenh20('ERP_GUI_KIEM_PHAM'),
   ERP_GUI_TEM_GIA_CONG: kenh20('ERP_GUI_TEM_GIA_CONG'),
   ERP_GUI_SUA_DAT: kenh20('ERP_GUI_SUA_DAT', {

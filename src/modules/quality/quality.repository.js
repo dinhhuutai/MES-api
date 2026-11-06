@@ -1,6 +1,7 @@
 'use strict';
 
 const { query } = require('../../config/db');
+const { chuyenTemSql, coCotChuyenTem } = require('../../utils/temChuyen');
 // Hiển thị theo PHƯƠNG ÁN IN — cấu hình động từng trang (mig 067), mặc định BẬT HẾT = không lọc.
 const { dkTrang } = require('../../utils/phuongAnIn');
 const { lenhPhanInMatch } = require('../../utils/search');
@@ -57,9 +58,9 @@ const notCancelledQc = (alias, table) => `NOT ${cancelledQc(alias, table)}`;
 //   hành). Bản cũ lấy `ton_tram` của CẢ LỆNH (`ORDER BY tg_vao LIMIT 1`) ⇒ tem ở KCS bị đo bằng mốc + SLA của
 //   trạm mà đợt vải đang ghi ở `ton_tram` (có khi là OQC), tem mới in của lệnh cũ bị tính từ nhiều ngày trước.
 const TRAM_THEO_TRANG = { SX_KCS: 'KIEM', SX_SUA: 'SUA', CL_OQC: 'OQC' };
-const temCtx = (maTrang) => {
+const temCtx = (maTrang, chuyenTem) => {
   const tram = TRAM_THEO_TRANG[maTrang] || 'KIEM';
-  return TEM_CTX.replace('__TG_VAO__', MOC_VAO_TEM[tram]('t')).replace('__MA_TRAM__', tram);
+  return TEM_CTX.replace('__TG_VAO__', MOC_VAO_TEM[tram]('t')).replace('__MA_TRAM__', tram).replace('__CHUYEN_TEM__', chuyenTem);
 };
 const TEM_CTX = `
   SELECT t.id AS tem_id, t.ma_tem, t.so_luong, t.trang_thai, t.da_qua_phoi, t.sl_chenh_lech, t.created_date AS ngay_in_tem,
@@ -81,7 +82,7 @@ const TEM_CTX = `
   FROM tem t
   JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
   JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
-  LEFT JOIN chuyen_san_xuat cs ON cs.id = COALESCE(ps.chuyen_id, ls.chuyen_id)
+  LEFT JOIN chuyen_san_xuat cs ON cs.id = __CHUYEN_TEM__
   LEFT JOIN loai_chuyen lc_gc ON lc_gc.id = cs.loai_chuyen_id
   LEFT JOIN LATERAL (
     SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim
@@ -143,7 +144,7 @@ async function listCandByCon(condExpr, { search = '', filters = {} } = {}, maTra
     conds.push(`(t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date <= $${params.length}::date`);
   }
   // Gửi SQL 1 dòng (IPS-safe). TEM_CTX không có comment '--' nên gộp an toàn.
-  const sql = `${temCtx(maTrang)} WHERE ${conds.join(' AND ')} ORDER BY t.created_date`;
+  const sql = `${temCtx(maTrang, await chuyenTemSql())} WHERE ${conds.join(' AND ')} ORDER BY t.created_date`;
   const { rows } = await query(sql.replace(/\s+/g, ' '), params);
   return rows;
 }
@@ -173,7 +174,7 @@ async function caPartsForTems(temIds) {
      FROM tem t
      LEFT JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
      LEFT JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
-     LEFT JOIN chuyen_san_xuat cs ON cs.id = COALESCE(ps.chuyen_id, ls.chuyen_id)
+     LEFT JOIN chuyen_san_xuat cs ON cs.id = ${await chuyenTemSql()}
      LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
      WHERE t.id = ANY($1::uuid[])`.replace(/\s+/g, ' '),
     [temIds]
@@ -305,12 +306,22 @@ async function coKcsTach() {
   return (await coCotBang('tem', 'kcs_tach_id')) && (await coCotBang('tem', 'sl_kcs_tach'));
 }
 
+// Tem gốc đã sửa chuyền riêng (mig 124) ⇒ tem 17 sinh sau cũng mang chuyền đó.
+async function theoChuyenTemGoc(client, temConId) {
+  if (!(await coCotChuyenTem())) return;
+  await client.query(
+    'UPDATE tem c SET chuyen_id = g.chuyen_id FROM tem g WHERE c.id = $1 AND g.id = c.tem_goc_id AND g.chuyen_id IS NOT NULL',
+    [temConId]
+  );
+}
+
 async function taoTemConKcs(client, { temGocId, phieuId, maTem, soLuong, kcsId }, actorId) {
   const { rows } = await client.query(
     `INSERT INTO tem (phieu_san_xuat_id, ma_tem, so_luong, trang_thai, sl_kcs_dat, tem_goc_id, kcs_tach_id, created_by)
      VALUES ($1,$2,0,'CHO_OQC',$3,$4,$5,$6) RETURNING id`,
     [phieuId, maTem, soLuong, temGocId, kcsId, actorId]
   );
+  await theoChuyenTemGoc(client, rows[0].id);
   return rows[0].id;
 }
 
@@ -340,6 +351,7 @@ async function taoTemCon(client, { temGocId, phieuId, maTem, soLuong }, actorId)
      VALUES ($1,$2,0,'CHO_OQC',$3,$4,$5) RETURNING id`,
     [phieuId, maTem, soLuong, temGocId, actorId]
   );
+  await theoChuyenTemGoc(client, rows[0].id);
   return rows[0].id;
 }
 
@@ -483,12 +495,12 @@ async function idMesKcsDaHuy(temId, kcsIdMoi) {
   return v != null && /^[0-9]+$/.test(String(v)) ? Number(v) : null;
 }
 
-// IDMES của lần gửi kiểm phẩm THÀNH CÔNG gần nhất của CHÍNH lượt KCS (để gửi lại số đã điều chỉnh).
-async function idMesKcsDaGui(kcsId) {
+// Lần gửi kiểm phẩm THÀNH CÔNG gần nhất của CHÍNH lượt KCS (để gửi lại số đã điều chỉnh: giữ IDMES + Ngày CT + ngày ca).
+async function lanGuiKcsGanNhat(kcsId) {
   const { rows } = await query(
-    "SELECT a.gia_tri_moi->>'id_mes' AS id_mes FROM audit_log a WHERE a.ten_bang = 'kcs' AND a.id_ban_ghi = $1 AND a.hanh_dong = 'ERP_GUI_KIEM_PHAM' AND (a.gia_tri_moi->>'id_mes') ~ '^[0-9]+$' ORDER BY a.thoi_gian DESC LIMIT 1",
+    "SELECT a.gia_tri_moi->>'id_mes' AS id_mes, a.gia_tri_moi->'gui'->>'Ngayct' AS ngay_ct, a.gia_tri_moi->'gui'->>'Ngayca' AS ngay_ca FROM audit_log a WHERE a.ten_bang = 'kcs' AND a.id_ban_ghi = $1 AND a.hanh_dong = 'ERP_GUI_KIEM_PHAM' AND (a.gia_tri_moi->>'id_mes') ~ '^[0-9]+$' ORDER BY a.thoi_gian DESC LIMIT 1",
     [String(kcsId)]);
-  return rows[0] ? Number(rows[0].id_mes) : null;
+  return rows[0] ? { idMes: Number(rows[0].id_mes), ngayCt: rows[0].ngay_ct || null, ngayCa: rows[0].ngay_ca || null } : null;
 }
 
 // OQC trả về SỬA: đưa phần chờ OQC (đã sửa — tem 17-) quay lại "chờ sửa" (giảm sl_sua_dat → tăng con_sua).
@@ -974,7 +986,7 @@ async function cotOqcThem() {
            (SELECT pin2.do_in FROM phan_in pin2 WHERE pin2.id = info.phan_in_id) AS do_in`,
     join: `LEFT JOIN phieu_san_xuat psq ON psq.id = t.phieu_san_xuat_id
            LEFT JOIN lenh_san_xuat lsq ON lsq.id = psq.lenh_san_xuat_id
-           LEFT JOIN chuyen_san_xuat csq ON csq.id = COALESCE(psq.chuyen_id, lsq.chuyen_id)
+           LEFT JOIN chuyen_san_xuat csq ON csq.id = ${await chuyenTemSql({ ps: 'psq', ls: 'lsq' })}
            LEFT JOIN loai_chuyen lcq ON lcq.id = csq.loai_chuyen_id`,
   };
 }
@@ -994,6 +1006,11 @@ async function temDoneByDate(table, date) {
   // ⚠ `la_tem_sua` (mig 091): tem CON mang số lượng ở `sl_kcs_dat` nên `oqc.nguon` của nó là 'KCS';
   //   chỉ cột này mới phân biệt được để hiện đúng nhãn 17 (đừng suy từ chuỗi `ma_tem`).
   const oqcThem = table === 'oqc' ? await cotOqcThem() : { cot: '', join: '' };
+  // Chuyền thực tế của tem cho sidebar KCS + Sửa (05/11/2026); OQC đã có trong `cotOqcThem`.
+  const cotChuyen = table === 'oqc' ? '' : ', csq.ma_chuyen, csq.ten_chuyen';
+  const joinChuyen = table === 'oqc' ? '' : `LEFT JOIN phieu_san_xuat psq ON psq.id = t.phieu_san_xuat_id
+    LEFT JOIN lenh_san_xuat lsq ON lsq.id = psq.lenh_san_xuat_id
+    LEFT JOIN chuyen_san_xuat csq ON csq.id = ${await chuyenTemSql({ ps: 'psq', ls: 'lsq' })}`;
   const oqcCols = table === 'oqc' ? `, x.nguon, x.sl_qua_giao, ${laTemSuaSql('t')} AS la_tem_sua${oqcThem.cot}` : '';
   // Sửa: + SL sửa hủy, + `sua_id` (khóa để ghi người sửa) và NGƯỜI SỬA (mig 080 — thiếu cột thì trả NULL).
   // ⚠⚠ `ma_tem_17` = mã THẬT của tem con (nhãn sửa đạt). Từ 06/09/2026 mã này do ERP cấp riêng
@@ -1022,13 +1039,14 @@ async function temDoneByDate(table, date) {
     : '';
   const sql = `
     SELECT x.created_date AS tg, nd.ho_ten AS nguoi, t.ma_tem AS ma, t.id AS tem_id,
-           x.${qtyCol} AS so_luong, x.${kiemCol} AS so_luong_kiem${oqcCols}${suaCols}${kcsCols},
+           x.${qtyCol} AS so_luong, x.${kiemCol} AS so_luong_kiem${oqcCols}${suaCols}${kcsCols}${cotChuyen},
            info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan, info.mau_vai, info.kich_vai, info.kich_phim,
            info.tinh_chat_in, info.han_giao_hang
     FROM ${table} x JOIN tem t ON t.id = x.tem_id
     LEFT JOIN nguoi_dung nd ON nd.id = x.created_by
     ${TEM_INFO_LATERAL}
     ${oqcThem.join}
+    ${joinChuyen}
     ${kcsJoin}
     WHERE (x.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
       AND ${notCancelledQc('x', table)}
@@ -1040,12 +1058,13 @@ async function temDoneByDate(table, date) {
 async function inlineDoneByDate(date) {
   const sql = `
     SELECT q.created_date AS tg, nd.ho_ten AS nguoi, ps.ma_phieu_san_xuat AS ma,
-           q.so_luong_mau AS so_luong, q.ket_qua,
+           q.so_luong_mau AS so_luong, q.ket_qua, cs.ma_chuyen, cs.ten_chuyen,
            info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan, info.mau_vai, info.kich_vai, info.kich_phim,
            info.tinh_chat_in, info.han_giao_hang
     FROM qc_in_line q
     JOIN phieu_san_xuat ps ON ps.id = q.phieu_san_xuat_id
     JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+    LEFT JOIN chuyen_san_xuat cs ON cs.id = COALESCE(ps.chuyen_id, ls.chuyen_id)
     LEFT JOIN nguoi_dung nd ON nd.id = q.created_by
     ${PHAN_INFO_LATERAL}
     WHERE (q.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
@@ -1335,7 +1354,7 @@ async function listTemSua({ search = '' } = {}) {
     FROM tem t
     JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
     JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
-    LEFT JOIN chuyen_san_xuat cs ON cs.id = COALESCE(ps.chuyen_id, ls.chuyen_id)
+    LEFT JOIN chuyen_san_xuat cs ON cs.id = ${await chuyenTemSql()}
     ${TEM_INFO_LATERAL}
     WHERE ${conds.join(' AND ')}
     ORDER BY t.created_date DESC`;
@@ -1369,7 +1388,7 @@ async function listTemSuaDaHuy({ search = '' } = {}) {
     JOIN tem t ON t.id = last.tem_id::uuid
     JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
     JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
-    LEFT JOIN chuyen_san_xuat cs ON cs.id = COALESCE(ps.chuyen_id, ls.chuyen_id)
+    LEFT JOIN chuyen_san_xuat cs ON cs.id = ${await chuyenTemSql()}
     LEFT JOIN nguoi_dung nd ON nd.id = last.nguoi_thuc_hien_id
     ${TEM_INFO_LATERAL}
     WHERE ${conds.join(' AND ')}
@@ -1468,7 +1487,7 @@ module.exports = {
   conKcsSql,
   // Hành trình gia công (`orders.repository.giaCongHanhTrinhData`) đọc sổ cái tem bằng CHÍNH 2 biểu thức
   // này (alias `t.`) + luật bỏ lượt OQC đã hủy xác nhận — không viết lại công thức ở module khác.
-  CON_OQC, CON_GIAO, notCancelledQc, dieuChinhKcsSauTraVe, idMesKcsDaHuy, idMesKcsDaGui,
+  CON_OQC, CON_GIAO, notCancelledQc, dieuChinhKcsSauTraVe, idMesKcsDaHuy, lanGuiKcsGanNhat,
   // "Tem tồn từ KCS" ở màn Giao hàng (`delivery.repository.listTonKcs`, 14/10/2026) đọc chờ sửa bằng chính biểu thức này.
   CON_SUA,
   insertQcTraVe, activeReturnsMap, resolveReturns, resolveReturnsMany, listQcTraVe, listTraVeChiTiet,

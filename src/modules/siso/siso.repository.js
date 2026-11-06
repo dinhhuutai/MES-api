@@ -45,7 +45,7 @@ function dungLoc(loc = {}, bat = 3) {
     params.push(mauTim(val));
     dk.push(`${col} ~* $${bat + params.length - 1}`);
   };
-  them(loc.timKiem, `concat_ws(' ', q.ten_khach_hang, q.ma_don_hang, q.ma_hang, q.ma_phan, q.mau_vai,
+  them(loc.timKiem, `concat_ws(' ', q.ten_khach_hang, q.ma_don_hang, q.ma_hang, q.ma_phan, q.barcode_phan_in, q.mau_vai,
     q.ma_lenh_san_xuat, q.ma_tem, q.ma_dot_vai)`);
   them(loc.khach, 'q.ten_khach_hang');
   them(loc.don, 'q.ma_don_hang');

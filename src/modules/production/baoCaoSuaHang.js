@@ -11,6 +11,7 @@
 //   · Gửi 1 dòng (IPS), không `--` trong chuỗi SQL. Cache RAM 15s theo khoảng ngày.
 
 const { query } = require('../../config/db');
+const { chuyenTemSql } = require('../../utils/temChuyen');
 const { nhoDoc } = require('../../utils/cacheDoc');
 const { dungBaoCaoSuaHang } = require('../../utils/baoCaoSuaHang');
 const { MOC_VAO_TEM } = require('../../utils/siSoTram');
@@ -60,7 +61,7 @@ async function docTem(tuNgay, denNgay) {
     JOIN tem t ON t.id = x.tem_id AND t.tem_goc_id IS NULL AND t.trang_thai <> 'HUY'
     LEFT JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
     LEFT JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
-    LEFT JOIN chuyen_san_xuat cs ON cs.id = COALESCE(ps.chuyen_id, ls.chuyen_id)
+    LEFT JOIN chuyen_san_xuat cs ON cs.id = ${await chuyenTemSql()}
     LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
     ${pllSql}
     LEFT JOIN LATERAL (SELECT array_agg(DISTINCT pin.id::text) AS phan_in_ids, string_agg(DISTINCT pin.ma_phan, ', ') AS ma_phan,

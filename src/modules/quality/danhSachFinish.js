@@ -9,6 +9,7 @@
 // Gửi 1 dòng (IPS), không `--` trong chuỗi SQL. Cache RAM 15s theo tham số.
 
 const { query } = require('../../config/db');
+const { chuyenTemSql } = require('../../utils/temChuyen');
 const { nhoDoc } = require('../../utils/cacheDoc');
 const { conKcsSql, CON_OQC, notCancelledQc } = require('./quality.repository');
 const { DAU_HE_THONG, dungDanhSachFinish } = require('../../utils/danhSachFinish');
@@ -100,7 +101,8 @@ async function docDong(tuNgay, denNgay, gomHeThong, nguon = 'OQC') {
         string_agg(DISTINCT cs.ma_chuyen, ', ') AS ma_chuyen
         FROM op LEFT JOIN chuyen_san_xuat cs ON cs.id = op.chuyen_id LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
        WHERE op.phan_in_id IS NOT NULL GROUP BY op.phan_in_id)`;
-  const sql = `WITH ${sanXuat ? D_SAN_XUAT : dOqc},
+  const chuyenTem = await chuyenTemSql();
+  const sql = `WITH ${(sanXuat ? D_SAN_XUAT : dOqc).split('COALESCE(ps.chuyen_id, ls.chuyen_id)').join(chuyenTem)},
     ta AS MATERIALIZED (
       SELECT z.* FROM (SELECT t.id, t.so_luong, t.sl_chenh_lech, t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy, t.sl_sua_dat,
             t.sl_sua_huy, t.sl_oqc_dat, t.sl_sua_tach, t.tem_goc_id, ${PIN_CUA_TEM} AS phan_in_id

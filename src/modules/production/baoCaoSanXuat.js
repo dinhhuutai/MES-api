@@ -10,6 +10,7 @@
 //   `tem.dot_vai_ve_id` (095) · `tem.tem_goc_id` (091) — thiếu cột thì lùi về giá trị rỗng, không lỗi.
 
 const { query } = require('../../config/db');
+const { coCotChuyenTem } = require('../../utils/temChuyen');
 const { dungBaoCaoSanXuat, khoaTuanIso, suyLoaiCaTuTem } = require('../../utils/baoCaoSanXuat');
 const { NHOM_CA_RIENG, NHOM_CA_KHAC, khoaNhomCa, loaiCaChiTiet } = require('../../utils/ca');
 const { thoInPhieuSql } = require('../../utils/thoIn');
@@ -70,7 +71,7 @@ const MOC_TEM = (cotGio) => `CASE WHEN ${cotGio} IS NULL THEN t.created_date
 
 // 26/10/2026: 1 dòng / TEM (trước GROUP BY phiếu × đợt × ca × giờ) — modal "bấm ô SL in thực tế" cần danh sách tem
 //   (mã tem · mã ngày ca · giờ SX · người in). Vài trăm tem / ngày ⇒ payload vẫn nhỏ; phép cộng ở hàm thuần không đổi.
-async function docTem(ngay, phieuIds, { coNgayCa, coDot, coGoc }) {
+async function docTem(ngay, phieuIds, { coNgayCa, coDot, coGoc, coChuyenRieng }) {
   if (!phieuIds.length) return [];
   // `coNgayCa` (mig 066) mang theo cả `gio_sx_bd/gio_sx_kt` — cùng một migration.
   const tu = coNgayCa ? MOC_TEM('t.gio_sx_bd') : 't.created_date';
@@ -80,6 +81,7 @@ async function docTem(ngay, phieuIds, { coNgayCa, coDot, coGoc }) {
       upper(right(COALESCE(${coNgayCa ? 't.ma_ngay_ca' : 'NULL'}, ''), 2)) AS ca_hint,
       EXTRACT(HOUR FROM t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS gio,
       t.so_luong::int AS so_luong, ${tu} AS tu_min, ${den} AS den_max, t.created_date AS tg_in,
+      ${coChuyenRieng ? 't.chuyen_id' : 'NULL::uuid'} AS chuyen_rieng_id,
       ${coNgayCa ? "to_char(t.gio_sx_bd, 'HH24:MI')" : 'NULL'} AS gio_sx_bd, ${coNgayCa ? "to_char(t.gio_sx_kt, 'HH24:MI')" : 'NULL'} AS gio_sx_kt,
       (SELECT nd.ho_ten FROM nguoi_dung nd WHERE nd.id = t.created_by) AS nguoi_in
     FROM tem t
@@ -161,15 +163,17 @@ async function dungMoi(ngay) {
     coCot('phieu_san_xuat', 'to_in_id'), coCot('tem', 'ngay_ca'), coCot('tem', 'dot_vai_ve_id'), coCot('tem', 'tem_goc_id'),
   ]);
   const coThoKh = await coCotThoInKh();
+  const coChuyenRieng = await coCotChuyenTem();
   const [phieus, loaiCa] = await Promise.all([docPhieu(ngay, { coTo, coNgayCa, coThoKh }), loaiCaCuaNgay(ngay)]);
   const lenhIds = duyNhat(phieus.map((p) => p.lenh_id));
-  const [tems, lenhs, pins, chuyens, tos] = phieus.length ? await Promise.all([
-    docTem(ngay, phieus.map((p) => p.id), { coNgayCa, coDot, coGoc }),
+  const tems = phieus.length ? await docTem(ngay, phieus.map((p) => p.id), { coNgayCa, coDot, coGoc, coChuyenRieng }) : [];
+  const [lenhs, pins, chuyens, tos] = phieus.length ? await Promise.all([
     docLenh(lenhIds),
     docPhanIn(lenhIds),
-    docChuyen(duyNhat(phieus.map((p) => p.chuyen_id))),
+    // Kèm chuyền riêng của tem (Sửa tem đổi chuyền, mig 124) — `dungBaoCaoSanXuat` cộng SL in của tem đó sang chuyền này.
+    docChuyen(duyNhat([...phieus.map((p) => p.chuyen_id), ...tems.map((t) => t.chuyen_rieng_id).filter(Boolean)])),
     coTo ? docTo(duyNhat(phieus.map((p) => p.to_in_id))) : [],
-  ]) : [[], [], [], [], []];
+  ]) : [[], [], [], []];
   // Mọi loại chuyền suy qua `loaiCaChiTiet` (riêng ⇒ chung ⇒ thừa hưởng tuần trước; nhóm Khác chỉ theo riêng Khác,
   //   mặc định Hành chính). Riêng báo cáo: Máy/Bàn/Robot chưa TỪNG cài (mặc định) ⇒ suy từ mã ca trên tem như trước.
   const caTem = suyLoaiCaTuTem(tems) || 'NGAN';

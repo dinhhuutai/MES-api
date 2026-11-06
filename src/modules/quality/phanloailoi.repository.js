@@ -11,6 +11,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 const { query } = require('../../config/db');
+const { chuyenTemSql } = require('../../utils/temChuyen');
 const { mauTim } = require('../../utils/timKiem');
 const { timTem } = require('../../utils/temPrefix');
 const { dkTrang } = require('../../utils/phuongAnIn');
@@ -89,7 +90,7 @@ async function listTheoNgay({ ngay = '', search = '', tinhTrang = '', page = 1, 
     LEFT JOIN phan_loai_loi pl ON pl.tem_id = t.id
     JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
     JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
-    LEFT JOIN chuyen_san_xuat cs ON cs.id = ps.chuyen_id
+    LEFT JOIN chuyen_san_xuat cs ON cs.id = ${await chuyenTemSql({ ls: null })}
     LEFT JOIN nguoi_dung nd ON nd.id = pl.created_by
     ${INFO}
     ${where}${dkTinhTrang}
@@ -133,7 +134,7 @@ async function timTemDePhanLoai(dsMa) {
     JOIN tem t ON t.id = uv.id
     JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
     JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
-    LEFT JOIN chuyen_san_xuat cs ON cs.id = ps.chuyen_id
+    LEFT JOIN chuyen_san_xuat cs ON cs.id = ${await chuyenTemSql({ ls: null })}
     ${INFO}
     LIMIT 1`;
   const { rows } = await query(sql.replace(/\s+/g, ' '), [ds]);

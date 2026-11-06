@@ -9,6 +9,9 @@
 //
 // ⚠⚠ DÙNG LẠI IDMES CŨ của dòng lịch sử: 3 proc `MES2SK6` · `MES2SU6` · `MES2SQ0` đều XÓA phiếu cùng
 //   `Soctcu` rồi tạo lại ⇒ gửi lại không đẻ phiếu trùng bên ERP. Dòng cũ không có IDMES ⇒ cấp số mới.
+// ⚠⚠ NGÀY CHỨNG TỪ GIỮ THEO LẦN GỬI TRƯỚC, KHÔNG lấy ngày bấm nút (04/11/2026 — ca thật: phân loại lỗi 13–15/10 bấm gửi
+//   lại 02/11 ⇒ ERP ghi Ngày CT 02/11). Dòng cũ không có ngày ⇒ ngày của chính lượt / phiếu. Sửa đạt + phiếu giao vốn
+//   đã lấy theo lượt / ngày giao. Chỉ "Sửa tem" (`opts.ngayCt`) hoặc "Sửa & gửi" mới đổi được ngày này.
 // ⚠ Phiếu giao: phải CÓ ID phiếu giao của ERP + có mã tem mới gửi — xem `delivery.service.guiLaiErp`.
 // ⚠ Hàm này CÓ `await` và NÉM LỖI cho người bấm (khác nhánh ngầm): họ đang đứng chờ biết ERP nhận chưa.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -18,6 +21,7 @@ const AppError = require('../../utils/AppError');
 const { temCode } = require('../../utils/temPrefix');
 const { capIdMes } = require('../../utils/idMes');
 const { ghiInTem, taoPayload, laMaTemErp } = require('../../utils/erpGhiInTem');
+const { ngayCtDaGui } = require('../../utils/erpNgayGio');
 
 // "Gửi lại" cũng phải chờ có mã tem ERP cấp (30/09/2026) — tem còn mang mã MES thì báo rõ, không gửi.
 const chanChuaCoMa = (maTem) => {
@@ -136,7 +140,8 @@ async function guiLai(ma, auditId, actorId, opts = {}) {
     const gui = g.gui || {};
     const thieu = soHoacNull(gui.SOLUONGTHIEU) ?? Math.max(0, -(Number(k.so_luong_chenh_lech) || 0));
     const kq = await kiemPhamErp.guiKiemPham(id, k.tem_id,
-      { dat: k.so_luong_dat, hu: k.so_luong_loi, thieu }, actorId, { guiLai: true, idMes: idMesCu(g) });
+      { dat: k.so_luong_dat, hu: k.so_luong_loi, thieu }, actorId,
+      { guiLai: true, idMes: idMesCu(g), ngayCt: ngayCtDaGui(gui.Ngayct), ngayCa: gui.Ngayca || null });
     loiNeu(kq, 'Gửi kiểm KCS');
     return { ok: true };
   }
@@ -144,7 +149,9 @@ async function guiLai(ma, auditId, actorId, opts = {}) {
   // OQC bốc mẫu (02/10/2026) — dựng lại từ lượt `oqc` (lượt đã hủy xác nhận / không qua giao ⇒ 409).
   if (ma === 'ERP_GUI_OQC') {
     const oqcErp = require('../quality/oqcErp');
-    const kq = await oqcErp.guiOqc(id, actorId, { guiLai: true, idMes: idMesCu(g) });
+    const gui = g.gui || {};
+    const kq = await oqcErp.guiOqc(id, actorId,
+      { guiLai: true, idMes: idMesCu(g), ngayCt: ngayCtDaGui(gui.Ngayct), ngayCa: gui.Ngayca || null });
     if (kq && kq.bo_qua && kq.ly_do === 'DA_HUY') {
       throw new AppError('Lượt OQC này đã bị hủy xác nhận — không gửi lại', { status: 409, errorCode: 'DA_HUY' });
     }
@@ -157,13 +164,14 @@ async function guiLai(ma, auditId, actorId, opts = {}) {
     const phieu = await plRepo.getPhieuTheoTem(id);
     const dsLoi = phieu ? erp.dsMaLoi(phieu.dong) : '';
     if (!dsLoi) throw new AppError('Tem chưa có phiếu phân loại lỗi (có mã lỗi) — không có dữ liệu để gửi', { status: 409, errorCode: 'THIEU_DU_LIEU' });
-    const { rows: t } = await query(
-      `SELECT ma_tem, to_char(now() AT TIME ZONE 'Asia/Ho_Chi_Minh', 'YYYY/MM/DD HH24:MI:SS') AS bay_gio FROM tem WHERE id = $1`, [id]);
+    const { rows: t } = await query('SELECT ma_tem FROM tem WHERE id = $1', [id]);
     if (!t[0]) throw new AppError('Tem không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
     chanChuaCoMa(t[0].ma_tem);
     const idMes = idMesCu(g) ?? await capIdMes('gui-erp-phan-loai-loi');
     const kq = await erp.guiPhanLoaiLoi({
-      IDMes: String(idMes), Ngayct: t[0].bay_gio, nhanvien: await erp.tenDangNhap(actorId),
+      // Giữ nguyên Ngày CT (cả giờ) của lần gửi trước; dòng không có ⇒ lúc lưu phiếu phân loại.
+      IDMes: String(idMes), Ngayct: (g.gui || {}).Ngayct || phieu.updated_date || phieu.created_date,
+      nhanvien: await erp.tenDangNhap(actorId),
       Maquet: temCode(t[0].ma_tem, 16), DsMaloi: dsLoi,
     }, { temId: id, actorId });
     loiNeu(kq, 'Gửi phân loại lỗi');
@@ -175,7 +183,7 @@ async function guiLai(ma, auditId, actorId, opts = {}) {
   const prodRepo = require('../production/production.repository');
   const cu = g.gui || g.payload || {};
   // `opts.ngayCt` (27/10/2026 — Sửa tem đổi ngày chứng từ) thắng ngày CT đã gửi lần trước.
-  const ngayCt = opts.ngayCt || (cu.Ngayct ? String(cu.Ngayct).slice(0, 10).replace(/\//g, '-') : null);
+  const ngayCt = opts.ngayCt || ngayCtDaGui(cu.Ngayct);
   // Tem gia công nhận theo code phần có `tem.dot_vai_ve_id` (mig 095) — dùng đúng đợt đó; thiếu cột thì đợt đại diện.
   let dotVaiId = null;
   try {

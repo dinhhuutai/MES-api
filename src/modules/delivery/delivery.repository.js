@@ -1,6 +1,7 @@
 'use strict';
 
 const { query } = require('../../config/db');
+const { chuyenTemSql } = require('../../utils/temChuyen');
 // Hiển thị theo PHƯƠNG ÁN IN — cấu hình động từng trang (mig 067), mặc định BẬT HẾT = không lọc.
 const { dkTrang } = require('../../utils/phuongAnIn');
 const { lenhPhanInMatch } = require('../../utils/search');
@@ -157,7 +158,7 @@ async function listTonKcs() {
         FROM tem t
         JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
         JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
-        LEFT JOIN chuyen_san_xuat cs ON cs.id = COALESCE(ps.chuyen_id, ls.chuyen_id)
+        LEFT JOIN chuyen_san_xuat cs ON cs.id = ${await chuyenTemSql()}
         JOIN LATERAL (
           SELECT k.created_date AS tg_kcs, k.created_by FROM kcs k
            WHERE k.tem_id = COALESCE(t.tem_goc_id, t.id) AND ${qaRepo.notCancelledQc('k', 'kcs')}
@@ -545,14 +546,16 @@ async function doneGiaoByDate(date) {
                       'ma_tem', t.ma_tem, 'la_tem_sua', ${laTemSuaSql('t')}, 'nguon', gt.nguon,
                       'so_luong_giao', gt.so_luong_giao, 'ma_phan', i.ma_phan, 'ma_hang', i.ma_hang,
                       'mau_vai', i.mau_vai, 'kich_vai', i.kich_vai, 'kich_phim', i.kich_phim,
-                      'tinh_chat_in', i.tinh_chat_in, 'han_giao_hang', i.han_giao_hang, 'ma_lenh_san_xuat', i.ma_lenh_san_xuat)
+                      'tinh_chat_in', i.tinh_chat_in, 'han_giao_hang', i.han_giao_hang, 'ma_lenh_san_xuat', i.ma_lenh_san_xuat,
+                      'ma_chuyen', i.ma_chuyen, 'ten_chuyen', i.ten_chuyen)
                     ORDER BY i.ma_phan, t.ma_tem), '[]'::json)
                FROM giao_hang_tem gt
                JOIN tem t ON t.id = gt.tem_id
                LEFT JOIN LATERAL (
                  SELECT pin.ma_phan, mh.ma_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
-                        dv.han_giao_hang, ls.ma_lenh_san_xuat
+                        dv.han_giao_hang, ls.ma_lenh_san_xuat, cs.ma_chuyen, cs.ten_chuyen
                    FROM phieu_san_xuat ps JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+                   LEFT JOIN chuyen_san_xuat cs ON cs.id = ${await chuyenTemSql()}
                    JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
                    JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
                    JOIN phan_in pin ON pin.id = dv.phan_in_id

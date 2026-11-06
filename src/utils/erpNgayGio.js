@@ -52,4 +52,12 @@ function ngayGioErp(v, kieu = 'Z') {
   return `${y}-${p2(mo)}-${p2(d)}T${p2(h)}:${p2(mi)}:${p2(s)}.000Z`;
 }
 
-module.exports = { ngayGioErp };
+// Phần NGÀY ('YYYY-MM-DD') của `Ngayct` đã gửi, nhận mọi dạng có trong lịch sử API ('YYYY/MM/DD[ HH:mm:ss]', '…T…Z', `Date`).
+// Dùng cho "Gửi lại ERP": chứng từ giữ ngày của lần gửi trước, không lấy ngày bấm nút. Thiếu / không nhận ra ⇒ null.
+function ngayCtDaGui(v) {
+  if (v == null) return null;
+  const t = tach(v);
+  return t ? `${t[0]}-${p2(t[1])}-${p2(t[2])}` : null;
+}
+
+module.exports = { ngayGioErp, ngayCtDaGui };

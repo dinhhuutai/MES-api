@@ -51,7 +51,7 @@ async function listCandidates({
   const SEARCH = `($1 = '' OR pin.ma_phan ~* $1 OR kh.ten_khach_hang ~* $1
                   OR dh.ma_don_hang ~* $1 OR mh.ma_hang ~* $1
                   OR pin.mau_vai ~* $1 OR pin.kich_vai ~* $1
-                  OR pin.kich_phim ~* $1)`;
+                  OR pin.kich_phim ~* $1 OR pin.barcode ~* $1)`;
   const doneExpr = (param) =>
     `EXISTS (SELECT 1 FROM ket_qua_checkpoint k WHERE k.phan_in_id = pin.id AND k.checkpoint_id = ${param} AND k.trang_thai = 'DAT')`;
   // withItems=true: kèm cờ tình trạng từng mục (cho bảng); dùng $6..$9.
@@ -360,6 +360,16 @@ async function doneByDate(date, scope = 'tech') {
                 pin.tinh_chat_in, mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
                 (SELECT h.phuong_an_in FROM hskt_phan_in hp JOIN ho_so_ky_thuat h ON h.id = hp.hskt_id
                   WHERE hp.phan_in_id = pin.id AND hp.dang_hoat_dong AND h.dang_hoat_dong LIMIT 1) AS phuong_an_in,
+                COALESCE(
+                  (SELECT string_agg(DISTINCT csl.ten_chuyen, ', ') FROM lenh_sx_dot_vai lsl
+                     JOIN dot_vai_ve dvl ON dvl.id = lsl.dot_vai_ve_id
+                     JOIN lenh_san_xuat ll ON ll.id = lsl.lenh_san_xuat_id AND ll.trang_thai <> 'HUY'
+                     JOIN chuyen_san_xuat csl ON csl.id = ll.chuyen_id
+                    WHERE dvl.phan_in_id = pin.id),
+                  (SELECT string_agg(DISTINCT cst.ten_chuyen, ', ') FROM ke_hoach_tam kt
+                     JOIN dot_vai_ve dvt ON dvt.id = kt.dot_vai_ve_id
+                     JOIN chuyen_san_xuat cst ON cst.id = kt.chuyen_id
+                    WHERE dvt.phan_in_id = pin.id)) AS ten_chuyen,
                 ${hanSql} AS han_giao_hang`;
   const joins = `JOIN ma_hang mh ON mh.id = pin.ma_hang_id
                  JOIN don_hang dh ON dh.id = mh.don_hang_id
@@ -471,6 +481,7 @@ async function traCuuMaQuet(code) {
     SELECT pin.ma_phan, pin.dang_hoat_dong, ${CHO_GN_SQL('pin.id')} AS dang_o_gn,
            kq.tg_xac_nhan AS qc_tg, nd.ho_ten AS qc_nguoi,
            (kq.id IS NOT NULL) AS qc_done,
+           ${conDotChuaReadySql('pin.id')} AS con_dot_chua_ready,
            EXISTS (SELECT 1 FROM dot_vai_ve dv2
                     WHERE dv2.phan_in_id = pin.id AND dv2.trang_thai NOT IN ('DA_GOP','DA_HUY')
                       AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd

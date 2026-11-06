@@ -17,6 +17,7 @@ const { query } = require('../../config/db');
 const env = require('../../config/env');
 const { ghiInTem, taoPayload, laMaTemErp, ghiChuaCoMaErp } = require('../../utils/erpGhiInTem');
 const { ghiLog } = require('../../utils/erpApiLog');
+const { ngayCtDaGui } = require('../../utils/erpNgayGio');
 const { thuCua } = require('../../utils/erpThuLai');
 const { capIdMes } = require('../../utils/idMes');
 const prodRepo = require('../production/production.repository');
@@ -53,11 +54,14 @@ async function mocNhapKcs(kcsId) {
  */
 // `opts.guiLai` (nút "Gửi lại ERP" ở Cài đặt API › Lịch sử, 26/09/2026): bỏ qua chặn "đã gửi thành công"
 //   và DÙNG LẠI `opts.idMes` cũ ⇒ proc `MES_spr_MES2Sh6` xóa phiếu SH6 cùng `Soctcu` rồi tạo lại (không đẻ phiếu trùng).
+// `opts.ngayCt` / `opts.ngayCa`: Ngày CT + mã ngày ca của lần gửi trước. Gửi lại mà dòng cũ không có Ngày CT ⇒ ngày của lượt kiểm.
 async function guiKiemPham(kcsId, temId, { dat = 0, hu = 0, thieu = 0 } = {}, actorId = null, opts = {}) {
   if (!kcsId || !temId) return { ok: false, bo_qua: true, ly_do: 'THIEU_DU_LIEU' };
   if (!opts.guiLai && await daGuiThanhCong(kcsId)) return { ok: true, bo_qua: true, ly_do: 'DA_GUI' };
 
-  const [r] = await prodRepo.duLieuGhiInTem([{ temId, dotVaiId: null }]);
+  const moc = await mocNhapKcs(kcsId);
+  const ngayCt = opts.guiLai ? (opts.ngayCt || ngayCtDaGui(moc)) : null;
+  const [r] = await prodRepo.duLieuGhiInTem([{ temId, dotVaiId: null }], ngayCt);
   if (!r) return { ok: false, bo_qua: true, ly_do: 'KHONG_DU_LIEU' };
   // Chờ có mã tem ERP cấp mới gửi (30/09/2026 — ca thật 26/09 gửi `TEM00001`).
   if (!laMaTemErp(r.ma_tem)) return ghiChuaCoMaErp(MA_API, { idBanGhi: kcsId, maTem: r.ma_tem, actorId });
@@ -76,12 +80,11 @@ async function guiKiemPham(kcsId, temId, { dat = 0, hu = 0, thieu = 0 } = {}, ac
   if (idMes == null) return { ok: false, error: 'Không cấp được IDMES' };
 
   const payload = taoPayload(r, { idMes, soLuong: Number(dat) || 0, soLuongHuy: Number(hu) || 0, soLuongThieu: Number(thieu) || 0 });
-  // Cùng bài học `@pNgayca` của sửa đạt (23/09/2026): tem thiếu mã ngày ca ⇒ lấy NGÀY HÔM NAY.
-  if (!payload.Ngayca) payload.Ngayca = await maNgayCaHomNay(r.loai_chuyen);
+  // Cùng bài học `@pNgayca` của sửa đạt (23/09/2026): tem thiếu mã ngày ca ⇒ gửi lại giữ mã lần trước, lần đầu lấy NGÀY HÔM NAY.
+  if (!payload.Ngayca) payload.Ngayca = opts.ngayCa || await maNgayCaHomNay(r.loai_chuyen);
   // Trường NGÀY GIỜ thiếu ⇒ lấy MỐC NHẬP KCS (người dùng chốt 26/09/2026: "ngày thì để hôm nay, có dữ
   //   liệu lúc nhập"). Proc dùng `@pDengio` làm Ngày/Giờ của phiếu chuyển giao SH6 ⇒ NULL là phiếu mất ngày.
-  //   Tem có nhập giờ SX (Từ giờ/Đến giờ) thì GIỮ nguyên; `Ngayct` vốn đã là ngày gửi = hôm nay.
-  const moc = await mocNhapKcs(kcsId);
+  //   Tem có nhập giờ SX (Từ giờ/Đến giờ) thì GIỮ nguyên; `Ngayct` lần đầu = hôm nay, gửi lại giữ ngày cũ (ở trên).
   if (!payload.Tugio) payload.Tugio = moc;
   if (!payload.Dengio) payload.Dengio = moc;
   if (!payload.Ngayct) payload.Ngayct = moc ? moc.slice(0, 10) : null;
@@ -113,11 +116,11 @@ async function guiKiemPham(kcsId, temId, { dat = 0, hu = 0, thieu = 0 } = {}, ac
 // hiện tại của lượt nên vẫn ra số đúng). Không ném lỗi.
 function guiLaiSauDieuChinhNgam(k, temId, actorId) {
   (async () => {
-    const idMes = await qaRepo().idMesKcsDaGui(k.id);
-    if (idMes == null) return;
+    const cu = await qaRepo().lanGuiKcsGanNhat(k.id);
+    if (!cu) return;
     await guiKiemPham(k.id, temId,
       { dat: k.so_luong_dat, hu: k.so_luong_loi, thieu: Math.max(0, -(Number(k.so_luong_chenh_lech) || 0)) },
-      actorId, { guiLai: true, idMes });
+      actorId, { guiLai: true, idMes: cu.idMes, ngayCt: ngayCtDaGui(cu.ngayCt), ngayCa: cu.ngayCa });
   })().catch((e) => {
     console.error(`[gui-kiem-pham] ✗ Gửi lại sau khi OQC trả về lỗi (lượt kiểm ${k.id}): ${e.message}`);
   });

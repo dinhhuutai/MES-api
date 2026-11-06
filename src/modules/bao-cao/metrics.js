@@ -324,7 +324,7 @@ const DEFS = [
     run: () => scalar(`SELECT count(*)::numeric AS v FROM phieu_san_xuat WHERE trang_thai = 'HOAN_TAT' AND ${TODAY_TS('COALESCE(updated_date, created_date)')}`) },
   { ma: 'PHUT_NGUNG_CHUYEN_HOM_NAY', ten: 'Số phút ngừng chuyền hôm nay', nhom: 'Sản xuất (hôm nay)', don_vi: 'phút',
     mo_ta: 'Tổng số phút ngừng chuyền (sum ngung_chuyen.so_phut) bắt đầu ngừng trong hôm nay.',
-    run: () => scalar(`SELECT COALESCE(sum(so_phut),0)::numeric AS v FROM ngung_chuyen WHERE ${TODAY_TS('tg_bd_ngung')}`) },
+    run: () => scalar(`SELECT COALESCE(sum(so_phut),0)::numeric AS v FROM ngung_chuyen WHERE trang_thai <> 'HUY' AND ${TODAY_TS('tg_bd_ngung')}`) },
 
   // ---------- SẢN XUẤT (hiện tại) ----------
   { ma: 'TEM_DANG_PHOI', ten: 'Tem đang phơi', nhom: 'Sản xuất (hiện tại)', don_vi: 'tem',

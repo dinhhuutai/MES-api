@@ -170,6 +170,10 @@ const KENH = {
     url: () => env.erp.ghiInTemUrl,
     timeoutMs: () => env.erp.ghiInTemTimeoutMs,
     retry: () => env.erp.ghiInTemRetry,
+    // ⚠ 05/11/2026 proc `MES_spr_MES2SF0` thêm `@pLabtp` + `@pLabtpCuoi` (CHỈ SF0, 4 proc còn lại không có):
+    //   1/0 = in 1 đầu (BTP trước) · 0/1 = in đầu còn lại (BTP cuối) · 0/0 = in bình thường. `r` = payload thô (`taoPayload`).
+    //   Router cũ chưa đọc 2 khóa này ⇒ proc lấy mặc định 0 ⇒ phiếu vẫn ghi, chỉ chưa phân biệt được đầu in.
+    them: (b, r = {}) => ({ Labtp: r.Labtp ? 1 : 0, LabtpCuoi: r.LabtpCuoi ? 1 : 0 }),
   },
   ERP_GUI_SUA_DAT: {
     nhan: 'gui-sua-dat',
@@ -251,6 +255,10 @@ function taoPayload(r, { idMes, soLuong = null, soLuongHuy = 0, soLuongThieu = 0
     Soluongloi: Number(soLuongHuy) || 0,
     SOLUONGTHIEU: Number(soLuongThieu) || 0,
     GCMauvai: r.gc_mau_vai,
+    // Không thuộc 20 trường — chỉ kênh ERP_GHI_IN_TEM đọc (`KENH.them`). Bảng luật của proc KHÔNG có ca 1/1 ⇒ tem lỡ tích
+    //   cả 2 ô (dữ liệu cũ) tính là BTP trước — cùng ưu tiên với luật không in nhãn + trần số lượng của tem BTP trước.
+    Labtp: r.btp_truoc ? 1 : 0,
+    LabtpCuoi: !r.btp_truoc && r.btp_cuoi ? 1 : 0,
     // Không thuộc 20 trường (`chuanHoa` bỏ đi) — chỉ để kênh `thieuGioLayMocTao` bù Tugio/Dengio.
     MocTao: r.moc_tao || null,
     // Cũng không thuộc 20 trường: mã số nhân viên của tài khoản ca trưởng ⇒ `chuanHoa` đặt vào `Catruong`.

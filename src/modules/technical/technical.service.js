@@ -149,7 +149,9 @@ async function traCuuMaQuet(code) {
   if (r.dang_o_gn === true) {
     return { ...base, ly_do: 'DANG_O_GN', mo_ta: 'Phần in đã bị TRẢ VỀ GIAO NHẬN sửa thông tin — chờ GN xác nhận lại (Đơn hàng › Phần in chờ sửa thông tin)' };
   }
-  if (r.qc_done === true) {
+  // ⚠ READY đi theo ĐỢT VẢI: dòng QC tổng DAT từ đợt trước mà còn đợt mới chưa được QC phủ thì phần in VẪN Ở
+  //   READY (ca thật 04/11/2026 SL-2606-024-A05-F02-C01: báo "Đã QC 16/10" trong khi đợt 03/11 đang chờ).
+  if (r.qc_done === true && r.con_dot_chua_ready !== true) {
     const tg = gioVN(r.qc_tg);
     const nguoi = r.qc_nguoi ? ` (${r.qc_nguoi})` : '';
     return {
@@ -758,7 +760,7 @@ async function xacNhanTheoNhom(phanInId, items, actorId, dotVaiIds, { byMa, resu
     todo.push({ ma, value: OPTION_CPS.includes(ma) ? (it.value ?? null) : null });
   }
   if (todo.length === 0) {
-    throw new AppError(`Đợt vải ${nhanNhom(chon)} không còn mục nào đủ điều kiện xác nhận`,
+    throw new AppError(`Đợt vải ${nhanNhom(chon)} đã xác nhận đủ các mục đang chọn rồi — không cần xác nhận lại`,
       { status: 422, errorCode: 'NOTHING' });
   }
   // Khuôn kéo theo Film — cùng luật đường phần in (đặt SAU guard rỗng).

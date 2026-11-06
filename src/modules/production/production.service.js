@@ -1,6 +1,7 @@
 'use strict';
 
 const { withTransaction } = require('../../config/db');
+const { coCotChuyenTem } = require('../../utils/temChuyen');
 const repo = require('./production.repository');
 const AppError = require('../../utils/AppError');
 const erpHuy = require('../../utils/erpHuy');
@@ -526,6 +527,18 @@ async function suaTem(temId, body = {}, actorId) {
       pcMoi = moiPc; pcCu = { ...cuPc, ca_truong: nhan.ca_truong || null, ma_to: nhan.ma_to || null };
     }
   }
+  // CHUYỀN CỦA RIÊNG TEM (05/11/2026, mig 124): phiếu có nhiều tem nên lưu ở `tem.chuyen_id`; trùng chuyền phiếu ⇒ NULL.
+  //   Chỉ chuyền sản xuất: tem sang chuyền gia công thì rời Danh sách tem in + các màn lọc theo loại chuyền.
+  let chuyenMoi = null;
+  if (body.chuyenId) {
+    const id = String(body.chuyenId).trim();
+    if (!/^[0-9a-f-]{36}$/i.test(id)) throw new AppError('Chuyền không hợp lệ', { status: 422, errorCode: 'CHUYEN_SAI' });
+    chuyenMoi = await repo.getChuyenById(id);
+    if (!chuyenMoi) throw new AppError('Chuyền không tồn tại', { status: 422, errorCode: 'CHUYEN_SAI' });
+    if (chuyenMoi.ma_loai_chuyen === 'GIA_CONG') {
+      throw new AppError('Không chuyển tem sản xuất sang chuyền gia công', { status: 422, errorCode: 'CHUYEN_GIA_CONG' });
+    }
+  }
   // ⚠ Vải hủy / thiếu KHÔNG sửa ở đây — khối "Vải hủy / thiếu" của panel tem (`suaVaiTheoTem`) đã ghi + gửi lại ERP cùng
   //   IDMES (người dùng 28/10/2026: "có rồi thì đỡ phải thêm chỗ sửa tem").
 
@@ -542,6 +555,13 @@ async function suaTem(temId, body = {}, actorId) {
     if ('gioBd' in moi && moi.gioBd !== (t.gio_sx_bd || null)) doi.gioBd = moi.gioBd;
     if ('gioKt' in moi && moi.gioKt !== (t.gio_sx_kt || null)) doi.gioKt = moi.gioKt;
     if ('maNgayCa' in moi && moi.maNgayCa !== (t.ma_ngay_ca || null)) { doi.maNgayCa = moi.maNgayCa; doi.ngayCa = moi.ngayCa; }
+    const doiChuyen = chuyenMoi && String(chuyenMoi.id) !== String(t.chuyen_id);
+    if (doiChuyen) {
+      if (!(await coCotChuyenTem())) {
+        throw new AppError('Chưa chạy migration 124 nên chưa sửa được chuyền của tem', { status: 409, errorCode: 'CHUA_MIGRATION_124' });
+      }
+      doi.chuyenRiengId = String(chuyenMoi.id) === String(t.chuyen_phieu_id) ? null : chuyenMoi.id;
+    }
     if (!Object.keys(doi).length && !ngayCtMoi && !pcMoi) {
       throw new AppError('Không có gì thay đổi', { status: 422, errorCode: 'KHONG_DOI' });
     }
@@ -563,6 +583,7 @@ async function suaTem(temId, body = {}, actorId) {
     const cu = { so_luong: t.so_luong, gio_sx_bd: t.gio_sx_bd, gio_sx_kt: t.gio_sx_kt, ma_ngay_ca: t.ma_ngay_ca, ngay_ca: t.ngay_ca,
       ...(ngayCtMoi ? { ngay_ct: dongErp.ngay_ct || null } : {}),
       ...(lo ? { ma_lo: lo.cu } : {}),
+      ...(doiChuyen ? { chuyen_id: t.chuyen_id } : {}),
       ...(pcMoi ? { phan_cong: pcCu } : {}) };
     const ghiMoi = {
       ma_tem: t.ma_tem, ly_do: ly,
@@ -572,6 +593,7 @@ async function suaTem(temId, body = {}, actorId) {
       ...('gioKt' in doi ? { gio_sx_kt: doi.gioKt } : {}),
       ...('maNgayCa' in doi ? { ma_ngay_ca: doi.maNgayCa, ngay_ca: doi.ngayCa } : {}),
       ...(lo ? { ma_lo: lo.moi } : {}),
+      ...(doiChuyen ? { chuyen_id: chuyenMoi.id, ma_chuyen: chuyenMoi.ma_chuyen } : {}),
       ...(pcMoi ? { phan_cong: pcMoi } : {}),
     };
     await repo.logSuaTemTx(client, temId, cu, ghiMoi, actorId);
@@ -876,6 +898,24 @@ async function resumeLine(phieuId, actorId, gioKt = null) {
   sockets.emit('production:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'hoat-dong-lai' });
   sockets.emit('dashboard:refresh', {});
   return getRun(phieu.lenh_san_xuat_id);
+}
+
+// HỦY 1 LẦN NGỪNG CHUYỀN (05/11/2026, người dùng yêu cầu) — nút ở sidebar Sản xuất + tab ở *Hủy lệnh xác nhận*. Lý do bắt
+//   buộc. Lần đang ngừng bị hủy ⇒ chuyền hết trạng thái ngừng. Không có kênh ERP (ngừng chuyền không gửi ERP).
+async function listNgungChoHuy({ search, page, limit, offset }) {
+  const { rows, total } = await repo.listNgungChoHuy({ search, offset, limit });
+  return { items: rows, meta: buildMeta(page, limit, total) };
+}
+
+async function huyNgungChuyen(ngungId, lyDo, actorId) {
+  const ly = String(lyDo || '').trim();
+  if (!ly) throw new AppError('Nhập lý do hủy lần ngừng chuyền', { status: 422, errorCode: 'NO_LY_DO' });
+  const n = await withTransaction((client) => repo.huyNgungTx(client, ngungId, ly, actorId));
+  if (!n) throw new AppError('Lần ngừng chuyền không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  if (n.da_huy) throw new AppError('Lần ngừng chuyền này đã hủy', { status: 409, errorCode: 'DA_HUY' });
+  sockets.emit('production:updated', { lenhId: n.lenh_id, action: 'huy-ngung' });
+  sockets.emit('dashboard:refresh', {});
+  return { id: ngungId, lenh_id: n.lenh_id };
 }
 
 // LÕI "Xác nhận chạy" 1 lệnh (guard + transaction + vết dòng chảy), KHÔNG bắn socket — dùng chung cho
@@ -2071,7 +2111,7 @@ async function vuotSanXuat(phieuId, soLuong, actorId) {
 module.exports = {
   listCandidates, getRun, startProduction, startProductionBatch, startProductionSpecial, printTem, printTemBatch, reprintTem, temLabel, temLogs, finishRun, monitor, vuotSanXuat,
   getXePhoi, listTemChoPhoi, addToXe, adjustPhoi, listDrying, confirmDry, listKiemTruocKho, redry,
-  stopLine, resumeLine, addVaiHuy, xemVaiTem, suaVaiTheoTem, suaTem, gopLenhCungPhan, tachLenhTheoNgc, savePhanCong, suaPhanCongPhieuXong,
+  stopLine, resumeLine, listNgungChoHuy, huyNgungChuyen, addVaiHuy, xemVaiTem, suaVaiTheoTem, suaTem, gopLenhCungPhan, tachLenhTheoNgc, savePhanCong, suaPhanCongPhieuXong,
   dsLyDoNgung, taoLyDoNgung, suaLyDoNgung, doiTrangThaiLyDoNgung,
   dsToIn, taoToIn, suaToIn, doiTrangThaiToIn,
   dsLyDoBoSung, taoLyDoBoSung, suaLyDoBoSung, doiTrangThaiLyDoBoSung, luuLyDoBoSungDotVai,

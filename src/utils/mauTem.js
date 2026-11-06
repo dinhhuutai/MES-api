@@ -139,8 +139,11 @@ const TRUONG_TEM = Object.freeze([
 
   { ma: 'created_date', ten: 'Ngày giờ in tem', kieu: 'ngay', nhom: 'Thời gian' },
   { ma: 'tg_bd_in', ten: 'Giờ bắt đầu in (phiếu)', kieu: 'ngay', nhom: 'Thời gian' },
-  { ma: 'tg_bd_phoi', ten: 'Giờ bắt đầu phơi', kieu: 'ngay', nhom: 'Thời gian' },
-  { ma: 'tg_kt_phoi', ten: 'Giờ phơi xong', kieu: 'ngay', nhom: 'Thời gian' },
+  { ma: 'tg_bd_phoi', ten: 'Giờ bắt đầu phơi (= giờ in tem)', kieu: 'ngay', nhom: 'Thời gian' },
+  // Giờ phơi xong = giờ in tem + thời gian phơi khô của phần in (`addTemToXe`, mặc định 60′). Tem Sửa (17) lấy của TEM GỐC;
+  // tem Gia công (13) không qua xe phơi ⇒ RỖNG. Phơi lại / chỉnh giờ / xác nhận khô sớm ⇒ in lại ra giờ mới.
+  { ma: 'tg_kt_phoi', ten: 'Giờ phơi xong (giờ in tem + thời gian phơi)', kieu: 'ngay', nhom: 'Thời gian' },
+  { ma: 'so_phut_phoi', ten: 'Thời gian phơi khô (phút)', kieu: 'so', nhom: 'Thời gian' },
   { ma: 'gio_sx_bd', ten: 'Giờ SX từ', kieu: 'chu', nhom: 'Thời gian' },
   { ma: 'gio_sx_kt', ten: 'Giờ SX đến', kieu: 'chu', nhom: 'Thời gian' },
   { ma: 'ngay_ca', ten: 'Ngày ca', kieu: 'ngay', nhom: 'Thời gian' },
