@@ -102,6 +102,8 @@ async function start() {
     //   (`erpsync.runSync` → `suathongtin/gnErp.truocDongBo`) khi GN xác nhận lại đợt trên ERP.
     startCleanupJob();
     startDryingJob();
+    // Hàng đợi tự gửi lại lượt gửi ERP bị lỗi (06/11/2026) — chỉ chạy trên máy chủ (xem đầu file job).
+    require('./jobs/erpTuGuiLai.job').startErpTuGuiLaiJob();
     // Luật SLA theo giờ (mig 109) — nạp từ `cai_dat_sla_gio` + nạp lại mỗi 60s; thiếu bảng ⇒ mặc định.
     require('./utils/slaTheoGio').batDauNapDinhKy();
   });

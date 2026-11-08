@@ -521,22 +521,39 @@ async function tinhTrangPhanInList(search = '', limit = 30) {
     if (giao.length) return giao;
   }
 
+  // TÌM THEO MÃ TEM (08/11/2026, người dùng: "trang sơ đồ phần in cho tìm kiếm theo mã tem"): mã khớp CHÍNH XÁC 1 tem
+  //   (nhãn 15/16 ⇒ tem gốc, tem 17 / 13 mã riêng, mã cũ `15-TEM…` — `maTemUngVien`) ⇒ mọi phần in của lệnh in ra tem đó
+  //   (lệnh gom set ⇒ nhiều phần in), xếp LÊN ĐẦU danh sách. Tra trước bằng khóa `ma_tem` (index UNIQUE) rồi mới lọc phần in.
+  let pinTem = [];
+  if (s) {
+    const { rows: rt } = await query(
+      `SELECT DISTINCT dv.phan_in_id::text AS id FROM tem t
+         JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+         JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ps.lenh_san_xuat_id
+         JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+        WHERE t.ma_tem = ANY($1::text[])`.replace(/\s+/g, ' '),
+      [maTemUngVien(s)]
+    );
+    pinTem = rt.map((x) => x.id);
+  }
+  // Phần in tìm ra bằng mã tem KHÔNG bị bắt có đợt vải sống: hủy đợt sau khi đã in / giao xong vẫn xem lại được sơ đồ.
   const { rows } = await query(
     `SELECT pi.id, pi.ma_phan, pi.mau_vai, pi.kich_vai, pi.kich_phim,
             mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
-            (SELECT max(dv2.created_date) FROM dot_vai_ve dv2 WHERE dv2.phan_in_id = pi.id) AS recency
+            (SELECT max(dv2.created_date) FROM dot_vai_ve dv2 WHERE dv2.phan_in_id = pi.id) AS recency,
+            (pi.id = ANY($2::uuid[])) AS khop_tem
      FROM phan_in pi
      JOIN ma_hang mh ON mh.id = pi.ma_hang_id
      JOIN don_hang dh ON dh.id = mh.don_hang_id
      JOIN khach_hang kh ON kh.id = dh.khach_hang_id
-     WHERE pi.dang_hoat_dong
+     WHERE (pi.id = ANY($2::uuid[]) OR (pi.dang_hoat_dong
        AND EXISTS (SELECT 1 FROM dot_vai_ve dv WHERE dv.phan_in_id = pi.id AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY'))
        AND ($1 = '' OR pi.ma_phan ~* $1 OR dh.ma_don_hang ~* $1
             OR mh.ma_hang ~* $1 OR pi.mau_vai ~* $1
-            OR pi.kich_vai ~* $1 OR pi.kich_phim ~* $1)
-     ORDER BY recency DESC NULLS LAST, pi.ma_phan
+            OR pi.kich_vai ~* $1 OR pi.kich_phim ~* $1)))
+     ORDER BY (pi.id = ANY($2::uuid[])) DESC, recency DESC NULLS LAST, pi.ma_phan
      LIMIT ${lim}`.replace(/\s+/g, ' '),
-    [mauTim(s)]
+    [mauTim(s), pinTem]
   );
   return rows;
 }

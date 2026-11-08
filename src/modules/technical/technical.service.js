@@ -13,6 +13,7 @@ const tracking = require('../workflow/tracking.service');
 const { isKhuonOptional } = require('../../utils/tech');
 const { slaQcReady, slaReadyHan, giaHanTraVeKt } = require('../../utils/slaTheoGio');
 const hsktRepo = require('../hskt/hskt.repository');
+const { ganThongTinPhanIn } = require('../../utils/thongTinLichSu');
 
 // Đổi phương án in của HSKT active của phần in (khi xác nhận Khuôn có nhập phương án in).
 async function applyPhuongAnIn(phanInId, phuongAnIn, actorId) {
@@ -1155,13 +1156,14 @@ async function confirmHistory(date, search) {
 async function history(date, scope) {
   const maList = scope === 'qc' ? ['QC_XAC_NHAN'] : INPUT_CPS;
   const rows = await repo.historyByDate(date, maList);
-  return rows.map((r) => ({
+  return ganThongTinPhanIn(rows.map((r) => ({
     tg: r.tg,
     nguoi: r.nguoi || '—',
     hanh_dong: r.hanh_dong || 'Xác nhận',
     doi_tuong: [r.ma_phan, r.ma_hang].filter(Boolean).join(' · '),
+    ma_phan: r.ma_phan || '', ma_hang: r.ma_hang || '',
     chi_tiet: r.chi_tiet || '',
-  }));
+  })));
 }
 
 // Danh sách phần in đã hoàn thành checkpoint READY theo ngày (cho DonePanel).

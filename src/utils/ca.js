@@ -64,9 +64,10 @@ function chiMucTuan(modeMap) {
   for (const g of ['', ...NHOM_CA_RIENG]) {
     const ds = [];
     for (const kt of tuan) {
-      const v = g === NHOM_CA_KHAC ? modeMap.get(`${kt}|${NHOM_CA_KHAC}`)
-        : (g && modeMap.get(`${kt}|${g}`)) || modeMap.get(kt);
-      if (v) ds.push({ ord: thuTuTuan(kt), khoa: kt, v });
+      const khoa = g === NHOM_CA_KHAC ? `${kt}|${NHOM_CA_KHAC}`
+        : (g && modeMap.get(`${kt}|${g}`) ? `${kt}|${g}` : kt);
+      const v = modeMap.get(khoa);
+      if (v) ds.push({ ord: thuTuTuan(kt), khoa: kt, v, cd: caDemCuaDong(modeMap, khoa) });
     }
     nhom[g] = ds.sort((a, b) => a.ord - b.ord);
   }
@@ -74,17 +75,34 @@ function chiMucTuan(modeMap) {
   return nhom;
 }
 
-// Trả { loaiCa, nguon: 'TUAN' (cài đúng tuần) | 'THUA_HUONG' (lấy tuần trước) | 'MAC_DINH', tuan: 'nam-tuan' | null }.
+// ⚠⚠ CA ĐÊM "CA TRƯỚC / CA SAU" (08/11/2026, mig 125, người dùng chốt): ca qua nửa đêm (D2 18:00→06:00 · C3
+//   22:00→06:00) thuộc NGÀY nào —
+//     · 'SAU' (mặc định, như trước giờ): ngày nó BẮT ĐẦU — ngày 08/11: D1 06–18 ngày 08, D2 18:00 ngày 08 → 06:00 ngày 09.
+//     · 'TRUOC': ngày nó KẾT THÚC — ngày 08/11: D2 18:00 ngày 07 → 06:00 ngày 08, rồi D1 06–18 ngày 08.
+//   Cài cùng dòng loại ca của tuần (`cai_dat_ca_tuan.ca_dem`, Kế hoạch › Cài đặt) ⇒ riêng theo loại chuyền + thừa hưởng
+//   tuần trước y như loại ca. `modeMap.caDem` = Map cùng khóa với `modeMap` (thiếu ⇒ 'SAU'; chưa chạy mig 125 ⇒ rỗng).
+const CA_DEM = ['SAU', 'TRUOC'];
+function caDemCuaDong(modeMap, khoa) {
+  const v = modeMap && modeMap.caDem ? modeMap.caDem.get(khoa) : null;
+  return v === 'TRUOC' ? 'TRUOC' : 'SAU';
+}
+
+// Trả { loaiCa, caDem, nguon: 'TUAN' (cài đúng tuần) | 'THUA_HUONG' (lấy tuần trước) | 'MAC_DINH', tuan: 'nam-tuan' | null }.
 function loaiCaChiTiet(modeMap, khoaTuan, loaiChuyen) {
   const k = khoaNhomCa(loaiChuyen);
-  const macDinh = { loaiCa: k === NHOM_CA_KHAC ? CA_KHAC_MAC_DINH : 'NGAN', nguon: 'MAC_DINH', tuan: null };
+  const macDinh = { loaiCa: k === NHOM_CA_KHAC ? CA_KHAC_MAC_DINH : 'NGAN', caDem: 'SAU', nguon: 'MAC_DINH', tuan: null };
   if (!modeMap || !modeMap.size || !khoaTuan) return macDinh;
   const ds = chiMucTuan(modeMap)[k] || [];
   const ord = thuTuTuan(khoaTuan);
   for (let i = ds.length - 1; i >= 0; i -= 1) {
-    if (ds[i].ord <= ord) return { loaiCa: ds[i].v, nguon: ds[i].ord === ord ? 'TUAN' : 'THUA_HUONG', tuan: ds[i].khoa };
+    if (ds[i].ord <= ord) {
+      return { loaiCa: ds[i].v, caDem: ds[i].cd, nguon: ds[i].ord === ord ? 'TUAN' : 'THUA_HUONG', tuan: ds[i].khoa };
+    }
   }
   return macDinh;
+}
+function caDemCua(modeMap, khoaTuan, loaiChuyen) {
+  return loaiCaChiTiet(modeMap, khoaTuan, loaiChuyen).caDem;
 }
 function loaiCaCua(modeMap, khoaTuan, loaiChuyen) {
   return loaiCaChiTiet(modeMap, khoaTuan, loaiChuyen).loaiCa;
@@ -145,9 +163,22 @@ function maNgayCaHopLe(ma) {
 // `ngay` + `ma` — 2 thời điểm cùng `khoa` ⇔ cùng một lượt ca. Ca đêm (C3 22:00→06:00 · D2 18:00→06:00) qua nửa đêm
 // vẫn là lượt ca của HÔM TRƯỚC ⇒ dùng `ymdSx` (= bây giờ lùi 6 giờ, lấy từ SQL). Hành chính không có ca đêm: mỗi
 // NGÀY LỊCH là một lượt (ngoài giờ vẫn tính hành chính — xem `caFromHour`).
-function caDangChay({ ymd, ymdSx, gio, phut, loaiCa }) {
+// ⚠ 08/11/2026: `caDem` 'TRUOC' (mig 125) ⇒ ca đêm mang NGÀY KẾT THÚC: 20:00 ngày 07 + 03:00 ngày 08 đều là lượt
+//   `…08D2` (ca sau: `…07D2`). Ca ngày (C1 · C2 · D1) + hành chính không đổi.
+const CA_DEM_MA = ['C3', 'D2'];
+function congNgayYmd(ymd, n) {
+  const m = /^(\d{2})(\d{2})(\d{2})$/.exec(String(ymd || ''));
+  if (!m) return '';
+  const t = new Date(Date.UTC(2000 + Number(m[1]), Number(m[2]) - 1, Number(m[3]) + n));
+  const p2 = (x) => String(x).padStart(2, '0');
+  return `${String(t.getUTCFullYear()).slice(2)}${p2(t.getUTCMonth() + 1)}${p2(t.getUTCDate())}`;
+}
+function caDangChay({ ymd, ymdSx, gio, phut, loaiCa, caDem = 'SAU' }) {
   const ma = maCa(gio, phut, loaiCa);
-  const ngay = (ma === 'HC' || !ma) ? (ymd || '') : (ymdSx || ymd || '');
+  let ngay;
+  if (ma === 'HC' || !ma) ngay = ymd || '';
+  else if (caDem === 'TRUOC' && CA_DEM_MA.includes(ma)) ngay = Number(gio) >= 6 ? congNgayYmd(ymd, 1) : (ymd || '');
+  else ngay = ymdSx || ymd || '';
   return { ma, ngay, khoa: `${ngay}${ma}` };
 }
 
@@ -184,6 +215,9 @@ function khoaTuanIso(ngay) {
 // `tuGio` / `ngayKeHoach`: chuỗi GIỜ VN 'YYYY/MM/DD HH:mm:ss' | 'YYYY-MM-DD[ T]HH:mm[:ss]' (chỉ đọc chữ số,
 //   không qua Date của máy chủ). `modeMap` = `planning.repository.caModeMap` · `loaiChuyen` = mã loại chuyền
 //   của lệnh (mig 112 — tuần có cài riêng cho Máy/Bàn/Robot).
+// ⚠ 08/11/2026 — tuần cài ca đêm 'TRUOC' (mig 125): người lập kế hoạch ghi "ngày 08/11, 18:00 → 06:00" nghĩa là ca
+//   D2 CỦA NGÀY 08/11 (18:00 ngày 07 → 06:00 ngày 08) ⇒ NGÀY trong mã = NGÀY KẾ HOẠCH, ca = ca của giờ bắt đầu (giờ
+//   bắt đầu lưu đúng chữ người nhập — không dời ngày). Ca sau giữ luật cũ (ngày SX = giờ BĐ lùi 6 giờ).
 function ngayCaKeHoach(tuGio, ngayKeHoach, modeMap, loaiChuyen = null) {
   const tach = (v) => /^(\d{4})[/-](\d{1,2})[/-](\d{1,2})(?:[ T](\d{1,2}):(\d{1,2}))?/.exec(String(v || '').trim());
   const p2 = (n) => String(n).padStart(2, '0');
@@ -194,8 +228,13 @@ function ngayCaKeHoach(tuGio, ngayKeHoach, modeMap, loaiChuyen = null) {
     // Lùi 6 giờ để ra NGÀY SX (giờ 00:00–05:59 thuộc ca đêm của hôm trước).
     const t = new Date(Date.UTC(+g[1], +g[2] - 1, +g[3], gio, phut) - 6 * 3600 * 1000);
     const ngaySx = `${t.getUTCFullYear()}-${p2(t.getUTCMonth() + 1)}-${p2(t.getUTCDate())}`;
-    const loai = loaiCaCua(modeMap, khoaTuanIso(ngaySx), loaiChuyen);
-    return `${ymd(t.getUTCFullYear(), t.getUTCMonth() + 1, t.getUTCDate())}${maCa(gio, phut, loai)}`;
+    const ct = loaiCaChiTiet(modeMap, khoaTuanIso(ngaySx), loaiChuyen);
+    const ma = maCa(gio, phut, ct.loaiCa);
+    if (ct.caDem === 'TRUOC' && CA_DEM_MA.includes(ma)) {
+      const nk = tach(ngayKeHoach) || g;
+      return `${ymd(nk[1], nk[2], nk[3])}${ma}`;
+    }
+    return `${ymd(t.getUTCFullYear(), t.getUTCMonth() + 1, t.getUTCDate())}${ma}`;
   }
   const n = tach(ngayKeHoach) || g;
   return n ? ymd(n[1], n[2], n[3]) : '';
@@ -207,6 +246,6 @@ const HAU_TO_CA = { HC: 'HC', CA1: 'C1', CA2: 'C2', CA3: 'C3', D1: 'D1', D2: 'D2
 module.exports = {
   HAU_TO_CA,
   caFromHour, caFromParts, maCa, maNgayCa, ngayTuMaNgayCa, gioBatDauCa, khoaTuanIso, ngayCaKeHoach, caDangChay,
-  loaiCaCua, loaiCaChiTiet, khoaNhomCa, loaiChuyenTinhCa, loaiChuyenTinhCaSql, LOAI_CHUYEN_CA, NHOM_CA_RIENG, NHOM_CA_KHAC, CA_KHAC_MAC_DINH,
+  loaiCaCua, loaiCaChiTiet, caDemCua, CA_DEM, CA_DEM_MA, congNgayYmd, khoaNhomCa, loaiChuyenTinhCa, loaiChuyenTinhCaSql, LOAI_CHUYEN_CA, NHOM_CA_RIENG, NHOM_CA_KHAC, CA_KHAC_MAC_DINH,
   maNgayCaHopLe, NGAY_CA_SAI,
 };

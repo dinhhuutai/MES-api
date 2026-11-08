@@ -29,6 +29,7 @@ const release1Erp = require('./release1Erp');
 const { isKhuonOptional } = require('../../utils/tech');
 const { ngayHomNayVN } = require('../../utils/khoangNgay');
 const { TOI_DA_TIM: TOI_DA_TIM_LS } = require('../../utils/lichSuTim');
+const { ganThongTinPhanIn } = require('../../utils/thongTinLichSu');
 const { trongGioHanhChinh } = require('../../utils/gioHanhChinh'); // Test Run ngoài giờ ⇒ QA kiêm Release 2
 const { khoaNgc, tenNgc } = require('../../utils/nhaGiaCong'); // đợt khác nhà gia công không gom (27/10/2026)
 const { coCotBtp, datSoDauTx, coDauCho } = require('../../utils/btpKhacKh'); // BTP khác kế hoạch (mig 120, 28/10/2026)
@@ -697,7 +698,7 @@ async function release1History(date) {
     tg: r.tg,
     nguoi: r.nguoi || '—',
     hanh_dong: r.da_huy ? 'Release 1 (đã hủy)' : 'Release 1',
-    doi_tuong: r.ma_lenh || '',
+    doi_tuong: r.ma_lenh || '', ma_phan: r.ma_phan || '', mau_vai: r.mau_vai || '',
     chi_tiet: [r.ma_phan, r.mau_vai, r.ma_dot_vai].filter(Boolean).join(' · ')
       + (r.ten_chuyen ? ` → ${r.ten_chuyen}` : '')
       + (r.da_huy ? ' · ĐÃ HỦY LỆNH' : ''),
@@ -710,7 +711,7 @@ async function release1History(date) {
     chi_tiet: khtChiTiet(r),
   }));
   const tatCa = [...lenh, ...tam].sort((a, b) => new Date(b.tg) - new Date(a.tg));
-  return date && typeof date === 'object' && !date.date ? tatCa.slice(0, TOI_DA_TIM_LS) : tatCa;
+  return ganThongTinPhanIn(date && typeof date === 'object' && !date.date ? tatCa.slice(0, TOI_DA_TIM_LS) : tatCa);
 }
 
 // ----- RELEASE SET (gom set → 1 lệnh sản xuất chung) -----
@@ -1650,13 +1651,13 @@ function khtChiTiet(r) {
 }
 async function keHoachTamHistory(date) {
   const rows = await repo.keHoachTamHistoryByDate(date);
-  return rows.map((r) => ({
+  return ganThongTinPhanIn(rows.map((r) => ({
     tg: r.tg,
     nguoi: r.nguoi || '—',
     hanh_dong: KHT_LABEL[r.hanh_dong] || r.hanh_dong,
     doi_tuong: r.ma_lenh || r.ma_phan || '', ma_phan: r.ma_phan || '',
     chi_tiet: khtChiTiet(r),
-  }));
+  })));
 }
 async function keHoachTamDone(date) { return repo.keHoachTamDoneByDate(date); }
 
@@ -2269,7 +2270,7 @@ function toDateStr(v) {
 async function planHistory(date) {
   const rows = await repo.planHistoryByDate(date);
   const ng = (v) => v || '—';
-  return rows.map((r) => {
+  return ganThongTinPhanIn(rows.map((r) => {
     const isReplan = r.hanh_dong === 'REPLAN';
     // Giờ BD/KT chỉ ghi vào phần chi tiết khi CÓ đặt giờ (dòng lịch sử cũ không có 2 khóa này).
     const khoangGio = (bd, kt) => (bd || kt ? `${bd || '—'}→${kt || '—'}` : '');
@@ -2288,18 +2289,18 @@ async function planHistory(date) {
       doi_tuong: r.ma_lenh || '', ma_phan: r.ma_phan || '',
       chi_tiet: chiTiet,
     };
-  });
+  }));
 }
 
 async function testRunHistory(date) {
   const rows = await repo.testRunHistoryByDate(date);
-  return rows.map((r) => ({
+  return ganThongTinPhanIn(rows.map((r) => ({
     tg: r.tg,
     nguoi: r.nguoi || '—',
     hanh_dong: r.hanh_dong || 'Xác nhận test',
     doi_tuong: r.doi_tuong || '', ma_phan: r.ma_phan || '',
     chi_tiet: r.chi_tiet || '',
-  }));
+  })));
 }
 
 // ----- CÀI ĐẶT CA THEO TUẦN -----
@@ -2308,11 +2309,19 @@ async function listCaTuan() { return repo.listCaTuan(); }
 // `loaiChuyen` (mig 112): mảng mã nhóm ('MAY'/'BAN'/'ROBOT'/'KHAC') để cài RIÊNG; rỗng/thiếu = CHUNG (cả xưởng
 //   — kéo luôn các dòng riêng Máy/Bàn/Robot của tuần về cùng loại ca, KHÔNG kéo 'KHAC' — xem `repo.upsertCaTuan`).
 //   Chuỗi đơn cũng nhận.
-async function upsertCaTuan({ nam, tuan, loaiCa, ghiChu, loaiChuyen }, actorId) {
+async function upsertCaTuan({ nam, tuan, loaiCa, ghiChu, loaiChuyen, caDem }, actorId) {
   const y = Number(nam); const w = Number(tuan);
   if (!Number.isInteger(y) || y < 2000 || y > 2100) throw new AppError('Năm không hợp lệ', { status: 422, errorCode: 'INVALID' });
   if (!Number.isInteger(w) || w < 1 || w > 53) throw new AppError('Tuần không hợp lệ (1–53)', { status: 422, errorCode: 'INVALID' });
   if (!['NGAN', 'DAI', 'HANH_CHINH'].includes(loaiCa)) throw new AppError('Loại ca phải là NGAN, DAI hoặc HANH_CHINH', { status: 422, errorCode: 'INVALID' });
+  // Ca đêm (mig 125, 08/11/2026): 'SAU' | 'TRUOC' — không gửi = giữ như cũ. "Ca trước" mà chưa chạy mig ⇒ 409.
+  const dem = caDem == null || caDem === '' ? undefined : String(caDem).toUpperCase();
+  if (dem !== undefined && !['SAU', 'TRUOC'].includes(dem)) {
+    throw new AppError('Ca đêm phải là SAU (ca sau) hoặc TRUOC (ca trước)', { status: 422, errorCode: 'INVALID' });
+  }
+  if (dem === 'TRUOC' && !(await repo.caTuanCoCaDem())) {
+    throw new AppError('Cơ sở dữ liệu chưa chạy migration 125 — chưa chọn "ca trước" được', { status: 409, errorCode: 'CHUA_MIGRATION_125' });
+  }
   const ds = [...new Set((Array.isArray(loaiChuyen) ? loaiChuyen : [loaiChuyen])
     .map((x) => String(x || '').trim().toUpperCase()).filter(Boolean))];
   const sai = ds.filter((x) => !NHOM_CA_RIENG.includes(x));
@@ -2323,9 +2332,9 @@ async function upsertCaTuan({ nam, tuan, loaiCa, ghiChu, loaiChuyen }, actorId) 
     throw new AppError('Cơ sở dữ liệu chưa chạy migration 112 — chưa cài ca riêng theo loại chuyền được (chỉ cài chung)',
       { status: 409, errorCode: 'CHUA_MIGRATION_112' });
   }
-  if (!ds.length) return [await repo.upsertCaTuan({ nam: y, tuan: w, loaiCa, ghiChu }, actorId)];
+  if (!ds.length) return [await repo.upsertCaTuan({ nam: y, tuan: w, loaiCa, ghiChu, caDem: dem }, actorId)];
   const out = [];
-  for (const lc of ds) out.push(await repo.upsertCaTuan({ nam: y, tuan: w, loaiCa, ghiChu, loaiChuyen: lc }, actorId));
+  for (const lc of ds) out.push(await repo.upsertCaTuan({ nam: y, tuan: w, loaiCa, ghiChu, loaiChuyen: lc, caDem: dem }, actorId));
   return out;
 }
 

@@ -26,7 +26,7 @@ const { thuCua } = require('../../utils/erpThuLai');
 const { capIdMes } = require('../../utils/idMes');
 const prodRepo = require('../production/production.repository');
 const repo = require('./quality.repository');
-const { maNgayCa, loaiCaCua, caDangChay, khoaTuanIso } = require('../../utils/ca');
+const { maNgayCa, loaiCaChiTiet, caDangChay, khoaTuanIso } = require('../../utils/ca');
 const { temCode, laMaErp } = require('../../utils/temPrefix');
 
 const MA_API = 'ERP_GUI_SUA_DAT';
@@ -45,7 +45,11 @@ async function maNgayCaHomNay(loaiChuyen = null) {
     const [g, modeMap] = await Promise.all([prodRepo.goiYTemMeta(null, null), planningRepo.caModeMap()]);
     if (g) {
       ymd = g.ymd;
-      return maNgayCa(g.ymd, g.gio, g.phut, loaiCaCua(modeMap, `${g.nam}-${g.tuan}`, loaiChuyen));
+      // 08/11/2026: đi qua `caDangChay` (lượt ca thật — ca đêm sau nửa đêm thuộc hôm trước, hoặc NGÀY KẾT THÚC khi tuần
+      //   cài "ca trước", mig 125); loại ca theo tuần của ngày SX (bây giờ lùi 6 giờ), như In tem.
+      const ct = loaiCaChiTiet(modeMap, `${g.nam_sx || g.nam}-${g.tuan_sx || g.tuan}`, loaiChuyen);
+      const ca = caDangChay({ ymd: g.ymd, ymdSx: g.ymd_sx, gio: g.gio, phut: g.phut, loaiCa: ct.loaiCa, caDem: ct.caDem });
+      return ca.ma ? `${ca.ngay}${ca.ma}` : maNgayCa(g.ymd, g.gio, g.phut, ct.loaiCa);
     }
   } catch { /* lùi xuống dưới */ }
   if (ymd) return ymd;
@@ -71,8 +75,8 @@ async function maNgayCaTaiMoc(moc, loaiChuyen = null) {
   const ymdSx = ngaySx.slice(2).replace(/-/g, '');
   try {
     const planningRepo = require('../planning/planning.repository');
-    const loaiCa = loaiCaCua(await planningRepo.caModeMap(), khoaTuanIso(ngaySx), loaiChuyen);
-    const ca = caDangChay({ ymd, ymdSx, gio, phut, loaiCa });
+    const ct = loaiCaChiTiet(await planningRepo.caModeMap(), khoaTuanIso(ngaySx), loaiChuyen);
+    const ca = caDangChay({ ymd, ymdSx, gio, phut, loaiCa: ct.loaiCa, caDem: ct.caDem });
     return ca.ma ? `${ca.ngay}${ca.ma}` : ymd;
   } catch {
     return ymd;
@@ -111,6 +115,51 @@ async function mocXacNhanSua(suaId) {
   } catch { return null; }
 }
 
+// PHẦN ĐUÔI CHUNG của 1 lần gửi SK6 (lượt sửa đạt · tem 17 của lượt KCS kiểm một phần): dựng 20 tham số từ TEM 17
+//   `temConId`, ngày/ca/giờ theo mốc `moc` của lượt, gửi + ghi Lịch sử với `id_ban_ghi` = `idBanGhi` (khóa chống trùng +
+//   khóa báo hủy theo IDMES — `utils/erpHuy` KENH.SUA).
+async function guiSk6({ idBanGhi, temConId, moc, dat, huy = 0, actorId, opts = {} }) {
+  const ngayCtLuot = moc ? moc.slice(0, 10).replace(/\//g, '-') : null;
+  const [r] = await prodRepo.duLieuGhiInTem([{ temId: temConId, dotVaiId: null }], ngayCtLuot);
+  if (!r) return { ok: false, bo_qua: true, ly_do: 'KHONG_DU_LIEU' };
+  // Chờ có mã tem 17 ERP cấp mới gửi (30/09/2026).
+  if (!laMaTemErp(r.ma_tem)) return ghiChuaCoMaErp(MA_API, { idBanGhi, maTem: r.ma_tem, actorId });
+
+  // ⚠ Cấp IDMES SAU mọi guard — mỗi lần cấp là tiêu 1 số của dãy dùng chung.
+  const idMes = opts.idMes != null ? opts.idMes : await capIdMes('gui-erp-sua-dat');
+  if (idMes == null) return { ok: false, error: 'Không cấp được IDMES' };
+
+  const payload = taoPayload(r, { idMes, soLuong: dat, soLuongHuy: Number(huy) || 0 });
+  if (!payload.Ngayca) payload.Ngayca = await maNgayCaTaiMoc(moc, r.loai_chuyen);
+  // NHÃN 16 của tem gốc (proc SK6 mới, 14/10/2026: `@pBarcodeSua16`) — chỉ suy được từ mã ERP 12 số; tem gốc mang
+  //   mã MES cũ (`TEM…`) ⇒ để trống (ERP không biết mã đó). `utils/erpGhiInTem` KENH.ERP_GUI_SUA_DAT đưa vào body.
+  payload.BarcodeSua16 = laMaErp(r.ma_tem_goc) ? temCode(r.ma_tem_goc, 16) : '';
+  // Tem 17 không có giờ SX ⇒ Tugio/Dengio = MỐC của lượt (proc SK6 dùng `@pDengio` làm Ngày/Giờ phiếu chuyển giao —
+  //   NULL là phiếu mất ngày). Không đọc được ⇒ bây giờ (giờ VN).
+  if (!payload.Tugio) payload.Tugio = moc;
+  if (!payload.Dengio) payload.Dengio = moc;
+  const kq = await ghiInTem(payload, { maApi: MA_API });
+  if (kq.bo_qua) return { ok: false, bo_qua: true, ly_do: 'API_DANG_TAT' };
+
+  const p = kq.data && typeof kq.data === 'object' ? kq.data : null;
+  await ghiLog(MA_API, {
+    thanhCong: kq.ok,
+    idBanGhi,
+    idMes,
+    maTem: payload.BarcodeIn,
+    url: env.erp.guiSuaDatUrl,
+    gui: kq.body,
+    nhan: kq.data,
+    erpMessage: p ? (p.message ?? null) : null,
+    erpError: p ? (p.error ?? null) : null,
+    erpReturnValue: p && p.returnValue != null ? p.returnValue : null,
+    loi: kq.error || null,
+    ...thuCua(kq),
+    actorId,
+  });
+  return kq.ok ? { ok: true, id_mes: idMes } : { ok: false, error: kq.error };
+}
+
 /**
  * Gửi 1 lượt sửa. Trả { ok, bo_qua?, ly_do?, error? }.
  * @param {string} suaId
@@ -118,9 +167,15 @@ async function mocXacNhanSua(suaId) {
  */
 // `opts` = { guiLai, idMes } — nút "Gửi lại ERP" ở Cài đặt API › Lịch sử: bỏ chặn "đã gửi" và DÙNG LẠI IDMES cũ
 //   (proc `MES2SK6` xóa phiếu cùng `Soctcu` rồi tạo lại ⇒ không trùng).
+// ⚠ `suaId` không phải lượt sửa mà là LƯỢT KCS (dòng Lịch sử SK6 của tem 17 KCS kiểm một phần, 08/11/2026) ⇒ chuyển sang
+//   `guiTem17Kcs` — để "Gửi lại ERP" + hàng đợi tự gửi lại (`caidatapi/guiLai`) chạy đúng mà không cần nhánh riêng.
 async function guiSuaDat(suaId, actorId, opts = {}) {
   const s = await repo.getCancelSuaRow(suaId);
-  if (!s) return { ok: false, bo_qua: true, ly_do: 'NOT_FOUND' };
+  if (!s) {
+    const k = await repo.getCancelKcsRow(suaId).catch(() => null);
+    if (k) return guiTem17Kcs(suaId, actorId, opts);
+    return { ok: false, bo_qua: true, ly_do: 'NOT_FOUND' };
+  }
   if (s.da_huy) return { ok: false, bo_qua: true, ly_do: 'DA_HUY' };
   const dat = Number(s.so_luong_sua_dat) || 0;
   if (dat <= 0) return { ok: false, bo_qua: true, ly_do: 'KHONG_SUA_DAT' };
@@ -136,45 +191,38 @@ async function guiSuaDat(suaId, actorId, opts = {}) {
 
   // Mọi mốc ngày của lượt lấy theo LÚC XÁC NHẬN SỬA (không phải lúc gửi) ⇒ "Gửi lại ERP" ngày sau vẫn ra đúng ngày.
   const moc = await mocXacNhanSua(suaId);
-  const ngayCtLuot = moc ? moc.slice(0, 10).replace(/\//g, '-') : null;
-  const [r] = await prodRepo.duLieuGhiInTem([{ temId: temConId, dotVaiId: null }], ngayCtLuot);
-  if (!r) return { ok: false, bo_qua: true, ly_do: 'KHONG_DU_LIEU' };
-  // Chờ có mã tem 17 ERP cấp mới gửi (30/09/2026).
-  if (!laMaTemErp(r.ma_tem)) return ghiChuaCoMaErp(MA_API, { idBanGhi: suaId, maTem: r.ma_tem, actorId });
+  return guiSk6({ idBanGhi: suaId, temConId, moc, dat, huy: s.so_luong_sua_huy, actorId, opts });
+}
 
-  // ⚠ Cấp IDMES SAU mọi guard — mỗi lần cấp là tiêu 1 số của dãy dùng chung.
-  const idMes = opts.idMes != null ? opts.idMes : await capIdMes('gui-erp-sua-dat');
-  if (idMes == null) return { ok: false, error: 'Không cấp được IDMES' };
-
-  const payload = taoPayload(r, { idMes, soLuong: dat, soLuongHuy: Number(s.so_luong_sua_huy) || 0 });
-  if (!payload.Ngayca) payload.Ngayca = await maNgayCaTaiMoc(moc, r.loai_chuyen);
-  // NHÃN 16 của tem gốc (proc SK6 mới, 14/10/2026: `@pBarcodeSua16`) — chỉ suy được từ mã ERP 12 số; tem gốc mang
-  //   mã MES cũ (`TEM…`) ⇒ để trống (ERP không biết mã đó). `utils/erpGhiInTem` KENH.ERP_GUI_SUA_DAT đưa vào body.
-  payload.BarcodeSua16 = laMaErp(r.ma_tem_goc) ? temCode(r.ma_tem_goc, 16) : '';
-  // Tem 17 không có giờ SX ⇒ Tugio/Dengio = MỐC XÁC NHẬN SỬA của lượt (proc SK6 dùng `@pDengio` làm
-  //   Ngày/Giờ phiếu chuyển giao — NULL là phiếu mất ngày). Không đọc được ⇒ bây giờ (giờ VN).
-  if (!payload.Tugio) payload.Tugio = moc;
-  if (!payload.Dengio) payload.Dengio = moc;
-  const kq = await ghiInTem(payload, { maApi: MA_API });
-  if (kq.bo_qua) return { ok: false, bo_qua: true, ly_do: 'API_DANG_TAT' };
-
-  const p = kq.data && typeof kq.data === 'object' ? kq.data : null;
-  await ghiLog(MA_API, {
-    thanhCong: kq.ok,
-    idBanGhi: suaId,
-    idMes,
-    maTem: payload.BarcodeIn,
-    url: env.erp.guiSuaDatUrl,
-    gui: kq.body,
-    nhan: kq.data,
-    erpMessage: p ? (p.message ?? null) : null,
-    erpError: p ? (p.error ?? null) : null,
-    erpReturnValue: p && p.returnValue != null ? p.returnValue : null,
-    loi: kq.error || null,
-    ...thuCua(kq),
-    actorId,
+// ─── TEM 17 CỦA LƯỢT KCS KIỂM MỘT PHẦN → SK6 (08/11/2026, người dùng chốt) ────────────────────────────────────────
+// "Kiểm 1 phần: xác nhận KCS gửi Sh6 bằng tem 15 (như cũ), sinh tem 17 cho phần giao trước; in tem 17 ở sidebar Đã hoàn
+//   thành trang KCS thì gọi SK6." ⇒ cùng proc + cùng 20 tham số của sửa đạt: `BarcodeSua17` = mã 17, `BarcodeSua16` =
+//   nhãn 16 của tem gốc, `Soluong` = phần ĐẠT đã tách ra tem 17 (`sl_kcs_dat` của tem 17), `Soluongloi` 0 (hư của lượt đi
+//   Sửa, đã nằm ở phiếu Sh6). Ngày CT / ngày ca / giờ = MỐC XÁC NHẬN lượt KCS (không phải lúc in).
+//   `id_ban_ghi` Lịch sử = LƯỢT KCS ⇒ khóa "1 lần / lượt" + hủy xác nhận KCS báo hủy được (`erpHuy` KENH.SUA).
+// Gọi ở lần ĐẦU in (`quality.service guiSk6KhiInTem17`, khóa ở `repo.khoaGuiErpKhiInTem17`); in lại KHÔNG gọi.
+async function mocNhapKcs(kcsId) {
+  try {
+    const { rows } = await query(
+      `SELECT to_char(COALESCE((SELECT created_date FROM kcs WHERE id = $1), now()) AT TIME ZONE 'Asia/Ho_Chi_Minh',
+              'YYYY/MM/DD HH24:MI:SS') AS moc`, [kcsId]);
+    return rows[0] ? rows[0].moc : null;
+  } catch { return null; }
+}
+async function guiTem17Kcs(kcsId, actorId, opts = {}) {
+  const k = await repo.getCancelKcsRow(kcsId);
+  if (!k) return { ok: false, bo_qua: true, ly_do: 'NOT_FOUND' };
+  if (k.da_huy) return { ok: false, bo_qua: true, ly_do: 'DA_HUY' };
+  const t17 = await repo.temConSongCuaLuotKcs(kcsId);
+  if (!t17) return { ok: false, bo_qua: true, ly_do: 'KHONG_TEM_17' };
+  if (!opts.guiLai && await daGuiThanhCong(kcsId)) return { ok: true, bo_qua: true, ly_do: 'DA_GUI' };
+  const moc = await mocNhapKcs(kcsId);
+  return guiSk6({ idBanGhi: kcsId, temConId: t17.id, moc, dat: Number(t17.sl_kcs_dat) || 0, huy: 0, actorId, opts });
+}
+function guiNgamTem17Kcs(kcsId, actorId) {
+  guiTem17Kcs(kcsId, actorId).catch((e) => {
+    console.error(`[gui-sua-dat] ✗ Lỗi ngoài dự kiến (tem 17 của lượt KCS ${kcsId}): ${e.message}`);
   });
-  return kq.ok ? { ok: true } : { ok: false, error: kq.error };
 }
 
 // Bắn NGẦM sau khi xác nhận sửa — không bao giờ ném.
@@ -184,4 +232,6 @@ function guiNgam(suaId, actorId) {
   });
 }
 
-module.exports = { guiSuaDat, guiNgam, trangThaiGui, daGuiThanhCong, maNgayCaHomNay, maNgayCaTaiMoc, MA_API };
+module.exports = {
+  guiSuaDat, guiNgam, guiTem17Kcs, guiNgamTem17Kcs, trangThaiGui, daGuiThanhCong, maNgayCaHomNay, maNgayCaTaiMoc, MA_API,
+};

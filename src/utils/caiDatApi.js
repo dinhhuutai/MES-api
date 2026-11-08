@@ -212,6 +212,20 @@ const DANH_MUC_API = [
     macDinh: () => env.erp.syncEnabled,
     url: () => env.erp.phieuNhanVaiUrl,
   },
+  // ─── HÀNG ĐỢI TỰ GỬI LẠI (06/11/2026, người dùng: "tem nào lỗi thì cho vào hàng đợi gửi lại, gửi đến lần thứ 5") ───
+  // Không phải 1 API riêng: công tắc của job `jobs/erpTuGuiLai.job.js` (không URL — trang ẩn nút Thử kết nối).
+  {
+    ma: 'ERP_TU_GUI_LAI',
+    ten: 'Tự gửi lại lượt gửi ERP bị lỗi',
+    mo_ta: `Mỗi ${env.erp.tuGuiLaiPhut} phút gom các IDMES mà lần gửi mới nhất bị lỗi (báo ERP in tem · tem gia công · `
+      + 'kiểm phẩm · sửa đạt · OQC · phân loại lỗi · phiếu giao) và gửi lại bằng đúng nút "Gửi lại ERP" (giữ IDMES + '
+      + `ngày chứng từ), tới LẦN GỬI THỨ ${env.erp.tuGuiLaiToiDa} (tính cả lần đầu), giãn cách 2 → 5 → 15 → 30 phút. `
+      + 'Bỏ qua bản ghi đã hủy ở MES. Hết lượt vẫn lỗi ⇒ nằm ở Lịch sử, lọc "Đang lỗi" để gửi lại bằng tay.',
+    canh_bao: 'Tắt thì lượt gửi ERP lỗi (timeout, deadlock) nằm đó tới khi có người bấm "Gửi lại ERP".',
+    macDinh: () => env.erp.tuGuiLaiEnabled,
+    url: () => null,
+    khong_url: true,
+  },
 ];
 
 const MA_HOP_LE = new Set(DANH_MUC_API.map((x) => x.ma));
@@ -317,6 +331,8 @@ async function danhSachCauHinh() {
     mac_dinh: macDinhCua(x.ma),
     // Giới hạn theo code phần — chỉ API nào khai `loc_code_phan` mới có ô này trên giao diện.
     loc_code_phan: !!x.loc_code_phan,
+    khong_url: !!x.khong_url, // công tắc job (không gọi URL nào) — trang ẩn URL + nút Thử kết nối
+
     code_phan: (m[x.ma] && m[x.ma].code_phan) || '',
     so_code_phan: tachCodePhan(m[x.ma] && m[x.ma].code_phan).length,
     // FE dùng để hiện lời nhắc chạy migration thay vì để người dùng bấm Lưu rồi ăn lỗi khó hiểu.

@@ -64,10 +64,19 @@ async function docPhieu(ngay, { coTo, coNgayCa, coThoKh = false }) {
 
 // Mốc tuyệt đối từ (ngày ca + giờ SX nhập ở ô In tem). Ca đêm (C3 / D2) mà giờ < 06:00 ⇒ đã sang hôm sau.
 // Tem không nhập giờ ⇒ lúc in tem.
+// ⚠ 08/11/2026 — tuần cài "ca trước" (mig 125): mã ca đêm mang NGÀY KẾT THÚC ca (D2 ngày 08 = 18:00 ngày 07 → 06:00
+//   ngày 08) ⇒ cách cộng trên ra mốc SAU lúc in tem đúng 1 ngày ⇒ lùi 1 ngày khi mốc giờ BĐ của tem > lúc in + 2 giờ
+//   (hàng in xong mới in tem). Đoán theo dữ liệu, không đọc cài đặt — gương `production.repository duLieuGhiInTem`.
+const NGAY_TEM = "COALESCE(t.ngay_ca, (t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date)";
+const DEM_TEM = "upper(right(COALESCE(t.ma_ngay_ca, ''), 2)) IN ('C3', 'D2')";
+const LUI_CA_TRUOC = `CASE WHEN ${DEM_TEM} AND t.gio_sx_bd IS NOT NULL
+    AND ((${NGAY_TEM} + t.gio_sx_bd + CASE WHEN t.gio_sx_bd < time '06:00' THEN interval '1 day' ELSE interval '0' END)
+         AT TIME ZONE 'Asia/Ho_Chi_Minh') > t.created_date + interval '2 hours'
+    THEN interval '1 day' ELSE interval '0' END`;
 const MOC_TEM = (cotGio) => `CASE WHEN ${cotGio} IS NULL THEN t.created_date
-  ELSE ((COALESCE(t.ngay_ca, (t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date) + ${cotGio}
-    + CASE WHEN upper(right(COALESCE(t.ma_ngay_ca, ''), 2)) IN ('C3', 'D2') AND ${cotGio} < time '06:00'
-           THEN interval '1 day' ELSE interval '0' END) AT TIME ZONE 'Asia/Ho_Chi_Minh') END`;
+  ELSE ((${NGAY_TEM} + ${cotGio}
+    + CASE WHEN ${DEM_TEM} AND ${cotGio} < time '06:00'
+           THEN interval '1 day' ELSE interval '0' END - ${LUI_CA_TRUOC}) AT TIME ZONE 'Asia/Ho_Chi_Minh') END`;
 
 // 26/10/2026: 1 dòng / TEM (trước GROUP BY phiếu × đợt × ca × giờ) — modal "bấm ô SL in thực tế" cần danh sách tem
 //   (mã tem · mã ngày ca · giờ SX · người in). Vài trăm tem / ngày ⇒ payload vẫn nhỏ; phép cộng ở hàm thuần không đổi.

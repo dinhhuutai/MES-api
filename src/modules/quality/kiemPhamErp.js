@@ -55,6 +55,8 @@ async function mocNhapKcs(kcsId) {
 // `opts.guiLai` (nút "Gửi lại ERP" ở Cài đặt API › Lịch sử, 26/09/2026): bỏ qua chặn "đã gửi thành công"
 //   và DÙNG LẠI `opts.idMes` cũ ⇒ proc `MES_spr_MES2Sh6` xóa phiếu SH6 cùng `Soctcu` rồi tạo lại (không đẻ phiếu trùng).
 // `opts.ngayCt` / `opts.ngayCa`: Ngày CT + mã ngày ca của lần gửi trước. Gửi lại mà dòng cũ không có Ngày CT ⇒ ngày của lượt kiểm.
+// ⚠ Lượt KCS kiểm một phần đã tách TEM 17 (mig 122) vẫn gửi phiếu này bằng TEM 15 lúc xác nhận (người dùng chốt
+//   08/11/2026); tem 17 báo ERP RIÊNG bằng proc sửa đạt SK6 ở lần ĐẦU in tem 17 (`suaDatErp.guiTem17Kcs`).
 async function guiKiemPham(kcsId, temId, { dat = 0, hu = 0, thieu = 0 } = {}, actorId = null, opts = {}) {
   if (!kcsId || !temId) return { ok: false, bo_qua: true, ly_do: 'THIEU_DU_LIEU' };
   if (!opts.guiLai && await daGuiThanhCong(kcsId)) return { ok: true, bo_qua: true, ly_do: 'DA_GUI' };

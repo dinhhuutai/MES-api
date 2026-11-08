@@ -75,6 +75,14 @@ function gonPhanHoi(v) {
 //   phiếu của tem đã hủy. Nay lần đầu hỏng ⇒ thử lại Ở NỀN (không `await`: nhiều chỗ gọi `ghiLog` nằm trong luồng
 //   người đang bấm, vd xin mã tem), dòng giữ đúng giờ của lượt gọi. Hết lượt thử ⇒ in NGUYÊN dòng ra log để còn bù tay.
 const THU_LAI_MS = [5000, 15000, 30000, 60000, 120000];
+
+// ─── HÀNG ĐỢI TỰ GỬI LẠI (06/11/2026, `jobs/erpTuGuiLai.job.js`) ─────────────────────────────────────────────────
+// Job gửi lại bằng CHÍNH hàm "Gửi lại ERP" của từng kênh (`caidatapi/guiLai.js`) — không luồn tham số qua 7 kênh mà bọc
+//   lượt gọi trong `chayTuGuiLai({ lan }, fn)`: mọi dòng lịch sử ghi trong lượt đó tự mang `gia_tri_moi.tu_gui_lai =
+//   { lan }` (lần gửi thứ mấy của IDMES) ⇒ màn Lịch sử ghi "tự gửi lại". AsyncLocalStorage đi theo mọi `await` bên trong.
+const { AsyncLocalStorage } = require('async_hooks');
+const boiCanhTuGuiLai = new AsyncLocalStorage();
+const chayTuGuiLai = (info, fn) => boiCanhTuGuiLai.run(info, fn);
 const SQL_GHI = `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
    VALUES ($1, $2, $3, $4::jsonb, $5, COALESCE($6::timestamptz, CURRENT_TIMESTAMP), $5)`.replace(/\s+/g, ' ');
 
@@ -145,6 +153,8 @@ async function ghiLog(maApi, o = {}) {
           // Các lần thử HỎNG trong lượt (26/10/2026, `utils/erpThuLai.ghiLanLoi`): [{ lan, tg, ms, timeout, loi }].
           //   Dòng thành công có mảng này ⇒ "thành công ở lần thử `so_lan_thu`, các lần trước lỗi".
           ...(o.cacLanLoi && o.cacLanLoi.length ? { cac_lan_loi: o.cacLanLoi } : {}),
+          // Lần gửi do hàng đợi tự gửi lại (06/11/2026) — xem `chayTuGuiLai` ở trên.
+          ...(boiCanhTuGuiLai.getStore() ? { tu_gui_lai: boiCanhTuGuiLai.getStore() } : {}),
         // jsonb từ chối ký tự NUL (lỗi 22P05, thử lại bao nhiêu cũng hỏng) — phản hồi ERP có NUL thì bỏ ký tự đó.
         }).replace(/(?<!\\)\\u0000/g, ''),
         o.actorId || null,
@@ -156,4 +166,4 @@ async function ghiLog(maApi, o = {}) {
   }
 }
 
-module.exports = { ghiLog, TEN_BANG, THU_LAI_MS };
+module.exports = { ghiLog, TEN_BANG, THU_LAI_MS, chayTuGuiLai };

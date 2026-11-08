@@ -1,6 +1,6 @@
 'use strict';
 
-const { query } = require('../../config/db');
+const { query, withTransaction } = require('../../config/db');
 const { chuyenTemSql, coCotChuyenTem } = require('../../utils/temChuyen');
 // Hiển thị theo PHƯƠNG ÁN IN — cấu hình động từng trang (mig 067), mặc định BẬT HẾT = không lọc.
 const { dkTrang } = require('../../utils/phuongAnIn');
@@ -948,6 +948,49 @@ async function luuNguoiKiemKcs(items, actorId) {
   return { ton_tai: rows[0].n, da_ghi: rowCount };
 }
 
+// ─── TEM 17 CỦA LƯỢT KCS MỘT PHẦN GỬI ERP (SK6) KHI IN LẦN ĐẦU (08/11/2026, người dùng chốt) ──────────────────────
+// Lượt KCS kiểm một phần vẫn gửi Sh6 bằng tem 15 lúc xác nhận; tem 17 tách ra báo ERP bằng proc sửa đạt SK6 ở lần ĐẦU
+//   in tem 17 ở sidebar "Đã hoàn thành" màn KCS (`suaDatErp.guiTem17Kcs`). In lại ⇒ chỉ in.
+// Khóa "chỉ gửi 1 lần": ghi dòng `GUI_ERP_KHI_IN_TEM_17` (`ten_bang='kcs'`, `id_ban_ghi` = lượt) cho lượt có TEM 17 CÒN
+//   SỐNG, CHƯA có dòng đó và CHƯA có dòng Lịch sử SK6 nào (`ten_bang='sua'`, `id_ban_ghi` = lượt KCS) — trong 1 transaction
+//   có khóa advisory ⇒ 2 lần bấm in cùng lúc chỉ 1 lần lọt. Trả đúng các lượt vừa khóa (bên gọi gửi ERP cho chúng).
+//   Lượt gửi lỗi ⇒ dòng `ERP_GUI_SUA_DAT_LOI` ⇒ hàng đợi tự gửi lại / nút "Gửi lại ERP" (không đi qua khóa này).
+async function khoaGuiErpKhiInTem17(kcsIds, actorId) {
+  const ids = [...new Set((kcsIds || []).filter(Boolean).map(String))];
+  if (!ids.length || !(await coKcsTach())) return [];
+  return withTransaction(async (client) => {
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('kcs.gui_erp_khi_in_tem_17'))");
+    const { rows } = await client.query(
+      `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+       SELECT 'kcs', k.id::text, 'GUI_ERP_KHI_IN_TEM_17',
+              jsonb_build_object('tem_17_id', tc.id, 'ma_tem_17', tc.ma_tem, 'tem_goc_id', k.tem_id, 'api', 'ERP_GUI_SUA_DAT'),
+              $2::uuid, CURRENT_TIMESTAMP, $2::uuid
+         FROM kcs k
+         JOIN LATERAL (SELECT t.id, t.ma_tem FROM tem t WHERE t.kcs_tach_id = k.id AND t.trang_thai <> 'HUY'
+                        ORDER BY t.created_date DESC LIMIT 1) tc ON true
+        WHERE k.id = ANY($1::uuid[])
+          AND NOT EXISTS (SELECT 1 FROM audit_log a WHERE a.ten_bang = 'kcs' AND a.id_ban_ghi = k.id::text
+                AND a.hanh_dong = 'GUI_ERP_KHI_IN_TEM_17')
+          AND NOT EXISTS (SELECT 1 FROM audit_log a WHERE a.ten_bang = 'sua' AND a.id_ban_ghi = k.id::text
+                AND a.hanh_dong IN ('ERP_GUI_SUA_DAT', 'ERP_GUI_SUA_DAT_LOI'))
+       RETURNING id_ban_ghi AS kcs_id, gia_tri_moi`.replace(/\s+/g, ' '),
+      [ids, actorId || null]
+    );
+    return rows.map((r) => ({ kcsId: r.kcs_id, ...r.gia_tri_moi }));
+  });
+}
+
+// Tem 17 CÒN SỐNG của 1 lượt KCS (lượt kiểm một phần, mig 122) — `null` khi lượt không tách / tem 17 đã hủy / chưa có mig.
+async function temConSongCuaLuotKcs(kcsId) {
+  if (!kcsId || !(await coKcsTach())) return null;
+  const { rows } = await query(
+    `SELECT id, ma_tem, COALESCE(sl_kcs_dat, 0)::int AS sl_kcs_dat FROM tem
+      WHERE kcs_tach_id = $1::uuid AND trang_thai <> 'HUY' ORDER BY created_date DESC LIMIT 1`.replace(/\s+/g, ' '),
+    [String(kcsId)]
+  );
+  return rows[0] || null;
+}
+
 // Dò 1 cột (cache khi ĐÃ có) — cho các cột phụ của Excel "DANH SÁCH KIỂM TRA CHẤT LƯỢNG ĐẦU RA" (tem.ma_lo mig 114).
 const _coCotBang = {};
 async function coCotBang(bang, cot) {
@@ -1488,6 +1531,8 @@ module.exports = {
   // Hành trình gia công (`orders.repository.giaCongHanhTrinhData`) đọc sổ cái tem bằng CHÍNH 2 biểu thức
   // này (alias `t.`) + luật bỏ lượt OQC đã hủy xác nhận — không viết lại công thức ở module khác.
   CON_OQC, CON_GIAO, notCancelledQc, dieuChinhKcsSauTraVe, idMesKcsDaHuy, lanGuiKcsGanNhat,
+  // Tem 17 của lượt KCS một phần gửi SK6 khi in lần đầu (08/11/2026).
+  khoaGuiErpKhiInTem17, temConSongCuaLuotKcs,
   // "Tem tồn từ KCS" ở màn Giao hàng (`delivery.repository.listTonKcs`, 14/10/2026) đọc chờ sửa bằng chính biểu thức này.
   CON_SUA,
   insertQcTraVe, activeReturnsMap, resolveReturns, resolveReturnsMany, listQcTraVe, listTraVeChiTiet,

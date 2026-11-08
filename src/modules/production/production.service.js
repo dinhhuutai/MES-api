@@ -17,7 +17,7 @@ const erpsyncRepo = require('../erpsync/erpsync.repository');     // reopenReady
 const qaRepo = require('../quality/quality.repository');          // qc_tra_ve (badge + lý do ở READY)
 const thongBao = require('../thongbao/thongbao.service');         // chuông Kỹ thuật (mig 085)
 const {
-  caFromParts, ngayTuMaNgayCa, gioBatDauCa, loaiCaCua, khoaNhomCa, caDangChay, maNgayCaHopLe, NGAY_CA_SAI,
+  caFromParts, ngayTuMaNgayCa, gioBatDauCa, loaiCaCua, loaiCaChiTiet, khoaNhomCa, caDangChay, maNgayCaHopLe, NGAY_CA_SAI,
 } = require('../../utils/ca');
 const { layBarcodeTem, layNhieuBarcodeTem } = require('../../utils/erpTemBarcode');
 const { ghiInTem, taoPayload, laMaTemErp, ghiChuaCoMaErp, ghiChuaGuiDuoc } = require('../../utils/erpGhiInTem');
@@ -109,8 +109,9 @@ async function caInTemHienTai(lenhId, phieuId, gSan = null, modeSan = null) {
   const [g, modeMap] = gSan ? [gSan, modeSan] : await Promise.all([repo.goiYTemMeta(lenhId, phieuId), planningRepo.caModeMap()]);
   if (!g) return null;
   // Loại ca lấy theo tuần của NGÀY SẢN XUẤT (bây giờ lùi 6 giờ) — ca đêm vắt sang thứ Hai vẫn theo tuần nó bắt đầu.
-  const loaiCa = loaiCaCua(modeMap, `${g.nam_sx}-${g.tuan_sx}`, g.loai_chuyen);
-  const ca = caDangChay({ ymd: g.ymd, ymdSx: g.ymd_sx, gio: g.gio, phut: g.phut, loaiCa });
+  // Ca đêm "ca trước / ca sau" (mig 125) cùng dòng cài đặt ⇒ ca trước: 20:00 ngày 07 là lượt `…08D2`.
+  const ct = loaiCaChiTiet(modeMap, `${g.nam_sx}-${g.tuan_sx}`, g.loai_chuyen);
+  const ca = caDangChay({ ymd: g.ymd, ymdSx: g.ymd_sx, gio: g.gio, phut: g.phut, loaiCa: ct.loaiCa, caDem: ct.caDem });
   if (!ca.ngay) return null;
   return { khoa: `${khoaNhomCa(g.loai_chuyen) || 'CHUNG'}|${ca.khoa}`, ma_ca: ca.ma, ngay: ca.ngay };
 }
@@ -608,12 +609,31 @@ async function suaTem(temId, body = {}, actorId) {
 
   // Gửi lại ERP phiếu in tem cùng IDMES — NGẦM, SL lấy từ tem (số mới). Tem chưa từng gửi (API tắt / mã MES) ⇒ bỏ qua.
   const dong = dongErp;
+  const { guiLai } = require('../caidatapi/guiLai');
   if (dong) {
-    require('../caidatapi/guiLai').guiLai('ERP_GHI_IN_TEM', dong.id, actorId, { slTheoTem: true, ...(ngayCtMoi ? { ngayCt: ngayCtMoi } : {}) })
+    guiLai('ERP_GHI_IN_TEM', dong.id, actorId, { slTheoTem: true, ...(ngayCtMoi ? { ngayCt: ngayCtMoi } : {}) })
       .catch((e) => console.error(`[sua-tem] ✗ Gửi lại ERP tem ${kq.t.ma_tem}: ${e.message}`));
   }
+  // ⚠ 08/11/2026 (người dùng: "sửa chuyền ở Danh sách tem in, không thấy gửi cập nhật lại ở ERP"): phiếu KIỂM PHẨM (Sh6) ·
+  //   SỬA ĐẠT (SK6) · OQC (QO6) đã gửi của tem cũng mang chuyền (`banin`) + phân công ⇒ đổi chuyền / phân công thì gửi
+  //   lại cả các lượt đó (cùng IDMES — proc ghi đè, như nút "Gửi lại ERP"), tuần tự, ngầm. Lượt đã hủy ⇒ guiLai 409, bỏ qua.
+  //   Trước đó chỉ gửi lại phiếu in tem (SF0) — tự chốt 05/11 "Sửa chuyền chỉ gửi lại SF0" đã bỏ.
+  let soLuotSau = 0;
+  if (kq.doi.chuyenRiengId !== undefined || kq.doi.phanCong) {
+    const luot = await repo.luotErpSauInCuaTem(temId).catch(() => []);
+    soLuotSau = luot.length;
+    if (luot.length) {
+      (async () => {
+        for (const l of luot) {
+          // eslint-disable-next-line no-await-in-loop
+          await guiLai(l.ma, l.id, actorId)
+            .catch((e) => console.warn(`[sua-tem] Gửi lại ${l.ma} (dòng ${l.id}) của tem ${kq.t.ma_tem}: ${e.message}`));
+        }
+      })();
+    }
+  }
   sockets.emit('production:updated', { lenhId: kq.t.lenh_san_xuat_id, action: 'sua-tem', temId });
-  return { tem_id: temId, ma_tem: kq.t.ma_tem, doi: kq.doi, gui_erp: !!dong };
+  return { tem_id: temId, ma_tem: kq.t.ma_tem, doi: kq.doi, gui_erp: !!dong, gui_lai_luot_sau: soLuotSau };
 }
 
 // Ghi sổ vải gắn tem (sau transaction in tem, best-effort — tem đã in xong thì không được hỏng vì sổ vải).
@@ -1741,8 +1761,8 @@ async function listCancelableTem({ search, page, limit, offset }) {
 // `laGiaCong` do ROUTE quyết định (mỗi module 1 route + 1 quyền riêng), KHÔNG nhận từ query string:
 // để client tự chọn thì người chỉ có quyền Kế hoạch sẽ xem được cả tem sản xuất.
 async function listTemDaIn(q, laGiaCong = false) {
-  const { rows, total } = await repo.listTemDaIn({ ...q, laGiaCong, offset: q.offset, limit: q.limit });
-  return { items: rows, meta: buildMeta(q.page, q.limit, total) };
+  const { rows, total, tong } = await repo.listTemDaIn({ ...q, laGiaCong, offset: q.offset, limit: q.limit });
+  return { items: rows, meta: { ...buildMeta(q.page, q.limit, total), tong } };
 }
 
 // Hủy 1 lệnh in tem: đánh dấu tem HỦY (loại khỏi tổng đã in ⇒ trả SL release về) + gỡ xe phơi.
@@ -2122,4 +2142,5 @@ module.exports = {
   traVeKyThuat,
   traVeKeHoachSx,
   guiGhiInTem, // export để kiểm thực (không có route nào gọi trực tiếp)
+  __test: { caInTemHienTai }, // kiểm thực luật lượt ca (ca trước / ca sau) với giờ giả
 };

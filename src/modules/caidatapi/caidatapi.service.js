@@ -13,7 +13,8 @@ async function danhSach() {
   const theoMa = new Map(sua.map((r) => [r.ma_api, r]));
   return ds.map((x) => {
     const s = theoMa.get(x.ma) || {};
-    return { ...x, ghi_chu: s.ghi_chu || null, nguoi_sua: s.nguoi || null, tg_sua: s.updated_date || null };
+    const them = x.ma === 'ERP_TU_GUI_LAI' ? { trang_thai_job: require('../../jobs/erpTuGuiLai.job').trangThai() } : {};
+    return { ...x, ghi_chu: s.ghi_chu || null, nguoi_sua: s.nguoi || null, tg_sua: s.updated_date || null, ...them };
   });
 }
 
@@ -106,7 +107,12 @@ async function lichSu(ma, { date, search, page, limit, offset, loc, ketQua, soLu
     const { rows, total } = await repo.lichSu({
       ma, date, search, offset, limit, loc, ketQua: repo.KET_QUA.has(ketQua) ? ketQua : '', soLuong,
     });
-    return { items: rows, meta: buildMeta(page, limit, total) };
+    // Hàng đợi tự gửi lại (06/11/2026): kênh này có trong hàng đợi không + gửi tới lần thứ mấy ⇒ ô Kết quả của dòng lỗi
+    //   ghi "chờ tự gửi lại (lần k/5)" / "đã gửi đủ 5 lần".
+    const job = require('../../jobs/erpTuGuiLai.job');
+    const tuGuiLai = job.KENH.includes(ma)
+      ? { co: true, toi_da: job.trangThai().toi_da, chay: !!job.trangThai().chay_tren_may } : { co: false };
+    return { items: rows, meta: buildMeta(page, limit, total), tu_gui_lai: tuGuiLai };
   } catch (e) {
     console.warn(`[cai-dat-api] Không đọc được lịch sử ${ma}: ${e.message}`);
     return { items: [], meta: buildMeta(page, limit, 0) };

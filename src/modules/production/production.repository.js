@@ -780,6 +780,32 @@ async function dongGhiInTemCuoi(temId) {
   return rows[0] || null;
 }
 
+// Các LƯỢT đã gửi ERP SAU in tem của 1 tem gốc (08/11/2026): kiểm phẩm Sh6 (`kcs`) · sửa đạt SK6 (`sua` — lượt Sửa
+//   của tem + lượt KCS kiểm một phần tách tem 17, khóa = `kcs.id`) · OQC QO6 (`oqc` — của tem gốc lẫn tem 17).
+//   Các phiếu này cũng mang `banin` / `dsthoin` / chuyền trưởng ⇒ Sửa tem đổi chuyền / phân công phải gửi lại.
+//   1 dòng / lượt = dòng audit để "Gửi lại" (thành công mới nhất, chưa có thì dòng lỗi mới nhất); lượt đã HỦY
+//   xác nhận bị `guiLai` từ chối (409) — bên gọi nuốt lỗi.
+async function luotErpSauInCuaTem(temId) {
+  const { rows } = await query(
+    `WITH tems AS (SELECT t.id FROM tem t WHERE t.id = $1 OR t.tem_goc_id = $1),
+          bg AS (
+            SELECT 'kcs'::text AS bang, k.id::text AS id FROM kcs k WHERE k.tem_id = $1
+            UNION ALL SELECT 'sua', k.id::text FROM kcs k WHERE k.tem_id = $1
+            UNION ALL SELECT 'sua', s.id::text FROM sua s WHERE s.tem_id = $1
+            UNION ALL SELECT 'oqc', o.id::text FROM oqc o WHERE o.tem_id IN (SELECT id FROM tems))
+     SELECT DISTINCT ON (a.ten_bang, a.id_ban_ghi) a.id, regexp_replace(a.hanh_dong, '_LOI$', '') AS ma
+       FROM bg JOIN audit_log a ON a.ten_bang = bg.bang AND a.id_ban_ghi = bg.id
+      WHERE a.hanh_dong IN ('ERP_GUI_KIEM_PHAM', 'ERP_GUI_KIEM_PHAM_LOI', 'ERP_GUI_SUA_DAT', 'ERP_GUI_SUA_DAT_LOI',
+                            'ERP_GUI_OQC', 'ERP_GUI_OQC_LOI')
+        AND (a.ten_bang <> 'kcs' OR a.hanh_dong LIKE 'ERP_GUI_KIEM_PHAM%')
+        AND (a.ten_bang <> 'sua' OR a.hanh_dong LIKE 'ERP_GUI_SUA_DAT%')
+        AND (a.ten_bang <> 'oqc' OR a.hanh_dong LIKE 'ERP_GUI_OQC%')
+      ORDER BY a.ten_bang, a.id_ban_ghi, (a.hanh_dong !~ '_LOI$') DESC, a.thoi_gian DESC`.replace(/\s+/g, ' '),
+    [temId]
+  );
+  return rows;
+}
+
 // ----- HỦY LỆNH IN TEM (tem chưa kiểm) -----
 // Danh sách tem đã in còn hủy được: chưa HỦY, đang IN/phơi/khô, sổ cái KCS/OQC/giao = 0 (chưa kiểm).
 async function listCancelableTem({ search = '', offset = 0, limit = 50 }) {
@@ -935,12 +961,22 @@ async function listTemDaIn({
     ${SU_KIEN_CUOI_LATERAL}
     ${ERP_VAI_LATERAL}
     ORDER BY trang.stt`;
-  const countSql = `SELECT count(*)::int AS total ${FROM}`;
+  // TỔNG SL IN theo đúng bộ lọc (08/11/2026, người dùng: "cho thêm tổng số lượng in ở Danh sách tem in, theo lọc luôn")
+  //   — cùng câu đếm, KHÔNG tính tem HỦY (tem đã hủy không còn là hàng in; số của chúng trả riêng để báo).
+  const countSql = `SELECT count(*)::int AS total,
+      COALESCE(SUM(t.so_luong) FILTER (WHERE t.trang_thai <> 'HUY'), 0)::bigint AS tong_sl,
+      count(*) FILTER (WHERE t.trang_thai <> 'HUY')::int AS so_tem_song,
+      count(*) FILTER (WHERE t.trang_thai = 'HUY')::int AS so_tem_huy,
+      COALESCE(SUM(t.so_luong) FILTER (WHERE t.trang_thai = 'HUY'), 0)::bigint AS sl_huy ${FROM}`;
   const [data, count] = await Promise.all([
     query(dataSql.replace(/\s+/g, ' '), [...p, limit, offset]),
     query(countSql.replace(/\s+/g, ' '), p),
   ]);
-  return { rows: data.rows, total: count.rows[0].total };
+  const c = count.rows[0];
+  return {
+    rows: data.rows, total: c.total,
+    tong: { sl: Number(c.tong_sl) || 0, so_tem: c.so_tem_song, so_tem_huy: c.so_tem_huy, sl_huy: Number(c.sl_huy) || 0 },
+  };
 }
 
 // Tem + sổ cái để validate trước khi hủy lệnh in tem.
@@ -1808,6 +1844,11 @@ const capIdMes = () => capIdMesChung('ghi-in-tem');
 //     trước → đến 14:18) bị gửi ERP thành khoảng ~23 giờ sang hôm sau. Ca ngày giờ ngược ⇒ GỬI ĐÚNG SỐ
 //     ĐÃ NHẬP, không bịa ngày.
 //   · `ngay_ca` NULL (mã ngày ca sai định dạng) ⇒ lùi về ngày in tem, KHÔNG bịa ngày
+//   · ⚠ 08/11/2026 CA ĐÊM (C3 / D2) có giờ BĐ (LATERAL `gb`): mốc BĐ = ngày ca + giờ, giờ < 06:00 ⇒ đã sang hôm sau
+//     (bản cũ quên phần này: BĐ 02:00 ra ngày hôm trước); Dengio = cùng ngày với mốc BĐ, nhỏ hơn BĐ ⇒ +1 ngày. Tuần cài
+//     "ca trước" (mig 125) thì ngày trong mã = ngày KẾT THÚC ca ⇒ mốc BĐ rơi SAU lúc in tem ⇒ lùi cả 2 mốc 1 ngày
+//     (`gb.lui`). Đoán theo dữ liệu, không đọc cài đặt: hàng in xong mới in tem nên giờ BĐ không thể sau lúc in quá
+//     2 giờ. Gương `production/baoCaoSanXuat.js MOC_TEM`.
 // `ngayCt` (tùy chọn, 'YYYY-MM-DD' — thêm 04/09/2026): NGÀY CHỨNG TỪ do người in tự đặt, dùng khi
 // muốn ghi lượt in vào một ngày khác hôm nay (in bù, chốt sổ cuối ngày…). Bỏ trống ⇒ `now()` như cũ.
 // ⚠ Ép `::date` rồi `to_char` để chuỗi sai định dạng bị Postgres từ chối ngay tại đây, không lọt sang
@@ -1849,8 +1890,12 @@ async function duLieuGhiInTem(capTem = [], ngayCt = null) {
            to_char(COALESCE($3::date, (now() ${VN})::date), 'YYYY/MM/DD') AS ngay_ct,
            to_char(t.created_date ${VN}, 'YYYY/MM/DD HH24:MI:SS') AS moc_tao,
            CASE WHEN t.gio_sx_bd IS NULL THEN NULL
+                WHEN gb.bd IS NOT NULL THEN to_char(gb.bd - gb.lui, 'YYYY/MM/DD HH24:MI:SS')
                 ELSE to_char(nen.ngay + t.gio_sx_bd, 'YYYY/MM/DD HH24:MI:SS') END AS tu_gio,
            CASE WHEN t.gio_sx_kt IS NULL THEN NULL
+                WHEN gb.bd IS NOT NULL THEN to_char(gb.bd::date + t.gio_sx_kt
+                       + CASE WHEN gb.bd::date + t.gio_sx_kt < gb.bd THEN interval '1 day' ELSE interval '0' END - gb.lui,
+                     'YYYY/MM/DD HH24:MI:SS')
                 ELSE to_char(nen.ngay + t.gio_sx_kt
                        + CASE WHEN t.gio_sx_bd IS NOT NULL AND t.gio_sx_kt < t.gio_sx_bd
                                    AND right(COALESCE(t.ma_ngay_ca, ''), 2) IN ('C3', 'D2')
@@ -1868,6 +1913,12 @@ async function duLieuGhiInTem(capTem = [], ngayCt = null) {
       CROSS JOIN LATERAL (
         SELECT COALESCE(t.ngay_ca, (t.created_date ${VN})::date) AS ngay
       ) nen
+      LEFT JOIN LATERAL (
+        SELECT x.bd, CASE WHEN (x.bd ${VN}) > t.created_date + interval '2 hours' THEN interval '1 day' ELSE interval '0' END AS lui
+          FROM (SELECT nen.ngay + t.gio_sx_bd
+                       + CASE WHEN t.gio_sx_bd < time '06:00' THEN interval '1 day' ELSE interval '0' END AS bd) x
+         WHERE right(COALESCE(t.ma_ngay_ca, ''), 2) IN ('C3', 'D2') AND t.gio_sx_bd IS NOT NULL
+      ) gb ON true
       LEFT JOIN LATERAL (
         SELECT dv.barcode, pin.ddh_sub_id, dh.ddh_id, pin.ma_phan, (ldv.ma_loai = 'BO_SUNG') AS la_bo_sung
         FROM lenh_sx_dot_vai lsd
@@ -2038,7 +2089,7 @@ async function downstreamSlaAfterProduction() {
 async function monitorQueue() {
   const dkPain = await dkTrang('SX_THEO_DOI', 'lenh', 'ls.id');
   const { rows } = await query(
-    `SELECT ls.ma_lenh_san_xuat, ls.so_luong_release AS target, ls.ngay_ke_hoach,
+    `SELECT ls.ma_lenh_san_xuat, ls.so_luong_release AS target, ls.ngay_ke_hoach, ls.tg_bd_kh, ls.tg_kt_kh,
             cs.ma_chuyen, cs.ten_chuyen, lc.ma_loai AS ma_loai_chuyen, lc.ten_loai AS ten_loai_chuyen,
             info.ten_khach_hang, info.ma_hang, info.ma_phan, info.mau_vai, info.kich_vai, info.kich_phim, info.han_giao_hang
      FROM lenh_san_xuat ls
@@ -2046,7 +2097,7 @@ async function monitorQueue() {
      LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
      ${PHAN_INFO_LATERAL}
      WHERE ls.trang_thai='RELEASE_2' AND ${dkPain}
-     ORDER BY cs.ma_chuyen, ls.ngay_ke_hoach NULLS LAST, ls.created_date`
+     ORDER BY cs.ma_chuyen, ls.ngay_ke_hoach NULLS LAST, ls.tg_bd_kh NULLS LAST, ls.created_date`
   );
   return rows;
 }
@@ -2748,7 +2799,7 @@ module.exports = {
   docPhanCongDauCa, ghiPhanCongDauCa, phieuDangChayCuaChuyen,
   listCancelableTem, listTemDaIn, getTemForCancel, logTemCancel, logCloseProduction,
   docTemSuaTx, capNhatTemSuaTx, logSuaTemTx, docLenhGopTx, gopLenhTx, logGopLenhTx, doiMaLoTheoNgayCaTx, ghiPhanCongTemTx,
-  listReopenableTem, getTemForReopen, reopenTem, logTemReopen, dongGhiInTemCuoi,
+  listReopenableTem, getTemForReopen, reopenTem, logTemReopen, dongGhiInTemCuoi, luotErpSauInCuaTem,
   listReopenCandidates, getPhieuFull, reopenPhieuTx, logReopenProduction, logPauseLenhChay,
   listLichSuHoanTat, docMoLaiPhieuTx, logChayHoanTat,
   cancelPhieuStart, logUndoStart, logChayDacBiet,

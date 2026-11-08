@@ -2201,9 +2201,10 @@ async function testRunHistoryByDate(lsIn) {
            NULLIF(concat_ws(' · ', 'Lý do: ' || NULLIF(a.gia_tri_moi->>'ly_do', ''),
              'Cộng vào lệnh đang chạy ' || NULLIF(a.gia_tri_moi->>'cong_vao_lenh', ''),
              CASE WHEN COALESCE(a.gia_tri_moi->>'cong_vao_lenh', '') = '' THEN 'Vào chờ sản xuất' END), '') AS chi_tiet,
-           NULL::text AS ma_phan
+           ${LS.maPhanLenhSql('ls.id')} AS ma_phan
       FROM audit_log a
-      JOIN lenh_san_xuat ls ON ls.id::text = a.id_ban_ghi
+      JOIN lenh_san_xuat ls ON ls.id = (CASE WHEN a.id_ban_ghi ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                                            THEN a.id_ban_ghi::uuid END)
       LEFT JOIN nguoi_dung nd ON nd.id = a.nguoi_thuc_hien_id
      WHERE a.ten_bang = 'lenh_san_xuat' AND a.hanh_dong = 'RELEASE_2'
        AND COALESCE((a.gia_tri_moi->>'bo_test_run')::boolean, false)
@@ -2356,11 +2357,27 @@ async function caTuanCoLoaiChuyen() {
   return caCoLoai;
 }
 
+// Mig 125 (08/11/2026): `ca_dem` 'SAU' | 'TRUOC' — ca qua nửa đêm thuộc ngày bắt đầu / ngày kết thúc (`utils/ca.js`).
+//   Dò cột, nhớ 60 giây CẢ HAI chiều (rollback bỏ cột thì lượt sau tự thôi đọc — không làm hỏng `caModeMap`).
+let caCoDem = false;
+let caDemDoLuc = 0;
+async function caTuanCoCaDem() {
+  if (Date.now() - caDemDoLuc < 60000) return caCoDem;
+  try {
+    const { rows } = await query(
+      "SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='cai_dat_ca_tuan' AND column_name='ca_dem'");
+    caCoDem = rows.length > 0;
+  } catch (e) { caCoDem = false; }
+  caDemDoLuc = Date.now();
+  return caCoDem;
+}
+
 async function listCaTuan() {
   try {
-    const coLoai = await caTuanCoLoaiChuyen();
+    const [coLoai, coDem] = await Promise.all([caTuanCoLoaiChuyen(), caTuanCoCaDem()]);
     const { rows } = await query(
-      `SELECT id, nam, tuan, loai_ca, ghi_chu, updated_date, ${coLoai ? 'loai_chuyen' : "''::text AS loai_chuyen"}
+      `SELECT id, nam, tuan, loai_ca, ghi_chu, updated_date, ${coLoai ? 'loai_chuyen' : "''::text AS loai_chuyen"},
+              ${coDem ? 'ca_dem' : "'SAU'::text AS ca_dem"}
        FROM cai_dat_ca_tuan ORDER BY nam DESC, tuan DESC${coLoai ? ', loai_chuyen' : ''}`.replace(/\s+/g, ' ')
     );
     return rows;
@@ -2369,12 +2386,19 @@ async function listCaTuan() {
 
 // Map "nam-tuan" (dòng CHUNG) / "nam-tuan|MAY" (dòng riêng loại chuyền) → loai_ca. Đọc qua
 // `utils/ca.js loaiCaCua` — đừng `get()` thẳng. Rỗng nếu bảng chưa có.
+// `map.caDem` (mig 125) = Map cùng khóa → 'SAU' | 'TRUOC' (đọc qua `utils/ca.js loaiCaChiTiet` / `caDemCua`).
 async function caModeMap() {
   const map = new Map();
+  map.caDem = new Map();
   try {
-    const coLoai = await caTuanCoLoaiChuyen();
-    const { rows } = await query(`SELECT nam, tuan, loai_ca${coLoai ? ', loai_chuyen' : ''} FROM cai_dat_ca_tuan`);
-    rows.forEach((r) => map.set(`${r.nam}-${r.tuan}${r.loai_chuyen ? `|${r.loai_chuyen}` : ''}`, r.loai_ca));
+    const [coLoai, coDem] = await Promise.all([caTuanCoLoaiChuyen(), caTuanCoCaDem()]);
+    const { rows } = await query(
+      `SELECT nam, tuan, loai_ca${coLoai ? ', loai_chuyen' : ''}${coDem ? ', ca_dem' : ''} FROM cai_dat_ca_tuan`);
+    rows.forEach((r) => {
+      const khoa = `${r.nam}-${r.tuan}${r.loai_chuyen ? `|${r.loai_chuyen}` : ''}`;
+      map.set(khoa, r.loai_ca);
+      if (r.ca_dem === 'TRUOC') map.caDem.set(khoa, 'TRUOC');
+    });
   } catch (e) { /* bảng chưa tạo → mặc định NGAN ở nơi dùng */ }
   return map;
 }
@@ -2382,8 +2406,11 @@ async function caModeMap() {
 // `loaiChuyen` '' = CHUNG. Lưu CHUNG ⇒ các dòng riêng Máy/Bàn/Robot cùng tuần cũng đổi theo (CHUNG = "cả xưởng đi ca
 // này" — không có quyền DELETE nên không xóa dòng riêng được, đổi về cùng giá trị là tương đương). Dòng 'KHAC'
 // (Gia công, Máy tròn, Logo, Ép — mặc định Hành chính, 09/10/2026) KHÔNG đổi theo.
-async function upsertCaTuan({ nam, tuan, loaiCa, ghiChu, loaiChuyen = '' }, actorId) {
-  const coLoai = await caTuanCoLoaiChuyen();
+// `caDem` (mig 125) 'SAU' | 'TRUOC' | undefined (= giữ giá trị đang có; dòng mới ⇒ 'SAU'). Lưu CHUNG ⇒ kéo luôn ca đêm
+//   của các dòng riêng Máy/Bàn/Robot (như loại ca).
+async function upsertCaTuan({ nam, tuan, loaiCa, ghiChu, loaiChuyen = '', caDem }, actorId) {
+  const [coLoai, coDem] = await Promise.all([caTuanCoLoaiChuyen(), caTuanCoCaDem()]);
+  const ghiDem = coDem && (caDem === 'SAU' || caDem === 'TRUOC');
   if (!coLoai) {
     const { rows } = await query(
       `INSERT INTO cai_dat_ca_tuan (nam, tuan, loai_ca, ghi_chu, created_by, updated_by, updated_date)
@@ -2398,19 +2425,20 @@ async function upsertCaTuan({ nam, tuan, loaiCa, ghiChu, loaiChuyen = '' }, acto
   }
   return withTransaction(async (client) => {
     const { rows } = await client.query(
-      `INSERT INTO cai_dat_ca_tuan (nam, tuan, loai_chuyen, loai_ca, ghi_chu, created_by, updated_by, updated_date)
-       VALUES ($1,$2,$3,$4,$5,$6,$6, now())
+      `INSERT INTO cai_dat_ca_tuan (nam, tuan, loai_chuyen, loai_ca, ghi_chu, created_by, updated_by, updated_date${ghiDem ? ', ca_dem' : ''})
+       VALUES ($1,$2,$3,$4,$5,$6,$6, now()${ghiDem ? ', $7' : ''})
        ON CONFLICT (nam, tuan, loai_chuyen) DO UPDATE
-         SET loai_ca = EXCLUDED.loai_ca, ghi_chu = EXCLUDED.ghi_chu,
+         SET loai_ca = EXCLUDED.loai_ca, ghi_chu = EXCLUDED.ghi_chu,${ghiDem ? ' ca_dem = EXCLUDED.ca_dem,' : ''}
              updated_by = EXCLUDED.updated_by, updated_date = now()
-       RETURNING id, nam, tuan, loai_chuyen, loai_ca, ghi_chu`.replace(/\s+/g, ' '),
-      [nam, tuan, loaiChuyen || '', loaiCa, ghiChu || null, actorId]
+       RETURNING id, nam, tuan, loai_chuyen, loai_ca, ghi_chu${coDem ? ', ca_dem' : ''}`.replace(/\s+/g, ' '),
+      [nam, tuan, loaiChuyen || '', loaiCa, ghiChu || null, actorId, ...(ghiDem ? [caDem] : [])]
     );
     if (!loaiChuyen) {
       await client.query(
-        `UPDATE cai_dat_ca_tuan SET loai_ca = $3, updated_by = $4, updated_date = now()
-          WHERE nam = $1 AND tuan = $2 AND loai_chuyen NOT IN ('', 'KHAC') AND loai_ca <> $3`.replace(/\s+/g, ' '),
-        [nam, tuan, loaiCa, actorId]);
+        `UPDATE cai_dat_ca_tuan SET loai_ca = $3,${ghiDem ? ' ca_dem = $5,' : ''} updated_by = $4, updated_date = now()
+          WHERE nam = $1 AND tuan = $2 AND loai_chuyen NOT IN ('', 'KHAC')
+            AND (loai_ca <> $3${ghiDem ? ' OR ca_dem <> $5' : ''})`.replace(/\s+/g, ' '),
+        [nam, tuan, loaiCa, actorId, ...(ghiDem ? [caDem] : [])]);
     }
     return rows[0];
   });
@@ -2621,7 +2649,7 @@ module.exports = {
   PHAN_INFO_LATERAL,
   releaseListByDate, daInGiaoTheoPhanIn,
   phanInIdByDotVai, dotVaiReleasedOne, auditTraVeKyThuat,
-  listCaTuan, caModeMap, upsertCaTuan, caTuanCoLoaiChuyen,
+  listCaTuan, caModeMap, upsertCaTuan, caTuanCoLoaiChuyen, caTuanCoCaDem,
   listRelease1Candidates, phanInDangOGnTheoDot, release1HistoryByDate, nextMaLenh, nextMaLenhTx, createLenh,
   release1DoneByDate, planDoneByDate, testDoneByDate,
   testedDotVaiIds, getDotVaiQty, getDotVaiRemaining, khoaConReleaseTx, getDotVaiForCompose, getPainVsChuyen, phanInDangChay, lenhDangChayCuaPhanIn, addLenhDotVai, dotVaiAlreadyReleased,

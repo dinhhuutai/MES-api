@@ -15,6 +15,7 @@ const { layBarcodeTem17 } = require('../../utils/erpTemBarcode');
 const suaDatErp = require('./suaDatErp');
 const kiemPhamErp = require('./kiemPhamErp');
 const oqcErp = require('./oqcErp');
+const { ganThongTinPhanIn } = require('../../utils/thongTinLichSu');
 
 const num = (x) => Math.max(0, Number(x) || 0);
 
@@ -141,6 +142,8 @@ async function returnOqcTemConKcs(temCon, lyDo, actorId) {
   for (const k of dieuChinh) {
     if (!k.da_huy) kiemPhamErp.guiLaiSauDieuChinhNgam(k, gocId, actorId);
   }
+  // Tem 17 vừa bị HỦY ⇒ báo ERP hủy phiếu SK6 đã gửi lúc in tem 17 (08/11/2026; chưa gửi thì không gọi gì).
+  if (temCon.kcs_tach_id) erpHuy.baoHuyNgam('SUA', temCon.kcs_tach_id, { lyDo, actorId, maHien: temCon.ma_tem });
   // Badge + lý do nằm trên TEM GỐC — dòng hiện ở màn KCS.
   await repo.insertQcTraVe({ loai: 'OQC', temId: gocId, lyDo }, actorId);
   await tracking.moveByTem(gocId, 'KIEM', actorId);
@@ -350,6 +353,8 @@ async function recordKcs(temId, body, actorId) {
   sockets.emit('quality:updated', { temId, stage: 'KCS' });
   sockets.emit('dashboard:refresh', {});
   // Đẩy kết quả kiểm sang ERP (/gui-erp-kiem-pham) — NGẦM, không bao giờ chặn việc xác nhận KCS.
+  // Lượt kiểm một phần đã tách tem 17 vẫn gửi bằng TEM 15 ở đây (08/11/2026); tem 17 gửi SK6 lúc in lần đầu
+  //   (`luuNguoiKiemKcs` → `guiSk6KhiInTem17`).
   if (kcsId) kiemPhamErp.guiNgam(kcsId, temId, { dat, hu, thieu }, actorId);
   const conLai = conSauChenh - tong; // = 0 khi cân đối; > 0 ở lượt "kiểm một phần" (27/10/2026)
   return {
@@ -697,7 +702,7 @@ const q0 = (v) => (v === null || v === undefined ? 0 : v);
 
 async function kcsHistory(date) {
   const rows = await repo.kcsHistoryByDate(date);
-  return rows.map((r) => {
+  return ganThongTinPhanIn(rows.map((r) => {
     const cl = q0(r.so_luong_chenh_lech);
     const chenh = cl ? ` · Chênh ${cl > 0 ? '+' + cl : cl}` : '';
     return {
@@ -708,31 +713,31 @@ async function kcsHistory(date) {
       chi_tiet: `Đạt ${q0(r.so_luong_dat)} · Hư ${q0(r.so_luong_loi)} · Hủy ${q0(r.so_luong_huy)}${chenh}`
         + (r.ma_tem_17 ? ` · Kiểm một phần → tem 17 ${r.ma_tem_17}` : ''),
     };
-  });
+  }));
 }
 
 async function suaHistory(date) {
   const rows = await repo.suaHistoryByDate(date);
-  return rows.map((r) => ({
+  return ganThongTinPhanIn(rows.map((r) => ({
     id: r.luot_id, tem_id: r.tem_id,
     tg: r.tg, nguoi: r.nguoi || '—', hanh_dong: 'Sửa',
     doi_tuong: r.ma_tem || '', ma_phan: r.ma_phan || '',
     chi_tiet: `Sửa ${q0(r.so_luong_sua)} · Đạt ${q0(r.so_luong_sua_dat)} · Hủy ${q0(r.so_luong_sua_huy)}`,
-  }));
+  })));
 }
 
 async function oqcHistory(date) {
   const rows = await repo.oqcHistoryByDate(date);
   const src = (n) => (n === 'SUA' ? 'Sửa' : 'KCS');
   const pre = (n) => (n === 'SUA' ? '17-' : '15-');
-  return rows.map((r) => ({
+  return ganThongTinPhanIn(rows.map((r) => ({
     id: r.luot_id, tem_id: r.tem_id,
     tg: r.tg, nguoi: r.nguoi || '—',
     hanh_dong: `OQC${r.ket_qua ? ' · ' + r.ket_qua : ''}`,
     doi_tuong: `${pre(r.nguon)}${r.ma_tem || ''}`, ma_phan: r.ma_phan || '',
     // Thêm NGUỒN (KCS/Sửa) + SL từ nguồn đó chuyền qua giao (sl_qua_giao).
     chi_tiet: `Nguồn ${src(r.nguon)} · Bốc mẫu ${q0(r.so_luong_kiem)} · Đạt ${q0(r.so_luong_dat)} · Qua giao ${q0(r.sl_qua_giao)}`,
-  }));
+  })));
 }
 
 // ----- HỦY XÁC NHẬN KCS / SỬA / OQC (lỡ xác nhận lộn / nhập sai số) -----
@@ -796,6 +801,9 @@ async function cancelKcs(kcsId, lyDo, actorId) {
   await repo.logCancelQc('kcs', kcsId, r.tem_id, r.ma_tem, lyDo, actorId);
   // Báo ERP hủy phiếu kiểm phẩm của lượt này theo IDMES — chạy ngầm (14/10/2026, `utils/erpHuy.js`).
   erpHuy.baoHuyNgam('KCS', kcsId, { lyDo, actorId, maHien: r.ma_tem });
+  // Lượt kiểm một phần đã gửi SK6 cho tem 17 (08/11/2026, dòng Lịch sử `ten_bang='sua'` mang id LƯỢT KCS) ⇒ báo hủy cả
+  //   phiếu đó; lượt chưa từng gửi SK6 thì `baoHuy` không gọi gì.
+  if (temCon) erpHuy.baoHuyNgam('SUA', kcsId, { lyDo, actorId, maHien: temCon.ma_tem || r.ma_tem });
   await tracking.moveByTem(r.tem_id, 'KIEM', actorId);
   sockets.emit('quality:updated', { temId: r.tem_id, stage: 'KCS', huy: true });
   sockets.emit('dashboard:refresh', {});
@@ -1019,7 +1027,23 @@ async function luuNguoiKiemKcs(items, actorId) {
   const dong = [...theoLuot.values()];
   const kq = await repo.luuNguoiKiemKcs(dong, actorId);
   if (kq.ton_tai !== dong.length) throw new AppError('Có lượt KCS không còn tồn tại — tải lại danh sách', { status: 404, errorCode: 'NOT_FOUND' });
-  return { so_dong: dong.length, da_ghi: kq.da_ghi };
+  const guiErp = await guiSk6KhiInTem17(dong.map((x) => x.kcsId), actorId);
+  return { so_dong: dong.length, da_ghi: kq.da_ghi, gui_erp_tem_17: guiErp };
+}
+
+// IN TEM 17 LẦN ĐẦU ⇒ GỬI SK6 (sửa đạt) SANG ERP (08/11/2026, người dùng chốt: "kiểm 1 phần, xác nhận kiểm phẩm là tem 15
+//   thì gọi Sh6 … khi in tem 17 trong sidebar Đã hoàn thành của trang KCS thì gọi SK6 … khóa lại, in lại chỉ in tem").
+// Mỗi lần In tem ở sidebar đều qua `luuNguoiKiemKcs` ⇒ chặn ở đây: khóa lượt chưa từng gửi (`repo.khoaGuiErpKhiInTem17`)
+//   rồi gửi NGẦM (không chặn việc in; lỗi ⇒ dòng `ERP_GUI_SUA_DAT_LOI` ⇒ hàng đợi tự gửi lại / nút "Gửi lại ERP").
+//   Lượt không tách tem 17 / đã gửi rồi ⇒ không làm gì. Lỗi khóa ⇒ chỉ ghi log, vẫn cho in. Trả mã tem 17 vừa gửi (FE báo).
+async function guiSk6KhiInTem17(kcsIds, actorId) {
+  let ds = [];
+  try { ds = await repo.khoaGuiErpKhiInTem17(kcsIds, actorId); } catch (e) {
+    console.error(`[gui-sua-dat] ✗ Không khóa được lượt gửi ERP khi in tem 17: ${e.message}`);
+    return [];
+  }
+  for (const x of ds) suaDatErp.guiNgamTem17Kcs(x.kcsId, actorId);
+  return ds.map((x) => x.ma_tem_17);
 }
 
 // ----- QC IN-LINE (kiểm tại chuyền — phiếu đang chạy) -----
@@ -1055,17 +1079,17 @@ async function recordQcInline(phieuId, body, actorId) {
 
 async function inlineHistory(date) {
   const rows = await repo.inlineHistoryByDate(date);
-  return rows.map((r) => ({
+  return ganThongTinPhanIn(rows.map((r) => ({
     tg: r.tg, nguoi: r.nguoi || '—',
     hanh_dong: `QC in-line${r.ket_qua ? ' · ' + (r.ket_qua === 'DAT' ? 'Đạt' : 'Không đạt') : ''}`,
-    doi_tuong: `${r.ma_phan || r.ma_phieu_san_xuat || ''}`,
+    doi_tuong: `${r.ma_phan || r.ma_phieu_san_xuat || ''}`, ma_phan: r.ma_phan || '',
     chi_tiet: [
       `Mẫu ${q0(r.so_luong_mau)} · Lỗi ${q0(r.so_luong_loi)}`,
       r.loi_list ? `Loại: ${r.loi_list}` : null,
       r.nguyen_nhan ? `NN: ${r.nguyen_nhan}` : null,
       r.khac_phuc ? `KP: ${r.khac_phuc}` : null,
     ].filter(Boolean).join(' · '),
-  }));
+  })));
 }
 
 // ----- DANH MỤC LỖI -----

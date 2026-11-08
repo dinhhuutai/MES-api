@@ -175,6 +175,17 @@ const env = {
     proxyUrl: process.env.ERP_PROXY_URL || null,
     // Số lần thử lại khi ERP lỗi tạm thời (deadlock SQL Server, 5xx, timeout). Mặc định 3.
     retry: parseInt(process.env.ERP_SYNC_RETRY || '3', 10),
+
+    // HÀNG ĐỢI TỰ GỬI LẠI LƯỢT LỖI (06/11/2026, `jobs/erpTuGuiLai.job.js`). `tuGuiLaiEnabled` = mặc định của công tắc
+    //   "Tự gửi lại lượt lỗi" ở Cài đặt API (DB thắng). `tuGuiLaiJob`: '' = tự quyết (chỉ chạy khi PGHOST là máy này —
+    //   backend production nối DB qua 127.0.0.1; máy dev trỏ DB từ xa thì KHÔNG chạy, để 2 máy không cùng gửi lại 1 IDMES);
+    //   'true' = ép chạy · 'false' = không chạy.
+    tuGuiLaiEnabled: String(process.env.ERP_TU_GUI_LAI_ENABLED || 'true').toLowerCase() === 'true',
+    tuGuiLaiJob: String(process.env.ERP_TU_GUI_LAI_JOB || '').toLowerCase(),
+    tuGuiLaiPhut: Math.max(2, parseInt(process.env.ERP_TU_GUI_LAI_PHUT || '5', 10) || 5),
+    tuGuiLaiSoNgay: Math.min(90, Math.max(1, parseInt(process.env.ERP_TU_GUI_LAI_SO_NGAY || '30', 10) || 30)),
+    tuGuiLaiToiDa: Math.min(10, Math.max(2, parseInt(process.env.ERP_TU_GUI_LAI_TOI_DA || '5', 10) || 5)),
+    tuGuiLaiMoiLuot: Math.min(200, Math.max(1, parseInt(process.env.ERP_TU_GUI_LAI_MOI_LUOT || '30', 10) || 30)),
   },
 };
 

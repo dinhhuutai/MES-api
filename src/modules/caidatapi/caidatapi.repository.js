@@ -5,6 +5,7 @@ const { coCotCodePhan } = require('../../utils/caiDatApi');
 const { mauTim } = require('../../utils/timKiem');
 const { chuanMaChuyen, chuanMaChuyenSql } = require('../../utils/maChuyen');
 const { docLocSoLuong, dkSoLuongSql } = require('../../utils/locSoLuong');
+const { chuyenTemSql } = require('../../utils/temChuyen');
 
 // Lưu 1 dòng cấu hình. `ma_api` là PK nên upsert theo nó.
 // ⚠⚠ DÒ CỘT `code_phan` TRƯỚC rồi mới dựng câu INSERT (khuôn `temCoCot` mig 066) — cột này thêm SAU
@@ -104,8 +105,13 @@ const ID_MES = `COALESCE(a.gia_tri_moi->>'id_mes', a.gia_tri_moi->'gui'->>'IDMES
 //   lệnh → chuyền KẾ HOẠCH. Phần in = mọi phần in của lệnh (lệnh gom set ⇒ khớp khi BẤT KỲ phần in nào khớp).
 //   Dòng KHÔNG gắn bản ghi (xin mã tem, hủy vải theo lô, kéo GN) ⇒ chỉ lọc được Code phần / Ngày ca / Chuyền bằng chính
 //   thân đã gửi (`gui` — DsRelease / DsPhanDotVai chứa code phần, `Ngayca`, `banin`); có lọc Đơn / Mã / Kích / Màu thì loại.
+// ⚠⚠ 08/11/2026 (người dùng: "sửa chuyền ở Danh sách tem in … trong lịch sử vẫn hiện theo chuyền cũ"): chuyền + ngày ca
+//   của dòng GẮN BẢN GHI đọc HIỆN TRẠNG (chuyền của TEM — `utils/temChuyen.chuyenTemSql`, mig 124 · `tem.ma_ngay_ca`),
+//   KHÔNG đọc `gui.banin` / `gui.Ngayca` của từng lần gửi — trước đó lượt gồm lần gửi cũ (chuyền cũ) + lần gửi lại sau
+//   khi Sửa tem (chuyền mới) khớp CẢ HAI chuyền vì "lượt có ≥1 lần gửi khớp". Thân đã gửi chỉ còn là đường lùi cho
+//   dòng KHÔNG gắn được bản ghi nào (`coBanGhi` sai) và cho Ngày ca của dòng lệnh (lệnh không có mã ngày ca).
 const LOC_TRUONG = ['codePhan', 'ngayCa', 'chuyen', 'don', 'maHang', 'kich', 'mau'];
-function dkTruongSql(loc, p) {
+function dkTruongSql(loc, p, chuyenTem = 'ps.chuyen_id') {
   const v = {};
   LOC_TRUONG.forEach((k) => { const s = String((loc || {})[k] || '').trim(); if (s) v[k] = s; });
   if (!Object.keys(v).length) return '';
@@ -115,11 +121,11 @@ function dkTruongSql(loc, p) {
   if (v.codePhan) { const n = tham(mauTim(v.codePhan)); trong.push(`pin.ma_phan ~* ${n}`); gui.push(`(a.gia_tri_moi->'gui')::text ~* ${n}`); }
   if (v.ngayCa) {
     const n = tham(mauTim(v.ngayCa));
-    trong.push(`(x.ma_ngay_ca ~* ${n} OR a.gia_tri_moi->'gui'->>'Ngayca' ~* ${n})`); gui.push(`a.gia_tri_moi->'gui'->>'Ngayca' ~* ${n}`);
+    trong.push(`COALESCE(NULLIF(x.ma_ngay_ca, ''), a.gia_tri_moi->'gui'->>'Ngayca') ~* ${n}`); gui.push(`a.gia_tri_moi->'gui'->>'Ngayca' ~* ${n}`);
   }
   if (v.chuyen) {
     const n = tham(mauTim(v.chuyen)); const nc = tham(mauTim(chuanMaChuyen(v.chuyen)));
-    trong.push(`(cs.ma_chuyen ~* ${n} OR cs.ten_chuyen ~* ${n} OR ${chuanMaChuyenSql('cs.ma_chuyen')} ~* ${nc} OR a.gia_tri_moi->'gui'->>'banin' ~* ${nc})`);
+    trong.push(`(cs.ma_chuyen ~* ${n} OR cs.ten_chuyen ~* ${n} OR ${chuanMaChuyenSql('cs.ma_chuyen')} ~* ${nc})`);
     gui.push(`a.gia_tri_moi->'gui'->>'banin' ~* ${nc}`);
   }
   if (v.don) { const n = tham(mauTim(v.don)); trong.push(`(dh.ma_don_hang ~* ${n} OR dh.so_po ~* ${n})`); }
@@ -130,13 +136,15 @@ function dkTruongSql(loc, p) {
   const tem = `(SELECT ${U} UNION ALL SELECT k.tem_id FROM kcs k WHERE k.id = ${U}
       UNION ALL SELECT s.tem_id FROM sua s WHERE s.id = ${U} UNION ALL SELECT o.tem_id FROM oqc o WHERE o.id = ${U}
       UNION ALL SELECT ght.tem_id FROM giao_hang_tem ght WHERE ght.giao_hang_id = ${U})`;
-  const ex = `EXISTS (SELECT 1 FROM (
-      SELECT ps.lenh_san_xuat_id AS lenh_id, ps.chuyen_id, t.ma_ngay_ca, NULL::uuid AS pin_id
-        FROM tem t JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id WHERE t.id IN ${tem}
+  const nguon = `(
+      SELECT ps.lenh_san_xuat_id AS lenh_id, ${chuyenTem} AS chuyen_id, t.ma_ngay_ca, NULL::uuid AS pin_id
+        FROM tem t JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+        LEFT JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id WHERE t.id IN ${tem}
       UNION ALL SELECT ls.id, ls.chuyen_id, NULL, NULL FROM lenh_san_xuat ls
         WHERE ls.id = ${U} OR (a.ten_bang = 'lenh_san_xuat'
           AND ls.ma_lenh_san_xuat = ANY(regexp_split_to_array(COALESCE(a.gia_tri_moi->>'ma_tem', ''), '[,; ]+')))
-      UNION ALL SELECT q.lenh_san_xuat_id, NULL, NULL, q.phan_in_id FROM qc_tra_ve q WHERE q.id = ${U}) x
+      UNION ALL SELECT q.lenh_san_xuat_id, NULL, NULL, q.phan_in_id FROM qc_tra_ve q WHERE q.id = ${U}) x`;
+  const ex = `EXISTS (SELECT 1 FROM ${nguon}
     LEFT JOIN chuyen_san_xuat cs ON cs.id = x.chuyen_id
     JOIN LATERAL (SELECT dv.phan_in_id AS id FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
                    WHERE lsd.lenh_san_xuat_id = x.lenh_id
@@ -144,7 +152,7 @@ function dkTruongSql(loc, p) {
     JOIN phan_in pin ON pin.id = pp.id
     JOIN ma_hang mh ON mh.id = pin.ma_hang_id JOIN don_hang dh ON dh.id = mh.don_hang_id
     WHERE ${trong.join(' AND ')})`;
-  return coGui ? `(${ex} OR (${gui.join(' AND ')}))` : ex;
+  return coGui ? `(${ex} OR (NOT EXISTS (SELECT 1 FROM ${nguon}) AND ${gui.join(' AND ')}))` : ex;
 }
 
 // LỌC KẾT QUẢ + SỐ LƯỢNG (06/11/2026, người dùng: "lịch sử lọc theo số lượng in, lọc những IDMES gửi sang ERP bị lỗi")
@@ -158,7 +166,7 @@ const KET_QUA = new Set(['LOI', 'TUNG_LOI', 'OK']);
 
 async function lichSu({ ma, date = '', search = '', offset = 0, limit = 20, loc = {}, ketQua = '', soLuong = '' }) {
   const args = [ma, `${ma}_LOI`, date || '', mauTim(search), duoiMaTem(search)];
-  const dkTruong = dkTruongSql(loc, args);
+  const dkTruong = dkTruongSql(loc, args, String((loc || {}).chuyen || '').trim() ? await chuyenTemSql() : 'ps.chuyen_id');
   const dkLuot = [];
   if (ketQua === 'LOI') dkLuot.push('d.hanh_dong = $2');
   if (ketQua === 'OK') dkLuot.push('d.hanh_dong = $1');
@@ -185,7 +193,8 @@ async function lichSu({ ma, date = '', search = '', offset = 0, limit = 20, loc 
              json_agg(json_build_object('id', x.id, 'thoi_gian', x.thoi_gian, 'thanh_cong', x.hanh_dong = $1,
                'loi', x.gia_tri_moi->>'loi', 'so_lan_thu', (x.gia_tri_moi->>'so_lan_thu')::int,
                'thoi_gian_ms', (x.gia_tri_moi->>'thoi_gian_ms')::int, 'cac_lan_loi', x.gia_tri_moi->'cac_lan_loi',
-               'sua_tay', x.gia_tri_moi ? 'sua_tay', 'nguoi', ng.ho_ten) ORDER BY x.thoi_gian, x.id) AS cac_lan_gui
+               'sua_tay', x.gia_tri_moi ? 'sua_tay', 'tu_gui_lai', x.gia_tri_moi->'tu_gui_lai',
+               'nguoi', ng.ho_ten) ORDER BY x.thoi_gian, x.id) AS cac_lan_gui
         FROM b JOIN p ON p.idm = b.idm JOIN audit_log x ON x.id = b.id
         LEFT JOIN nguoi_dung ng ON ng.id = x.nguoi_thuc_hien_id
        GROUP BY b.idm)
@@ -201,7 +210,11 @@ async function lichSu({ ma, date = '', search = '', offset = 0, limit = 20, loc 
            (a.gia_tri_moi->>'thoi_gian_ms')::int AS thoi_gian_ms,
            a.gia_tri_moi AS chi_tiet,
            nd.ho_ten AS nguoi,
-           g.so_lan_gui, g.co_thanh_cong, g.cac_lan_gui
+           g.so_lan_gui, g.co_thanh_cong, g.cac_lan_gui,
+           (SELECT y.gia_tri_moi->>'ly_do' FROM audit_log y
+             WHERE y.ten_bang = 'erp_tu_gui_lai' AND y.id_ban_ghi = $1 || '|' || p.idm
+               AND y.gia_tri_moi->>'bo_qua' = 'true' AND y.gia_tri_moi->>'audit_id' = a.id::text
+             ORDER BY y.thoi_gian DESC LIMIT 1) AS tu_gui_lai_bo_qua
       FROM p
       JOIN audit_log a ON a.id = p.id
       JOIN g ON g.idm = p.idm
@@ -217,4 +230,63 @@ async function lichSu({ ma, date = '', search = '', offset = 0, limit = 20, loc 
   return { rows: rows.map(({ _total, ...r }) => r), total };
 }
 
-module.exports = { luu, thongTinSua, lichSu, KET_QUA };
+// ─── HÀNG ĐỢI TỰ GỬI LẠI (06/11/2026, `jobs/erpTuGuiLai.job.js`) ────────────────────────────────────────────────
+// Mọi IDMES của các kênh `dsMa` mà LẦN GỬI MỚI NHẤT đang lỗi, trong `soNgay` ngày (1 lần quét `audit_log` cho cả mọi
+//   kênh — bảng không có index theo `hanh_dong`; prod 06/11: ~62 nghìn dòng / 52 MB). Chỉ ID kết nối dạng SỐ (IDMES thật):
+//   dòng cũ / lượt bị chặn "chưa có mã ERP" mang `LOG-…` / `CHO-…` / mã phiếu — gửi lại sẽ cấp IDMES MỚI (đẻ lượt mới)
+//   nên không đưa vào hàng đợi. Trả mỗi lượt: dòng mới nhất (`audit_id` — đúng dòng nút "Gửi lại ERP" dùng), số lần
+//   gửi, người gửi đầu (gửi lại thay mặt họ — `nhanvien`/`user` của ERP giữ đúng người), số lần hàng đợi đã gửi + cờ bỏ qua
+//   (vết `TU_GUI_LAI_ERP` có `audit_id` = dòng mới nhất ⇒ có lần gửi mới hơn thì cờ tự hết).
+async function hangDoiTuGuiLai({ dsMa, soNgay }) {
+  const hd = []; const ma = []; const loi = [];
+  dsMa.forEach((m) => { hd.push(m, `${m}_LOI`); ma.push(m, m); loi.push(false, true); });
+  const sql = `
+    WITH m AS (SELECT * FROM unnest($1::text[], $2::text[], $3::boolean[]) AS m(hd, ma, loi)),
+    b AS MATERIALIZED (
+      SELECT a.id, a.thoi_gian, a.id_ban_ghi, a.nguoi_thuc_hien_id, m.ma, m.loi, ${ID_MES} AS idm
+        FROM audit_log a JOIN m ON m.hd = a.hanh_dong
+       WHERE a.thoi_gian > now() - make_interval(days => $4::int)),
+    g AS (SELECT ma, idm, count(*)::int AS so_lan_gui,
+                 (array_agg(nguoi_thuc_hien_id ORDER BY thoi_gian) FILTER (WHERE nguoi_thuc_hien_id IS NOT NULL))[1] AS nguoi_dau
+            FROM b WHERE idm ~ '^[0-9]+$' GROUP BY ma, idm),
+    d AS (SELECT DISTINCT ON (ma, idm) id, ma, idm, loi, thoi_gian, id_ban_ghi FROM b WHERE idm ~ '^[0-9]+$'
+           ORDER BY ma, idm, thoi_gian DESC, id DESC)
+    SELECT d.id::text AS audit_id, d.ma, d.idm, d.id_ban_ghi, d.thoi_gian, g.so_lan_gui, g.nguoi_dau,
+           COALESCE(t.so_tu, 0)::int AS so_tu, t.bo_qua
+      FROM d JOIN g ON g.ma = d.ma AND g.idm = d.idm
+      LEFT JOIN LATERAL (
+        SELECT count(*) AS so_tu,
+               (array_agg(x.gia_tri_moi->>'ly_do' ORDER BY x.thoi_gian DESC)
+                 FILTER (WHERE x.gia_tri_moi->>'bo_qua' = 'true' AND x.gia_tri_moi->>'audit_id' = d.id::text))[1] AS bo_qua
+          FROM audit_log x WHERE x.ten_bang = 'erp_tu_gui_lai' AND x.id_ban_ghi = d.ma || '|' || d.idm) t ON true
+     WHERE d.loi`;
+  const { rows } = await query(sql.replace(/\s+/g, ' '), [hd, ma, loi, soNgay]);
+  return rows;
+}
+
+// IDMES đã từng được báo HỦY sang ERP (thành công hay lỗi) — bản ghi đã hủy ở MES, gửi lại là dựng lại phiếu ERP đã hủy.
+async function idMesDaBaoHuy() {
+  const { rows } = await query(
+    `SELECT DISTINCT gia_tri_moi->'gui'->>'IDMES' AS idm FROM audit_log
+      WHERE hanh_dong IN ('ERP_GUI_HUY_IDMES', 'ERP_GUI_HUY_IDMES_LOI') AND gia_tri_moi->'gui'->>'IDMES' IS NOT NULL`.replace(/\s+/g, ' '));
+  return new Set(rows.map((r) => String(r.idm)));
+}
+
+// Tem đã HỦY trong danh sách id (kênh có `id_ban_ghi` = tem: in tem · tem gia công · phân loại lỗi).
+async function temDaHuy(ids) {
+  const uu = [...new Set(ids)].filter((x) => /^[0-9a-f-]{36}$/i.test(String(x || '')));
+  if (!uu.length) return new Set();
+  const { rows } = await query("SELECT id::text AS id FROM tem WHERE id = ANY($1::uuid[]) AND trang_thai = 'HUY'", [uu]);
+  return new Set(rows.map((r) => r.id));
+}
+
+// Vết 1 lần hàng đợi xử lý 1 lượt: `id_ban_ghi` = `<mã API>|<IDMES>` (khóa đếm số lần + cờ bỏ qua của lượt).
+async function ghiTuGuiLai({ ma, idm, auditId, lan, ok, boQua = false, lyDo = null, loi = null }) {
+  await query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, thoi_gian)
+     VALUES ('erp_tu_gui_lai', $1, 'TU_GUI_LAI_ERP', $2::jsonb, CURRENT_TIMESTAMP)`.replace(/\s+/g, ' '),
+    [`${ma}|${idm}`, JSON.stringify({ ma, id_mes: idm, audit_id: auditId, lan, ok: !!ok, bo_qua: !!boQua, ly_do: lyDo, loi })]
+  );
+}
+
+module.exports = { luu, thongTinSua, lichSu, KET_QUA, hangDoiTuGuiLai, idMesDaBaoHuy, temDaHuy, ghiTuGuiLai };

@@ -14,6 +14,7 @@ const { ghiLog } = require('../../utils/erpApiLog');
 const { capIdMes } = require('../../utils/idMes');
 const { taoIdKetNoi } = require('../../utils/idKetNoi');
 const { ngayHomNayVN } = require('../../utils/khoangNgay');
+const { ganThongTinPhanIn } = require('../../utils/thongTinLichSu');
 
 // Dùng chung 2 màn (xem `repo.listTemGiao`): `SAN_SANG` = Giao hàng · `CHO_TICH` = Tích tem giao hàng.
 async function dsTemGiao(q = {}, cheDo) {
@@ -214,7 +215,7 @@ async function listGiaoHang(q = {}) {
   });
 }
 
-const historyGiao = (date) => repo.historyGiaoByDate(date || ngayHomNayVN());
+const historyGiao = async (date) => ganThongTinPhanIn(await repo.historyGiaoByDate(date || ngayHomNayVN()));
 const doneGiao = (date) => repo.doneGiaoByDate(date || ngayHomNayVN());
 
 // ─── HỦY PHIẾU GIAO ───────────────────────────────────────────────────────────────────────────
