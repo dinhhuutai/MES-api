@@ -44,6 +44,9 @@ function dungBang(rows) {
     const ds = hoatDong.get(ten) || daTat.get(ten);
     bang.set(ten, ds.size === 1 ? [...ds][0] : null);
   }
+  // Tập mọi mã số nhân viên đang có (09/11/2026): bên gọi đưa SẴN mã (vd người kiểm Sh6 chọn từ tài khoản) ⇒ giữ nguyên mã,
+  //   không coi là "tên không tra được".
+  bang.maCo = new Set([...hoatDong.values(), ...daTat.values()].flatMap((x) => [...x]));
   return bang;
 }
 
@@ -64,7 +67,12 @@ async function napBang() {
 // Trả hàm tra đồng bộ `(họ tên) → mã số nhân viên | null` trên bảng vừa nạp.
 async function boTraMaNhanVien() {
   const bang = await napBang();
-  return (ten) => bang.get(chuanTen(ten)) || null;
+  return (ten) => {
+    const ma = bang.get(chuanTen(ten));
+    if (ma) return ma;
+    const tho = String(ten == null ? '' : ten).trim();
+    return bang.maCo && bang.maCo.has(tho) ? tho : null;
+  };
 }
 
 module.exports = { boTraMaNhanVien, dungBang, chuanTen, _xoaNho: () => { bangNho = null; napLuc = 0; } };

@@ -742,12 +742,15 @@ async function coCotSuaTemCon() {
 }
 
 // `temConId` (mig 100) = tem 17 do CHÍNH lượt này sinh ra — neo để `cancelSua` trừ ngược đúng chỗ.
+// `d.nguoiSua` / `d.nguoiSuaId` (tùy chọn, 09/11/2026 — modal "Tích tem" trang Sửa nhập NGƯỜI SỬA từng dòng rồi "Xác nhận
+//   và in tem"): ghi luôn vào lượt (mig 080) — chưa có cột thì bỏ qua, như `setNguoiSua`.
 async function insertSua(client, temId, d, actorId) {
   const co = await coCotSuaTemCon();
+  const coNguoi = !!String(d.nguoiSua || '').trim() && await coCotNguoiSua();
   const cot = ['tem_id', 'so_luong_sua', 'so_luong_sua_dat', 'so_luong_sua_huy', 'ghi_chu',
-    ...(co ? ['tem_con_id'] : []), 'created_by'];
+    ...(co ? ['tem_con_id'] : []), ...(coNguoi ? ['nguoi_sua', 'nguoi_sua_id'] : []), 'created_by'];
   const val = [temId, d.soLuongSua, d.soLuongSuaDat, d.soLuongSuaHuy, d.ghiChu || null,
-    ...(co ? [d.temConId || null] : []), actorId];
+    ...(co ? [d.temConId || null] : []), ...(coNguoi ? [String(d.nguoiSua).trim(), d.nguoiSuaId || null] : []), actorId];
   const { rows } = await client.query(
     `INSERT INTO sua (${cot.join(', ')}) VALUES (${cot.map((_, i) => `$${i + 1}`).join(', ')}) RETURNING id`,
     val
@@ -931,10 +934,14 @@ async function setNguoiSua(suaId, { nguoiSuaId, nguoiSua }, actorId) {
 // NGƯỜI KIỂM của 1 lượt KCS (03/11/2026, nhập ở modal In tem của sidebar "Đã hoàn thành" màn KCS) — KHÔNG migration:
 // nhớ ở `audit_log` `ten_bang='kcs'`, `id_ban_ghi` = lượt KCS, `hanh_dong='NGUOI_KIEM_KCS'`, DÒNG MỚI NHẤT là giá trị.
 // Chỉ ghi dòng có tên KHÁC giá trị đang nhớ (in lại nhiều lần không đẻ thêm dòng). Trả số lượt tồn tại + số dòng đã ghi.
-async function luuNguoiKiemKcs(items, actorId) {
+// ⚠ 09/11/2026 (người dùng: "modal tích tem thêm cột người kiểm, ở các chỗ xác nhận KCS nữa, gửi Sh6 phải là tên người
+//   này"): người kiểm nay nhập LÚC XÁC NHẬN KCS ⇒ `recordKcs` gọi hàm này TRONG transaction (`client`). Trả thêm `doi` =
+//   các lượt vừa ĐỔI tên (dòng mới ghi) — sửa tên ở modal In tem sau khi Sh6 đã gửi ⇒ bên gọi gửi lại Sh6 cùng IDMES.
+async function luuNguoiKiemKcs(items, actorId, client = null) {
+  const q = client ? (sql, p) => client.query(sql, p) : query;
   const ids = items.map((x) => x.kcsId);
-  const { rows } = await query('SELECT count(*)::int AS n FROM kcs WHERE id = ANY($1::uuid[])', [ids]);
-  const { rowCount } = await query(
+  const { rows } = await q('SELECT count(*)::int AS n FROM kcs WHERE id = ANY($1::uuid[])', [ids]);
+  const { rows: ghi } = await q(
     `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
      SELECT 'kcs', k.id::text, 'NGUOI_KIEM_KCS', jsonb_build_object('nguoi_kiem', u.ten, 'nguoi_kiem_id', u.uid), $4::uuid, CURRENT_TIMESTAMP, $4::uuid
        FROM unnest($1::uuid[], $2::text[], $3::uuid[]) AS u(kcs_id, ten, uid)
@@ -942,10 +949,27 @@ async function luuNguoiKiemKcs(items, actorId) {
        LEFT JOIN LATERAL (SELECT a.gia_tri_moi->>'nguoi_kiem' AS ten FROM audit_log a
                            WHERE a.ten_bang = 'kcs' AND a.id_ban_ghi = k.id::text AND a.hanh_dong = 'NGUOI_KIEM_KCS'
                            ORDER BY a.thoi_gian DESC LIMIT 1) c ON true
-      WHERE c.ten IS DISTINCT FROM u.ten`.replace(/\s+/g, ' '),
+      WHERE c.ten IS DISTINCT FROM u.ten
+      RETURNING id_ban_ghi`.replace(/\s+/g, ' '),
     [ids, items.map((x) => x.nguoiKiem), items.map((x) => x.nguoiKiemId), actorId || null]
   );
-  return { ton_tai: rows[0].n, da_ghi: rowCount };
+  return { ton_tai: rows[0].n, da_ghi: ghi.length, doi: ghi.map((r) => r.id_ban_ghi) };
+}
+
+// NGƯỜI KIỂM đang nhớ của 1 lượt KCS (dòng `NGUOI_KIEM_KCS` mới nhất) + MÃ SỐ NHÂN VIÊN của tài khoản đã chọn (nếu có) —
+//   nguồn `dsthoin` của phiếu kiểm phẩm Sh6 (`kiemPhamErp`, 09/11/2026). Chưa nhập ⇒ null.
+async function nguoiKiemCuaLuot(kcsId) {
+  const { rows } = await query(
+    `SELECT a.gia_tri_moi->>'nguoi_kiem' AS nguoi_kiem, nd.ten_dang_nhap AS ma_nv
+       FROM audit_log a
+       LEFT JOIN nguoi_dung nd ON nd.id = (CASE WHEN (a.gia_tri_moi->>'nguoi_kiem_id') ~ '^[0-9a-fA-F-]{36}$'
+                                                THEN (a.gia_tri_moi->>'nguoi_kiem_id')::uuid END)
+      WHERE a.ten_bang = 'kcs' AND a.id_ban_ghi = $1 AND a.hanh_dong = 'NGUOI_KIEM_KCS'
+      ORDER BY a.thoi_gian DESC LIMIT 1`.replace(/\s+/g, ' '),
+    [String(kcsId)]
+  );
+  const r = rows[0];
+  return r && String(r.nguoi_kiem || '').trim() ? { nguoi_kiem: String(r.nguoi_kiem).trim(), ma_nv: r.ma_nv || null } : null;
 }
 
 // ─── TEM 17 CỦA LƯỢT KCS MỘT PHẦN GỬI ERP (SK6) KHI IN LẦN ĐẦU (08/11/2026, người dùng chốt) ──────────────────────
@@ -1548,7 +1572,7 @@ module.exports = {
   nextMaTem, createChildTem, insertTemSplit, getTemForSplit,
   insertKcs, insertSua, nextOqcRound, insertOqc,
   kcsHistoryByDate, suaHistoryByDate, oqcHistoryByDate,
-  temDoneByDate, inlineDoneByDate, setNguoiSua, luuNguoiKiemKcs,
+  temDoneByDate, inlineDoneByDate, setNguoiSua, luuNguoiKiemKcs, nguoiKiemCuaLuot,
   listInlineCandidates, getPhieuRun, nextInlineRound, insertQcInline, insertQcInlineLoi, inlineHistoryByDate,
   listLoaiLoiActive, listLoaiLoiAll, insertLoaiLoi, updateLoaiLoi, setLoaiLoiActive,
   listGiaoDacBietActive, listGiaoDacBietAll, insertGiaoDacBiet, updateGiaoDacBiet, setGiaoDacBietActive,

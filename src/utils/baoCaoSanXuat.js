@@ -20,7 +20,8 @@
 //   · Chỉ hàng ĐANG / ĐÃ IN trong ngày: phiếu chạy (≠ HUY) có giờ chạy cắt vào ngày, hoặc có tem ngày ca đó.
 //     Lệnh có kế hoạch mà chưa chạy KHÔNG lên báo cáo. Chuyền gia công bị loại (không in ở xưởng).
 //   · NGÀY D = các ca BẮT ĐẦU trong ngày D: 06:00 D → 06:00 D+1 (ca đêm C3/D2 qua nửa đêm vẫn thuộc D —
-//     đúng quy ước mã ngày ca của tem). Chia ca theo loại ca của tuần ISO (`cai_dat_ca_tuan`, `utils/ca.js`):
+//     đúng quy ước mã ngày ca của tem). ⚠ 09/11/2026: tuần cài ca đêm "CA TRƯỚC" (mig 125) ⇒ ngày D bắt đầu từ TỐI
+//     HÔM TRƯỚC (D2 18:00 / C3 22:00 của D−1) — khung ngày theo từng chuyền, xem `khungCa`. Chia ca theo loại ca của tuần ISO (`cai_dat_ca_tuan`, `utils/ca.js`):
 //     NGAN CA1 06–14 · CA2 14–22 · CA3 22–06 · DAI D1 06–18 · D2 18–06 · HANH_CHINH cả ngày = HC.
 //     Tuần chưa cài ⇒ suy từ mã ca trên tem trong ngày (`suyLoaiCaTuTem`), không có tem ⇒ NGAN.
 //   · SL in TT = Σ `tem.so_luong` (tem 15 sống, không tính tem con 17) có `ngay_ca` = D, ca theo HẬU TỐ mã
@@ -75,17 +76,48 @@ const nhomCuaLoai = (maLoai) => NHOM_THEO_LOAI[String(maLoai || '').toUpperCase(
 const GIO = 3600 * 1000;
 const VN_LECH = 7 * GIO; // giờ VN = UTC+7, không có giờ mùa hè
 
-// Khung ca của ngày D (mốc ms tuyệt đối). D bắt đầu 06:00 giờ VN.
-function khungCa(ngay, loaiCa) {
+// Khung ca của ngày D (mốc ms tuyệt đối).
+// ⚠⚠ 09/11/2026 (người dùng: "kế hoạch ngày 7/11 và 9/11 lại nhảy vào ngày 8/11 — tuần này đi ca trước, các tuần trước ca
+//   sau"): NGÀY D KHÔNG CÒN CỐ ĐỊNH 06:00 → 06:00 — theo "ca đêm" của tuần (mig 125, `utils/ca.js`):
+//     · ca SAU (mặc định): D 06:00 → D+1 06:00 (ca đêm D2 / C3 qua nửa đêm thuộc ngày nó BẮT ĐẦU — như trước giờ).
+//     · ca TRƯỚC: ca đêm thuộc ngày nó KẾT THÚC ⇒ D bắt đầu từ TỐI HÔM TRƯỚC: Dài D2 18:00 (D−1) → D1 06–18 · Ngắn C3
+//       22:00 (D−1) → C1 06–14 → C2 14–22. Hành chính không có ca đêm ⇒ luôn 06:00.
+//   Ngày D KẾT THÚC đúng lúc ngày D+1 BẮT ĐẦU (`loaiCaSau` / `caDemSau` = cấu hình của ngày D+1, có thể ở tuần khác) ⇒ các
+//   ngày nối khít, không trùng không hở: tuần ca sau → tuần ca trước thì đêm giáp ranh thuộc ngày SAU (ngày D chỉ còn ca
+//   ngày); tuần ca trước → tuần ca sau thì đêm giáp ranh vẫn thuộc ngày D (thêm 1 đoạn ca đêm cuối ngày).
+//   Ca thật 08–09/11/2026: đêm CN 08 → T2 09 xưởng nhập `261109D2` (ca trước tuần 46) nhưng báo cáo cũ cắt 06:00 nên lệnh
+//   bấm chạy 20:14–05:23 đêm đó (kế hoạch 07/11, 09/11) rơi vào ngày 08/11.
+const DEM_CUA_LOAI = { DAI: { ca: 'D2', dai: 12 }, NGAN: { ca: 'CA3', dai: 8 } };
+function batDauNgay(ngay, loaiCa, caDem) {
   const [y, m, d] = String(ngay).split('-').map(Number);
   const ws = Date.UTC(y, m - 1, d, 6) - VN_LECH;
-  if (loaiCa === 'HANH_CHINH') return [{ ca: 'HC', a: ws, b: ws + 24 * GIO }];
-  if (loaiCa === 'DAI') return [{ ca: 'D1', a: ws, b: ws + 12 * GIO }, { ca: 'D2', a: ws + 12 * GIO, b: ws + 24 * GIO }];
-  return [
-    { ca: 'CA1', a: ws, b: ws + 8 * GIO },
-    { ca: 'CA2', a: ws + 8 * GIO, b: ws + 16 * GIO },
-    { ca: 'CA3', a: ws + 16 * GIO, b: ws + 24 * GIO },
-  ];
+  const dem = DEM_CUA_LOAI[loaiCa];
+  return caDem === 'TRUOC' && dem ? ws - dem.dai * GIO : ws;
+}
+function ngayKe(ngay) {
+  const [y, m, d] = String(ngay).split('-').map(Number);
+  const t = new Date(Date.UTC(y, m - 1, d + 1));
+  return `${t.getUTCFullYear()}-${String(t.getUTCMonth() + 1).padStart(2, '0')}-${String(t.getUTCDate()).padStart(2, '0')}`;
+}
+function khungCa(ngay, loaiCa, { caDem = 'SAU', loaiCaSau = loaiCa, caDemSau = caDem } = {}) {
+  const [y, m, d] = String(ngay).split('-').map(Number);
+  const ws = Date.UTC(y, m - 1, d, 6) - VN_LECH;
+  let goc;
+  if (loaiCa === 'HANH_CHINH') goc = [{ ca: 'HC', a: ws, b: ws + 24 * GIO }];
+  else if (loaiCa === 'DAI') {
+    goc = caDem === 'TRUOC'
+      ? [{ ca: 'D2', a: ws - 12 * GIO, b: ws }, { ca: 'D1', a: ws, b: ws + 12 * GIO }]
+      : [{ ca: 'D1', a: ws, b: ws + 12 * GIO }, { ca: 'D2', a: ws + 12 * GIO, b: ws + 24 * GIO }];
+  } else {
+    goc = caDem === 'TRUOC'
+      ? [{ ca: 'CA3', a: ws - 8 * GIO, b: ws }, { ca: 'CA1', a: ws, b: ws + 8 * GIO }, { ca: 'CA2', a: ws + 8 * GIO, b: ws + 16 * GIO }]
+      : [{ ca: 'CA1', a: ws, b: ws + 8 * GIO }, { ca: 'CA2', a: ws + 8 * GIO, b: ws + 16 * GIO }, { ca: 'CA3', a: ws + 16 * GIO, b: ws + 24 * GIO }];
+  }
+  const ket = batDauNgay(ngayKe(ngay), loaiCaSau, caDemSau);
+  const out = goc.map((w) => ({ ...w, b: Math.min(w.b, ket) })).filter((w) => w.b > w.a);
+  const cuoi = out.length ? out[out.length - 1].b : goc[0].a;
+  if (ket > cuoi) out.push({ ca: (DEM_CUA_LOAI[loaiCa] || { ca: 'HC' }).ca, a: cuoi, b: ket });
+  return out;
 }
 
 // `khoaTuanIso` (tuần ISO → khóa `nam-tuan` của `cai_dat_ca_tuan`) nay ở `utils/ca.js`, export lại bên dưới.
@@ -139,12 +171,14 @@ function caCuaTem(hint, gio, loaiCa) {
 // Ca của KẾ HOẠCH theo GIỜ BẮT ĐẦU KH (26/10/2026 người dùng chốt: "giờ kế hoạch bắt đầu ở ca nào thì là ca đó") —
 // lấy GIỜ TRONG NGÀY của `tg_bd_kh` đặt vào khung ca ngày D của chuyền (06:00 → 06:00; giờ < 06:00 thuộc phần sau
 // nửa đêm). Lệnh không có giờ BĐ KH ⇒ null (bên gọi lùi về ca lúc bấm Xác nhận chạy / hoạt động đầu).
+// ⚠ 09/11/2026: khung ngày ca trước bắt đầu 18:00 / 22:00 hôm trước (`khungCa`) ⇒ đặt giờ theo GIỜ BẮT ĐẦU của khung, không
+//   cố định 06:00 (kế hoạch "ngày 09/11, 18:00" ở tuần ca trước = D2 của ngày 09/11, đúng như người lập kế hoạch ghi).
 function caCuaGioKh(tgBdKh, khung) {
   const a = ms(tgBdKh);
   if (a == null || !khung || !khung.length) return null;
   const NGAY = 24 * GIO;
-  const phutTrongNgay = (((a + VN_LECH) % NGAY) + NGAY) % NGAY; // ms kể từ 00:00 giờ VN
-  const moc = khung[0].a + ((phutTrongNgay - 6 * GIO + NGAY) % NGAY);
+  const gioTrongNgay = (t) => (((t + VN_LECH) % NGAY) + NGAY) % NGAY; // ms kể từ 00:00 giờ VN
+  const moc = khung[0].a + ((gioTrongNgay(a) - gioTrongNgay(khung[0].a) + NGAY) % NGAY);
   const w = khung.find((x) => moc >= x.a && moc < x.b);
   return w ? w.ca : null;
 }
@@ -214,20 +248,34 @@ const soTuNhien = (a, b) => String(a || '').localeCompare(String(b || ''), 'vi',
 function dungBaoCaoSanXuat({
   ngay, loaiCa = 'NGAN', bayGio = Date.now(), phieus = [], tems = [], lenhs = [], pins = [], chuyens = [], tos = [],
 }) {
-  const loaiCaCuaLoai = typeof loaiCa === 'function' ? loaiCa : () => loaiCa;
-  const khung = khungCa(ngay, loaiCaCuaLoai(null));
+  // `loaiCa` (hàm) có thể trả CHUỖI loại ca (cũ) hoặc `{ loaiCa, caDem, loaiCaSau, caDemSau }` (09/11/2026 — ca đêm
+  //   "ca trước / ca sau" của ngày D và ngày D+1, quyết định khung ngày của chuyền — xem `khungCa`).
+  const cauHinhCa = (lc) => {
+    const v = typeof loaiCa === 'function' ? loaiCa(lc) : loaiCa;
+    return v && typeof v === 'object' ? v : { loaiCa: v };
+  };
+  const loaiCaCuaLoai = (lc) => cauHinhCa(lc).loaiCa;
   const lenhById = new Map(lenhs.map((l) => [String(l.id), l]));
   const chuyenById = new Map(chuyens.map((c) => [String(c.id), c]));
   const toById = new Map(tos.map((t) => [String(t.id), t]));
   // Loại ca theo chuyền (1A1B chạy ca của Máy — `loaiChuyenTinhCa`); nhóm dây chuyền của dòng vẫn theo `ma_loai`.
-  const loaiCaChuyen = (c) => loaiCaCuaLoai(loaiChuyenTinhCa(c.ma_loai || null, c.ma_chuyen));
+  const loaiTinhCa = (c) => loaiChuyenTinhCa(c.ma_loai || null, c.ma_chuyen);
+  const loaiCaChuyen = (c) => loaiCaCuaLoai(loaiTinhCa(c));
   const loaiCaPhieu = (p) => loaiCaChuyen(chuyenById.get(String(p.chuyen_id)) || {});
   const khungTheoLoai = new Map();
   const khungPhieu = (p) => {
-    const lca = loaiCaPhieu(p);
-    if (!khungTheoLoai.has(lca)) khungTheoLoai.set(lca, khungCa(ngay, lca));
-    return khungTheoLoai.get(lca);
+    const ch = cauHinhCa(loaiTinhCa(chuyenById.get(String(p.chuyen_id)) || {}));
+    const k = `${ch.loaiCa}|${ch.caDem || ''}|${ch.loaiCaSau || ''}|${ch.caDemSau || ''}`;
+    if (!khungTheoLoai.has(k)) {
+      khungTheoLoai.set(k, khungCa(ngay, ch.loaiCa, {
+        caDem: ch.caDem || 'SAU', loaiCaSau: ch.loaiCaSau || ch.loaiCa, caDemSau: ch.caDemSau || ch.caDem || 'SAU',
+      }));
+    }
+    return khungTheoLoai.get(k);
   };
+  // Cửa sổ NGÀY D của chuyền chạy phiếu (ca trước ⇒ bắt đầu từ tối hôm trước — `khungCa`).
+  const cuaSo = (p) => { const kp = khungPhieu(p); return [kp[0].a, kp[kp.length - 1].b]; };
+  const trongNgay = (p, x) => { const [a, b] = cuaSo(p); return x != null && x >= a && x < b; };
 
   // Phần in của từng lệnh (sắp theo code phần ⇒ "phần in đầu" ổn định) + đợt vải → phần in.
   const pinsTheoLenh = new Map();
@@ -251,9 +299,6 @@ function dungBaoCaoSanXuat({
   };
 
   // 1. Giờ chạy phiếu trong ngày (chặn bằng tem — xem đầu file), cắt theo ca, chia đều cho phần in của lệnh.
-  const W0 = khung[0].a;
-  const W1 = khung[khung.length - 1].b;
-  const trongNgay = (x) => x != null && x >= W0 && x < W1;
   const temPhieu = new Map(); // phiếu → { tu: sớm nhất, den: muộn nhất } của tem trong ngày
   tems.forEach((t) => {
     const k = String(t.phieu_id);
@@ -265,14 +310,15 @@ function dungBaoCaoSanXuat({
     temPhieu.set(k, cu);
   });
   const khoangChay = (p) => {
+    const [W0, W1] = cuaSo(p);
     const bd = ms(p.tg_bd);
     const kt = ms(p.tg_kt);
     const tm = temPhieu.get(String(p.id));
-    let a = trongNgay(bd) ? bd : null;
-    let b = trongNgay(kt) ? kt : null;
+    let a = trongNgay(p, bd) ? bd : null;
+    let b = trongNgay(p, kt) ? kt : null;
     if (tm && tm.tu != null) a = a == null ? tm.tu : Math.min(a, tm.tu);
     if (tm && tm.den != null) b = b == null ? tm.den : Math.max(b, tm.den);
-    if (b == null && trongNgay(bd) && kt == null) b = Math.min(bayGio, W1); // mới chạy trong ngày, chưa in tem
+    if (b == null && trongNgay(p, bd) && kt == null) b = Math.min(bayGio, W1); // mới chạy trong ngày, chưa in tem
     if (a == null || b == null) return null;
     a = Math.max(a, W0);
     b = Math.min(b, W1);
@@ -367,18 +413,19 @@ function dungBaoCaoSanXuat({
         });
       }
     };
-    if (!trongNgay(dau)) {
+    // Phiếu bấm chạy đầu — "trong ngày" xét theo khung ngày của CHUYỀN chạy phiếu đó (ca trước / ca sau, 09/11/2026).
+    const chinh = dsPhieu.find((p) => ms(p.tg_bd) === dau)
+      || [...dsPhieu].sort((x, y) => (ms(x.tg_bd) || 0) - (ms(y.tg_bd) || 0))[0];
+    if (!trongNgay(chinh, dau)) {
       // Chạy tiếp từ ngày trước: phiếu có hoạt động trong ngày, sớm nhất.
       const hd = dsPhieu.map((p) => ({ p, kc: khoangChay(p) })).filter((x) => x.kc).sort((x, y) => x.kc[0] - y.kc[0])[0];
-      if (!hd || dau == null || dau >= W1) return;
+      if (!hd || dau == null || dau >= cuaSo(hd.p)[1]) return;
       const kp = khungPhieu(hd.p);
       const caKh = caCuaGioKh(l.tg_bd_kh, kp);
       const ca = caKh || (kp.find((w) => hd.kc[0] >= w.a && hd.kc[0] < w.b) || kp[0]).ca;
       ds.forEach((pin) => ghiKh(hd.p, pin, ca, 'CHAY_TIEP', caKh ? ms(l.tg_bd_kh) : hd.kc[0], caKh ? 'GIO_KH' : 'HOAT_DONG'));
       return;
     }
-    const chinh = dsPhieu.find((p) => ms(p.tg_bd) === dau)
-      || [...dsPhieu].sort((x, y) => (ms(x.tg_bd) || 0) - (ms(y.tg_bd) || 0))[0];
     const kp = khungPhieu(chinh);
     const caKh = caCuaGioKh(l.tg_bd_kh, kp);
     const caChon = caKh || (kp.find((w) => dau >= w.a && dau < w.b) || kp[0]).ca;
@@ -499,7 +546,14 @@ function dungBaoCaoSanXuat({
   const rieng = {};
   // Nhóm "Chuyền khác" (Gia công, Máy tròn, Logo, Ép — mặc định Hành chính) chỉ ghi khi ngày đó CÓ chuyền thuộc nhóm.
   const coKhac = chuyens.some((c) => khoaNhomCa(c.ma_loai) === 'KHAC');
-  ['MAY', 'BAN', 'ROBOT', ...(coKhac ? ['KHAC'] : [])].forEach((lc) => { const v = loaiCaCuaLoai(lc); if (v !== chung) rieng[lc] = v; });
+  // Ca đêm "ca trước" (09/11/2026) — ca chung + loại chuyền ghi riêng khi KHÁC ca chung (FE ghi "· ca trước" ở nhãn loại ca).
+  const caDemChung = cauHinhCa(null).caDem === 'TRUOC' ? 'TRUOC' : 'SAU';
+  const caDemRieng = {};
+  ['MAY', 'BAN', 'ROBOT', ...(coKhac ? ['KHAC'] : [])].forEach((lc) => {
+    const v = loaiCaCuaLoai(lc);
+    const cd = cauHinhCa(lc).caDem === 'TRUOC' ? 'TRUOC' : 'SAU';
+    if (v !== chung || cd !== caDemChung) { rieng[lc] = v; caDemRieng[lc] = cd; }
+  });
   // Cột ca hiện trên bảng (26/10/2026): HC luôn có + ca của loại ca mỗi chuyền có dòng (NGAN ⇒ CA1–3 · DAI ⇒ D1–D2)
   //   + ca nào CÓ SỐ (vd tem Bàn hành chính nhập nhầm D2). FE tính lại theo bộ chọn chuyền (gương `gomBaoCao.caHien`).
   const coCa = new Set(['HC']);
@@ -507,7 +561,7 @@ function dungBaoCaoSanXuat({
   CA.forEach((c) => { const o = tongCong[c]; if (o.kh || o.tt || o.gk || o.gt) coCa.add(c); });
   const caHien = CA.filter((c) => coCa.has(c));
   return {
-    ngay, loai_ca: chung, loai_ca_rieng: rieng, ca: caHien,
+    ngay, loai_ca: chung, loai_ca_rieng: rieng, ca_dem: caDemChung, ca_dem_rieng: caDemRieng, ca: caHien,
     theo_nhom: bang1, theo_khach: bangKhach, theo_tho: bangTho, theo_chuyen: bangChuyen,
     tong: xuatBo(tongCong), chi_tiet: chiTiet,
     // Danh sách cho modal bấm ô (26/10/2026): `ds_kh` — mỗi phần SL KH đã cộng (lệnh × phần in, kiểu BAM_CHAY = ngày
@@ -518,5 +572,5 @@ function dungBaoCaoSanXuat({
 }
 
 module.exports = {
-  dungBaoCaoSanXuat, khungCa, khoaTuanIso, caCuaTem, caCuaGioKh, CA_THEO_LOAI, nhomCuaLoai, suyLoaiCaTuTem, chiaGioCungLuc, khoangKeHoach, CA, NHOM,
+  dungBaoCaoSanXuat, khungCa, ngayKe, khoaTuanIso, caCuaTem, caCuaGioKh, CA_THEO_LOAI, nhomCuaLoai, suyLoaiCaTuTem, chiaGioCungLuc, khoangKeHoach, CA, NHOM,
 };

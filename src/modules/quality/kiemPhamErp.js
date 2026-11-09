@@ -82,6 +82,16 @@ async function guiKiemPham(kcsId, temId, { dat = 0, hu = 0, thieu = 0 } = {}, ac
   if (idMes == null) return { ok: false, error: 'Không cấp được IDMES' };
 
   const payload = taoPayload(r, { idMes, soLuong: Number(dat) || 0, soLuongHuy: Number(hu) || 0, soLuongThieu: Number(thieu) || 0 });
+  // ⚠⚠ NGƯỜI KIỂM ⇒ `dsthoin` (09/11/2026, người dùng: "gửi dữ liệu Sh6 phải là của tên người này"): người nhập ở chỗ
+  //   xác nhận KCS / modal In tem (`NGUOI_KIEM_KCS` của lượt) thay cho danh sách thợ in của phiếu sản xuất. Chọn tài khoản
+  //   ⇒ gửi thẳng mã số nhân viên; tên gõ tay ⇒ `chuanHoa` tra họ tên → mã như thợ in (không ra ⇒ tên gọi).
+  //   Chuyền trưởng / ca trưởng vẫn của phiếu sản xuất. Lượt cũ chưa có người kiểm ⇒ giữ thợ in như trước.
+  try {
+    const nk = await qaRepo().nguoiKiemCuaLuot(kcsId);
+    if (nk) payload.dsthoin = nk.ma_nv || nk.nguoi_kiem;
+  } catch (e) {
+    console.error(`[gui-kiem-pham] ⚠ Không đọc được người kiểm (lượt ${kcsId}) — gửi thợ in của phiếu: ${e.message}`);
+  }
   // Cùng bài học `@pNgayca` của sửa đạt (23/09/2026): tem thiếu mã ngày ca ⇒ gửi lại giữ mã lần trước, lần đầu lấy NGÀY HÔM NAY.
   if (!payload.Ngayca) payload.Ngayca = opts.ngayCa || await maNgayCaHomNay(r.loai_chuyen);
   // Trường NGÀY GIỜ thiếu ⇒ lấy MỐC NHẬP KCS (người dùng chốt 26/09/2026: "ngày thì để hôm nay, có dữ
@@ -128,10 +138,26 @@ function guiLaiSauDieuChinhNgam(k, temId, actorId) {
   });
 }
 
+// Đổi NGƯỜI KIỂM sau khi Sh6 đã gửi thành công (modal In tem ở sidebar Đã hoàn thành, 09/11/2026) ⇒ gửi lại phiếu cùng
+//   IDMES + Ngày CT / ngày ca lần trước với số hiện tại của lượt. Lượt đã hủy xác nhận / chưa từng gửi được ⇒ thôi. Không ném lỗi.
+function guiLaiNguoiKiemNgam(kcsId, actorId) {
+  (async () => {
+    const cu = await qaRepo().lanGuiKcsGanNhat(kcsId);
+    if (!cu) return;
+    const k = await qaRepo().getCancelKcsRow(kcsId);
+    if (!k || k.da_huy) return;
+    await guiKiemPham(k.id, k.tem_id,
+      { dat: k.so_luong_dat, hu: k.so_luong_loi, thieu: Math.max(0, -(Number(k.so_luong_chenh_lech) || 0)) },
+      actorId, { guiLai: true, idMes: cu.idMes, ngayCt: ngayCtDaGui(cu.ngayCt), ngayCa: cu.ngayCa });
+  })().catch((e) => {
+    console.error(`[gui-kiem-pham] ✗ Gửi lại sau khi đổi người kiểm lỗi (lượt kiểm ${kcsId}): ${e.message}`);
+  });
+}
+
 function guiNgam(kcsId, temId, sl, actorId) {
   guiKiemPham(kcsId, temId, sl, actorId).catch((e) => {
     console.error(`[gui-kiem-pham] ✗ Lỗi ngoài dự kiến (lượt kiểm ${kcsId}): ${e.message}`);
   });
 }
 
-module.exports = { guiKiemPham, guiNgam, guiLaiSauDieuChinhNgam, daGuiThanhCong, MA_API };
+module.exports = { guiKiemPham, guiNgam, guiLaiSauDieuChinhNgam, guiLaiNguoiKiemNgam, daGuiThanhCong, MA_API };

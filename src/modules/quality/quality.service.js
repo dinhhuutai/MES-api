@@ -258,6 +258,17 @@ async function traVeDanhSach({ loai, tuNgay, denNgay }) {
   return repo.listTraVeChiTiet({ loais, tuNgay: ngay(tuNgay), denNgay: ngay(denNgay) });
 }
 
+// Người kiểm của 1 lượt KCS: tên bắt buộc (≤ NGUOI_KIEM_TOI_DA ký tự), tài khoản tùy chọn (chỉ nhận uuid). Dùng chung cho
+//   xác nhận KCS (`recordKcs`) và modal In tem ở sidebar Đã hoàn thành (`luuNguoiKiemKcs`).
+function chuanNguoiKiem(ten, id, loiThieu = 'Nhập người kiểm trước khi xác nhận KCS') {
+  const nguoiKiem = String(ten || '').trim().replace(/\s+/g, ' ');
+  if (!nguoiKiem) throw new AppError(loiThieu, { status: 422, errorCode: 'NO_NGUOI_KIEM' });
+  if (nguoiKiem.length > NGUOI_KIEM_TOI_DA) {
+    throw new AppError(`Tên người kiểm dài quá ${NGUOI_KIEM_TOI_DA} ký tự`, { status: 422, errorCode: 'NGUOI_KIEM_QUA_DAI' });
+  }
+  return { nguoiKiem, nguoiKiemId: UUID_RE.test(String(id || '')) ? id : null };
+}
+
 async function recordKcs(temId, body, actorId) {
   const tem = await repo.getTemLedger(temId);
   if (!tem) throw new AppError('Tem không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
@@ -265,6 +276,11 @@ async function recordKcs(temId, body, actorId) {
   const conKcs = Number(tem.con_kcs) || 0;
   if (conKcs <= 0) throw new AppError('Tem không còn phần chờ KCS', { status: 409, errorCode: 'DONE' });
 
+  // ⚠⚠ NGƯỜI KIỂM BẮT BUỘC (09/11/2026, người dùng: "thêm cột người kiểm ở các chỗ xác nhận KCS, gửi dữ liệu Sh6 phải là
+  //   tên người này"): lưu TÊN (người chưa có tài khoản vẫn gõ được) + tài khoản nếu chọn từ danh sách — cùng nơi nhớ
+  //   `NGUOI_KIEM_KCS` của modal In tem (03/11/2026) ⇒ sidebar Đã hoàn thành + tem in ra có sẵn tên. Sh6 lấy người này làm
+  //   `dsthoin` (`kiemPhamErp`).
+  const nguoiKiem = chuanNguoiKiem(body.nguoiKiem, body.nguoiKiemId);
   const dat = num(body.soLuongDat);                          // đạt → chờ OQC
   const hu = num(body.soLuongHu);                            // hư (khuyết tật) → TOÀN BỘ vào chờ sửa
   // MẪU (29/10/2026, người dùng: "số lượng mẫu vẫn tính vào tổng — 616 = đạt 615 + mẫu 1 là ok"): mẫu lấy ra khỏi lô ⇒
@@ -338,6 +354,7 @@ async function recordKcs(temId, body, actorId) {
         { status: 409, errorCode: 'DA_DOI' });
     }
     kcsId = await repo.insertKcs(client, temId, data, actorId);
+    await repo.luuNguoiKiemKcs([{ kcsId, ...nguoiKiem }], actorId, client);
     // Cộng dồn sổ cái: đạt → chờ OQC; quyết định sửa → chờ sửa; (hư không sửa + hủy) → loại; chênh lệch → tổng cần kiểm.
     await repo.addKcsLedger(client, temId, { dat, sua: quyetDinhSua, huy: huyTaiKcs, chenh: chenhSoCai }, actorId);
     if (maTem17) {
@@ -359,7 +376,7 @@ async function recordKcs(temId, body, actorId) {
   const conLai = conSauChenh - tong; // = 0 khi cân đối; > 0 ở lượt "kiểm một phần" (27/10/2026)
   return {
     tem_id: temId, next: 'KCS', so_luong_dat: dat, so_luong_sua: quyetDinhSua, so_luong_huy: huyTaiKcs, con_kcs: conLai,
-    tem_con_id: temConId, ma_tem_17: maTem17,
+    tem_con_id: temConId, ma_tem_17: maTem17, kcs_id: kcsId, nguoi_kiem: nguoiKiem.nguoiKiem,
   };
 }
 
@@ -442,6 +459,13 @@ async function recordSua(temId, body, actorId) {
   if (total > conSua) throw new AppError(`SL sửa lần này (${total}) vượt SL cần sửa còn lại (${conSua})`, { status: 422, errorCode: 'OVER' });
 
   const ghiChu = [body.ghiChu, huyThang > 0 ? `Hủy thẳng: ${huyThang}` : null].filter(Boolean).join(' · ') || null;
+  // NGƯỜI SỬA (tùy chọn, 09/11/2026 — modal "Tích tem" trang Sửa nhập từng dòng rồi "Xác nhận và in tem"): ghi luôn vào
+  //   lượt sửa như modal In tem ở sidebar (`luuNguoiSua`). Hộp sửa lẻ không gửi ⇒ như cũ (nhập lúc in tem 17).
+  const nguoiSua = String(body.nguoiSua || '').trim().replace(/\s+/g, ' ');
+  if (nguoiSua.length > NGUOI_KIEM_TOI_DA) {
+    throw new AppError(`Tên người sửa dài quá ${NGUOI_KIEM_TOI_DA} ký tự`, { status: 422, errorCode: 'NGUOI_SUA_QUA_DAI' });
+  }
+  const nguoiSuaId = nguoiSua && UUID_RE.test(String(body.nguoiSuaId || '')) ? body.nguoiSuaId : null;
 
   // ⚠⚠⚠ MÃ TEM 17 XIN RIÊNG CỦA ERP (chốt 06/09/2026) — KHÔNG còn suy từ mã tem gốc bằng
   //   `temCode(ma,17)`. Liên kết "tem 17 này là hàng sửa đạt của tem 15 kia" do cột `tem.tem_goc_id`
@@ -501,7 +525,7 @@ async function recordSua(temId, body, actorId) {
     // ⚠ `insertSua` ĐẶT SAU khi có `temConId` để neo lượt sửa ↔ đúng tem con của nó (mig 100) —
     //   thiếu neo thì hủy xác nhận Sửa không biết trừ ngược vào tem con nào.
     suaId = await repo.insertSua(client, temId,
-      { soLuongSua: total, soLuongSuaDat: suaDat, soLuongSuaHuy: suaHuy, ghiChu, temConId }, actorId);
+      { soLuongSua: total, soLuongSuaDat: suaDat, soLuongSuaHuy: suaHuy, ghiChu, temConId, nguoiSua, nguoiSuaId }, actorId);
     // Sửa đạt → quay lại pool OQC; sửa hủy → hủy.
     await repo.addSuaLedger(client, temId, { dat: suaDat, huy: suaHuy }, actorId);
     // Tính lại trạng thái CẢ HAI: tem gốc (hết phần chờ sửa thì rời màn Sửa) và tem con (vào CHO_OQC).
@@ -516,7 +540,7 @@ async function recordSua(temId, body, actorId) {
   sockets.emit('dashboard:refresh', {});
   return {
     tem_id: temId, next: 'SUA', so_luong_sua_dat: suaDat, con_sua: conSuaMoi - total,
-    tem_con_id: temConId,
+    tem_con_id: temConId, sua_id: suaId, so_luong_sua: total, so_luong_sua_huy: suaHuy, nguoi_sua: nguoiSua || null,
     // Mã tem 17 THẬT (ERP cấp) để FE hiện/in đúng — đừng suy lại bằng `temCode(ma_goc, 17)`.
     ma_tem_17: maTemCon,
   };
@@ -1017,18 +1041,16 @@ async function luuNguoiKiemKcs(items, actorId) {
   ds.forEach((x) => {
     const kcsId = String(x?.kcsId || '');
     if (!UUID_RE.test(kcsId)) throw new AppError('Lượt KCS không hợp lệ', { status: 422, errorCode: 'KCS_ID_SAI' });
-    const nguoiKiem = String(x?.nguoiKiem || '').trim();
-    if (!nguoiKiem) throw new AppError('Nhập tên người kiểm cho mọi dòng trước khi in', { status: 422, errorCode: 'NO_NGUOI_KIEM' });
-    if (nguoiKiem.length > NGUOI_KIEM_TOI_DA) {
-      throw new AppError(`Tên người kiểm dài quá ${NGUOI_KIEM_TOI_DA} ký tự`, { status: 422, errorCode: 'NGUOI_KIEM_QUA_DAI' });
-    }
-    theoLuot.set(kcsId, { kcsId, nguoiKiem, nguoiKiemId: UUID_RE.test(String(x?.nguoiKiemId || '')) ? x.nguoiKiemId : null });
+    theoLuot.set(kcsId, { kcsId, ...chuanNguoiKiem(x?.nguoiKiem, x?.nguoiKiemId, 'Nhập tên người kiểm cho mọi dòng trước khi in') });
   });
   const dong = [...theoLuot.values()];
   const kq = await repo.luuNguoiKiemKcs(dong, actorId);
   if (kq.ton_tai !== dong.length) throw new AppError('Có lượt KCS không còn tồn tại — tải lại danh sách', { status: 404, errorCode: 'NOT_FOUND' });
   const guiErp = await guiSk6KhiInTem17(dong.map((x) => x.kcsId), actorId);
-  return { so_dong: dong.length, da_ghi: kq.da_ghi, gui_erp_tem_17: guiErp };
+  // 09/11/2026: Sh6 mang NGƯỜI KIỂM ⇒ đổi tên ở đây sau khi Sh6 đã gửi thì gửi lại phiếu cùng IDMES (ngầm). Chưa từng gửi
+  //   thành công ⇒ thôi (lần gửi / gửi lại sau tự đọc tên mới).
+  for (const kcsId of kq.doi || []) kiemPhamErp.guiLaiNguoiKiemNgam(kcsId, actorId);
+  return { so_dong: dong.length, da_ghi: kq.da_ghi, gui_erp_tem_17: guiErp, gui_lai_sh6: (kq.doi || []).length };
 }
 
 // IN TEM 17 LẦN ĐẦU ⇒ GỬI SK6 (sửa đạt) SANG ERP (08/11/2026, người dùng chốt: "kiểm 1 phần, xác nhận kiểm phẩm là tem 15

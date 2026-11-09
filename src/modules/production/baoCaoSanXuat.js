@@ -11,7 +11,7 @@
 
 const { query } = require('../../config/db');
 const { coCotChuyenTem } = require('../../utils/temChuyen');
-const { dungBaoCaoSanXuat, khoaTuanIso, suyLoaiCaTuTem } = require('../../utils/baoCaoSanXuat');
+const { dungBaoCaoSanXuat, khoaTuanIso, suyLoaiCaTuTem, ngayKe } = require('../../utils/baoCaoSanXuat');
 const { NHOM_CA_RIENG, NHOM_CA_KHAC, khoaNhomCa, loaiCaChiTiet } = require('../../utils/ca');
 const { thoInPhieuSql } = require('../../utils/thoIn');
 const { coCotThoInKh } = require('../../utils/thoInKeHoach');
@@ -33,6 +33,9 @@ async function coCot(bang, cot) {
 const KHUNG = "(($1::date + time '06:00') AT TIME ZONE 'Asia/Ho_Chi_Minh')";
 
 const TRONG_NGAY = (cot) => `(${cot} >= ${KHUNG} AND ${cot} < ${KHUNG} + interval '1 day')`;
+// Khung RỘNG để lấy phiếu (09/11/2026): tuần cài "ca trước" thì ngày D bắt đầu từ 18:00 hôm trước (ca Dài) / 22:00 (ca
+//   Ngắn) — `utils/baoCaoSanXuat.js khungCa`. Lấy dư rồi hàm thuần cắt đúng khung của từng chuyền (phiếu ngoài khung ra 0).
+const TRONG_NGAY_RONG = (cot) => `(${cot} >= ${KHUNG} - interval '12 hours' AND ${cot} < ${KHUNG} + interval '1 day')`;
 // Bỏ dữ liệu SCRIPT hệ thống ghi (02/10/2026 `chay_den_giao_ton_san_xuat_truoc_0110.sql`): phiếu `[HỆ THỐNG…` +
 // tem `HT-…` — không phải sản xuất thật (đo prod 08/10: 4.626 phiếu · 4.657 tem, đều dồn vào ngày 02/10).
 const PHIEU_THAT = "COALESCE(ps.ghi_chu, '') NOT LIKE '[HỆ THỐNG%'";
@@ -55,7 +58,7 @@ async function docPhieu(ngay, { coTo, coNgayCa, coThoKh = false }) {
     WHERE ps.trang_thai <> 'HUY' AND ls.trang_thai <> 'HUY' AND ${PHIEU_THAT}
       AND NOT EXISTS (SELECT 1 FROM chuyen_san_xuat cs JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
                        WHERE cs.id = COALESCE(ps.chuyen_id, ls.chuyen_id) AND lc.ma_loai = 'GIA_CONG')
-      AND (${TRONG_NGAY('ps.tg_bd')} OR ${TRONG_NGAY('ps.tg_kt')}
+      AND (${TRONG_NGAY_RONG('ps.tg_bd')} OR ${TRONG_NGAY_RONG('ps.tg_kt')}
            OR EXISTS (SELECT 1 FROM tem t WHERE t.phieu_san_xuat_id = ps.id AND t.trang_thai <> 'HUY'
                        AND ${TEM_THAT} AND ${TEM_CUA_NGAY(coNgayCa)}))`;
   const { rows } = await query(sql.replace(/\s+/g, ' '), [ngay]);
@@ -156,11 +159,14 @@ async function docTo(ids) {
 
 // Cấu hình ca của tuần ISO chứa ngày: { map, khoa } — đọc qua `planning.repository.caModeMap`, suy bằng
 // `utils/ca.js loaiCaChiTiet` (CÙNG LUẬT mọi chỗ suy ca, gồm thừa hưởng tuần trước — 21/10/2026). Bảng chưa có ⇒ map rỗng.
+// `khoaSau` = tuần của ngày D+1 (09/11/2026): ngày D kết thúc lúc ngày D+1 bắt đầu — D+1 ở tuần "ca trước" thì đêm D → D+1
+//   thuộc D+1 (`utils/baoCaoSanXuat.js khungCa`).
 async function loaiCaCuaNgay(ngay) {
   const khoa = khoaTuanIso(ngay);
+  const khoaSau = khoaTuanIso(ngayKe(ngay));
   try {
-    return { map: await require('../planning/planning.repository').caModeMap(), khoa };
-  } catch { return { map: new Map(), khoa }; }
+    return { map: await require('../planning/planning.repository').caModeMap(), khoa, khoaSau };
+  } catch { return { map: new Map(), khoa, khoaSau }; }
 }
 
 const duyNhat = (arr) => [...new Set(arr.filter(Boolean).map(String))];
@@ -186,9 +192,12 @@ async function dungMoi(ngay) {
   // Mọi loại chuyền suy qua `loaiCaChiTiet` (riêng ⇒ chung ⇒ thừa hưởng tuần trước; nhóm Khác chỉ theo riêng Khác,
   //   mặc định Hành chính). Riêng báo cáo: Máy/Bàn/Robot chưa TỪNG cài (mặc định) ⇒ suy từ mã ca trên tem như trước.
   const caTem = suyLoaiCaTuTem(tems) || 'NGAN';
+  const loaiCaThat = (r, lc) => (r.nguon === 'MAC_DINH' && khoaNhomCa(lc) !== NHOM_CA_KHAC ? caTem : r.loaiCa);
+  // 09/11/2026: kèm CA ĐÊM (ca trước / ca sau, mig 125) của ngày D và ngày D+1 ⇒ khung ngày của từng chuyền.
   const caTheoLoai = (lc) => {
     const r = loaiCaChiTiet(loaiCa.map, loaiCa.khoa, lc);
-    return r.nguon === 'MAC_DINH' && khoaNhomCa(lc) !== NHOM_CA_KHAC ? caTem : r.loaiCa;
+    const s = loaiCaChiTiet(loaiCa.map, loaiCa.khoaSau, lc);
+    return { loaiCa: loaiCaThat(r, lc), caDem: r.caDem, loaiCaSau: loaiCaThat(s, lc), caDemSau: s.caDem };
   };
   const kq = dungBaoCaoSanXuat({ ngay, loaiCa: caTheoLoai, bayGio: Date.now(), phieus, tems, lenhs, pins, chuyens, tos });
   const daCai = ['', ...NHOM_CA_RIENG].some((g) => loaiCaChiTiet(loaiCa.map, loaiCa.khoa, g || null).nguon !== 'MAC_DINH');
