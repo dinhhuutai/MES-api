@@ -26,6 +26,7 @@ const { coCotThoInKh } = require('../../utils/thoInKeHoach');
 const { cotGiaSql } = require('../../utils/giaPhanIn');
 const { LOAI_TRA_VE_KH, LENH_CHO_KH_SQL } = require('../../utils/traVeKeHoach');
 const { khoaNgcLenhSql } = require('../../utils/nhaGiaCong');
+const { temTrongKySql } = require('../../utils/ngaySxTem');
 // BTP khác kế hoạch (mig 120): đợt có cờ release được 2 × SL vải (2 đầu tấm vải, 2 kế hoạch) — nguồn luật duy nhất.
 const { coBtpSql, soDauSql, sucChuaSql, conReleaseSql, conRelease, coDauCho } = require('../../utils/btpKhacKh');
 // Luồng sản xuất theo tính chất in (mig 126): phần in 2 công đoạn (in kiếng / in + ép) có phần ÉP ỦI release RIÊNG.
@@ -2492,8 +2493,8 @@ const daXacNhanMucSql = (dvAlias, ma) => `(EXISTS (SELECT 1 FROM ket_qua_checkpo
 //     (tem 17 con mang sẵn phần sửa đạt — cộng là đếm đôi), OQC = Σ `sl_oqc_dat` mọi tem (cả lô qua giao),
 //     cùng công thức thẻ trạm "Hành trình phần in" (`orders.repository qtySql`). Tem không lưu phần in ⇒ số
 //     mức lệnh chỉ để ở DÒNG ĐẦU của lệnh (service).
-// 'IN_TEM' (26/10/2026 — Danh sách release của Sản xuất) = lệnh có TEM GỐC (sống, không phải tem `HT-` của script) IN
-//   trong khoảng [$1, $2] theo giờ VN (`tem.created_date` — cùng nghĩa ô "Ngày in tem" của Danh sách tem in).
+// 'IN_TEM' (26/10/2026 — Danh sách release của Sản xuất) = lệnh có TEM GỐC (sống, không phải tem `HT-` của script) thuộc
+//   NGÀY SẢN XUẤT trong khoảng [$1, $2] = ngày trong mã ngày ca của tem (ca trước / ca sau — `utils/ngaySxTem.js`).
 //   ⚠ Tập lệnh lấy bằng 1 CÂU RIÊNG rồi lọc `ls.id = ANY(...)` (lọc thẳng trên bảng gốc như ngày kế hoạch). Viết thành
 //   EXISTS / IN-subquery trong câu chính thì planner tính các LATERAL cho MỌI lệnh trước khi lọc — đo prod 26/10/2026:
 //   1–4 s cho 33 dòng. Chế độ này cũng KHÔNG tính `giai_doan_hien_tai` (`dominantStageScalar` nặng với phần in đang sản
@@ -2505,7 +2506,7 @@ async function releaseListByDate(date, mode = 'KE_HOACH', denNgay = null) {
     const { rows: ids } = await query(
       `SELECT DISTINCT psn.lenh_san_xuat_id AS id FROM tem tn JOIN phieu_san_xuat psn ON psn.id = tn.phieu_san_xuat_id
         WHERE tn.trang_thai <> 'HUY' AND tn.tem_goc_id IS NULL AND tn.ma_tem NOT LIKE 'HT-%'
-          AND tn.created_date >= ($1::date)::timestamp ${VN} AND tn.created_date < ($2::date + 1)::timestamp ${VN}`.replace(/\s+/g, ' '),
+          AND ${temTrongKySql('tn', '$1', '$2')}`.replace(/\s+/g, ' '),
       [date, denNgay || date]
     );
     if (!ids.length) return [];

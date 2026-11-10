@@ -18,15 +18,16 @@
 
 const { query, withTransaction } = require('../../config/db');
 const { chuyenTemSql } = require('../../utils/temChuyen');
+const { ngaySxTemSql, temTrongKySql } = require('../../utils/ngaySxTem');
 const planningService = require('../planning/planning.service');
 
 const KHOA_DONG = 'ds_release_sx';
 const KHOA_CHUYEN = 'ds_release_sx_chuyen';
 const VN = "AT TIME ZONE 'Asia/Ho_Chi_Minh'";
 
-// ⚠⚠ 26/10/2026 chiều (người dùng: "lấy theo ngày là ngày in tem"): tập dòng = lệnh có TEM GỐC IN trong khoảng
-//   [tuNgay, denNgay] (giờ VN, `tem.created_date` — cùng nghĩa ô "Ngày in tem" của Danh sách tem in; bỏ tem `HT-` của
-//   script) — `releaseList(…, 'IN_TEM')`. Các số SL theo KỲ:
+// ⚠⚠ Tập dòng = lệnh có TEM GỐC thuộc khoảng [tuNgay, denNgay] theo NGÀY SẢN XUẤT của tem = ngày trong MÃ NGÀY CA
+//   (ca trước / ca sau — `utils/ngaySxTem.js`, cùng luật Báo cáo sản xuất; bỏ tem `HT-` của script) —
+//   `releaseList(…, 'IN_TEM')`. "Trong kỳ" / "trước kỳ" dưới đây đều theo ngày đó. Các số SL theo KỲ:
 //   · SL IN       = tem gốc của CHÍNH lệnh in TRONG kỳ (= Σ cột "In" của Nhật ký in cùng kỳ cho lệnh đó).
 //   · SL ĐÃ IN    = tem gốc của phần in in TRƯỚC kỳ (mọi lệnh sống, kể cả chính lệnh — "đã in trước") + tem `HT-` của
 //     script "chạy đến giao" tới hết kỳ (tem script không bao giờ vào SL IN ⇒ để ở Đã in, không rơi mất khi kỳ chứa ngày
@@ -35,11 +36,13 @@ const VN = "AT TIME ZONE 'Asia/Ho_Chi_Minh'";
 //   · SLNV (`slnv_pin`) = vải nhận của CẢ phần in (mọi đợt sống) — CÙNG phạm vi với Đã in / Đã giao (bản đầu dùng vải của
 //     đợt trong lệnh ⇒ 64 đứng cạnh "đã in 304", nhìn như sai). Vải của đợt trong lệnh giữ ở `slnv`.
 //   · `sl_in_truoc_lenh` = tem của CHÍNH lệnh in trước kỳ ⇒ CL = Tổng + phần này − SL release (= còn thiếu của lệnh).
-//   · Vải hư / thiếu = sổ `vai_huy` của lệnh GHI trong kỳ.
+//   · Vải hư / thiếu = sổ `vai_huy` của lệnh thuộc kỳ: dòng gắn tem (mig 118) theo ngày SX của TEM đó, dòng không gắn tem
+//     theo lúc ghi (cắt 06:00).
 async function dsReleaseSx(tuNgay, denNgay) {
   const ngay = tuNgay;
   const den = denNgay || tuNgay;
   const { items } = await planningService.releaseList(tuNgay, 'IN_TEM', den);
+  const NGAY_TM = ngaySxTemSql('tm');
   // ⚠ 26/10/2026 (người dùng: "chỉ lấy những phần đã xác nhận chạy"): giữ lệnh ĐÃ CÓ phiếu Xác nhận chạy (phiếu ≠ HUY —
   //   đang chạy hoặc đã chạy hoàn tất; bỏ phiếu script hệ thống `PHIEU_THAT`, cùng luật Báo cáo sản xuất).
   const { PHIEU_THAT } = require('./baoCaoSanXuat');
@@ -60,6 +63,7 @@ async function dsReleaseSx(tuNgay, denNgay) {
   //   giai đoạn CHẬM NHẤT của cả PHẦN IN — phần in còn 1 đợt chưa release thì lệnh đang chạy cũng ghi "Release 1". Ở đây
   //   tính lại bằng CHÍNH `dotStageCase` trên các đợt của ĐÚNG lệnh × phần in (lấy giai đoạn chậm nhất trong các đợt đó).
   const { dotStageCase, ORDER_SQL_ARRAY, STAGE_LABEL } = require('../../utils/stage');
+  const coVaiTem = await require('./production.repository').vaiHuyCoCotTem();
   const [inTruoc, nvPin, inLenh, vai, ghi, ttLenh] = await Promise.all([
     // Theo cặp (lệnh × phần in): đã in TRƯỚC kỳ (tem gốc) + đã giao của phần in (mọi tem).
     query(
@@ -68,7 +72,7 @@ async function dsReleaseSx(tuNgay, denNgay) {
                     JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
                    WHERE ls.trang_thai <> 'HUY' AND dv.phan_in_id = ANY($1::uuid[])),
             t AS (SELECT p.phan_in_id, p.lenh_id,
-                         COALESCE(SUM(tm.so_luong) FILTER (WHERE tm.tem_goc_id IS NULL AND ((tm.created_date ${VN})::date < $2::date
+                         COALESCE(SUM(tm.so_luong) FILTER (WHERE tm.tem_goc_id IS NULL AND (${NGAY_TM} < $2::date
                                    OR (tm.ma_tem LIKE 'HT-%' AND (tm.created_date ${VN})::date <= $3::date))), 0) AS da_in,
                          COALESCE(SUM(tm.so_luong) FILTER (WHERE tm.tem_goc_id IS NULL AND tm.ma_tem LIKE 'HT-%'
                                    AND (tm.created_date ${VN})::date <= $3::date), 0) AS da_in_ht,
@@ -90,8 +94,8 @@ async function dsReleaseSx(tuNgay, denNgay) {
     query(
       `SELECT ps.lenh_san_xuat_id AS lenh_id,
               COALESCE(SUM(tm.so_luong) FILTER (WHERE tm.ma_tem NOT LIKE 'HT-%'
-                        AND (tm.created_date ${VN})::date BETWEEN $2::date AND $3::date), 0)::int AS sl_in,
-              COALESCE(SUM(tm.so_luong) FILTER (WHERE (tm.created_date ${VN})::date < $2::date
+                        AND ${NGAY_TM} BETWEEN $2::date AND $3::date), 0)::int AS sl_in,
+              COALESCE(SUM(tm.so_luong) FILTER (WHERE ${NGAY_TM} < $2::date
                         OR (tm.ma_tem LIKE 'HT-%' AND (tm.created_date ${VN})::date <= $3::date)), 0)::int AS sl_in_truoc
          FROM phieu_san_xuat ps JOIN tem tm ON tm.phieu_san_xuat_id = ps.id AND tm.trang_thai <> 'HUY' AND tm.tem_goc_id IS NULL
         WHERE ps.lenh_san_xuat_id = ANY($1::uuid[]) GROUP BY 1`.replace(/\s+/g, ' '),
@@ -102,8 +106,11 @@ async function dsReleaseSx(tuNgay, denNgay) {
               COALESCE(SUM(vh.so_luong) FILTER (WHERE COALESCE(vh.loai, 'HUY') = 'HUY'), 0)::int AS hu,
               COALESCE(SUM(vh.so_luong) FILTER (WHERE vh.loai = 'THIEU'), 0)::int AS thieu
          FROM vai_huy vh LEFT JOIN phieu_san_xuat ps ON ps.id = vh.phieu_san_xuat_id
+         ${coVaiTem ? 'LEFT JOIN tem tv ON tv.id = vh.tem_id' : ''}
         WHERE COALESCE(vh.lenh_san_xuat_id, ps.lenh_san_xuat_id) = ANY($1::uuid[])
-          AND (vh.created_date ${VN})::date BETWEEN $2::date AND $3::date GROUP BY 1, 2`.replace(/\s+/g, ' '),
+          AND COALESCE(${coVaiTem ? ngaySxTemSql('tv') : 'NULL::date'},
+                       ((vh.created_date ${VN}) - interval '6 hours')::date) BETWEEN $2::date AND $3::date
+        GROUP BY 1, 2`.replace(/\s+/g, ' '),
       [lenhIds, ngay, den]
     ),
     query(
@@ -166,8 +173,9 @@ async function dsReleaseSx(tuNgay, denNgay) {
 }
 
 // ─── NHẬT KÝ IN (26/10/2026, người dùng gửi mẫu ERP "DANH SÁCH NHẬT KÝ IN Từ ngày … đến ngày …") ─────────────────
-// Toggle thứ hai của modal: 1 dòng / TEM GỐC sản xuất in trong kỳ (cùng tập tem của Danh sách release cùng kỳ: sống,
-//   không phải tem `HT-`, không phải chuyền gia công), xếp theo giờ in. Cột theo mẫu ERP — nguồn MES:
+// Toggle thứ hai của modal: 1 dòng / TEM GỐC sản xuất thuộc kỳ theo NGÀY SẢN XUẤT (mã ngày ca — `utils/ngaySxTem.js`; cùng
+//   tập tem của Danh sách release cùng kỳ: sống, không phải tem `HT-`, không phải chuyền gia công), xếp theo giờ in. Cột
+//   theo mẫu ERP — nguồn MES:
 //   · Số CT = IDMES lượt "Báo ERP mỗi lần in tem" (`erp_ok` = lượt thành công) — MES không có số chứng từ ERP `SF0…`.
 //   · Vải hư / thiếu = cùng luật cột "Hủy / Thiếu" của Danh sách tem in (`repo.vaiTemSql`).
 //   · Ngày = Ngày CT đã gửi ERP (`gui.Ngayct`), chưa gửi ⇒ ngày ca của tem · Giờ = lúc in tem · Số phút = giờ SX nhập
@@ -228,7 +236,7 @@ async function nhatKyIn(tuNgay, denNgay) {
       ) kk ON true
      WHERE t.tem_goc_id IS NULL AND t.trang_thai <> 'HUY' AND t.ma_tem NOT LIKE 'HT-%'
        AND COALESCE(lc.ma_loai, '') <> 'GIA_CONG'
-       AND (t.created_date ${VN})::date BETWEEN $1::date AND $2::date
+       AND ${temTrongKySql('t', '$1', '$2')}
      ORDER BY t.created_date, t.ma_tem`;
   const { rows } = await query(sql.replace(/\s+/g, ' '), [tuNgay, denNgay || tuNgay]);
   const nhanNhom = new Map(NHOM.map((n) => [n.key, n.label]));

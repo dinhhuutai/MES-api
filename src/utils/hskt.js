@@ -9,6 +9,13 @@
 const PHUONG_AN_IN = { 0: 'Chưa xác định', 1: 'Bàn', 2: 'Máy', 3: 'Robot', 4: 'Logo', 5: 'Ép' };
 const PAIN_HOP_LE = [1, 2, 3, 4, 5];
 
+// LOGO / ÉP THEO ERP: đây là LOẠI hàng, không phải lựa chọn Bàn ↔ Máy theo sản lượng ⇒ luật sản lượng + luật "đợt bổ sung
+//   ⇒ Bàn" (`erpsync.repository applyPainTheoSanLuong` / `hsktBoSungSaiPain`) KHÔNG đụng hồ sơ đang 4 / 5, và ERP gửi
+//   Pain 4 / 5 (hoặc gửi 1–3 cho hồ sơ đang 4 / 5) thì đổi theo ERP cả với hồ sơ đã có (`upsertHsktForPin`).
+//   Sửa tay (`pa_in_sua_tay`) vẫn thắng tất cả.
+const PAIN_THEO_ERP = [4, 5];
+const laPainTheoErp = (pain) => PAIN_THEO_ERP.includes(Number(pain));
+
 // SỐ CUỐI của `barcode_hskt` = phương án in (đối chiếu dữ liệu thật ERP: 278/278 dòng đúng, TRONG ĐÓ
 // 14 dòng `Pain=0` ↔ barcode kết thúc `0`; barcode luôn 12 chữ số, 11 số đầu duy nhất 1:1 ⇒ 11 số
 // đầu là ĐỊNH DANH, số cuối là thuộc tính đổi được). Logo / Ép ⇒ số cuối 4 / 5.
@@ -32,4 +39,6 @@ function applyPainToBarcode(barcode, pain) {
 // Barcode có theo được quy tắc số cuối không (để FE/BE biết có nên cảnh báo "mã vạch sẽ đổi").
 const canApplyPain = (barcode) => BARCODE_RE.test(String(barcode ?? '').trim());
 
-module.exports = { PHUONG_AN_IN, PAIN_HOP_LE, MO_TA_PAIN, BARCODE_RE, isValidPain, applyPainToBarcode, canApplyPain };
+module.exports = {
+  PHUONG_AN_IN, PAIN_HOP_LE, PAIN_THEO_ERP, MO_TA_PAIN, BARCODE_RE, isValidPain, laPainTheoErp, applyPainToBarcode, canApplyPain,
+};

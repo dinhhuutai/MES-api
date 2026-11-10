@@ -83,7 +83,7 @@ const erpDuAn = (r) => clean(field(r, 'Duan', 'du_an', 'duan')) || null;
 // BỘ PHẬN BÁN HÀNG (mig 090) — theo ĐƠN HÀNG. Giá trị thật trên prod: `THLA` · `DAMY`.
 const erpBoPhanBh = (r) => clean(field(r, 'bophanbh', 'bo_phan_bh', 'BoPhanBH')) || null;
 const toIntOrNull = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
-// Pain = phương án in (1 Bàn / 2 Máy / 3 Robot).
+// Pain = phương án in (0 chưa xác định / 1 Bàn / 2 Máy / 3 Robot / 4 Logo / 5 Ép — 4 + 5 theo ERP, `utils/hskt.js PAIN_THEO_ERP`).
 const erpPain = (r) => toIntOrNull(field(r, 'Pain', 'pain', 'phuong_an_in'));
 // Inset = SỐ NHÓM GOM SET (0 = không gom set; N>0 = nhóm N) — phạm vi số nhóm là TRONG 1 ĐỢT READY
 // (IDDotReady), không phải toàn hệ thống. ⚠ KHÔNG phải cờ true/false, và KHÔNG gom theo BarcodeHKT
@@ -341,6 +341,7 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
     // HSKT bị đụng trong lần sync này → chạy POST-PASS áp luật sản lượng (≥2000 = in Máy) sau khi
     // đã upsert xong MỌI đợt vải, để tổng SL là số cuối cùng (chạy giữa vòng lặp sẽ sinh phiên bản rác).
     const hsktTouched = new Set();
+    const hsktDoiPainErp = new Set(); // hồ sơ đã đổi PA theo Pain Logo / Ép của ERP trong lượt này (`upsertHsktForPin`)
     const resolveLoai = makeLoaiResolver();
     for (const p of prepared) {
       if (p.skip) {
@@ -385,7 +386,9 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
         const ktCan = erpKtCanKiemTra(p.r);
         // `maPhan` để đặt tên HSKT khi ERP thiếu BarcodeHKT (vẫn giữ được phương án in).
         try {
-          const hid = await repo.upsertHsktForPin({ pinId, barcodeHskt, pain, inset, maDonReady: erpBarcode(p.r), maPhan: p.maPhan, actorId });
+          const hid = await repo.upsertHsktForPin({
+            pinId, barcodeHskt, pain, inset, maDonReady: erpBarcode(p.r), maPhan: p.maPhan, actorId, daDoiPain: hsktDoiPainErp,
+          });
           if (hid) hsktTouched.add(hid);
         } catch (e) { console.error(`[erp-sync] ✗ HSKT lỗi (${p.maPhan}): ${e.message}`); }
         try { if (ktCan != null) await repo.setDotVaiKtCanKiemTra(affectedDotVaiIds, ktCan); }

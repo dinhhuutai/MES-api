@@ -16,6 +16,7 @@ const { NHOM_CA_RIENG, NHOM_CA_KHAC, khoaNhomCa, loaiCaChiTiet } = require('../.
 const { thoInPhieuSql } = require('../../utils/thoIn');
 const { coCotThoInKh } = require('../../utils/thoInKeHoach');
 const { nhoDoc } = require('../../utils/cacheDoc');
+const { temTrongKySql } = require('../../utils/ngaySxTem');
 
 const daCo = new Map();
 async function coCot(bang, cot) {
@@ -40,10 +41,8 @@ const TRONG_NGAY_RONG = (cot) => `(${cot} >= ${KHUNG} - interval '12 hours' AND 
 // tem `HT-…` — không phải sản xuất thật (đo prod 08/10: 4.626 phiếu · 4.657 tem, đều dồn vào ngày 02/10).
 const PHIEU_THAT = "COALESCE(ps.ghi_chu, '') NOT LIKE '[HỆ THỐNG%'";
 const TEM_THAT = "t.ma_tem NOT LIKE 'HT-%'";
-// Tem thuộc ngày D: ngày ca = D; tem cũ chưa có ngày ca thì theo lúc in.
-const TEM_CUA_NGAY = (coNgayCa) => (coNgayCa
-  ? `(t.ngay_ca = $1::date OR (t.ngay_ca IS NULL AND ${TRONG_NGAY('t.created_date')}))`
-  : TRONG_NGAY('t.created_date'));
+// Tem thuộc ngày D: ngày ca = D; tem cũ chưa có ngày ca thì theo lúc in — luật chung `utils/ngaySxTem.js`.
+const TEM_CUA_NGAY = (coNgayCa) => (coNgayCa ? temTrongKySql('t', '$1') : TRONG_NGAY('t.created_date'));
 
 // Phiếu có HOẠT ĐỘNG trong ngày: bấm chạy / bấm hoàn tất trong ngày, hoặc có tem của ngày. Phiếu treo
 // `DANG_CHAY` từ hôm trước mà hôm nay không in gì ⇒ không lấy (xem `utils/baoCaoSanXuat.js`).

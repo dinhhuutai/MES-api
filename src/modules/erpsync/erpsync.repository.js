@@ -2,7 +2,7 @@
 
 const { query, withTransaction } = require('../../config/db');
 // Số cuối `barcode_hskt` = phương án in (mig 064) — dùng chung với trang Hồ sơ kỹ thuật.
-const { applyPainToBarcode } = require('../../utils/hskt');
+const { applyPainToBarcode, isValidPain, laPainTheoErp, PAIN_THEO_ERP } = require('../../utils/hskt');
 const { tachDsMa, soMaVuaCot, NGAN_CACH } = require('../../utils/maPhanIn');
 const { coCotGia, TEN_COT: TEN_COT_GIA } = require('../../utils/giaPhanIn');
 // Khóa đồng bộ ERP của phần in admin đã sửa tay (mig 116) — xem đầu file utils/khoaErp.js.
@@ -908,6 +908,9 @@ async function applyPainTheoSanLuong(hsktId, actorId = null) {
     // ⚠⚠ ĐỢT BỔ SUNG THẮNG NGƯỠNG SẢN LƯỢNG — xem `LOAI_LUON_IN_BAN` ở đầu khối.
     const coLuonBan = Number(sl.n_luon_ban) > 0;
     const pain = coLuonBan ? PAIN_BAN : (tong >= NGUONG_VAI_IN_MAY ? PAIN_MAY : PAIN_BAN);
+    // ⚠⚠ Logo / Ép (Pain 4 / 5) là LOẠI hàng do ERP quyết, không phải Bàn ↔ Máy theo sản lượng ⇒ không đè (kể cả có đợt
+    //   bổ sung) — `utils/hskt.js PAIN_THEO_ERP`. Trước đây ERP gửi Pain 5, 1 giây sau luật bổ sung kéo về Bàn.
+    if (laPainTheoErp(h.phuong_an_in)) return { doi: false, tong, pain: Number(h.phuong_an_in), bo_qua: 'logo_ep' };
     // ⚠ Bổ sung ⇒ Bàn chỉ là MẶC ĐỊNH (28/09/2026, gỡ khóa chặt 26/09): người đã sửa tay thì giữ.
     if (h.pa_in_sua_tay === true) return { doi: false, tong, pain, bo_qua: 'sua_tay' };
     if (Number(h.phuong_an_in) === pain) return { doi: false, tong, pain };
@@ -957,13 +960,16 @@ async function hsktCoBoSung(hsktId) {
 
 // Mọi HSKT active có đợt bổ sung mà phương án in ≠ Bàn — job ERP quét MỖI LƯỢT để tự lành cả hồ sơ
 // cũ (luật bổ sung ra đời sau, hồ sơ không được sync lại thì không bao giờ được tính lại).
+// Bỏ hồ sơ Logo / Ép (`PAIN_THEO_ERP`) — luật bổ sung không áp cho chúng.
 async function hsktBoSungSaiPain() {
   const { rows } = await query(
-    `SELECT DISTINCT h.id FROM ho_so_ky_thuat h JOIN hskt_phan_in hp ON hp.hskt_id = h.id AND hp.dang_hoat_dong JOIN phan_in pin ON pin.id = hp.phan_in_id AND pin.dang_hoat_dong JOIN dot_vai_ve dv ON dv.phan_in_id = pin.id AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY') JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id AND ldv.ma_loai IN (${LUON_IN_BAN_SQL}) WHERE h.dang_hoat_dong AND NOT COALESCE(h.pa_in_sua_tay,false) AND COALESCE(h.phuong_an_in,0) <> ${PAIN_BAN}`);
+    `SELECT DISTINCT h.id FROM ho_so_ky_thuat h JOIN hskt_phan_in hp ON hp.hskt_id = h.id AND hp.dang_hoat_dong JOIN phan_in pin ON pin.id = hp.phan_in_id AND pin.dang_hoat_dong JOIN dot_vai_ve dv ON dv.phan_in_id = pin.id AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY') JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id AND ldv.ma_loai IN (${LUON_IN_BAN_SQL}) WHERE h.dang_hoat_dong AND NOT COALESCE(h.pa_in_sua_tay,false) AND COALESCE(h.phuong_an_in,0) <> ${PAIN_BAN} AND COALESCE(h.phuong_an_in,0) NOT IN (${PAIN_THEO_ERP.join(',')})`);
   return rows.map((r) => r.id);
 }
 
-async function upsertHsktForPin({ pinId, barcodeHskt, pain, inset, maDonReady, maPhan, actorId = null }) {
+// `daDoiPain` (Set, tùy chọn — 1 Set / lượt đồng bộ): hồ sơ đã đổi phương án in theo Pain Logo / Ép của ERP trong lượt này
+//   ⇒ dòng sau của cùng hồ sơ không đổi nữa (chốt chống đổi qua lại nếu ERP gửi lẫn Pain trong 1 lượt).
+async function upsertHsktForPin({ pinId, barcodeHskt, pain, inset, maDonReady, maPhan, actorId = null, daDoiPain = null }) {
   if (!barcodeHskt) {
     if (pain == null) return null; // không có gì để lưu
     return withTransaction((client) => upsertHsktNoBarcode(client, { pinId, maPhan, pain, inset, actorId }));
@@ -1010,6 +1016,18 @@ async function upsertHsktForPin({ pinId, barcodeHskt, pain, inset, maDonReady, m
       // Đã xảy ra thật (04/08/2026): 1 HSKT lên `phien_ban=134`, 1101/1434 bản ghi là phiên bản rác,
       // 525 dòng lịch sử "(ERP)" ↔ 555 dòng "theo sản lượng". Giữ nguyên bản active, chỉ cập nhật
       // inset/ma_don_ready ở dưới. (`pa_in_sua_tay` vẫn giữ ý nghĩa: chặn cả luật sản lượng.)
+      // ⚠⚠ NGOẠI LỆ LOGO / ÉP (`utils/hskt.js PAIN_THEO_ERP`): ERP gửi Pain 4 / 5 khác hiện tại, hoặc gửi 1–3 cho hồ sơ
+      //   đang 4 / 5 ⇒ đổi theo ERP (phiên bản mới). Không thành vòng lặp như trên vì luật sản lượng không đụng 4 / 5;
+      //   ra khỏi 4 / 5 thì post-pass sản lượng quyết tiếp Bàn / Máy. Pain 0 (chưa xác định) không kéo hồ sơ ra.
+      const painErp = Number(pain);
+      if (act[0].pa_in_sua_tay !== true && pain != null && isValidPain(painErp) && painErp !== Number(curPain)
+          && (laPainTheoErp(painErp) || laPainTheoErp(curPain)) && !(daDoiPain && daDoiPain.has(hsktId))) {
+        hsktId = await taoPhienBanPain(client, {
+          hsktId, phienBan, curPain, pain: painErp, pinId, actorId,
+          chiTiet: `Đổi phương án in ${curPain ?? '—'}→${painErp} (ERP gửi Pain ${painErp} — Logo / Ép theo ERP)`,
+        });
+        if (daDoiPain) daDoiPain.add(hsktId);
+      }
       // Số nhóm gom set + đợt ready THEO LẦN ĐỒNG BỘ MỚI NHẤT (phần in có thể sang đợt ready khác
       // với số nhóm khác) — giữ bản active khớp ERP để trang Hồ sơ kỹ thuật hiển thị đúng.
       await client.query(
