@@ -22,6 +22,7 @@
 //   dựng lúc nạp module (siSoTram) không dò cột được. Câu GHI phải dò cột trước (`coCotBtp`, khuôn `coCotThoInKh`).
 // ─────────────────────────────────────────────────────────────────────────────
 const { query, withTransaction } = require('../config/db');
+const { khtLaGdSql } = require('./luongSanXuat');
 
 // Biểu thức boolean: đợt `dv` có hơn 1 đầu.
 const coBtpSql = (dv = 'dv') => `(${soDauSql(dv)} > 1)`;
@@ -96,7 +97,7 @@ async function datSoDauTx(client, dotVaiIds, actorId, { them, nguon, lyDo } = {}
                       WHERE lsd.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY'
                         AND ls.giai_doan IS DISTINCT FROM 'EP_UI'),0)::int
           + COALESCE((SELECT SUM(COALESCE(k.so_luong,0)) FROM ke_hoach_tam k
-                      WHERE k.dot_vai_ve_id = dv.id AND k.trang_thai = 'CHO'),0)::int AS da_tong
+                      WHERE k.dot_vai_ve_id = dv.id AND k.trang_thai = 'CHO' AND ${khtLaGdSql('k')}),0)::int AS da_tong
        FROM dot_vai_ve dv WHERE dv.id = ANY($1::uuid[])`.replace(/\s+/g, ' '),
     [ids]
   );

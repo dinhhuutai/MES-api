@@ -216,18 +216,19 @@ async function toanCanh(phanInId) {
   const { SU_KIEN_CUOI_LATERAL, MO_LAI_DUOC_SQL } = require('../production/production.repository');
   const { thoInPhieuSql } = require('../../utils/thoIn');
   const { coCotThoInKh } = require('../../utils/thoInKeHoach');
+  const { khtGdSql } = require('../../utils/luongSanXuat');
   const q1 = (sql, p) => query(sql.replace(/\s+/g, ' ').trim(), p).then((r) => r.rows);
   // KẾ HOẠCH (26/10/2026 — sửa kế hoạch ở Quản trị phần in): giờ BĐ/KT + thợ in KH của lệnh; kế hoạch tạm của các đợt.
   const coTho = await coCotThoInKh();
   const keHoachTam = await q1(`
     SELECT kt.id, kt.dot_vai_ve_id, dv.ma_dot_vai, kt.chuyen_id, cs.ma_chuyen, cs.ten_chuyen, kt.ngay_ke_hoach,
            kt.tg_bd_kh, kt.tg_kt_kh, kt.so_luong, ${coTho ? 'kt.tho_in_kh' : 'NULL::text AS tho_in_kh'},
-           COALESCE(dv.so_luong_vai_ve, 0)::int AS so_luong_vai_ve
+           COALESCE(dv.so_luong_vai_ve, 0)::int AS so_luong_vai_ve, ${khtGdSql('kt')} AS giai_doan
       FROM ke_hoach_tam kt
       JOIN dot_vai_ve dv ON dv.id = kt.dot_vai_ve_id
       LEFT JOIN chuyen_san_xuat cs ON cs.id = kt.chuyen_id
      WHERE kt.phan_in_id = $1
-     ORDER BY dv.created_date`, [phanInId]);
+     ORDER BY dv.created_date, ${khtGdSql('kt')}`, [phanInId]);
   const lenh = await q1(`
     SELECT ls.id, ls.ma_lenh_san_xuat, ls.trang_thai, ls.so_luong_release, ls.ngay_ke_hoach, ls.created_date,
            ls.chuyen_id, ls.tg_bd_kh, ls.tg_kt_kh, ${coTho ? 'ls.tho_in_kh' : 'NULL::text AS tho_in_kh'},

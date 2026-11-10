@@ -30,7 +30,7 @@ const { temTrongKySql } = require('../../utils/ngaySxTem');
 // BTP khác kế hoạch (mig 120): đợt có cờ release được 2 × SL vải (2 đầu tấm vải, 2 kế hoạch) — nguồn luật duy nhất.
 const { coBtpSql, soDauSql, sucChuaSql, conReleaseSql, conRelease, coDauCho } = require('../../utils/btpKhacKh');
 // Luồng sản xuất theo tính chất in (mig 126): phần in 2 công đoạn (in kiếng / in + ép) có phần ÉP ỦI release RIÊNG.
-const { daRelSql, gdSql, haiCongDoanSql, GD_IN, GD_EP, chuanGd } = require('../../utils/luongSanXuat');
+const { daRelSql, gdSql, haiCongDoanSql, GD_IN, GD_EP, chuanGd, khtGdSql, khtLaGdSql, khtCoCotGd } = require('../../utils/luongSanXuat');
 
 // SL vải đã ĐƯA VÀO đợt SX của 1 đợt vải = Σ lenh_sx_dot_vai.so_luong các lệnh non-HUY gắn đợt đó
 // (mig 052: SL đưa vào theo TỪNG đợt nằm ở junction — đúng cả khi 1 lệnh gồm nhiều đợt).
@@ -62,9 +62,9 @@ const hsktCols = (pinCol) => `
 //   BIẾT mấy phần in này vốn định in chung, dù nay không bị ép).
 // ⚠ Hàm dùng chung 3 nơi (Release 1 · Tạo đợt SX · Kế hoạch tự động) ⇒ cả 3 cùng thấy đợt trong set.
 // ⚠⚠ MIG 126 — PHẦN IN 2 CÔNG ĐOẠN (in kiếng / in + ép): mỗi đợt vải ra 2 DÒNG — `giai_doan` 'IN' (như cũ) và 'EP_UI'
-//   (phần ép ủi, sức chứa riêng). Dòng ép KHÔNG bị Kế hoạch tạm của phần in làm ẩn (KH tạm chỉ cho phần in); đợt chưa Ready
-//   vẫn hiện dòng ép (để 2 phần nằm cạnh nhau) nhưng chỉ lập kế hoạch được khi Ready (`createRelease1`).
-//   Xếp 2 dòng của cùng đợt liền nhau, công đoạn ĐẦU trước (`ep_truoc` ⇒ ép trước).
+//   (phần ép ủi, sức chứa riêng). Mỗi dòng chỉ bị ẩn bởi Kế hoạch tạm CÙNG công đoạn (mig 128 — lập phần nào trước cũng
+//   được; đợt chưa Ready thì phần nào cũng lưu kế hoạch tạm). Xếp 2 dòng của cùng đợt liền nhau, công đoạn ĐẦU trước
+//   (`ep_truoc` ⇒ ép trước).
 async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
   const dkPain = await dkTrang('KH_RELEASE1', 'pin', 'pin.id');
   const SEARCH = `($1 = '' OR pin.ma_phan ~* $1 OR kh.ten_khach_hang ~* $1
@@ -87,9 +87,9 @@ async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
       AND ${dkPain}
       AND NOT ${CHO_GN_SQL('pin.id')}
       AND dv.tg_chuyen_ready IS NOT NULL
-      AND ((g.gd = '${GD_IN}' AND NOT EXISTS (SELECT 1 FROM ke_hoach_tam kht
-                      WHERE kht.dot_vai_ve_id = dv.id AND kht.trang_thai = 'CHO'))
-           OR (g.gd = '${GD_EP}' AND ${haiCongDoanSql('pin')}))
+      AND (g.gd = '${GD_IN}' OR ${haiCongDoanSql('pin')})
+      AND NOT EXISTS (SELECT 1 FROM ke_hoach_tam kht
+                       WHERE kht.dot_vai_ve_id = dv.id AND kht.trang_thai = 'CHO' AND ${khtLaGdSql('kht', 'g.gd')})
       AND ${conReleaseSql('dv', DA_GD)} > 0
       AND ${SEARCH}`;
 
@@ -488,7 +488,7 @@ async function listReleasableSets(search = '') {
        AND EXISTS (SELECT 1 FROM gom_set_dot_vai d JOIN dot_vai_ve dvm ON dvm.id = d.dot_vai_ve_id
                     WHERE d.gom_set_id = gs.id AND ${dkPain})
        AND NOT EXISTS (SELECT 1 FROM gom_set_dot_vai d JOIN ke_hoach_tam kht
-                         ON kht.dot_vai_ve_id = d.dot_vai_ve_id AND kht.trang_thai = 'CHO'
+                         ON kht.dot_vai_ve_id = d.dot_vai_ve_id AND kht.trang_thai = 'CHO' AND ${khtLaGdSql('kht')}
                         WHERE d.gom_set_id = gs.id)
        AND ($1 = '' OR gs.ma_set ~* $1 OR gs.ghi_chu ~* $1
             OR EXISTS (SELECT 1 FROM gom_set_dot_vai ds JOIN dot_vai_ve dvs ON dvs.id = ds.dot_vai_ve_id
@@ -1227,20 +1227,31 @@ async function cancelGiaCongTemTx(client, { temId, phieuId, lenhId, lenhTrangTha
 // ----- KẾ HOẠCH TẠM (mig 058): lập kế hoạch sớm cho đợt vải CHƯA QC -----
 // `thoInKh` (mig 111): thợ in kế hoạch — chỉ ghi khi bên gọi truyền khóa (lập lại từ Release 1 không chọn thợ
 //   ⇒ null = kế hoạch mới không có thợ, ghi đè đúng). Chép sang lệnh khi xác nhận kế hoạch tạm.
-async function upsertKeHoachTam({ dotVaiId, phanInId, chuyenId, ngayKeHoach, tgBdKh, tgKtKh, soLuong, thoInKh }, actorId) {
+// `giaiDoan` (mig 128): 'IN' (mặc định) | 'EP_UI' — kế hoạch tạm của PHẦN ÉP ỦI. Chưa chạy mig ⇒ phần ép không lưu được
+//   (409 EP_CHUA_READY — bên gọi nên kiểm `khtCoCotGd()` trước). Audit mang `giai_doan` cho dòng ép (id_ban_ghi vẫn = đợt).
+async function upsertKeHoachTam({ dotVaiId, phanInId, chuyenId, ngayKeHoach, tgBdKh, tgKtKh, soLuong, thoInKh, giaiDoan }, actorId) {
+  const gd = chuanGd(giaiDoan);
+  const coGd = await khtCoCotGd();
+  if (gd === GD_EP && !coGd) {
+    throw new AppError('Phần ép ủi chỉ lập kế hoạch được khi đợt vải đã Ready (chưa chạy migration 128 — kế hoạch tạm theo công đoạn)',
+      { status: 409, errorCode: 'EP_CHUA_READY' });
+  }
   const themTho = thoInKh !== undefined && (await coCotThoInKh());
+  const cot = ['dot_vai_ve_id', 'phan_in_id', 'chuyen_id', 'ngay_ke_hoach', 'tg_bd_kh', 'tg_kt_kh', 'so_luong', 'trang_thai', 'created_by'];
+  const gt = ['$1', '$2', '$3', '$4', '$5', KT_QUA_DEM('$5', '$6'), '$7', "'CHO'", '$8'];
+  const thamSo = [dotVaiId, phanInId, chuyenId || null, ngayKeHoach || null, tgBdKh || null, tgKtKh || null, soLuong || null, actorId];
+  if (themTho) { thamSo.push(thoInKh || null); cot.push('tho_in_kh'); gt.push(`$${thamSo.length}`); }
+  if (coGd) { thamSo.push(gd); cot.push('giai_doan'); gt.push(`$${thamSo.length}`); }
   await query(
-    `INSERT INTO ke_hoach_tam (dot_vai_ve_id, phan_in_id, chuyen_id, ngay_ke_hoach, tg_bd_kh, tg_kt_kh, so_luong, trang_thai, created_by${themTho ? ', tho_in_kh' : ''})
-     VALUES ($1,$2,$3,$4,$5,${KT_QUA_DEM('$5', '$6')},$7,'CHO',$8${themTho ? ',$9' : ''})
-     ON CONFLICT (dot_vai_ve_id) DO UPDATE SET chuyen_id=EXCLUDED.chuyen_id, ngay_ke_hoach=EXCLUDED.ngay_ke_hoach,
+    `INSERT INTO ke_hoach_tam (${cot.join(', ')}) VALUES (${gt.join(', ')})
+     ON CONFLICT (dot_vai_ve_id${coGd ? ', giai_doan' : ''}) DO UPDATE SET chuyen_id=EXCLUDED.chuyen_id, ngay_ke_hoach=EXCLUDED.ngay_ke_hoach,
        tg_bd_kh=EXCLUDED.tg_bd_kh, tg_kt_kh=EXCLUDED.tg_kt_kh, so_luong=EXCLUDED.so_luong, trang_thai='CHO',
        ${themTho ? 'tho_in_kh=EXCLUDED.tho_in_kh,' : ''} updated_by=EXCLUDED.created_by, updated_date=now()`.replace(/\s+/g, ' '),
-    [dotVaiId, phanInId, chuyenId || null, ngayKeHoach || null, tgBdKh || null, tgKtKh || null, soLuong || null, actorId,
-      ...(themTho ? [thoInKh || null] : [])]
+    thamSo
   );
   await logKeHoachTam('LUU_KE_HOACH_TAM', dotVaiId, {
     chuyen_id: chuyenId || null, ngay_ke_hoach: ngayKeHoach || null, so_luong: soLuong || null,
-    ...(themTho && thoInKh ? { tho_in: thoInKh } : {}),
+    ...(themTho && thoInKh ? { tho_in: thoInKh } : {}), ...(gd === GD_EP ? { giai_doan: GD_EP } : {}),
   }, actorId);
 }
 
@@ -1283,7 +1294,8 @@ async function keHoachTamHistoryByDate(lsIn) {
            (a.gia_tri_moi->>'ngay_ke_hoach') AS ngay_ke_hoach,
            (a.gia_tri_moi->>'ma_lenh') AS ma_lenh,
            (a.gia_tri_moi->>'gio_bd') AS gio_bd, (a.gia_tri_moi->>'gio_kt') AS gio_kt,
-           (a.gia_tri_moi->>'tho_in') AS tho_in, (a.gia_tri_moi->>'ly_do') AS ly_do
+           (a.gia_tri_moi->>'tho_in') AS tho_in, (a.gia_tri_moi->>'ly_do') AS ly_do,
+           COALESCE(a.gia_tri_moi->>'giai_doan', '${GD_IN}') AS giai_doan
     ${khtHistoryFrom(ls)}
     ORDER BY a.thoi_gian DESC${LS.gioiHan(ls)}`;
   const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [LS.giaTri(ls)]);
@@ -1297,7 +1309,8 @@ async function keHoachTamDoneByDate(date) {
            COALESCE(a.gia_tri_moi->>'ma_lenh', dv.ma_dot_vai) AS ma,
            (a.gia_tri_moi->>'so_luong')::int AS so_luong,
            pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
-           mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang, dv.han_giao_hang, cs.ten_chuyen
+           mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang, dv.han_giao_hang, cs.ten_chuyen,
+           COALESCE(a.gia_tri_moi->>'giai_doan', '${GD_IN}') AS giai_doan, pin.luong_sx
     ${KHT_HISTORY_FROM} AND a.hanh_dong = 'XAC_NHAN_KE_HOACH_TAM'
     ORDER BY a.thoi_gian DESC`;
   const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [date]);
@@ -1342,15 +1355,17 @@ async function keHoachTamTheoDoi({ search = '', tuNgay = '', denNgay = '', loaiN
   const COT_NGAY = loai === 'NGAY_LAP'
     ? `((k.lap_dau AT TIME ZONE 'Asia/Ho_Chi_Minh')::date)`
     : NGAY_KH;
+  // Mig 128: 1 đợt có thể có kế hoạch tạm cho TỪNG công đoạn (payload audit dòng ép mang `giai_doan`) ⇒ gom theo
+  //   (đợt × công đoạn); bảng sống + lệnh đã release cũng so đúng công đoạn.
   const sql = `WITH k AS (
-      SELECT a.id_ban_ghi AS dv_text,
+      SELECT a.id_ban_ghi AS dv_text, COALESCE(a.gia_tri_moi->>'giai_doan', '${GD_IN}') AS gd,
              min(a.thoi_gian) FILTER (WHERE a.hanh_dong = 'LUU_KE_HOACH_TAM') AS lap_dau,
              max(a.thoi_gian) FILTER (WHERE a.hanh_dong = 'XAC_NHAN_KE_HOACH_TAM') AS moc_xac_nhan,
              (array_agg(a.gia_tri_moi ORDER BY a.thoi_gian DESC))[1] AS pl,
              (array_agg(a.nguoi_thuc_hien_id ORDER BY a.thoi_gian))[1] AS nguoi_lap_id
-        FROM audit_log a WHERE a.ten_bang = 'ke_hoach_tam' GROUP BY a.id_ban_ghi
+        FROM audit_log a WHERE a.ten_bang = 'ke_hoach_tam' GROUP BY 1, 2
        HAVING min(a.thoi_gian) FILTER (WHERE a.hanh_dong = 'LUU_KE_HOACH_TAM') IS NOT NULL)
-    SELECT dv.id AS dot_vai_ve_id, dv.ma_dot_vai, dv.barcode, dv.so_luong_vai_ve, dv.han_giao_hang,
+    SELECT dv.id AS dot_vai_ve_id, k.gd AS giai_doan, pin.luong_sx, dv.ma_dot_vai, dv.barcode, dv.so_luong_vai_ve, dv.han_giao_hang,
            dv.nha_gia_cong, ldv.ten_loai AS loai_dot_vai,
            pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim,
            pin.tinh_chat_in, pin.so_luong_don_hang,
@@ -1371,16 +1386,16 @@ async function keHoachTamTheoDoi({ search = '', tuNgay = '', denNgay = '', loaiN
       JOIN khach_hang kh ON kh.id = dh.khach_hang_id
       LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id
       LEFT JOIN nguoi_dung nd ON nd.id = k.nguoi_lap_id
-      LEFT JOIN ke_hoach_tam kht ON kht.dot_vai_ve_id = dv.id AND kht.trang_thai = 'CHO'
+      LEFT JOIN ke_hoach_tam kht ON kht.dot_vai_ve_id = dv.id AND kht.trang_thai = 'CHO' AND ${khtLaGdSql('kht', 'k.gd')}
       LEFT JOIN chuyen_san_xuat cs ON cs.id = kht.chuyen_id
       LEFT JOIN chuyen_san_xuat csx ON csx.id = (k.pl->>'chuyen_id')::uuid
       LEFT JOIN LATERAL (SELECT ls.ma_lenh_san_xuat, ls.so_luong_release, ls.created_date AS tg_release,
                                 ls.ngay_ke_hoach, true AS co
                            FROM lenh_sx_dot_vai l JOIN lenh_san_xuat ls ON ls.id = l.lenh_san_xuat_id
-                          WHERE l.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY' AND ls.giai_doan IS DISTINCT FROM 'EP_UI'
+                          WHERE l.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY' AND ${gdSql('ls')} = k.gd
                           ORDER BY ls.created_date DESC LIMIT 1) lsx ON true
       CROSS JOIN LATERAL (SELECT EXISTS (SELECT 1 FROM ke_hoach_tam t
-                            WHERE t.dot_vai_ve_id = dv.id AND t.trang_thai = 'CHO') AS con) live
+                            WHERE t.dot_vai_ve_id = dv.id AND t.trang_thai = 'CHO' AND ${khtLaGdSql('t', 'k.gd')}) AS con) live
       CROSS JOIN LATERAL (SELECT ${qcDotSql('dv', 'pin.id')} AS done) qc
      WHERE ${dkPain} AND ${SEARCH}
        AND ($2 = '' OR ${COT_NGAY} >= $2::date)
@@ -1412,6 +1427,7 @@ async function listKeHoachTamRows({ search = '', offset = 0, limit = 200, locPai
   const colTho = (await coCotThoInKh()) ? 'kt.tho_in_kh' : 'NULL::text AS tho_in_kh';
   const dataSql = `
     SELECT kt.id, kt.dot_vai_ve_id, kt.phan_in_id, kt.chuyen_id, kt.ngay_ke_hoach, kt.tg_bd_kh, kt.tg_kt_kh, kt.so_luong,
+           ${khtGdSql('kt')} AS giai_doan, pin.luong_sx, pin.ep_truoc,
            COALESCE(kt.updated_date, kt.created_date) AS tg_lap, ndl.ho_ten AS nguoi_lap,
            ${colTho}, dv.ma_dot_vai, dv.han_giao_hang, dv.so_luong_vai_ve, dv.ngay_vai_ve, cs.ten_chuyen, ldv.ten_loai AS loai_dot_vai,
            pin.so_luong_don_hang,
@@ -1422,7 +1438,7 @@ async function listKeHoachTamRows({ search = '', offset = 0, limit = 200, locPai
              WHERE gsd.dot_vai_ve_id = dv.id AND gs.trang_thai = 'MO' LIMIT 1) AS ma_set,
            ${qcDotSql('dv', 'pin.id')} AS qc_done
     ${FROM}
-    ORDER BY kt.ngay_ke_hoach NULLS LAST, kt.created_date
+    ORDER BY kt.ngay_ke_hoach NULLS LAST, kt.created_date, ${khtGdSql('kt')}
     LIMIT $2 OFFSET $3`;
   const countSql = `SELECT count(*)::int AS total ${FROM}`;
   const [data, count] = await Promise.all([
@@ -1452,7 +1468,7 @@ async function getKeHoachTam(id) {
   const colTho = (await coCotThoInKh()) ? 'kt.tho_in_kh' : 'NULL::text AS tho_in_kh';
   const { rows } = await query(
     `SELECT kt.id, kt.dot_vai_ve_id, kt.phan_in_id, kt.chuyen_id, kt.ngay_ke_hoach, kt.tg_bd_kh, kt.tg_kt_kh, kt.so_luong,
-            ${colTho},
+            ${colTho}, ${khtGdSql('kt')} AS giai_doan,
             EXISTS (SELECT 1 FROM dot_vai_ve zdv WHERE zdv.id = kt.dot_vai_ve_id AND ${qcDotSql('zdv', 'kt.phan_in_id')}) AS qc_done
      FROM ke_hoach_tam kt WHERE kt.id = $1`.replace(/\s+/g, ' '),
     [id]
@@ -1488,20 +1504,22 @@ async function updateKeHoachTam(id, { chuyenId, ngayKeHoach, soLuong, tgBdKh, tg
 async function deleteKeHoachTam(id) {
   await query('DELETE FROM ke_hoach_tam WHERE id = $1', [id]);
 }
-async function deleteKeHoachTamByDotVai(dotVaiIds) {
+// Chỉ dọn kế hoạch tạm của CÔNG ĐOẠN `gd` (mặc định phần in — bên gọi duy nhất là `releaseSet`, gom set chỉ có phần in).
+async function deleteKeHoachTamByDotVai(dotVaiIds, gd = GD_IN) {
   if (!dotVaiIds || dotVaiIds.length === 0) return;
-  await query('DELETE FROM ke_hoach_tam WHERE dot_vai_ve_id = ANY($1::uuid[])', [dotVaiIds]);
+  await query(`DELETE FROM ke_hoach_tam kht WHERE kht.dot_vai_ve_id = ANY($1::uuid[]) AND ${khtLaGdSql('kht', '$2')}`,
+    [dotVaiIds, chuanGd(gd)]);
 }
 
 // Lệnh (≠HUY) mới nhất của 1 đợt vải — để báo lỗi RÕ khi dòng kế hoạch tạm còn sót lại sau khi đợt
 // đã được release ở đường khác (điển hình: release theo gom set).
-async function lenhMoiNhatCuaDotVai(dotVaiId) {
+async function lenhMoiNhatCuaDotVai(dotVaiId, gd = GD_IN) {
   const { rows } = await query(
     `SELECT ls.ma_lenh_san_xuat, ls.trang_thai FROM lenh_sx_dot_vai lsd
        JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
-      WHERE lsd.dot_vai_ve_id = $1 AND ls.trang_thai <> 'HUY' AND ls.giai_doan IS DISTINCT FROM 'EP_UI'
+      WHERE lsd.dot_vai_ve_id = $1 AND ls.trang_thai <> 'HUY' AND ${gdSql('ls')} = $2
       ORDER BY ls.created_date DESC LIMIT 1`.replace(/\s+/g, ' '),
-    [dotVaiId]
+    [dotVaiId, chuanGd(gd)]
   );
   return rows[0] || null;
 }
@@ -1932,7 +1950,8 @@ async function getReplanDotVai(lenhId) {
             COALESCE(lsd.so_luong, 0)::int AS so_luong,
             COALESCE(dv.so_luong_vai_ve, 0)::int AS so_luong_vai_ve,
             ${sucChuaSql('dv')}::int AS suc_chua, ${coBtpSql('dv')} AS btp_khac_kh, ${soDauSql('dv')} AS so_dau_btp,
-            COALESCE((SELECT SUM(COALESCE(k.so_luong,0)) FROM ke_hoach_tam k WHERE k.dot_vai_ve_id = dv.id AND k.trang_thai = 'CHO'),0)::int AS sl_ke_hoach_tam,
+            COALESCE((SELECT SUM(COALESCE(k.so_luong,0)) FROM ke_hoach_tam k WHERE k.dot_vai_ve_id = dv.id AND k.trang_thai = 'CHO'
+                        AND ${khtLaGdSql('k', `(SELECT ${gdSql('s1')} FROM lenh_san_xuat s1 WHERE s1.id = $1)`)}),0)::int AS sl_ke_hoach_tam,
             COALESCE((SELECT SUM(COALESCE(l2.so_luong, 0)) FROM lenh_sx_dot_vai l2
                        JOIN lenh_san_xuat s2 ON s2.id = l2.lenh_san_xuat_id
                       WHERE l2.dot_vai_ve_id = dv.id AND s2.trang_thai <> 'HUY'
@@ -2622,12 +2641,13 @@ async function timBtpKhacKh(q) {
             dv.ngay_vai_ve, dv.han_giao_hang, dv.nha_gia_cong, ldv.ten_loai AS loai_dot_vai,
             dv.tg_chuyen_ready IS NOT NULL AS da_len_ready,
             ${coBtpSql('dv')} AS btp_khac_kh, ${soDauSql('dv')} AS so_dau_btp,
-            COALESCE((SELECT SUM(COALESCE(k.so_luong,0)) FROM ke_hoach_tam k WHERE k.dot_vai_ve_id = dv.id AND k.trang_thai = 'CHO'),0)::int AS sl_ke_hoach_tam,
+            COALESCE((SELECT SUM(COALESCE(k.so_luong,0)) FROM ke_hoach_tam k WHERE k.dot_vai_ve_id = dv.id AND k.trang_thai = 'CHO'
+                        AND ${khtLaGdSql('k')}),0)::int AS sl_ke_hoach_tam,
             (to_jsonb(dv)->>'btp_khac_kh_tg')::timestamptz AS btp_khac_kh_tg,
             nd.ho_ten AS btp_khac_kh_nguoi,
             ${DA}::int AS da_release,
             ${conReleaseSql('dv', DA)}::int AS con_release,
-            EXISTS (SELECT 1 FROM ke_hoach_tam kht WHERE kht.dot_vai_ve_id = dv.id AND kht.trang_thai = 'CHO') AS co_ke_hoach_tam,
+            EXISTS (SELECT 1 FROM ke_hoach_tam kht WHERE kht.dot_vai_ve_id = dv.id AND kht.trang_thai = 'CHO' AND ${khtLaGdSql('kht')}) AS co_ke_hoach_tam,
             COALESCE((SELECT json_agg(json_build_object('ma', ls.ma_lenh_san_xuat, 'sl', lsd.so_luong, 'trang_thai', ls.trang_thai,
                                                          'chuyen', cs.ma_chuyen, 'ngay', ls.ngay_ke_hoach) ORDER BY ls.created_date)
                         FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id

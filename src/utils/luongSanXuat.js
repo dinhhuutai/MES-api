@@ -64,6 +64,23 @@ const laPhanInSql = (ls = 'ls') => `${ls}.giai_doan IS DISTINCT FROM '${GD_EP}'`
 // SQL: phần in `pin` có 2 công đoạn.
 const haiCongDoanSql = (pin = 'pin') => `(${pin}.luong_sx IN ('IN_KIENG','IN_EP'))`;
 
+// KẾ HOẠCH TẠM THEO CÔNG ĐOẠN (mig 128): `ke_hoach_tam.giai_doan` 'IN' | 'EP_UI' — mỗi đợt tối đa 1 dòng / công đoạn
+//   (phần ép của đợt chưa Ready cũng lưu kế hoạch tạm được, lập phần nào trước cũng được). Đọc qua `to_jsonb` ⇒ câu chạy
+//   được cả khi chưa chạy mig (thiếu cột ⇒ mọi dòng là 'IN'). ⚠ Mọi câu đọc `ke_hoach_tam` theo ĐỢT phải lọc công đoạn
+//   (không thì 1 đợt 2 dòng ⇒ nhân đôi / ẩn nhầm dòng của công đoạn kia).
+const khtGdSql = (kt = 'kht') => `COALESCE(to_jsonb(${kt})->>'giai_doan', '${GD_IN}')`;
+const khtLaGdSql = (kt = 'kht', gd = `'${GD_IN}'`) => `${khtGdSql(kt)} = ${gd}`;
+let khtCoGd = false;
+async function khtCoCotGd() {
+  if (khtCoGd) return true;
+  try {
+    const { rows } = await query(
+      "SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='ke_hoach_tam' AND column_name='giai_doan' LIMIT 1");
+    khtCoGd = rows.length > 0;
+  } catch { khtCoGd = false; }
+  return khtCoGd;
+}
+
 // Luồng của tính chất in theo danh mục *Tính chất in* (nhớ 60 s). Lỗi / thiếu bảng ⇒ THUONG.
 let nho = { luc: 0, map: null };
 async function bangLuongTinhChat() {
@@ -86,6 +103,6 @@ async function luongTheoTinhChat(tinhChatIn) {
 module.exports = {
   LUONG_SX, MA_LUONG_SX, HAI_CONG_DOAN, GD_IN, GD_EP,
   chuanLuong, laHaiCongDoan, laLogo, chuanGd, congDoanDau, laCongDoanDau, canNhapKieng, nhanCongDoan,
-  gdSql, daRelSql, laPhanInSql, haiCongDoanSql,
+  gdSql, daRelSql, laPhanInSql, haiCongDoanSql, khtGdSql, khtLaGdSql, khtCoCotGd,
   bangLuongTinhChat, luongTheoTinhChat, xoaNho,
 };

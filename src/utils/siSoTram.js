@@ -51,6 +51,10 @@
 const { khongReadyTuDongSql, conDotChuaReadySql, conDotChoQcSql, qcMoLaiSql } = require('./tech');
 // BTP khác kế hoạch (mig 120): đợt có cờ rời Release 1 khi đã release đủ 2 × SL vải.
 const { sucChuaSql } = require('./btpKhacKh');
+// Kế hoạch tạm theo công đoạn (mig 128): dải Theo dõi Release 1 / Kế hoạch tạm vẫn chỉ đếm PHẦN IN ⇒ chỉ dòng 'IN'
+//   (không lọc thì đợt có thêm kế hoạch tạm phần ép ra 2 dòng ⇒ đếm đôi).
+const { khtLaGdSql } = require('./luongSanXuat');
+const KHT_PHAN_IN = (kt) => khtLaGdSql(kt);
 
 const VN = "AT TIME ZONE 'Asia/Ho_Chi_Minh'";
 
@@ -321,7 +325,7 @@ const DV = {
       rel.tg_release_cuoi AS ngay_release, NULL::text AS ma_tem
     FROM dot_vai_ve dv
     JOIN phan_in pin ON pin.id = dv.phan_in_id AND pin.dang_hoat_dong
-    LEFT JOIN ke_hoach_tam kht ON kht.dot_vai_ve_id = dv.id AND kht.trang_thai = 'CHO'
+    LEFT JOIN ke_hoach_tam kht ON kht.dot_vai_ve_id = dv.id AND kht.trang_thai = 'CHO' AND ${KHT_PHAN_IN('kht')}
     LEFT JOIN LATERAL (SELECT sum(xlsd.so_luong)::int AS da_release,
         max(xls.created_date) AS tg_release_cuoi
       FROM lenh_sx_dot_vai xlsd JOIN lenh_san_xuat xls ON xls.id = xlsd.lenh_san_xuat_id
@@ -354,10 +358,11 @@ const DV = {
                FILTER (WHERE xa.gia_tri_moi->>'ngay_ke_hoach' IS NOT NULL))[1] AS ngay_kh_audit,
             (array_agg(xa.gia_tri_moi->>'chuyen_id' ORDER BY xa.thoi_gian DESC)
                FILTER (WHERE xa.gia_tri_moi->>'chuyen_id' IS NOT NULL))[1] AS chuyen_id_audit
-          FROM audit_log xa WHERE xa.ten_bang = 'ke_hoach_tam' GROUP BY xa.id_ban_ghi) kt
+          FROM audit_log xa WHERE xa.ten_bang = 'ke_hoach_tam' AND COALESCE(xa.gia_tri_moi->>'giai_doan', 'IN') = 'IN'
+          GROUP BY xa.id_ban_ghi) kt
     JOIN dot_vai_ve dv ON dv.id::text = kt.id_ban_ghi
     JOIN phan_in pin ON pin.id = dv.phan_in_id AND pin.dang_hoat_dong
-    LEFT JOIN ke_hoach_tam kht ON kht.dot_vai_ve_id = dv.id AND kht.trang_thai = 'CHO'
+    LEFT JOIN ke_hoach_tam kht ON kht.dot_vai_ve_id = dv.id AND kht.trang_thai = 'CHO' AND ${KHT_PHAN_IN('kht')}
     LEFT JOIN chuyen_san_xuat cs ON cs.id = COALESCE(kht.chuyen_id, kt.chuyen_id_audit::uuid)
     LEFT JOIN loai_chuyen lct ON lct.id = cs.loai_chuyen_id
     LEFT JOIN LATERAL (SELECT max(xls.created_date) AS tg_release_cuoi
