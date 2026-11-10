@@ -14,7 +14,7 @@
 //   để họ tự thông ngay tại chỗ (người có quyền duyệt được đổi thẳng).
 //
 // ⚠ CHỈ ÁP CHO 3 LOẠI BÀN/MÁY/ROBOT. **Ép · Logo · Gia công MIỄN KIỂM** — 3 loại đó là luồng riêng
-//   và danh mục `phuong_an_in` không có giá trị tương ứng (chỉ 0..3). Đo prod: riêng gia công đã có
+//   (PA 4 Logo / 5 Ép có từ 10/11/2026 nhưng loại EP/LOGO vẫn miễn kiểm). Đo prod: riêng gia công đã có
 //   291 lệnh mang PA=Bàn, không miễn là gia công tắc hoàn toàn.
 //
 // ⚠⚠ MIỄN THEO **MÃ CHUYỀN** — 3 chuyền dùng chung (chốt 19/08/2026, xem `MA_CHUYEN_MIEN` bên dưới).

@@ -152,6 +152,42 @@ async function listCandByCon(condExpr, { search = '', filters = {} } = {}, maTra
 // KCS: tem đã khô, còn phần chưa kiểm. Sửa: còn phần chờ sửa. OQC: còn phần chờ kiểm cuối.
 // (con_sua/con_oqc > 0 ⟹ đã qua KCS ⟹ đã khô — không cần lọc thêm da_qua_phoi.)
 const listKcsCand = (opt) => listCandByCon(`t.trang_thai = 'DA_KHO' AND ${CON_KCS} > 0`, opt, 'SX_KCS');
+// TỒN CHƯA KIỂM (Excel "Danh sách phiếu nhật ký kiểm phẩm chưa kiểm" của màn KCS, 10/11/2026): tem còn phần chưa kiểm,
+//   đã khô (= hàng đợi KCS) + tùy chọn tem ĐANG PHƠI / mới in (chưa tới KCS). Cùng bộ lọc + cấu hình hiển thị của màn KCS.
+const listKcsTon = (opt, gomDangPhoi = true) => listCandByCon(
+  `t.trang_thai IN (${gomDangPhoi ? "'IN','DANG_PHOI','DA_KHO'" : "'DA_KHO'"}) AND ${CON_KCS} > 0`, opt, 'SX_KCS');
+
+// Thông tin THÊM cho Excel tồn chưa kiểm (không có trong `TEM_CTX` — giữ danh sách màn KCS nhẹ): màu in · tính chất in ·
+//   độ in (phần in đại diện của lệnh, cùng thứ tự `TEM_CTX info`) · ngày ca · phiên phơi MỚI NHẤT (giờ bắt đầu / tháo ·
+//   phút phơi — cùng công thức trường tem `so_phut_phoi`) · IDMES phiếu in tem SF0 đã gửi ERP (khóa `soctcu` bên ERP).
+async function thongTinTonKcs(temIds = []) {
+  if (!temIds.length) return [];
+  const { rows } = await query(
+    `SELECT t.id AS tem_id, to_char(t.ngay_ca, 'YYYY-MM-DD') AS ngay_ca, info.mau_in, info.tinh_chat_in, info.do_in,
+            phoi.tg_bd_phoi, phoi.tg_kt_phoi, phoi.trang_thai AS phoi_trang_thai,
+            CASE WHEN phoi.tg_kt_phoi IS NULL OR phoi.tg_bd_phoi IS NULL THEN NULL
+                 ELSE GREATEST(0, ROUND(EXTRACT(EPOCH FROM (phoi.tg_kt_phoi - phoi.tg_bd_phoi)) / 60))::int END AS so_phut_phoi,
+            (SELECT a.gia_tri_moi->>'id_mes' FROM audit_log a
+              WHERE a.ten_bang = 'tem' AND a.id_ban_ghi = t.id::text AND a.hanh_dong = 'ERP_GHI_IN_TEM'
+              ORDER BY a.thoi_gian DESC LIMIT 1) AS id_mes
+       FROM unnest($1::uuid[]) AS x(id)
+       JOIN tem t ON t.id = x.id
+       JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+       LEFT JOIN LATERAL (
+         SELECT pin.mau_in, pin.tinh_chat_in, pin.do_in
+           FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+           JOIN phan_in pin ON pin.id = dv.phan_in_id
+          WHERE lsd.lenh_san_xuat_id = ps.lenh_san_xuat_id ORDER BY pin.ma_phan, dv.ma_dot_vai LIMIT 1
+       ) info ON true
+       LEFT JOIN LATERAL (
+         SELECT txp.tg_bd_phoi, txp.tg_kt_phoi, txp.trang_thai FROM tem_xe_phoi txp
+          WHERE txp.tem_id = t.id AND txp.trang_thai <> 'HUY'
+          ORDER BY txp.tg_bd_phoi DESC NULLS LAST LIMIT 1
+       ) phoi ON true`.replace(/\s+/g, ' '),
+    [temIds]
+  );
+  return rows;
+}
 // Sửa: hủy tem sửa = xóa SL sửa khỏi sổ cái ⇒ con_sua về 0 ⇒ tem tự rời hàng đợi (không cần cờ ẩn).
 const listSuaCand = (opt) => listCandByCon(`${CON_SUA} > 0`, opt, 'SX_SUA');
 const listOqcCand = (opt) => listCandByCon(`${CON_OQC} > 0`, opt, 'CL_OQC');
@@ -1564,7 +1600,7 @@ module.exports = {
   listTemSua, listTemSuaDaHuy, getTemSuaRow, getTemSuaRows, applyTemSuaLedgerMany, logTemSuaMany,
   getTemsForMerge, addTemSoLuong, logGopTem,
   listCancelKcs, listCancelSua, listCancelOqc, getCancelKcsRow, getCancelSuaRow, getCancelOqcRow, logCancelQc,
-  listKcsCand, listSuaCand, listOqcCand, caPartsForTems, prevConfirmerByTems, tgKiemByTems, getTemBasic, setTemTrangThai, setTemStatusQty,
+  listKcsCand, listKcsTon, thongTinTonKcs, listSuaCand, listOqcCand, caPartsForTems, prevConfirmerByTems, tgKiemByTems, getTemBasic, setTemTrangThai, setTemStatusQty,
   getTemLedger, addKcsLedger, addSuaLedger, addOqcLedger, addGiaoLedger, reduceKcsDat, reduceSuaDat,
   getTemConCuaGoc, getTemConById, coCotSuaTemCon, taoTemCon, congSlTemCon, congSuaTach, huyTemConNeuRong,
   coKcsTach, taoTemConKcs, congKcsTach, temConCuaLuotKcs,

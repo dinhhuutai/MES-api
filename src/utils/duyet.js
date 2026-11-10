@@ -21,14 +21,15 @@ const { PHUONG_AN_IN } = require('./hskt');
 const LOAI_DUYET = {
   DOI_PHUONG_AN_IN: {
     ten: 'Đổi phương án in',
-    mo_ta: 'Đổi phương án in của hồ sơ kỹ thuật (Bàn / Máy / Robot). '
+    mo_ta: 'Đổi phương án in của hồ sơ kỹ thuật (Bàn / Máy / Robot / Logo / Ép). '
       + 'Ảnh hưởng cả nhóm phần in dùng chung hồ sơ và đổi luôn số cuối mã vạch HSKT.',
     bang: 'ho_so_ky_thuat',
     // Quyền được DUYỆT (và được tự đổi thẳng không qua hàng đợi).
     quyenDuyet: 'PA_IN_APPROVE',
-    // Quyền được GỬI yêu cầu — đúng bộ quyền vốn đã đổi được phương án in trước đây.
-    quyenGui: ['READY_KHUON', 'READY_FILM', 'READY_MUC', 'READY_QC'],
-    // Diễn giải giá trị cho người đọc hàng đợi (số 0..3 → "Bàn"/"Máy"…).
+    // Quyền được GỬI yêu cầu — bộ quyền READY vốn đã đổi được phương án in + `RELEASE1` (ô ↻ ở màn Release 1, 10/11/2026;
+    //   gương FE `Release1Page QUYEN_DOI_PAIN`).
+    quyenGui: ['READY_KHUON', 'READY_FILM', 'READY_MUC', 'READY_QC', 'RELEASE1'],
+    // Diễn giải giá trị cho người đọc hàng đợi (số 0..5 → "Bàn"/"Máy"/"Logo"/"Ép"…).
     nhanGiaTri: (v) => PHUONG_AN_IN[Number(v) || 0] || String(v ?? '—'),
   },
 };

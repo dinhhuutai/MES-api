@@ -49,16 +49,4 @@ async function ghiVet(id, hanhDong, cu, moi, actorId) {
   );
 }
 
-// Loại kiếng + hệ số của tem in kiếng GẦN NHẤT của lệnh — điền sẵn ô ở sidebar (nhớ theo lệnh, như Ngày ca).
-async function ganNhatCuaLenh(lenhId) {
-  const { rows } = await query(
-    `SELECT t.loai_kieng_id, t.he_so_kieng::float AS he_so_kieng
-       FROM tem t JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
-      WHERE ps.lenh_san_xuat_id = $1 AND t.loai_kieng_id IS NOT NULL AND t.trang_thai <> 'HUY'
-      ORDER BY t.created_date DESC LIMIT 1`.replace(/\s+/g, ' '),
-    [lenhId]
-  );
-  return rows[0] || null;
-}
-
-module.exports = { danhSach, theoId, theoMa, them, sua, ghiVet, ganNhatCuaLenh };
+module.exports = { danhSach, theoId, theoMa, them, sua, ghiVet };

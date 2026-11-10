@@ -29,17 +29,16 @@ const { canNhapKieng, nhanCongDoan } = require('../../utils/luongSanXuat');
 const loaiKieng = require('../loaikieng/loaikieng.service');
 const loaiKiengRepo = require('../loaikieng/loaikieng.repository');
 
-// Ô "Loại kiếng / Hệ số kiếng" của sidebar in tem (mig 126): `can` = lệnh công đoạn IN của phần in kiếng ⇒ bắt buộc nhập;
-//   `ds` = danh mục kiếng đang dùng; `goi_y` = loại + hệ số của tem in kiếng gần nhất của lệnh (điền sẵn — nhớ theo lệnh).
+// 3 ô kiếng của sidebar in tem (mig 126/127): `can` = lệnh công đoạn IN của phần in kiếng ⇒ bắt buộc nhập; `ds` = danh mục
+//   kiếng đang dùng. KHÔNG trả gợi ý / giá trị lần in trước — người in tự nhập cả 3 ô (10/11/2026, người dùng chốt).
 //   Lỗi đọc (thiếu bảng) ⇒ { can, ds: [] } — sidebar vẫn mở được, in tem sẽ báo lỗi rõ.
 async function kiengCuaLenh(lenh) {
   const can = canNhapKieng(lenh && lenh.luong_sx, lenh && lenh.giai_doan);
   if (!can) return { can: false };
   try {
-    const [ds, goiY] = await Promise.all([loaiKiengRepo.danhSach(), loaiKiengRepo.ganNhatCuaLenh(lenh.id)]);
-    return { can: true, ds, goi_y: goiY };
+    return { can: true, ds: await loaiKiengRepo.danhSach() };
   } catch (e) {
-    return { can: true, ds: [], goi_y: null };
+    return { can: true, ds: [] };
   }
 }
 
@@ -1345,7 +1344,8 @@ async function printTem(phieuId, soLuong, actorId, body) {
   const target = Number(lenh?.so_luong_release) || 0;
   const them = meta.btpTruoc ? { btp: qty } : qty;
   if (target > 0) kiemTranIn(target, await repo.getPrintedTach(phieuId), them);
-  // Mig 126: tem in kiếng ⇒ bắt buộc loại kiếng + hệ số (trước khi xin mã tem ERP); tem công đoạn đầu không vào KCS.
+  // Mig 126/127: tem in kiếng ⇒ bắt buộc loại kiếng + hệ số + SL kiếng (trước khi xin mã tem ERP); tem công đoạn đầu
+  //   không vào KCS.
   const kieng = await loaiKieng.kiemKiengIn(canNhapKieng(lenh?.luong_sx, lenh?.giai_doan), body);
   const metaCd = { congDoanDau: !!lenh?.la_cong_doan_dau, ...kieng };
 
@@ -1411,6 +1411,12 @@ async function printTemBatch(phieuId, items, actorId, body) {
     // BTP trước / cuối RIÊNG từng dòng (25/10/2026 — bảng In tem nhiều phần); không gửi ⇒ theo ô chung của lượt.
     btpTruoc: it.btpTruoc === undefined ? undefined : !!it.btpTruoc,
     btpCuoi: it.btpCuoi === undefined ? undefined : !!it.btpCuoi,
+    // In kiếng (mig 127): loại · hệ số · SL kiếng RIÊNG từng dòng (= từng tem); khóa nào không gửi ⇒ theo ô chung của lượt.
+    kieng: {
+      loaiKiengId: it.loaiKiengId !== undefined ? it.loaiKiengId : body?.loaiKiengId,
+      heSoKieng: it.heSoKieng !== undefined ? it.heSoKieng : body?.heSoKieng,
+      slKieng: it.slKieng !== undefined ? it.slKieng : body?.slKieng,
+    },
   }));
   const list = dongVao.filter((it) => it.soLuong > 0);
   // Vải hủy / vải thiếu nhập NGAY TRONG bảng In tem: dòng có in tem ⇒ gắn vào tem của dòng; dòng KHÔNG in tem (SL in
@@ -1469,9 +1475,17 @@ async function printTemBatch(phieuId, items, actorId, body) {
   if (target > 0) {
     kiemTranIn(target, await repo.getPrintedTach(phieuId), them, { tienTo: 'Vượt quá 110% SL release của đợt SX' });
   }
-  // Mig 126: tem in kiếng ⇒ bắt buộc loại kiếng + hệ số (1 bộ cho cả lượt); tem công đoạn đầu không vào KCS.
-  const kieng = await loaiKieng.kiemKiengIn(canNhapKieng(lenh?.luong_sx, lenh?.giai_doan), body);
-  const metaCd = { congDoanDau: !!lenh?.la_cong_doan_dau, ...kieng };
+  // Mig 126/127: tem in kiếng ⇒ bắt buộc loại kiếng + hệ số + SL kiếng cho TỪNG TEM (dòng); tem công đoạn đầu không
+  //   vào KCS. Kiểm hết trước khi xin mã tem ERP.
+  const canKieng = canNhapKieng(lenh?.luong_sx, lenh?.giai_doan);
+  const nhoKieng = new Map();
+  for (const it of list) {
+    const d = it.dotVaiId ? byId.get(it.dotVaiId) : null;
+    const nhan = list.length > 1 ? `Dòng ${list.indexOf(it) + 1}${d && d.ma_phan ? ` (${d.ma_phan})` : ''}` : '';
+    // eslint-disable-next-line no-await-in-loop
+    it.kiengDong = await loaiKieng.kiemKiengIn(canKieng, it.kieng, { nhan, nho: nhoKieng });
+  }
+  const metaCd = { congDoanDau: !!lenh?.la_cong_doan_dau };
 
   const xe = await repo.getDefaultXePhoi();
   if (!xe) throw new AppError('Chưa cấu hình xe phơi để bắt đầu phơi', { status: 409, errorCode: 'NO_XE' });
@@ -1491,7 +1505,7 @@ async function printTemBatch(phieuId, items, actorId, body) {
       const maTem = maTemList[i];
       // GC màu vải nhập RIÊNG từng dòng ở modal gom set → ưu tiên `it.gcMauVai`; không có thì dùng ô chung.
       const temId = await repo.createTem(client, {
-        phieuId, maTem, soLuong: it.soLuong, ...meta, ...metaCd,
+        phieuId, maTem, soLuong: it.soLuong, ...meta, ...metaCd, ...it.kiengDong,
         gcMauVai: (it.gcMauVai || '').trim() || meta.gcMauVai,
         ...(it.btpTruoc !== undefined ? { btpTruoc: it.btpTruoc } : {}),
         ...(it.btpCuoi !== undefined ? { btpCuoi: it.btpCuoi } : {}),

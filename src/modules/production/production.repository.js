@@ -1696,9 +1696,10 @@ async function capMaLo(client, { maNgayCa, maTem }) {
 
 // Tạo tem + (mig 066) ngày ca · giờ SX từ→đến · cờ BTP trước/cuối + (mig 068) mã ngày ca
 // + (mig 071) GC màu vải + (mig 114) mã lô — tất cả của LƯỢT IN này.
-// `congDoanDau` · `loaiKiengId` · `heSoKieng` (mig 126): tem công đoạn đầu (không vào KCS) + loại / hệ số kiếng của tem in
-//   kiếng — chỉ ghi cột khi có giá trị (tem thường không đụng cột mới).
-async function createTem(client, { phieuId, maTem, soLuong, ngayCa, maNgayCa, gioBd, gioKt, btpTruoc, btpCuoi, gcMauVai, congDoanDau, loaiKiengId, heSoKieng }, actorId) {
+// `congDoanDau` · `loaiKiengId` · `heSoKieng` (mig 126) · `slKieng` (mig 127): tem công đoạn đầu (không vào KCS) + loại /
+//   hệ số / SL kiếng người in nhập của tem in kiếng — chỉ ghi cột khi có giá trị (tem thường không đụng cột mới);
+//   chưa chạy mig 127 ⇒ bỏ cột SL kiếng (tem vẫn in, ERP nhận số tự tính — `erpGhiInTem.taoPayload`).
+async function createTem(client, { phieuId, maTem, soLuong, ngayCa, maNgayCa, gioBd, gioKt, btpTruoc, btpCuoi, gcMauVai, congDoanDau, loaiKiengId, heSoKieng, slKieng }, actorId) {
   const base = [phieuId, maTem, soLuong, actorId];
   if (await temCoCotNgayCa()) {
     const coMa = await temCoCotMaNgayCa();
@@ -1708,7 +1709,10 @@ async function createTem(client, { phieuId, maTem, soLuong, ngayCa, maNgayCa, gi
     if (coMa) { cot.push('ma_ngay_ca'); val.push(maNgayCa || null); }
     if (coGc) { cot.push('gc_mau_vai'); val.push((gcMauVai || '').trim() || null); }
     if (congDoanDau) { cot.push('cong_doan_dau'); val.push(true); }
-    if (loaiKiengId) { cot.push('loai_kieng_id'); val.push(loaiKiengId); cot.push('he_so_kieng'); val.push(heSoKieng); }
+    if (loaiKiengId) {
+      cot.push('loai_kieng_id'); val.push(loaiKiengId); cot.push('he_so_kieng'); val.push(heSoKieng);
+      if (slKieng != null && (await temCoCot('so_luong_kieng'))) { cot.push('so_luong_kieng'); val.push(slKieng); }
+    }
     const maLo = await capMaLo(client, { maNgayCa, maTem });
     if (maLo) { cot.push('ma_lo'); val.push(maLo); }
     const themCot = cot.length ? `, ${cot.join(', ')}` : '';
@@ -1870,6 +1874,8 @@ async function duLieuGhiInTem(capTem = [], ngayCt = null) {
   // TỔ IN (mig 084) — gửi `ma_to` lên ERP qua `@pToin`. Chưa chạy migration ⇒ trả NULL, service
   // chuẩn hóa thành '' ⇒ đúng bằng hiện trạng trước mig này.
   const coTo = await phieuCoCotToIn();
+  // SL kiếng người in nhập (mig 127) — chưa có cột ⇒ NULL, `taoPayload` lùi về ⌈SL ÷ hệ số⌉.
+  const cotSlKieng = (await temCoCot('so_luong_kieng')) ? 't.so_luong_kieng' : 'NULL::int';
   // ⚠ `ddh_sub_id` đọc từ **PHẦN IN** (mig 088), không còn ở `dot_vai_ve`: DDHSUBID ứng 1:1 với phần
   //   in (= 3 số cuối của `BarcodePTHDH`). Lệnh gom set vẫn lấy đúng subID của phần in mà lượt in
   //   chỉ định qua `dotVaiId`, vì LATERAL `info` đã lọc theo đợt vải đó rồi mới lấy `pin.*`.
@@ -1886,6 +1892,7 @@ async function duLieuGhiInTem(capTem = [], ngayCt = null) {
     SELECT t.id AS tem_id, t.ma_tem, t.ma_ngay_ca, t.gc_mau_vai,
            COALESCE(t.btp_truoc, false) AS btp_truoc, COALESCE(t.btp_cuoi, false) AS btp_cuoi,
            (SELECT lk.ma_hang_hoa FROM loai_kieng lk WHERE lk.id = t.loai_kieng_id) AS ma_kieng, t.he_so_kieng::float AS he_so_kieng,
+           ${cotSlKieng} AS so_luong_kieng,
            ${laTemSuaSql('t')} AS la_tem_sua,
            (SELECT tg.ma_tem FROM tem tg WHERE tg.id = t.tem_goc_id) AS ma_tem_goc,
            CASE WHEN t.tem_goc_id IS NOT NULL THEN t.sl_kcs_dat ELSE t.so_luong END AS so_luong,

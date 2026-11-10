@@ -157,8 +157,8 @@ const CASE_MA_LOAI_DUYET = `CASE WHEN yc.trang_thai = 'CHO' THEN 'DUYET_PA_IN_MO
   ELSE 'DUYET_PA_IN_DA_DOI' END`;
 
 // Nhãn phương án in dựng NGAY TRONG SQL để chuông · trang · popup dùng CHUNG một câu.
-// ⚠ Nguồn số → chữ phải khớp `utils/hskt.js PHUONG_AN_IN` (0 Chưa xác định · 1 Bàn · 2 Máy · 3 Robot).
-const PA_TEN = (col) => `CASE (${col})::int WHEN 1 THEN 'Bàn' WHEN 2 THEN 'Máy' WHEN 3 THEN 'Robot'
+// ⚠ Nguồn số → chữ phải khớp `utils/hskt.js PHUONG_AN_IN` (0 Chưa xác định · 1 Bàn · 2 Máy · 3 Robot · 4 Logo · 5 Ép).
+const PA_TEN = (col) => `CASE (${col})::int WHEN 1 THEN 'Bàn' WHEN 2 THEN 'Máy' WHEN 3 THEN 'Robot' WHEN 4 THEN 'Logo' WHEN 5 THEN 'Ép'
   ELSE 'Chưa xác định' END`;
 const PA_CU = PA_TEN("COALESCE(yc.gia_tri_cu->>'phuong_an_in','0')");
 const PA_MOI = PA_TEN("COALESCE(yc.gia_tri_moi->>'phuong_an_in','0')");

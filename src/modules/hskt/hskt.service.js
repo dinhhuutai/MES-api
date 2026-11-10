@@ -5,8 +5,8 @@ const AppError = require('../../utils/AppError');
 const { buildMeta } = require('../../utils/pagination');
 const sockets = require('../../sockets');
 
-// Nhãn phương án in (Pain): 1 Bàn, 2 Máy, 3 Robot — nguồn chung `utils/hskt.js`.
-const { PHUONG_AN_IN: PHUONG_AN, isValidPain } = require('../../utils/hskt');
+// Nhãn phương án in (Pain): 1 Bàn · 2 Máy · 3 Robot · 4 Logo · 5 Ép — nguồn chung `utils/hskt.js`.
+const { PHUONG_AN_IN: PHUONG_AN, isValidPain, MO_TA_PAIN } = require('../../utils/hskt');
 
 const paLabel = (v) => (v == null ? null : (PHUONG_AN[Number(v)] || String(v)));
 
@@ -76,7 +76,7 @@ async function byBarcode(barcode, kieu) {
 //   đặt `pa_in_sua_tay` nên `applyPainTheoSanLuong` không kéo về Bàn nữa.
 async function changePhuongAnIn(id, pain, actorId) {
   const p = Number(pain);
-  if (!isValidPain(p)) throw new AppError('Phương án in không hợp lệ (1 Bàn / 2 Máy / 3 Robot)', { status: 422, errorCode: 'INVALID' });
+  if (!isValidPain(p)) throw new AppError(`Phương án in không hợp lệ (${MO_TA_PAIN})`, { status: 422, errorCode: 'INVALID' });
   const res = await repo.changePhuongAnIn(id, p, actorId);
   if (!res) throw new AppError('HSKT không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   // ⚠ Trùng mã vạch KHÔNG còn là lỗi (15/09/2026): repository đã GỘP phần in vào hồ sơ đang giữ mã

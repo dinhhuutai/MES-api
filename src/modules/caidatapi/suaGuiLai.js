@@ -56,12 +56,6 @@ function kenh20(ma, them = {}) {
 }
 
 // 2 cờ đầu in của SF0 (05/11/2026): chỉ 3 tổ hợp 1/0 · 0/1 · 0/0 theo luật proc `MES_spr_MES2SF0`.
-// Số thập phân ≥ 0 (ô hệ số kiếng / số tấm kiếng) — '' = 0.
-function soThapPhan(v) {
-  const t = String(v == null ? '' : v).trim().replace(',', '.');
-  return t === '' || /^\d+(\.\d+)?$/.test(t) ? '' : 'Phải là số ≥ 0 (dùng dấu chấm cho phần lẻ)';
-}
-
 function kiemDauBtp(b) {
   const a = Number(b.Labtp || 0); const c = Number(b.LabtpCuoi || 0);
   if (![0, 1].includes(a)) return { Labtp: 'Chỉ nhận 0 hoặc 1' };
@@ -82,10 +76,11 @@ function kiemDsRelease(b) {
 }
 
 const KENH = {
-  // In kiếng (mig 126): Makieng (mã hàng hóa ERP) · Hesokieng / Soluongkieng (số thập phân ⇒ kiểu chữ + kiểm số).
+  // In kiếng (10/11/2026, proc SF0): Kieng (@pKieng nvarchar(20), mã hàng hóa ERP) · HsKieng (@pHsKieng int) ·
+  //   SoluongKieng (@pSoluongKieng int).
   ERP_GHI_IN_TEM: kenh20('ERP_GHI_IN_TEM', {
-    truong: ['Labtp', 'LabtpCuoi', 'Makieng', 'Hesokieng', 'Soluongkieng'], so: ['Labtp', 'LabtpCuoi'], kiem: kiemDauBtp,
-    dai: { Makieng: 30 }, kiemTruong: { Hesokieng: soThapPhan, Soluongkieng: soThapPhan },
+    truong: ['Labtp', 'LabtpCuoi', 'Kieng', 'HsKieng', 'SoluongKieng'], so: ['Labtp', 'LabtpCuoi', 'HsKieng', 'SoluongKieng'],
+    kiem: kiemDauBtp, dai: { Kieng: 20 },
   }),
   ERP_GUI_KIEM_PHAM: kenh20('ERP_GUI_KIEM_PHAM'),
   ERP_GUI_TEM_GIA_CONG: kenh20('ERP_GUI_TEM_GIA_CONG'),

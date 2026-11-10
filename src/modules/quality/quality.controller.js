@@ -21,6 +21,10 @@ const dsTem = (nhom, ham) => asyncHandler(async (req, res) => {
   return ok(res, await nhoDoc(nhom, f, () => ham(f)));
 });
 const kcsCandidates = dsTem('quality.kcs', (f) => service.listKcsCandidates(f));
+// Excel tồn chưa kiểm (khuôn ERP) — chỉ tải khi bấm xuất ⇒ không cache. `gomDangPhoi=0` ⇒ chỉ tem đã khô.
+const kcsTonChuaKiem = asyncHandler(async (req, res) => ok(res, await service.tonChuaKiemKcs({
+  ...candFilters(req.query), gomDangPhoi: String(req.query.gomDangPhoi ?? '1') !== '0',
+})));
 const recordKcs = asyncHandler(async (req, res) =>
   ok(res, await service.recordKcs(req.params.temId, req.body, req.user.id), 'Đã ghi nhận KCS'));
 const gopTem = asyncHandler(async (req, res) =>
@@ -147,7 +151,7 @@ const bpToggle = asyncHandler(async (req, res) => { await plService.doiTrangThai
 
 module.exports = {
   plList, plTraTem, plChiTiet, plLuu, bpList, bpCreate, bpUpdate, bpToggle,
-  kcsCandidates, recordKcs, gopTem, suaCandidates, recordSua, oqcCandidates, recordOqc,
+  kcsCandidates, kcsTonChuaKiem, recordKcs, gopTem, suaCandidates, recordSua, oqcCandidates, recordOqc,
   kcsHistory, suaHistory, oqcHistory,
   kcsDone, suaDone, oqcDone, oqcFinishList, inlineDone, luuNguoiSua, luuNguoiKiemKcs, guiLaiErpSua,
   inlineCandidates, inlineLoaiLoi, inlineHistory, recordInline,

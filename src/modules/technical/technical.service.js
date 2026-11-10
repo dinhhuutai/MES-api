@@ -7,6 +7,7 @@ const qaRepo = require('../quality/quality.repository'); // qc_tra_ve dùng chun
 const thongBao = require('../thongbao/thongbao.service'); // chuông Kỹ thuật (mig 085)
 const wf = require('../workflow/workflow.repository');
 const AppError = require('../../utils/AppError');
+const { isValidPain } = require('../../utils/hskt');
 const { buildMeta } = require('../../utils/pagination');
 const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
@@ -19,7 +20,7 @@ const { ganThongTinPhanIn } = require('../../utils/thongTinLichSu');
 async function applyPhuongAnIn(phanInId, phuongAnIn, actorId) {
   if (phuongAnIn == null || phuongAnIn === '') return;
   const p = Number(phuongAnIn);
-  if (![1, 2, 3].includes(p)) return;
+  if (!isValidPain(p)) return;
   const h = await hsktRepo.activeHsktOfPhanIn(phanInId);
   if (h && Number(h.phuong_an_in) !== p) {
     try { await hsktRepo.changePhuongAnIn(h.id, p, actorId); } catch (e) { /* best-effort */ }

@@ -173,12 +173,13 @@ const KENH = {
     // ⚠ 05/11/2026 proc `MES_spr_MES2SF0` thêm `@pLabtp` + `@pLabtpCuoi` (CHỈ SF0, 4 proc còn lại không có):
     //   1/0 = in 1 đầu (BTP trước) · 0/1 = in đầu còn lại (BTP cuối) · 0/0 = in bình thường. `r` = payload thô (`taoPayload`).
     //   Router cũ chưa đọc 2 khóa này ⇒ proc lấy mặc định 0 ⇒ phiếu vẫn ghi, chỉ chưa phân biệt được đầu in.
-    // ⚠ 09/11/2026 (mig 126): tem IN KIẾNG gửi thêm `Makieng` (mã hàng hóa ERP của loại kiếng) · `Hesokieng` (1 tấm chia
-    //   bao nhiêu phần) · `Soluongkieng` (= Soluong ÷ hệ số, 2 số lẻ). Tem thường ⇒ '' / 0 / 0. Proc SF0 CHƯA có tham số này
-    //   (người dùng nhờ ERP thêm) ⇒ router hiện tại bỏ qua 3 khóa, phiếu vẫn ghi như cũ.
+    // ⚠ 10/11/2026 proc SF0 ALTER thêm 3 tham số IN KIẾNG — tên khóa JSON = tên tham số bỏ chữ `p`:
+    //   `Kieng` ⇒ `@pKieng nvarchar(20)` (mã hàng hóa ERP của loại kiếng) · `HsKieng` ⇒ `@pHsKieng int` (1 tấm chia bao
+    //   nhiêu phần) · `SoluongKieng` ⇒ `@pSoluongKieng int` (số lượng kiếng NGƯỜI IN NHẬP cho tem). Tem thường ⇒ '' / 0 / 0.
+    //   Router `docs/erp-router/ghi-in-tem.js` (3 tham số proc KHÔNG có mặc định ⇒ router luôn truyền đủ).
     them: (b, r = {}) => ({
       Labtp: r.Labtp ? 1 : 0, LabtpCuoi: r.LabtpCuoi ? 1 : 0,
-      Makieng: chuoi(r.Makieng, 30), Hesokieng: Number(r.Hesokieng) || 0, Soluongkieng: Number(r.Soluongkieng) || 0,
+      Kieng: chuoi(r.Kieng, 20), HsKieng: soNguyen(r.HsKieng), SoluongKieng: soNguyen(r.SoluongKieng),
     }),
   },
   ERP_GUI_SUA_DAT: {
@@ -265,11 +266,14 @@ function taoPayload(r, { idMes, soLuong = null, soLuongHuy = 0, soLuongThieu = 0
     //   cả 2 ô (dữ liệu cũ) tính là BTP trước — cùng ưu tiên với luật không in nhãn + trần số lượng của tem BTP trước.
     Labtp: r.btp_truoc ? 1 : 0,
     LabtpCuoi: !r.btp_truoc && r.btp_cuoi ? 1 : 0,
-    // In kiếng (mig 126) — chỉ kênh ERP_GHI_IN_TEM đọc. Số tấm kiếng = SL in ÷ hệ số.
-    Makieng: r.ma_kieng || '',
-    Hesokieng: Number(r.he_so_kieng) || 0,
-    Soluongkieng: Number(r.he_so_kieng) > 0
-      ? Math.round(((soLuong != null ? Number(soLuong) || 0 : Number(r.so_luong) || 0) / Number(r.he_so_kieng)) * 100) / 100 : 0,
+    // In kiếng (mig 126/127) — chỉ kênh ERP_GHI_IN_TEM đọc. SL kiếng = số người in nhập (`tem.so_luong_kieng`); tem in
+    //   trước mig 127 (chưa lưu số) ⇒ lùi ⌈SL in ÷ hệ số⌉. Tem thường ⇒ '' / 0 / 0.
+    Kieng: r.ma_kieng || '',
+    HsKieng: r.ma_kieng ? Math.round(Number(r.he_so_kieng) || 0) : 0,
+    SoluongKieng: !r.ma_kieng ? 0
+      : r.so_luong_kieng != null ? Number(r.so_luong_kieng) || 0
+        : Number(r.he_so_kieng) > 0
+          ? Math.ceil((soLuong != null ? Number(soLuong) || 0 : Number(r.so_luong) || 0) / Number(r.he_so_kieng)) : 0,
     // Không thuộc 20 trường (`chuanHoa` bỏ đi) — chỉ để kênh `thieuGioLayMocTao` bù Tugio/Dengio.
     MocTao: r.moc_tao || null,
     // Cũng không thuộc 20 trường: mã số nhân viên của tài khoản ca trưởng ⇒ `chuanHoa` đặt vào `Catruong`.

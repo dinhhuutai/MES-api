@@ -12,6 +12,7 @@ router.use(auth);
 router.get('/tem/:temId/hanh-trinh', rbac('KCS', 'SUA', 'OQC', 'DELIVERY_VIEW', 'DELIVERY_MANAGE'), c.temHanhTrinh);
 
 router.get('/kcs/candidates', rbac('KCS'), c.kcsCandidates);
+router.get('/kcs/ton-chua-kiem', rbac('KCS'), c.kcsTonChuaKiem); // Excel "phiếu nhật ký kiểm phẩm chưa kiểm"
 router.get('/kcs/history', rbac('KCS'), c.kcsHistory);
 router.get('/kcs/done', rbac('KCS'), c.kcsDone);
 router.post('/kcs/gop-tem', rbac('KCS'), c.gopTem);

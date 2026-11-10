@@ -916,7 +916,22 @@ async function timViTriPhanIn(q) {
   const conKcs = qa.conKcsSql();
   const ma = String(q || '').trim();
   if (ma.length < 3) return { ds: [], qua_nhieu: false };
-  const { rows: pins } = await query(
+  // TÌM THEO MÃ TEM (10/11/2026, người dùng: "Sơ đồ dòng chảy trên header cho tìm kiếm theo mã tem"): khớp CHÍNH XÁC 1 tem
+  //   (nhãn 15/16 ⇒ tem gốc · tem 17 / 13 mã riêng · mã cũ — `maTemUngVien`, nguyên văn trước) ⇒ `tem_tim` = vị trí của CHÍNH
+  //   tem đó theo sổ cái (cùng biểu thức `quality.repository`) + phần in của lệnh in ra tem (gom set ⇒ nhiều phần in).
+  //   Không khớp tem nào ⇒ tìm code phần như cũ.
+  const temTim = await timTemSoDo(ma, qa);
+  const { rows: pins } = temTim ? await query(
+    `SELECT pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.dang_hoat_dong,
+            kh.ten_khach_hang AS khach, dh.ma_don_hang AS don, mh.ma_hang, true AS chinh_xac,
+            ${CHO_GN_SQL('pin.id')} AS dang_o_gn
+       FROM phan_in pin
+       LEFT JOIN ma_hang mh ON mh.id = pin.ma_hang_id
+       LEFT JOIN don_hang dh ON dh.id = mh.don_hang_id
+       LEFT JOIN khach_hang kh ON kh.id = dh.khach_hang_id
+      WHERE pin.id = ANY($1::uuid[]) ORDER BY pin.ma_phan LIMIT 11`.replace(/\s+/g, ' '),
+    [temTim.pin_ids || []]
+  ) : await query(
     `SELECT pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.dang_hoat_dong,
             kh.ten_khach_hang AS khach, dh.ma_don_hang AS don, mh.ma_hang,
             (upper(pin.ma_phan) = upper($1) OR ${sqlKhopMa('pin.barcode', '$1')}) AS chinh_xac,
@@ -932,7 +947,7 @@ async function timViTriPhanIn(q) {
   let ds = pins.some((p) => p.chinh_xac) ? pins.filter((p) => p.chinh_xac) : pins;
   const quaNhieu = ds.length > 10;
   ds = ds.slice(0, 10);
-  if (!ds.length) return { ds: [], qua_nhieu: false };
+  if (!ds.length) return { ds: [], qua_nhieu: false, tem_tim: temTim ? { ...temTim, pin_ids: undefined } : null };
   const ids = ds.map((p) => p.phan_in_id);
   const [dots, tems] = await Promise.all([
     query(
@@ -977,7 +992,40 @@ async function timViTriPhanIn(q) {
   return {
     qua_nhieu: quaNhieu,
     ds: ds.map(({ chinh_xac: _, ...p }) => ({ ...p, dots: dotTheo.get(p.phan_in_id) || [], tem: temTheo.get(p.phan_in_id) || null })),
+    tem_tim: temTim ? { ...temTim, pin_ids: undefined } : null,
   };
+}
+
+// 1 tem khớp CHÍNH XÁC mã (ứng viên `maTemUngVien`, nguyên văn trước) — sổ cái của RIÊNG tem đó tách theo trạm sau sản xuất
+//   (tên trường trùng khối `tem` gộp theo phần in ở trên để FE dùng chung cách vẽ) + lệnh / chuyền của tem + phần in của lệnh.
+//   Không khớp ⇒ null. Tra theo khóa `ma_tem` (index UNIQUE).
+async function timTemSoDo(ma, qa) {
+  const dsMa = maTemUngVien(ma);
+  if (!dsMa.length) return null;
+  const conKcs = qa.conKcsSql();
+  const { rows } = await query(
+    `SELECT t.ma_tem, t.trang_thai, t.so_luong, (t.tem_goc_id IS NOT NULL) AS la_tem_con, ls.ma_lenh_san_xuat AS ma_lenh,
+            cs.ma_chuyen,
+            (CASE WHEN t.trang_thai IN ('IN','DANG_PHOI') THEN t.so_luong ELSE 0 END)::int AS cho_kho_sl,
+            (CASE WHEN t.trang_thai = 'DA_KHO' AND ${conKcs} > 0 THEN ${conKcs} ELSE 0 END)::int AS kcs_sl,
+            GREATEST(${qa.CON_SUA}, 0)::int AS sua_sl, GREATEST(${qa.CON_OQC}, 0)::int AS oqc_sl,
+            GREATEST(${qa.CON_GIAO}, 0)::int AS cho_giao_sl, COALESCE(t.sl_da_giao, 0)::int AS da_giao_sl,
+            (SELECT array_agg(DISTINCT dv.phan_in_id) FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+              WHERE lsd.lenh_san_xuat_id = ls.id) AS pin_ids
+       FROM tem t
+       JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+       JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+       LEFT JOIN chuyen_san_xuat cs ON cs.id = ${await chuyenTemSql()}
+      WHERE t.ma_tem = ANY($1::text[])
+      ORDER BY array_position($1::text[], t.ma_tem) LIMIT 1`.replace(/\s+/g, ' '),
+    [dsMa]
+  );
+  if (!rows[0]) return null;
+  const r = rows[0];
+  // Số tem ở mỗi trạm (0/1) — cùng tên trường khối `tem` gộp theo phần in.
+  for (const k of ['cho_kho', 'kcs', 'sua', 'oqc', 'cho_giao']) r[`${k}_tem`] = r[`${k}_sl`] > 0 ? 1 : 0;
+  r.ma_quet = ma;
+  return r;
 }
 
 // SƠ ĐỒ DÒNG CHẢY (nút ở thanh đầu trang, 21/10/2026): owner trạm + checklist của workflow hiện hành, 1 lượt query,

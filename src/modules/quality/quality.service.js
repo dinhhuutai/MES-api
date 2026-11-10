@@ -41,6 +41,39 @@ async function listKcsCandidates({ search, filters }) {
   return rows;
 }
 
+// EXCEL "DANH SÁCH PHIẾU NHẬT KÝ KIỂM PHẨM CHƯA KIỂM" của màn KCS (10/11/2026, người dùng gửi khuôn tờ ERP — "danh sách
+//   hàng tồn"): tem còn phần chưa kiểm theo CÙNG bộ lọc màn KCS, `gomDangPhoi` ⇒ gồm cả tem đang phơi (chưa tới KCS).
+//   Mỗi dòng = dòng `TEM_CTX` (+ cờ OQC trả về để FE lọc như màn) + giờ SX từ/đến · tổ in · thợ in · mã ngày ca · GC màu vải
+//   (ĐÚNG luật đã gửi ERP SF0 — đọc qua `production.repository.duLieuGhiInTem`, đừng chép luật giờ ca đêm) + màu in · tính
+//   chất in · độ in · ngày ca · phiên phơi · IDMES SF0 (`thongTinTonKcs`). Chỉ đọc.
+async function tonChuaKiemKcs({ search, filters, gomDangPhoi = true }) {
+  try { await prodRepo.promoteFinishedDrying(); } catch (e) { /* bỏ qua */ }
+  const rows = await repo.listKcsTon({ search, filters }, gomDangPhoi);
+  if (!rows.length) return rows;
+  const ids = rows.map((r) => r.tem_id);
+  const [rm, erp, them] = await Promise.all([
+    repo.activeReturnsMap('OQC', ids),
+    prodRepo.duLieuGhiInTem(ids.map((temId) => ({ temId }))),
+    repo.thongTinTonKcs(ids),
+  ]);
+  const theoErp = new Map(erp.map((x) => [x.tem_id, x]));
+  const theoThem = new Map(them.map((x) => [x.tem_id, x]));
+  return rows.map((r) => {
+    const e = theoErp.get(r.tem_id) || {};
+    const x = theoThem.get(r.tem_id) || {};
+    return {
+      ...r,
+      tra_ve: rm[r.tem_id] || null, tra_ve_ly_do: rm[r.tem_id]?.ly_do || null,
+      ma_ngay_ca: e.ma_ngay_ca || null, gc_mau_vai: e.gc_mau_vai || null, ma_to: e.ma_to || null,
+      tho_in: e.tho_in || null, chuyen_truong: e.chuyen_truong || null,
+      tu_gio: e.tu_gio || null, den_gio: e.den_gio || null, // 'YYYY/MM/DD HH:MM:SS' giờ VN
+      ngay_ca: x.ngay_ca || null, mau_in: x.mau_in || null, tinh_chat_in: x.tinh_chat_in || null, do_in: x.do_in || null,
+      tg_bd_phoi: x.tg_bd_phoi || null, tg_kt_phoi: x.tg_kt_phoi || null, phoi_trang_thai: x.phoi_trang_thai || null,
+      so_phut_phoi: x.so_phut_phoi ?? null, id_mes: x.id_mes || null,
+    };
+  });
+}
+
 // Gắn "người xác nhận trạm trước" vào từng dòng (field `nguoi_truoc`) — query nhẹ theo tem_id.
 async function attachPrevConfirmer(rows, key) {
   if (!rows || rows.length === 0) return;
@@ -1156,7 +1189,7 @@ async function toggleGiaoDacBiet(id, active, actorId) {
 }
 
 module.exports = {
-  listKcsCandidates, recordKcs, gopTem, listSuaCandidates, recordSua, listOqcCandidates, recordOqc,
+  listKcsCandidates, tonChuaKiemKcs, recordKcs, gopTem, listSuaCandidates, recordSua, listOqcCandidates, recordOqc,
   listCancelKcs, listCancelSua, listCancelOqc, cancelKcs, cancelSua, cancelOqc,
   listTemSuaCancelable, listTemSuaDeleted, huyTemSua, moTemSua,
   kcsHistory, suaHistory, oqcHistory, temHanhTrinh,

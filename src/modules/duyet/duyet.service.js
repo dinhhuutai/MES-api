@@ -3,6 +3,7 @@
 const repo = require('./duyet.repository');
 const { query } = require('../../config/db');
 const AppError = require('../../utils/AppError');
+const { isValidPain, MO_TA_PAIN } = require('../../utils/hskt');
 const sockets = require('../../sockets');
 const {
   LOAI_DUYET, laLoaiHopLe, coQuyenDuyet, coQuyenGui, coQuyenXemHangDoi, danhMuc,
@@ -165,8 +166,8 @@ async function guiYeuCauDoiPain(user, { hsktId, phuongAnIn, lyDo }) {
     throw new AppError('Bạn không có quyền đổi phương án in', { status: 403, errorCode: 'NO_PERM' });
   }
   const pa = Number(phuongAnIn);
-  if (![1, 2, 3].includes(pa)) {
-    throw new AppError('Phương án in không hợp lệ (1 Bàn / 2 Máy / 3 Robot)', { status: 422, errorCode: 'INVALID' });
+  if (!isValidPain(pa)) {
+    throw new AppError(`Phương án in không hợp lệ (${MO_TA_PAIN})`, { status: 422, errorCode: 'INVALID' });
   }
   // ⚠⚠ LÝ DO BẮT BUỘC — NHƯNG CHỈ KHI TÍNH NĂNG DUYỆT ĐANG BẬT (mig 087, chốt 19/08/2026).
   //   Tắt duyệt = "bấm là đổi" (người dùng chọn) ⇒ bắt nhập lý do nữa thì tắt cũng như không.
