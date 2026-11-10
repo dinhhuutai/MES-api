@@ -3,6 +3,21 @@
 const { query } = require('../../config/db');
 const { MA_TCIN_SQL } = require('../../utils/tinhChatIn');
 
+// Áp luồng sản xuất mới cho phần in mang tính chất `ma` (mig 126) — bỏ qua phần in đã sửa tay hoặc đã có lệnh sống
+//   (đã chạy theo luồng cũ; đổi thì dùng Quản trị phần in). Trả số phần in đổi.
+async function apLuongChoPhanInTx(client, ma, luong) {
+  const { rowCount } = await client.query(
+    `UPDATE phan_in pin SET luong_sx = $2::varchar, la_in_kieng = ($2::varchar = 'IN_KIENG'), luong_sx_tg = CURRENT_TIMESTAMP
+      WHERE ${MA_TCIN_SQL('pin.tinh_chat_in')} = $1 AND NOT pin.luong_sx_sua_tay
+        AND pin.luong_sx IS DISTINCT FROM $2::varchar
+        AND NOT EXISTS (SELECT 1 FROM dot_vai_ve dv JOIN lenh_sx_dot_vai lsd ON lsd.dot_vai_ve_id = dv.id
+                          JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
+                         WHERE dv.phan_in_id = pin.id AND ls.trang_thai <> 'HUY')`.replace(/\s+/g, ' '),
+    [ma, luong]
+  );
+  return rowCount;
+}
+
 async function coBang() {
   const { rows } = await query("SELECT to_regclass('public.tinh_chat_in') AS bang");
   return !!rows[0].bang;
@@ -96,4 +111,4 @@ async function logTx(client, id, hanhDong, cu, moi, actorId) {
   );
 }
 
-module.exports = { coBang, danhMuc, demPhanIn, demDotErp, demPhanInCua, docTheoMaTx, docTheoIdTx, themTx, suaTx, anTx, logTx };
+module.exports = { coBang, danhMuc, demPhanIn, demDotErp, demPhanInCua, docTheoMaTx, docTheoIdTx, themTx, suaTx, anTx, logTx, apLuongChoPhanInTx };

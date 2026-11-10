@@ -21,8 +21,9 @@ const { kcsTachIdSql, laTemSuaSql, slKcsTachSql } = require('../../utils/temCon'
 //   bị cộng tổng ở bất kỳ đâu, chỉ dùng làm điều kiện `> 0` và hiển thị (đã rà 05/09/2026).
 // ⚠ Tem con vốn đã không lọt màn KCS (`listKcsCand` còn đòi `trang_thai='DA_KHO'`), nhưng để số âm
 //   hiện lên bảng/báo cáo là mời gọi hiểu nhầm — kẹp ở NGUỒN, đừng vá từng màn.
+// ⚠ Mig 126: tem CÔNG ĐOẠN ĐẦU (in kiếng / in trước khi ép — `cong_doan_dau`) KHÔNG vào KCS ⇒ còn kiểm = 0.
 const conKcsSql = (a = 't.') =>
-  `(CASE WHEN ${a}tem_goc_id IS NOT NULL THEN 0 ELSE (${a}so_luong + ${a}sl_chenh_lech) - (${a}sl_kcs_dat + ${a}sl_kcs_sua + ${a}sl_kcs_huy) END)`;
+  `(CASE WHEN ${a}tem_goc_id IS NOT NULL OR ${a}cong_doan_dau THEN 0 ELSE (${a}so_luong + ${a}sl_chenh_lech) - (${a}sl_kcs_dat + ${a}sl_kcs_sua + ${a}sl_kcs_huy) END)`;
 const CON_KCS = conKcsSql();
 const CON_SUA = '(t.sl_kcs_sua - (t.sl_sua_dat + t.sl_sua_huy))';
 // ⚠⚠ TRỪ `sl_sua_tach` (mig 091) — BẮT BUỘC, giữ bất biến `con_oqc = con_oqc_kcs + con_oqc_sua`.

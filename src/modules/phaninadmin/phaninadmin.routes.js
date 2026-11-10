@@ -26,6 +26,7 @@ router.post('/:phanInId/huy-muc-ready', c.huyMucReady);
 // 19/10/2026: khóa ERP (mig 116) · lùi lệnh về trạm bất kỳ (body.xemTruoc = chỉ dựng kế hoạch) · hủy lẻ 1 bản ghi ·
 // phân công 1 phiếu · hủy / mở cả phần in.
 router.post('/:phanInId/khoa-erp', c.datKhoaErp);
+router.post('/:phanInId/luong-sx', c.datLuongSx); // mig 126 — luồng sản xuất + ép trước
 router.post('/:phanInId/lenh/:lenhId/lui-ve', c.luiVe);
 router.post('/:phanInId/huy-le', c.huyLe);
 router.post('/:phanInId/phieu/:phieuId/phan-cong', c.luuPhanCong);

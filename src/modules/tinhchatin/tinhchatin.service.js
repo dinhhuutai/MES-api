@@ -6,10 +6,15 @@ const repo = require('./tinhchatin.repository');
 const {
   LUONG, MA_LUONG, BO_QUA_MAC_DINH, BO_QUA_MAC_DINH_RAW, normTcin,
 } = require('../../utils/tinhChatIn');
+const { HAI_CONG_DOAN, xoaNho: xoaNhoLuong } = require('../../utils/luongSanXuat');
+
+// Luồng sản xuất của phần in ứng với 1 luồng phân loại (KHAC / CHUA_PHAN_LOAI ⇒ in thường).
+const luongPhanIn = (l) => (HAI_CONG_DOAN.has(l) || l === 'LOGO' ? l : 'THUONG');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Hệ thống › Tính chất in (mig 123). Luật + danh mục luồng: `utils/tinhChatIn.js`.
-//   · `luong`  chỉ là phân loại — chưa đổi cách chạy.
+//   · `luong`  — mig 126: IN_KIENG · IN_EP · LOGO đã có luồng riêng. Đổi luồng 1 tính chất ⇒ áp cho phần in mang tính chất
+//              đó mà CHƯA có lệnh sống và chưa sửa tay ở Quản trị phần in (`repo.apLuongChoPhanInTx`).
 //   · `bo_qua` CÓ HIỆU LỰC: đồng bộ ERP đọc ở lượt kế tiếp ⇒ tắt = đợt mới vào MES, bật = đợt mới không vào nữa.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -70,6 +75,7 @@ async function luu(items, actorId) {
   const ds = (Array.isArray(items) ? items : []).map(chuanDong);
   if (!ds.length) throw new AppError('Không có dòng nào để lưu', { status: 422, errorCode: 'EMPTY' });
   const theoMa = new Map(ds.map((d) => [d.ma_chuan, d])); // trùng mã trong 1 lượt ⇒ dòng sau thắng
+  let apPhanIn = 0; // số phần in đổi luồng sản xuất theo phân loại mới (mig 126)
 
   const soDoi = await withTransaction(async (client) => {
     const cu = new Map((await repo.docTheoMaTx(client, [...theoMa.keys()])).map((r) => [r.ma_chuan, r]));
@@ -83,12 +89,14 @@ async function luu(items, actorId) {
       } else if (!c.dang_hoat_dong || c.luong !== d.luong || c.bo_qua !== d.bo_qua || (c.ghi_chu || null) !== d.ghi_chu) {
         await repo.suaTx(client, c.id, d, actorId);
         await repo.logTx(client, c.id, 'SUA_TINH_CHAT_IN', giaTri(c), giaTri(d), actorId);
+        if (c.luong !== d.luong) apPhanIn += await repo.apLuongChoPhanInTx(client, d.ma_chuan, luongPhanIn(d.luong));
         n += 1;
       }
     }
     return n;
   });
-  return { ...(await danhSach()), so_doi: soDoi };
+  xoaNhoLuong();
+  return { ...(await danhSach()), so_doi: soDoi, so_phan_in_doi_luong: apPhanIn };
 }
 
 // Thêm 1 tính chất. Đã có (đang dùng) ⇒ 409; đã xóa trước đó ⇒ bật lại.

@@ -83,7 +83,7 @@ const PHAN_INFO_LATERAL = `
     SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, dh.bo_phan_bh,
            pin.id AS phan_in_id,
            pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.ma_phan, pin.so_luong_don_hang,
-           pin.tinh_chat_in, pin.mau_in, pin.do_in,
+           pin.tinh_chat_in, pin.mau_in, pin.do_in, pin.luong_sx,
            dv.han_giao_hang, dv.so_luong_vai_ve, dv.nha_gia_cong
     FROM lenh_sx_dot_vai lsd
     JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
@@ -138,7 +138,7 @@ async function listProductionCandidates({ search = '', offset = 0, limit = 20 })
       AND NOT ${LENH_CHO_GN_SQL('COALESCE(ls.lenh_lien_ket_id, ls.id)')}
       AND ($1 = '' OR ls.ma_lenh_san_xuat ~* $1 OR ${lenhPhanInMatch('ls.id', '$1')})`;
   const dataSql = `
-    SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.chuyen_id, ls.ngay_ke_hoach, ls.giai_doan,
+    SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.chuyen_id, ls.ngay_ke_hoach, ls.giai_doan, info.luong_sx,
            cs.ma_chuyen, cs.ten_chuyen, lc.ma_loai AS ma_loai_chuyen, lc.ten_loai AS ten_loai_chuyen,
            info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.phan_in_id,
            info.mau_vai, info.kich_vai, info.kich_phim, info.ma_phan,
@@ -347,7 +347,11 @@ async function getLenhBasic(lenhId) {
   const { rows } = await query(
     `SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.trang_thai, COALESCE(ps.chuyen_id, ls.chuyen_id) AS chuyen_id, ${colTho},
             cs.ma_chuyen, cs.ten_chuyen, ls.chuyen_id AS chuyen_kh_id, ck.ma_chuyen AS ma_chuyen_kh, ck.ten_chuyen AS ten_chuyen_kh,
-            ${PHAN_AGG} AS phan_list
+            ${PHAN_AGG} AS phan_list,
+            (CASE WHEN ls.giai_doan = 'EP_UI' THEN 'EP_UI' ELSE 'IN' END) AS giai_doan, ls.la_cong_doan_dau,
+            (SELECT pl.luong_sx FROM lenh_sx_dot_vai ll JOIN dot_vai_ve dl ON dl.id = ll.dot_vai_ve_id
+               JOIN phan_in pl ON pl.id = dl.phan_in_id
+              WHERE ll.lenh_san_xuat_id = COALESCE(ls.lenh_lien_ket_id, ls.id) ORDER BY pl.ma_phan LIMIT 1) AS luong_sx
      FROM lenh_san_xuat ls
      LEFT JOIN LATERAL (SELECT p.chuyen_id FROM phieu_san_xuat p WHERE p.lenh_san_xuat_id = ls.id AND p.trang_thai = 'DANG_CHAY'
                          ORDER BY p.created_date DESC LIMIT 1) ps ON true
@@ -816,7 +820,7 @@ async function listCancelableTem({ search = '', offset = 0, limit = 50 }) {
     JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
     LEFT JOIN chuyen_san_xuat cs ON cs.id = ${await chuyenTemSql({ ls: null })}
     ${PHAN_INFO_LATERAL}
-    WHERE t.trang_thai IN ('IN','DANG_PHOI','DA_KHO')
+    WHERE t.trang_thai IN ('IN','DANG_PHOI','DA_KHO','CHO_CD_SAU')
       AND COALESCE(t.sl_kcs_dat,0)=0 AND COALESCE(t.sl_kcs_sua,0)=0 AND COALESCE(t.sl_kcs_huy,0)=0
       AND COALESCE(t.sl_oqc_dat,0)=0 AND COALESCE(t.sl_da_giao,0)=0
       AND ($1='' OR t.ma_tem ~* $1 OR ls.ma_lenh_san_xuat ~* $1
@@ -986,6 +990,7 @@ async function docLenhGopTx(client, ids) {
   const { rows } = await client.query(
     `SELECT ls.id, ls.ma_lenh_san_xuat, ls.trang_thai, COALESCE(ps.chuyen_id, ls.chuyen_id) AS chuyen_id,
             COALESCE(ls.so_luong_release,0)::int AS so_luong_release,
+            (CASE WHEN ls.giai_doan = 'EP_UI' THEN 'EP_UI' ELSE 'IN' END) AS giai_doan, ls.la_cong_doan_dau,
             ps.id AS phieu_id,
             COALESCE((SELECT SUM(t.so_luong) FROM tem t WHERE t.phieu_san_xuat_id = ps.id AND t.trang_thai <> 'HUY'), 0)::int AS da_in,
             (SELECT COUNT(*) FROM phieu_san_xuat p2 WHERE p2.lenh_san_xuat_id = ls.id AND p2.trang_thai <> 'HUY')::int AS so_phieu,
@@ -1691,7 +1696,9 @@ async function capMaLo(client, { maNgayCa, maTem }) {
 
 // Tạo tem + (mig 066) ngày ca · giờ SX từ→đến · cờ BTP trước/cuối + (mig 068) mã ngày ca
 // + (mig 071) GC màu vải + (mig 114) mã lô — tất cả của LƯỢT IN này.
-async function createTem(client, { phieuId, maTem, soLuong, ngayCa, maNgayCa, gioBd, gioKt, btpTruoc, btpCuoi, gcMauVai }, actorId) {
+// `congDoanDau` · `loaiKiengId` · `heSoKieng` (mig 126): tem công đoạn đầu (không vào KCS) + loại / hệ số kiếng của tem in
+//   kiếng — chỉ ghi cột khi có giá trị (tem thường không đụng cột mới).
+async function createTem(client, { phieuId, maTem, soLuong, ngayCa, maNgayCa, gioBd, gioKt, btpTruoc, btpCuoi, gcMauVai, congDoanDau, loaiKiengId, heSoKieng }, actorId) {
   const base = [phieuId, maTem, soLuong, actorId];
   if (await temCoCotNgayCa()) {
     const coMa = await temCoCotMaNgayCa();
@@ -1700,6 +1707,8 @@ async function createTem(client, { phieuId, maTem, soLuong, ngayCa, maNgayCa, gi
     const cot = []; const val = [];
     if (coMa) { cot.push('ma_ngay_ca'); val.push(maNgayCa || null); }
     if (coGc) { cot.push('gc_mau_vai'); val.push((gcMauVai || '').trim() || null); }
+    if (congDoanDau) { cot.push('cong_doan_dau'); val.push(true); }
+    if (loaiKiengId) { cot.push('loai_kieng_id'); val.push(loaiKiengId); cot.push('he_so_kieng'); val.push(heSoKieng); }
     const maLo = await capMaLo(client, { maNgayCa, maTem });
     if (maLo) { cot.push('ma_lo'); val.push(maLo); }
     const themCot = cot.length ? `, ${cot.join(', ')}` : '';
@@ -1876,6 +1885,7 @@ async function duLieuGhiInTem(capTem = [], ngayCt = null) {
     WITH inp AS (SELECT * FROM unnest($1::uuid[], $2::uuid[]) AS x(tem_id, dot_vai_id))
     SELECT t.id AS tem_id, t.ma_tem, t.ma_ngay_ca, t.gc_mau_vai,
            COALESCE(t.btp_truoc, false) AS btp_truoc, COALESCE(t.btp_cuoi, false) AS btp_cuoi,
+           (SELECT lk.ma_hang_hoa FROM loai_kieng lk WHERE lk.id = t.loai_kieng_id) AS ma_kieng, t.he_so_kieng::float AS he_so_kieng,
            ${laTemSuaSql('t')} AS la_tem_sua,
            (SELECT tg.ma_tem FROM tem tg WHERE tg.id = t.tem_goc_id) AS ma_tem_goc,
            CASE WHEN t.tem_goc_id IS NOT NULL THEN t.sl_kcs_dat ELSE t.so_luong END AS so_luong,
@@ -2026,6 +2036,7 @@ async function monitorRunning() {
     `SELECT ps.id AS phieu_id, ls.id AS lenh_id, cs.id AS chuyen_id, cs.ma_chuyen, cs.ten_chuyen,
             lc.ma_loai AS ma_loai_chuyen, lc.ten_loai AS ten_loai_chuyen,
             cs.dinh_muc_gio, ps.tg_bd, ls.ma_lenh_san_xuat, ls.ngay_ke_hoach,
+            ls.giai_doan, info.luong_sx,
             ls.so_luong_release AS target, ${PHAN_AGG} AS phan_list,
             (SELECT count(*) FROM lenh_sx_dot_vai lsd WHERE lsd.lenh_san_xuat_id = ls.id)::int AS so_dot_vai,
             (SELECT count(DISTINCT dv2.phan_in_id) FROM lenh_sx_dot_vai lsd2 JOIN dot_vai_ve dv2 ON dv2.id = lsd2.dot_vai_ve_id WHERE lsd2.lenh_san_xuat_id = ls.id)::int AS so_phan_in,
@@ -2203,6 +2214,10 @@ async function accumulateDryTime(client, temId) {
 //   mốc vào KCS của dải Theo dõi / SLA KCS (`siSoTram.MOC_VAO_TEM.KIEM`) — rơi vào tương lai). Ghi audit `XAC_NHAN_KHO`
 //   (giờ phơi dự kiến cũ) để tra ai xác nhận sớm.
 // Số phút CÒN LẠI tới giờ phơi xong dự kiến của phiên đang phơi (khóa phiên `FOR UPDATE`); ≤ 0 ⇒ đã tới giờ.
+// Trạng thái tem khi KHÔ (mig 126): tem công đoạn đầu (in kiếng / in trước khi ép) không vào KCS ⇒ `CHO_CD_SAU`
+//   ("chờ công đoạn sau"); tem thường ⇒ `DA_KHO` (vào hàng đợi KCS).
+const TT_SAU_KHO = "CASE WHEN cong_doan_dau THEN 'CHO_CD_SAU' ELSE 'DA_KHO' END";
+
 async function phutKhoSomTx(client, temId) {
   const { rows } = await client.query(
     `SELECT CEIL(EXTRACT(EPOCH FROM (tg_kt_phoi - now())) / 60)::int AS con FROM tem_xe_phoi
@@ -2218,7 +2233,7 @@ async function confirmDry(client, temId, actorId, kho = {}) {
     [temId]
   );
   await accumulateDryTime(client, temId);
-  await client.query("UPDATE tem SET trang_thai='DA_KHO', updated_by=$2, updated_date=CURRENT_TIMESTAMP WHERE id=$1", [temId, actorId]);
+  await client.query(`UPDATE tem SET trang_thai=${TT_SAU_KHO}, updated_by=$2, updated_date=CURRENT_TIMESTAMP WHERE id=$1`, [temId, actorId]);
   await client.query(
     `UPDATE tem_xe_phoi SET trang_thai='XONG', tg_kt_phoi=LEAST(COALESCE(tg_kt_phoi, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP),
        updated_by=$2, updated_date=CURRENT_TIMESTAMP WHERE tem_id=$1 AND trang_thai='DANG_PHOI'`,
@@ -2286,7 +2301,7 @@ async function promoteFinishedDrying() {
     );
   } catch (e) { /* migration 038 chưa chạy */ }
   const { rowCount } = await query(
-    `UPDATE tem SET trang_thai='DA_KHO', updated_date=CURRENT_TIMESTAMP
+    `UPDATE tem SET trang_thai=${TT_SAU_KHO}, updated_date=CURRENT_TIMESTAMP
      WHERE trang_thai='DANG_PHOI'
        AND EXISTS (SELECT 1 FROM tem_xe_phoi x WHERE x.tem_id=tem.id AND x.trang_thai='DANG_PHOI' AND x.tg_kt_phoi <= now())`.replace(/\s+/g, ' ')
   );

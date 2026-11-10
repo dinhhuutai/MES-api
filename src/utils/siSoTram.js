@@ -325,7 +325,7 @@ const DV = {
     LEFT JOIN LATERAL (SELECT sum(xlsd.so_luong)::int AS da_release,
         max(xls.created_date) AS tg_release_cuoi
       FROM lenh_sx_dot_vai xlsd JOIN lenh_san_xuat xls ON xls.id = xlsd.lenh_san_xuat_id
-      WHERE xlsd.dot_vai_ve_id = dv.id AND xls.trang_thai <> 'HUY') rel ON true
+      WHERE xlsd.dot_vai_ve_id = dv.id AND xls.trang_thai <> 'HUY' AND xls.giai_doan IS DISTINCT FROM 'EP_UI') rel ON true
     WHERE dv.trang_thai NOT IN ('DA_GOP','DA_HUY') AND dv.tg_chuyen_ready IS NOT NULL`,
 
   // KẾ HOẠCH TẠM (mig 058): lập kế hoạch SỚM cho đợt vải chưa QC. Vào = lần LƯU gần nhất,
@@ -416,12 +416,13 @@ const DV = {
   }),
 
   // KCS: vào = tem KHÔ xong (vào hàng đợi kiểm), ra = kiểm hết phần còn lại.
+  // ⚠ Mig 126: tem công đoạn đầu (`cong_doan_dau` — in kiếng / in trước khi ép) không vào KCS ⇒ loại khỏi trạm.
   KIEM: NGUON_TEM({
     tgVao: MOC_VAO_TEM.KIEM('t'),
     tgRa: `CASE WHEN (COALESCE(t.so_luong,0) + COALESCE(t.sl_chenh_lech,0))
                      - (COALESCE(t.sl_kcs_dat,0)+COALESCE(t.sl_kcs_sua,0)+COALESCE(t.sl_kcs_huy,0)) <= 0
                 THEN kc.moc_kcs END`,
-    dk: "t.trang_thai <> 'HUY'",
+    dk: "t.trang_thai <> 'HUY' AND NOT t.cong_doan_dau",
     them: `LEFT JOIN LATERAL (SELECT max(xk.created_date) AS moc_kcs FROM kcs xk
              WHERE xk.tem_id = t.id) kc ON true`,
   }),

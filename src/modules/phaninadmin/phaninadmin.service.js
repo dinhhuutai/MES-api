@@ -8,8 +8,9 @@ const erpsyncRepo = require('../erpsync/erpsync.repository');
 const hsktRepo = require('../hskt/hskt.repository');
 const sockets = require('../../sockets');
 const AppError = require('../../utils/AppError');
-const { query } = require('../../config/db');
+const { query, withTransaction } = require('../../config/db');
 const khoaErp = require('../../utils/khoaErp');
+const { LUONG_SX } = require('../../utils/luongSanXuat');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // QUẢN TRỊ PHẦN IN — một chỗ gỡ rối mọi thứ của 1 phần in.
@@ -37,7 +38,7 @@ async function chiTiet(phanInId) {
     const { rows } = await query('SELECT ho_ten FROM nguoi_dung WHERE id = $1', [pin.khoa_erp_boi]);
     khoa = { ...khoa, nguoi: rows[0] ? rows[0].ho_ten : null };
   }
-  return { phan_in: pin, ready, dot_vai: dotVai, loai_dot_vai: loaiDotVai, toan_canh: toanCanh, khoa_erp: khoa, dich_lui: DICH_LUI };
+  return { phan_in: pin, ready, dot_vai: dotVai, loai_dot_vai: loaiDotVai, toan_canh: toanCanh, khoa_erp: khoa, dich_lui: DICH_LUI, luong_sx: LUONG_SX };
 }
 
 // ─── SỬA TRƯỜNG ──────────────────────────────────────────────────────────────
@@ -62,6 +63,71 @@ async function khoaSauKhiSua(phanInId, actorId) {
     if (e.errorCode !== 'CHUA_MIGRATION_116') console.error(`[quan-tri-phan-in] ✗ Khóa ERP lỗi: ${e.message}`);
     return false;
   }
+}
+
+// ─── LUỒNG SẢN XUẤT (mig 126, 09/11/2026) ────────────────────────────────────
+// Đổi luồng của phần in (In thường · In kiếng · In + ép · Logo) + đánh dấu "ép ủi trước, in sau". Lý do bắt buộc.
+//   · Bỏ 2 công đoạn (về thường / logo) khi phần in còn LỆNH ÉP sống ⇒ 409 `DA_LAP_EP` (hủy lệnh ép trước) — giống BTP:
+//     không hạ dưới phần đã lập. Chưa lập ⇒ phần ép ủi biến khỏi Release 1 ngay.
+//   · Lệnh sống CHƯA in tem ⇒ đánh lại "công đoạn đầu" theo luồng + thứ tự mới; lệnh đã in tem giữ (tem đã ghi) — trả số.
+//   · Đặt `luong_sx_sua_tay` ⇒ đổi phân loại ở trang Tính chất in không ghi đè nữa.
+async function datLuongSx(phanInId, { luong, epTruoc, lyDo } = {}, actorId) {
+  const L = require('../../utils/luongSanXuat');
+  if (!L.MA_LUONG_SX.has(luong)) throw new AppError('Luồng sản xuất không hợp lệ', { status: 422, errorCode: 'LUONG_SAI' });
+  const ly = String(lyDo || '').trim();
+  if (!ly) throw new AppError('Nhập lý do đổi luồng', { status: 422, errorCode: 'NO_LY_DO' });
+  const epT = L.laHaiCongDoan(luong) ? !!epTruoc : false;
+  const kq = await withTransaction(async (client) => {
+    const { rows: [cu] } = await client.query(
+      'SELECT id, ma_phan, luong_sx, ep_truoc, luong_sx_sua_tay FROM phan_in WHERE id = $1 FOR UPDATE', [phanInId]);
+    if (!cu) throw new AppError('Phần in không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+    const luongCu = L.chuanLuong(cu.luong_sx);
+    if (luongCu === luong && !!cu.ep_truoc === epT) {
+      throw new AppError('Luồng không đổi', { status: 422, errorCode: 'KHONG_DOI' });
+    }
+    const { rows: lenh } = await client.query(
+      `SELECT DISTINCT ls.id, ls.ma_lenh_san_xuat, ${L.gdSql('ls')} AS gd, ls.la_cong_doan_dau,
+              EXISTS (SELECT 1 FROM phieu_san_xuat ps JOIN tem t ON t.phieu_san_xuat_id = ps.id
+                       WHERE ps.lenh_san_xuat_id = ls.id AND t.trang_thai <> 'HUY') AS co_tem
+         FROM lenh_san_xuat ls JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
+         JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+        WHERE dv.phan_in_id = $1 AND ls.trang_thai <> 'HUY'`.replace(/\s+/g, ' '),
+      [phanInId]
+    );
+    if (!L.laHaiCongDoan(luong)) {
+      const ep = lenh.filter((l) => l.gd === L.GD_EP);
+      if (ep.length) {
+        throw new AppError(`Phần in còn lệnh ép ủi ${ep.map((l) => l.ma_lenh_san_xuat).join(', ')} — hủy lệnh ép trước rồi mới bỏ công đoạn ép`,
+          { status: 409, errorCode: 'DA_LAP_EP', details: ep.map((l) => l.id) });
+      }
+    }
+    let doiLenh = 0; const giu = [];
+    for (const l of lenh) {
+      const dau = L.laCongDoanDau(luong, epT, l.gd);
+      if (dau === !!l.la_cong_doan_dau) continue;
+      if (l.co_tem) { giu.push(l.ma_lenh_san_xuat); continue; }
+      // eslint-disable-next-line no-await-in-loop
+      await client.query('UPDATE lenh_san_xuat SET la_cong_doan_dau = $2, updated_by = $3, updated_date = CURRENT_TIMESTAMP WHERE id = $1',
+        [l.id, dau, actorId]);
+      doiLenh += 1;
+    }
+    await client.query(
+      `UPDATE phan_in SET luong_sx = $2::varchar, ep_truoc = $3, la_in_kieng = ($2::varchar = 'IN_KIENG'), luong_sx_sua_tay = true,
+              luong_sx_tg = CURRENT_TIMESTAMP, luong_sx_boi = $4, updated_by = $4, updated_date = CURRENT_TIMESTAMP
+        WHERE id = $1`.replace(/\s+/g, ' '),
+      [phanInId, luong, epT, actorId]
+    );
+    await client.query(
+      `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_cu, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+       VALUES ('phan_in', $1, 'DOI_LUONG_SX', $2::jsonb, $3::jsonb, $4, CURRENT_TIMESTAMP, $4)`,
+      [String(phanInId), JSON.stringify({ luong_sx: luongCu, ep_truoc: !!cu.ep_truoc }),
+        JSON.stringify({ luong_sx: luong, ep_truoc: epT, ly_do: ly, so_lenh_doi_cong_doan_dau: doiLenh, lenh_giu: giu }), actorId]
+    );
+    return { ma_phan: cu.ma_phan, doiLenh, giu };
+  });
+  sockets.emit('workflow:updated', { phanInId, action: 'doi-luong' });
+  sockets.emit('dashboard:refresh', {});
+  return { phan_in_id: phanInId, luong_sx: luong, ep_truoc: epT, so_lenh_doi: kq.doiLenh, lenh_da_in_tem_giu: kq.giu };
 }
 
 async function datKhoaErp(phanInId, khoa, actorId) {
@@ -486,6 +552,6 @@ async function moPhanIn(phanInId, actorId) {
 
 module.exports = {
   traCuu, chiTiet, suaPhanIn, suaDotVai, datGiaiDoan, huyDotVai, moDotVai, huyMucReady, DICH,
-  datKhoaErp, luiVe, dungBuocLui, huyLe, luuPhanCong, huyPhanIn, moPhanIn, DICH_LUI,
+  datKhoaErp, datLuongSx, luiVe, dungBuocLui, huyLe, luuPhanCong, huyPhanIn, moPhanIn, DICH_LUI,
   xemKeHoachLenh, suaKeHoachLenh, suaKeHoachTam,
 };

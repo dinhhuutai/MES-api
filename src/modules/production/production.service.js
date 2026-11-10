@@ -24,6 +24,24 @@ const { ghiInTem, taoPayload, laMaTemErp, ghiChuaCoMaErp, ghiChuaGuiDuoc } = req
 const { apiChoPhepPhanIn } = require('../../utils/caiDatApi');
 const { tenNgc } = require('../../utils/nhaGiaCong'); // tách lệnh theo nhà gia công (27/10/2026)
 const { coCotThoInKh, chuanHoaThoIn } = require('../../utils/thoInKeHoach');
+// Luồng theo tính chất in (mig 126): tem in kiếng nhập loại + hệ số kiếng; tem công đoạn đầu không vào KCS.
+const { canNhapKieng, nhanCongDoan } = require('../../utils/luongSanXuat');
+const loaiKieng = require('../loaikieng/loaikieng.service');
+const loaiKiengRepo = require('../loaikieng/loaikieng.repository');
+
+// Ô "Loại kiếng / Hệ số kiếng" của sidebar in tem (mig 126): `can` = lệnh công đoạn IN của phần in kiếng ⇒ bắt buộc nhập;
+//   `ds` = danh mục kiếng đang dùng; `goi_y` = loại + hệ số của tem in kiếng gần nhất của lệnh (điền sẵn — nhớ theo lệnh).
+//   Lỗi đọc (thiếu bảng) ⇒ { can, ds: [] } — sidebar vẫn mở được, in tem sẽ báo lỗi rõ.
+async function kiengCuaLenh(lenh) {
+  const can = canNhapKieng(lenh && lenh.luong_sx, lenh && lenh.giai_doan);
+  if (!can) return { can: false };
+  try {
+    const [ds, goiY] = await Promise.all([loaiKiengRepo.danhSach(), loaiKiengRepo.ganNhatCuaLenh(lenh.id)]);
+    return { can: true, ds, goi_y: goiY };
+  } catch (e) {
+    return { can: true, ds: [], goi_y: null };
+  }
+}
 
 // Gắn `phan_in_list` (1 dòng / phần in) cho các lệnh GOM SET — màn Xác nhận chạy tách dòng theo phần in,
 // hợp nhất ô ở STT + nút thao tác. Lệnh 1 phần in KHÔNG gắn (FE render như cũ, khỏi phình payload).
@@ -75,6 +93,8 @@ async function getRun(lenhId) {
            dot_vai: dotVai, vai_huy: vaiHuy, vai_cho_tem: vaiTrong(vaiCho) ? null : vaiCho,
            phan_cong: phieu ? await phanCongHienThi(lenh, phieu, phanCong) : phanCong,
            goi_y_tem: await goiYTemMeta(lenhId, phieu?.id),
+           cong_doan: nhanCongDoan(lenh.luong_sx, lenh.giai_doan), // "In kiếng" / "In" / "Ép ủi" — null với phần in 1 công đoạn
+           kieng: await kiengCuaLenh(lenh),
            so_phan_in: soPhanIn, co_gom_set: soPhanIn > 1 };
 }
 
@@ -999,6 +1019,10 @@ async function gopLenhCungPhan(lenhIds, actorId, { lyDo = '' } = {}) {
     if (new Set(ds.map((l) => l.chuyen_id || '')).size !== 1) {
       throw new AppError('Chỉ gộp các lệnh cùng chuyền', { status: 409, errorCode: 'KHAC_CHUYEN' });
     }
+    // Mig 126: lệnh IN và lệnh ÉP ỦI của cùng phần in 2 công đoạn là 2 công đoạn khác nhau — không bao giờ cộng chung.
+    if (new Set(ds.map((l) => l.giai_doan || 'IN')).size !== 1) {
+      throw new AppError('Các lệnh khác công đoạn (in / ép ủi) — không gộp số lượng chung', { status: 409, errorCode: 'KHAC_CONG_DOAN' });
+    }
     // Đợt khác nhà gia công không cộng chung (27/10/2026, người dùng chốt) — mỗi lệnh 1 NGC và cùng NGC.
     if (new Set(ds.map((l) => l.ngc_khoa || '')).size !== 1 || ds.some((l) => String(l.ngc_khoa || '').includes('|'))) {
       throw new AppError('Các lệnh khác nhà gia công — không gộp số lượng chung', { status: 409, errorCode: 'KHAC_NHA_GIA_CONG' });
@@ -1132,7 +1156,7 @@ async function startProductionBatch(items, actorId) {
     for (const x of hopLe) {
       const l = theoId.get(x.lenhId);
       if (!l || l.trang_thai !== 'RELEASE_2' || l.so_phieu > 0 || (l.phan_in_ids || []).length !== 1) continue;
-      const k = `${l.phan_in_ids[0]}|${l.chuyen_id || ''}|${x.chuyenId || l.chuyen_id || ''}|${l.ngc_khoa || ''}`; // + nhà gia công
+      const k = `${l.phan_in_ids[0]}|${l.chuyen_id || ''}|${x.chuyenId || l.chuyen_id || ''}|${l.ngc_khoa || ''}|${l.giai_doan || 'IN'}`; // + nhà gia công + công đoạn
       if (!nhom.has(k)) nhom.set(k, []);
       nhom.get(k).push(x);
     }
@@ -1321,6 +1345,9 @@ async function printTem(phieuId, soLuong, actorId, body) {
   const target = Number(lenh?.so_luong_release) || 0;
   const them = meta.btpTruoc ? { btp: qty } : qty;
   if (target > 0) kiemTranIn(target, await repo.getPrintedTach(phieuId), them);
+  // Mig 126: tem in kiếng ⇒ bắt buộc loại kiếng + hệ số (trước khi xin mã tem ERP); tem công đoạn đầu không vào KCS.
+  const kieng = await loaiKieng.kiemKiengIn(canNhapKieng(lenh?.luong_sx, lenh?.giai_doan), body);
+  const metaCd = { congDoanDau: !!lenh?.la_cong_doan_dau, ...kieng };
 
   // In tem xong tự đưa vào xe phơi mặc định + bắt đầu đếm ngược ngay.
   const xe = await repo.getDefaultXePhoi();
@@ -1337,7 +1364,7 @@ async function printTem(phieuId, soLuong, actorId, body) {
   let vaiCho = null; // số vải hủy / thiếu đang CHỜ của phiếu — gắn vào tem này (21/10/2026)
   await withTransaction(async (client) => {
     await kiemTran110Tx(client, phieuId, target, them);
-    newTemId = await repo.createTem(client, { phieuId, maTem, soLuong: qty, ...meta }, actorId);
+    newTemId = await repo.createTem(client, { phieuId, maTem, soLuong: qty, ...meta, ...metaCd }, actorId);
     await repo.logTemPrint(client, { temId: newTemId, maTem, actorId });
     await repo.logNgayCtTem(client, newTemId, body?.ngayCt, actorId);
     await repo.addTemToXe(client, { temId: newTemId, xeId: xe.id, soLuongPhoi: qty, phut: dryMin }, actorId);
@@ -1442,6 +1469,9 @@ async function printTemBatch(phieuId, items, actorId, body) {
   if (target > 0) {
     kiemTranIn(target, await repo.getPrintedTach(phieuId), them, { tienTo: 'Vượt quá 110% SL release của đợt SX' });
   }
+  // Mig 126: tem in kiếng ⇒ bắt buộc loại kiếng + hệ số (1 bộ cho cả lượt); tem công đoạn đầu không vào KCS.
+  const kieng = await loaiKieng.kiemKiengIn(canNhapKieng(lenh?.luong_sx, lenh?.giai_doan), body);
+  const metaCd = { congDoanDau: !!lenh?.la_cong_doan_dau, ...kieng };
 
   const xe = await repo.getDefaultXePhoi();
   if (!xe) throw new AppError('Chưa cấu hình xe phơi để bắt đầu phơi', { status: 409, errorCode: 'NO_XE' });
@@ -1461,7 +1491,7 @@ async function printTemBatch(phieuId, items, actorId, body) {
       const maTem = maTemList[i];
       // GC màu vải nhập RIÊNG từng dòng ở modal gom set → ưu tiên `it.gcMauVai`; không có thì dùng ô chung.
       const temId = await repo.createTem(client, {
-        phieuId, maTem, soLuong: it.soLuong, ...meta,
+        phieuId, maTem, soLuong: it.soLuong, ...meta, ...metaCd,
         gcMauVai: (it.gcMauVai || '').trim() || meta.gcMauVai,
         ...(it.btpTruoc !== undefined ? { btpTruoc: it.btpTruoc } : {}),
         ...(it.btpCuoi !== undefined ? { btpCuoi: it.btpCuoi } : {}),
@@ -1771,7 +1801,7 @@ async function cancelPrintTem(temId, lyDo, actorId) {
   const tem = await repo.getTemForCancel(temId);
   if (!tem) throw new AppError('Tem không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   if (tem.trang_thai === 'HUY') throw new AppError('Tem đã hủy', { status: 409, errorCode: 'ALREADY' });
-  if (!['IN', 'DANG_PHOI', 'DA_KHO'].includes(tem.trang_thai)) {
+  if (!['IN', 'DANG_PHOI', 'DA_KHO', 'CHO_CD_SAU'].includes(tem.trang_thai)) { // CHO_CD_SAU = tem công đoạn đầu khô xong (mig 126)
     throw new AppError('Tem đã qua kiểm/giao — không thể hủy lệnh in tem', { status: 409, errorCode: 'WRONG_STAGE' });
   }
   const daKiem = tem.sl_kcs_dat + tem.sl_kcs_sua + tem.sl_kcs_huy + tem.sl_oqc_dat + tem.sl_da_giao;
@@ -1837,7 +1867,7 @@ async function reopenPrintTem(temId, lyDo, actorId) {
   //   ⇒ đang phơi · đã phơi xong ⇒ đã khô · còn lại ⇒ mới in.
   const chup = tem.huy_moi || {};
   const xeIds = Array.isArray(chup.xe_phoi_ids) ? chup.xe_phoi_ids : (tem.xe_huy_ids || []);
-  let trangThai = ['IN', 'DANG_PHOI', 'DA_KHO'].includes(chup.trang_thai_cu) ? chup.trang_thai_cu : null;
+  let trangThai = ['IN', 'DANG_PHOI', 'DA_KHO', 'CHO_CD_SAU'].includes(chup.trang_thai_cu) ? chup.trang_thai_cu : null;
   if (!trangThai) trangThai = xeIds.length ? 'DANG_PHOI' : (tem.da_phoi_xong ? 'DA_KHO' : 'IN');
   if (trangThai === 'DANG_PHOI' && !xeIds.length) trangThai = tem.da_phoi_xong ? 'DA_KHO' : 'IN';
 

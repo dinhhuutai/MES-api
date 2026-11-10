@@ -87,7 +87,7 @@ const NGUON_DOT = `
     SELECT ls.id AS lenh_id, ls.trang_thai AS lenh_tt
       FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
      WHERE lsd.dot_vai_ve_id = d.id AND ls.trang_thai <> 'HUY'
-     ORDER BY ls.created_date DESC LIMIT 1) l ON true`;
+     ORDER BY ls.la_cong_doan_dau, ls.created_date DESC LIMIT 1) l ON true`; // mig 126: gương `utils/stage.js dotSource`
 
 async function getDotVaiList(phanInId) {
   const sql = `
@@ -130,7 +130,8 @@ const COT_PHAN_IN = {
   //   của `barcode` (BarcodePTHDH). Sửa lệch nhau là ERP không đối soát được lượt in tem.
   ddh_sub_id: 'text',
   so_luong_don_hang: 'int', thoi_gian_cho_kho_phut: 'int',
-  la_in_kieng: 'bool',
+  // ⚠ `la_in_kieng` BỎ khỏi danh sách (mig 126): cờ này nay đi theo `luong_sx` — đổi luồng qua khối "Luồng sản xuất"
+  //   (`phaninadmin.service datLuongSx`) để còn kiểm lệnh ép ủi đã lập + ghi vết.
 };
 const COT_DOT_VAI = {
   ma_dot_vai: 'text', barcode: 'text', nha_gia_cong: 'text', ghi_chu: 'text',

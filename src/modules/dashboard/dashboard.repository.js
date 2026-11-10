@@ -213,7 +213,7 @@ async function stageCounts() {
   const dkPain = await dkTrang('DB_TONG_QUAN', 'pin', 'dom0.phan_in_id');
   // GIAI ĐOẠN DOMINANT mỗi phần in ("mỗi phần in 1 trạm" — utils/stage.js), dùng CHUNG logic với
   // orders.stageCondition ⇒ Σ(phần in mỗi stage) = tổng phần in, khớp mọi danh sách + đường vàng.
-  const lenh = (col) => `(SELECT ls.${col} FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id WHERE lsd.dot_vai_ve_id=d.id AND ls.trang_thai<>'HUY' ORDER BY ls.created_date DESC LIMIT 1)`;
+  const lenh = (col) => `(SELECT ls.${col} FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id WHERE lsd.dot_vai_ve_id=d.id AND ls.trang_thai<>'HUY' ORDER BY ls.la_cong_doan_dau, ls.created_date DESC LIMIT 1)`; // mig 126: ưu tiên lệnh công đoạn cuối — gương `utils/stage.js dotSource`
   // `dom` lọc theo cấu hình HIỂN THỊ THEO PHƯƠNG ÁN IN (mig 067) nhưng CHỪA giai đoạn READY:
   // READY đã có khóa cấu hình riêng ở màn của nó (KT_READY / CL_QC_READY), lọc thêm ở đây sẽ lệch số.
   // ⚠ KHÔNG viết chú thích dạng `-- …` bên trong chuỗi SQL: nhiều query gộp về 1 dòng (IPS-safe)
@@ -694,7 +694,7 @@ async function flowRows(tramMa = '') {
       SELECT DISTINCT ON (lsd.dot_vai_ve_id) lsd.dot_vai_ve_id, ls.id AS lenh_id, ls.trang_thai AS lenh_tt, ls.created_date AS lenh_tg, ${gioSxKhSql('ls.tg_bd_kh', 'ls.ngay_ke_hoach')} AS lenh_bd_kh
       FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
       WHERE ls.trang_thai <> 'HUY'
-      ORDER BY lsd.dot_vai_ve_id, ls.created_date DESC
+      ORDER BY lsd.dot_vai_ve_id, ls.la_cong_doan_dau, ls.created_date DESC
     ),
     ph AS (
       SELECT lk.dot_vai_ve_id, min(ps.tg_bd) AS phieu_tg, bool_or(ps.trang_thai='DANG_CHAY') AS co_chay

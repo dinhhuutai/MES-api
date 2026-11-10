@@ -96,8 +96,10 @@ const SQL_DONG = `
     LEFT JOIN LATERAL (SELECT h.id::text AS hskt_id, h.barcode_hskt, h.phuong_an_in, h.inset
                          FROM hskt_phan_in hp JOIN ho_so_ky_thuat h ON h.id = hp.hskt_id AND h.dang_hoat_dong
                         WHERE hp.phan_in_id = pin.id AND hp.dang_hoat_dong LIMIT 1) hs ON TRUE
-   WHERE ls.id = ANY($1::uuid[]) AND ls.trang_thai <> 'HUY'
+   WHERE ls.id = ANY($1::uuid[]) AND ls.trang_thai <> 'HUY' AND ls.giai_doan IS DISTINCT FROM 'EP_UI'
    ORDER BY array_position($1::uuid[], ls.id), pin.ma_phan, dv.ma_dot_vai`.replace(/\s+/g, ' ').trim();
+// ⚠ Mig 126: lệnh ÉP ỦI (phần in 2 công đoạn) KHÔNG gửi ERP Release 1 — ERP chưa phân biệt công đoạn, gửi là ERP nhận 2 lần
+//   release cho cùng đợt vải. Chờ ERP thêm tham số công đoạn rồi mới mở.
 
 const sach = (v) => (v == null ? '' : String(v).replace(/[\r\n]+/g, ' ').replace(/,/g, ' ').trim());
 const dsMaVach = (v) => String(v == null ? '' : v).split(',').map((s) => s.trim()).filter(Boolean).join(';');

@@ -2,8 +2,8 @@
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DANH MỤC TÍNH CHẤT IN (mig 123, 04/11/2026, người dùng yêu cầu) — trang *Hệ thống › Tính chất in*.
-//   · `LUONG`    : các luồng (nguồn duy nhất, không FK). ⚠ `luong` HIỆN CHỈ LÀ PHÂN LOẠI: chưa có chỗ nào đọc nó để đổi cách
-//                  chạy. Làm xong luồng nào thì bật `da_lam` của luồng đó — giao diện đọc cờ này để ghi "đang đi luồng gì".
+//   · `LUONG`    : các luồng (nguồn duy nhất, không FK). Luồng nào đã làm thì `da_lam` = true — giao diện đọc cờ này để
+//                  ghi "đang đi luồng gì". Luồng chạy thật của PHẦN IN nằm ở `phan_in.luong_sx` (`utils/luongSanXuat.js`).
 //   · `tapBoQua` : tập tính chất bị BỎ QUA khi đồng bộ ERP, đọc từ bảng mỗi lượt đồng bộ.
 //
 // ⚠ Hướng an toàn: thiếu bảng (chưa chạy mig) / lỗi đọc / bảng rỗng ⇒ lùi về `BO_QUA_MAC_DINH` (danh sách đã chạy trước đây),
@@ -11,11 +11,15 @@
 // ─────────────────────────────────────────────────────────────────────────────
 const { query } = require('../config/db');
 
+// ⚠ 09/11/2026 (mig 126): IN_KIENG · IN_EP · LOGO ĐÃ CÓ LUỒNG RIÊNG — phần in mới nhận `phan_in.luong_sx` theo cột `luong`
+//   của bảng này (`utils/luongSanXuat.js`). `KHAC` = các tính chất người dùng bảo "thuộc nhóm khác, chưa đụng tới"
+//   (chỉ ép · ép kiếng · in + logo ép · logo + ép nhựa · DANKEO / LS…): vào MES thì đi luồng in thường.
 const LUONG = [
   { ma: 'THUONG', ten: 'In thường', da_lam: true },
-  { ma: 'IN_KIENG', ten: 'In kiếng', da_lam: false },
-  { ma: 'IN_EP', ten: 'In + ép', da_lam: false },
-  { ma: 'LOGO', ten: 'Logo', da_lam: false },
+  { ma: 'IN_KIENG', ten: 'In kiếng', da_lam: true },
+  { ma: 'IN_EP', ten: 'In + ép', da_lam: true },
+  { ma: 'LOGO', ten: 'Logo', da_lam: true },
+  { ma: 'KHAC', ten: 'Nhóm khác (chưa làm)', da_lam: false },
   { ma: 'CHUA_PHAN_LOAI', ten: 'Chưa phân loại', da_lam: false },
 ];
 const MA_LUONG = new Set(LUONG.map((l) => l.ma));

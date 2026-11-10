@@ -108,8 +108,11 @@ function readyFallback(pinId) {
 
 // Rowsource các đợt vải (không DA_GOP/DA_HUY, ĐÃ vào READY — tg_chuyen_ready ≠ null) của phần in + lệnh non-HUY mới nhất.
 // Đợt CHỜ chuyển (pending) bị loại ⇒ dominant chỉ tính đợt đã vào dòng chảy; pending → readyFallback ('CHO_CHUYEN').
+// ⚠ Mig 126: đợt của phần in 2 công đoạn có thể có lệnh IN + lệnh ÉP ỦI ⇒ ưu tiên lệnh công đoạn CUỐI (`la_cong_doan_dau`
+//   false xếp trước) — tem công đoạn đầu không đi KCS/OQC/giao nên tiến độ thật của hàng nằm ở lệnh công đoạn cuối; chưa có
+//   lệnh công đoạn cuối thì lấy lệnh công đoạn đầu (tem khô xong ⇒ `CHO_CD_SAU` ⇒ rơi nhánh "Chờ sản xuất").
 function dotSource(pinId) {
-  const lenh = (col) => `(SELECT ls.${col} FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id WHERE lsd.dot_vai_ve_id=d.id AND ls.trang_thai<>'HUY' ORDER BY ls.created_date DESC LIMIT 1)`;
+  const lenh = (col) => `(SELECT ls.${col} FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id WHERE lsd.dot_vai_ve_id=d.id AND ls.trang_thai<>'HUY' ORDER BY ls.la_cong_doan_dau, ls.created_date DESC LIMIT 1)`;
   return `SELECT d.id, d.phan_in_id, d.tg_chuyen_ready, d.created_date, ${lenh('id')} AS lenh_id, ${lenh('trang_thai')} AS lenh_tt FROM dot_vai_ve d WHERE d.phan_in_id=${pinId} AND d.trang_thai NOT IN ('DA_GOP','DA_HUY') AND d.tg_chuyen_ready IS NOT NULL`;
 }
 

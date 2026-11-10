@@ -21,6 +21,10 @@ const datKhoaErp = asyncHandler(async (req, res) => {
     khoa ? 'Đã khóa đồng bộ ERP' : 'Đã mở khóa — lượt đồng bộ ERP kế tiếp sẽ cập nhật lại phần in này');
 });
 
+// Luồng sản xuất (mig 126): In thường · In kiếng · In + ép · Logo + đánh dấu ép trước.
+const datLuongSx = asyncHandler(async (req, res) =>
+  ok(res, await service.datLuongSx(req.params.phanInId, req.body, req.user.id), 'Đã đổi luồng sản xuất'));
+
 const datGiaiDoan = asyncHandler(async (req, res) => {
   const r = await service.datGiaiDoan(req.params.dotVaiId, req.body, req.user.id);
   return ok(res, r, `Đã đưa đợt vải về ${r.nhan}`);
@@ -64,6 +68,6 @@ const suaKeHoachTam = asyncHandler(async (req, res) =>
   ok(res, await service.suaKeHoachTam(req.params.phanInId, req.params.ktId, req.body || {}, req.user.id), 'Đã sửa kế hoạch tạm'));
 
 module.exports = {
-  traCuu, chiTiet, suaPhanIn, suaDotVai, datKhoaErp, datGiaiDoan, luiVe, huyLe, luuPhanCong, huyPhanIn, moPhanIn,
+  traCuu, chiTiet, suaPhanIn, suaDotVai, datKhoaErp, datLuongSx, datGiaiDoan, luiVe, huyLe, luuPhanCong, huyPhanIn, moPhanIn,
   huyDotVai, moDotVai, huyMucReady, xemKeHoachLenh, suaKeHoachLenh, suaKeHoachTam,
 };

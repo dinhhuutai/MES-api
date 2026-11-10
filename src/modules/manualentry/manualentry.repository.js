@@ -5,6 +5,7 @@ const { soDauSql, conRelease } = require('../../utils/btpKhacKh');
 const AppError = require('../../utils/AppError');
 const { mauTim } = require('../../utils/timKiem');
 const { chuanHoaDsMa } = require('../../utils/maPhanIn');
+const { luongTheoTinhChat } = require('../../utils/luongSanXuat');
 
 // ─── Tra cứu để chọn "có sẵn" ────────────────────────────────────────────────
 async function searchKhach(q, limit = 30) {
@@ -109,14 +110,16 @@ async function createChainTx(client, p, actorId) {
     // ⚠ ĐỪNG nhầm với `dot_vai_ve.barcode` (`IDDotReady`) — mã đó ở mức ĐỢT VẢI và dùng chung nhiều phần in.
     // `ddh_sub_id` = ERP `DDHSUBID` — số dòng chi tiết đơn, ứng 1:1 với PHẦN IN (mig 088, trước ở đợt vải).
     // ⚠ Bằng 3 số cuối của `barcode` — nhập lệch nhau là ERP không đối soát được lượt in tem.
+    // Luồng sản xuất (mig 126): ô "In kiếng" tích ⇒ IN_KIENG; không thì theo *Tính chất in* (như phần in từ ERP).
+    const luongSx = p.phanIn?.la_in_kieng ? 'IN_KIENG' : await luongTheoTinhChat(p.phanIn?.tinh_chat_in);
     const r = await client.query(
       `INSERT INTO phan_in (ma_hang_id, ma_phan, mau_vai, kich_vai, kich_phim, tinh_chat_in, do_in, mau_in,
-         so_luong_don_hang, la_in_kieng, thoi_gian_cho_kho_phut, barcode, ddh_sub_id, ghi_chu, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id, ma_phan`,
+         so_luong_don_hang, la_in_kieng, thoi_gian_cho_kho_phut, barcode, ddh_sub_id, ghi_chu, created_by, luong_sx, luong_sx_tg)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,CURRENT_TIMESTAMP) RETURNING id, ma_phan`,
       [maHangId, ma, p.phanIn?.mau_vai || null, p.phanIn?.kich_vai || null, p.phanIn?.kich_phim || null,
         p.phanIn?.tinh_chat_in || null, p.phanIn?.do_in || null, p.phanIn?.mau_in || null,
-        p.phanIn?.so_luong_don_hang ?? null, !!p.phanIn?.la_in_kieng, p.phanIn?.thoi_gian_cho_kho_phut ?? null,
-        chuanHoaDsMa(p.phanIn?.barcode), p.phanIn?.ddh_sub_id || null, p.phanIn?.ghi_chu || null, actorId]
+        p.phanIn?.so_luong_don_hang ?? null, luongSx === 'IN_KIENG', p.phanIn?.thoi_gian_cho_kho_phut ?? null,
+        chuanHoaDsMa(p.phanIn?.barcode), p.phanIn?.ddh_sub_id || null, p.phanIn?.ghi_chu || null, actorId, luongSx]
     );
     phanInId = r.rows[0].id;
     maPhan = r.rows[0].ma_phan;
@@ -159,7 +162,7 @@ async function searchVaiVe(q, limit = 40) {
             pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim,
             mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
             COALESCE((SELECT SUM(COALESCE(lsd.so_luong,0)) FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id
-               WHERE lsd.dot_vai_ve_id=dv.id AND ls.trang_thai<>'HUY'),0)::int AS da_release
+               WHERE lsd.dot_vai_ve_id=dv.id AND ls.trang_thai<>'HUY' AND ls.giai_doan IS DISTINCT FROM 'EP_UI'),0)::int AS da_release
      FROM dot_vai_ve dv
      JOIN phan_in pin ON pin.id = dv.phan_in_id AND pin.dang_hoat_dong
      JOIN ma_hang mh ON mh.id = pin.ma_hang_id
@@ -175,7 +178,7 @@ async function searchVaiVe(q, limit = 40) {
   const ids = rows.map((r) => r.id);
   const { rows: rels } = await query(
     `SELECT lsd.dot_vai_ve_id, ls.id AS lenh_san_xuat_id, ls.ma_lenh_san_xuat, ls.trang_thai,
-            lsd.so_luong, ls.so_luong_release
+            lsd.so_luong, ls.so_luong_release, ls.giai_doan
      FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
      WHERE lsd.dot_vai_ve_id = ANY($1::uuid[]) AND ls.trang_thai <> 'HUY'
      ORDER BY ls.created_date`.replace(/\s+/g, ' '),

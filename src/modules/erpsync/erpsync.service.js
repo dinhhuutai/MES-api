@@ -351,7 +351,7 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
       if (gn && gn.boQua.has(p)) { soBoQua += 1; continue; } // đợt đã hủy bên ERP, ERP chưa xác nhận lại
       // `laDotMoi` = lần sync NÀY có đợt vải MỚI vào READY (insert mới, hoặc promote đợt cũ còn kẹt).
       // Tách khỏi `intoReady` (chỉ nghĩa "dòng xử lý xong") vì luật KTCankiemtra chỉ áp cho ĐỢT MỚI.
-      let pinId = null; let affectedDotVaiIds = []; let intoReady = false; let laDotMoi = false;
+      let pinId = null; let affectedDotVaiIds = []; let intoReady = false; let laDotMoi = false; let luongPin = null;
       try {
         const tgPhoi = Number(p.r.tgphoi);
         // Upsert theo `ma_dot_vai` (idempotent): đợt mới thì tạo, đợt đã có thì cập nhật —
@@ -360,6 +360,9 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
         const { inserted, dotVaiId, pinId: pid } = await processRow(p.r, p.maPhan, p.maDotVai, loaiDotVaiId, new Date());
         if (inserted) { soMoi += 1; newDotVaiIds.push(dotVaiId); } else soCapNhat += 1;
         pinId = pid; affectedDotVaiIds = [dotVaiId]; intoReady = true; laDotMoi = !!inserted;
+        // Luồng sản xuất của phần in MỚI theo *Tính chất in* (mig 126) — phần in đã có luồng thì giữ (đổi ở Quản trị phần in).
+        try { luongPin = await repo.ganLuongSx(pid, erpTinhChatIn(p.r)); }
+        catch (e) { console.error(`[erp-sync] ✗ Gán luồng sản xuất lỗi (${p.maPhan}): ${e.message}`); }
         // Chờ khô (`tgphoi`) + 4 giá của phần in (`GiaIn` · `Giaep` · `giainkieng` · `Dongia`, mig 113) — 1 câu.
         await repo.capNhatPhanInPhu(pid, {
           choKhoPhut: Number.isFinite(tgPhoi) && tgPhoi > 0 ? Math.round(tgPhoi) : null,
@@ -403,7 +406,8 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
           catch (e) { console.error(`[erp-sync] ✗ Mở lại phần in có đợt mới lỗi (${p.maPhan}): ${e.message}`); }
           try {
             // ⚠ Truyền đợt vải vừa nhận để ghi vào `ghi_chu` (biết ĐỢT NÀO kích hoạt lần tự động này).
-            if (ktCan === 0) await repo.simulateReadyDone(pinId, affectedDotVaiIds); // giả lập KT xong → Release 1
+            // LOGO (mig 126): không qua Kỹ thuật / IQC ⇒ đợt mới vào thẳng Kế hoạch như KTCankiemtra=0.
+            if (ktCan === 0 || luongPin === 'LOGO') await repo.simulateReadyDone(pinId, affectedDotVaiIds); // giả lập KT xong → Release 1
             // KTCankiemtra=1 & phần in đã xong READY một lần rồi (đợt trước ĐÃ RELEASE **hoặc** đã QC
             // xác nhận READY dù chưa release) → đợt vải mới phải qua kỹ thuật lại.
             // ⚠⚠ TỪ 16/09/2026 CHỈ GẮN CỜ, KHÔNG hủy xác nhận READY của phần in (`flagLamLaiReady`

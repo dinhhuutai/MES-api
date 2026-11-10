@@ -93,7 +93,8 @@ async function datSoDauTx(client, dotVaiIds, actorId, { them, nguon, lyDo } = {}
     `SELECT dv.id::text AS id, dv.ma_dot_vai, COALESCE(dv.so_luong_vai_ve,0)::int AS so_luong, dv.so_dau_btp::int AS cu,
             COALESCE((SELECT SUM(COALESCE(lsd.so_luong,0)) FROM lenh_sx_dot_vai lsd
                       JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
-                      WHERE lsd.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY'),0)::int
+                      WHERE lsd.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY'
+                        AND ls.giai_doan IS DISTINCT FROM 'EP_UI'),0)::int
           + COALESCE((SELECT SUM(COALESCE(k.so_luong,0)) FROM ke_hoach_tam k
                       WHERE k.dot_vai_ve_id = dv.id AND k.trang_thai = 'CHO'),0)::int AS da_tong
        FROM dot_vai_ve dv WHERE dv.id = ANY($1::uuid[])`.replace(/\s+/g, ' '),

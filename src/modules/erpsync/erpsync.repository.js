@@ -8,6 +8,25 @@ const { coCotGia, TEN_COT: TEN_COT_GIA } = require('../../utils/giaPhanIn');
 // Khóa đồng bộ ERP của phần in admin đã sửa tay (mig 116) — xem đầu file utils/khoaErp.js.
 const { coCotKhoaErp, khongKhoaSql, dangKhoa } = require('../../utils/khoaErp');
 const { chuanMauMuc, MAU_IN_KHOA_SQL } = require('../../utils/mauMuc');
+const { luongTheoTinhChat } = require('../../utils/luongSanXuat');
+
+// LUỒNG SẢN XUẤT (mig 126): phần in CHƯA có luồng (vừa tạo từ ERP) ⇒ gán theo *Tính chất in*. Phần in đã có luồng GIỮ
+//   NGUYÊN (đổi tay ở Quản trị phần in; đổi phân loại tính chất in thì `tinhchatin.service` tự áp cho phần in chưa có lệnh).
+//   Trả luồng hiện tại của phần in.
+async function ganLuongSx(pinId, tinhChatIn) {
+  // Chỉ GHI khi phần in chưa có luồng — ERP gửi lại cùng dòng mỗi 5 phút, ghi đè mỗi lượt là phình dòng vô ích.
+  const { rows: co } = await query('SELECT luong_sx FROM phan_in WHERE id = $1', [pinId]);
+  if (!co[0]) return null;
+  if (co[0].luong_sx) return co[0].luong_sx;
+  const luong = await luongTheoTinhChat(tinhChatIn);
+  const { rows } = await query(
+    `UPDATE phan_in SET luong_sx = COALESCE(luong_sx, $2), la_in_kieng = (COALESCE(luong_sx, $2) = 'IN_KIENG'),
+            luong_sx_tg = CURRENT_TIMESTAMP
+      WHERE id = $1 RETURNING luong_sx`.replace(/\s+/g, ' '),
+    [pinId, luong]
+  );
+  return rows[0] ? rows[0].luong_sx : luong;
+}
 
 // ----- Log đồng bộ -----
 async function createSyncLog({ nguon, fromDate, tuDong }, actorId) {
@@ -1037,7 +1056,7 @@ module.exports = {
   upsertKhachHang, upsertDonHang, upsertMaHang, upsertPhanIn, setPhanInDryMin, capNhatPhanInPhu, getLoaiDotVaiId, upsertDotVai,
   findPhanInIdByMaPhan, promotePhanInToReady,
   anhChupPhanInTheoMa, dotVaiDaCo, ganLaiPhanIn,
-  readyCheckpointIds, simulateReadyDone, isPhanInReleased, canLamLaiReady, flagLamLaiReady,
+  ganLuongSx, readyCheckpointIds, simulateReadyDone, isPhanInReleased, canLamLaiReady, flagLamLaiReady,
   chiHuyQcReady, reopenReadyForPhanIn, setDotVaiKtCanKiemTra,
   upsertHsktForPin, eligibleDotVaiByIds, openSetByGhiChu,
   applyPainTheoSanLuong, NGUONG_VAI_IN_MAY, LOAI_LUON_IN_BAN, hsktCoBoSung, hsktBoSungSaiPain, moLaiPhanInCoDotMoi,
