@@ -25,6 +25,13 @@ const datKhoaErp = asyncHandler(async (req, res) => {
 const datLuongSx = asyncHandler(async (req, res) =>
   ok(res, await service.datLuongSx(req.params.phanInId, req.body, req.user.id), 'Đã đổi luồng sản xuất'));
 
+// Bỏ 1 công đoạn của phần in 2 công đoạn (11/11/2026): body { bo: 'IN'|'EP_UI', lyDo, doiPa, xemTruoc }.
+const boCongDoan = asyncHandler(async (req, res) => {
+  const r = await service.boCongDoan(req.params.phanInId, req.body || {}, req.user.id);
+  if (r.xem_truoc) return ok(res, r);
+  return ok(res, r, `Đã bỏ công đoạn ${r.nhan_bo} — phần in chuyển sang luồng ${r.ten_luong_moi}`);
+});
+
 const datGiaiDoan = asyncHandler(async (req, res) => {
   const r = await service.datGiaiDoan(req.params.dotVaiId, req.body, req.user.id);
   return ok(res, r, `Đã đưa đợt vải về ${r.nhan}`);
@@ -68,6 +75,6 @@ const suaKeHoachTam = asyncHandler(async (req, res) =>
   ok(res, await service.suaKeHoachTam(req.params.phanInId, req.params.ktId, req.body || {}, req.user.id), 'Đã sửa kế hoạch tạm'));
 
 module.exports = {
-  traCuu, chiTiet, suaPhanIn, suaDotVai, datKhoaErp, datLuongSx, datGiaiDoan, luiVe, huyLe, luuPhanCong, huyPhanIn, moPhanIn,
+  traCuu, chiTiet, suaPhanIn, suaDotVai, datKhoaErp, datLuongSx, boCongDoan, datGiaiDoan, luiVe, huyLe, luuPhanCong, huyPhanIn, moPhanIn,
   huyDotVai, moDotVai, huyMucReady, xemKeHoachLenh, suaKeHoachLenh, suaKeHoachTam,
 };

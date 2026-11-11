@@ -198,12 +198,127 @@ async function slDaInCuaDotVai(dotVaiId) {
   return Number(rows[0]?.sl) || 0;
 }
 
-async function ghiAudit(tenBang, id, hanhDong, cu, moi, actorId) {
-  await query(
+// `client` (tùy chọn) = ghi trong transaction của bên gọi.
+async function ghiAudit(tenBang, id, hanhDong, cu, moi, actorId, client = null) {
+  await (client || { query }).query(
     `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_cu, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
      VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, CURRENT_TIMESTAMP, $6)`,
     [tenBang, String(id), hanhDong, JSON.stringify(cu || {}), JSON.stringify(moi || {}), actorId]
   );
+}
+
+// ─── LUỒNG SẢN XUẤT · BỎ 1 CÔNG ĐOẠN (11/11/2026) — dữ liệu cho `phaninadmin.service datLuongSx / boCongDoan` ──────
+// Lệnh sống của phần in + công đoạn + số đo để quyết định: có phiếu (KỂ CẢ phiếu HUY — đúng điều kiện của
+//   `planning.rollbackLenh`), số tem sống, số tem công đoạn đầu (kể cả tem đã hủy — để mở lại không kẹt), số phần in
+//   của lệnh (lệnh gom set cũ nhiều phần in thì không đổi công đoạn được — đổi là kéo cả phần in khác).
+async function lenhTheoCongDoan(phanInId, client = null) {
+  const { gdSql } = require('../../utils/luongSanXuat');
+  const { rows } = await (client || { query }).query(
+    `SELECT ls.id, ls.ma_lenh_san_xuat, ls.trang_thai, ${gdSql('ls')} AS gd, ls.la_cong_doan_dau, cs.ma_chuyen,
+            EXISTS (SELECT 1 FROM phieu_san_xuat px WHERE px.lenh_san_xuat_id = ls.id) AS co_phieu,
+            (SELECT count(*) FROM phieu_san_xuat p2 JOIN tem t2 ON t2.phieu_san_xuat_id = p2.id
+              WHERE p2.lenh_san_xuat_id = ls.id AND t2.trang_thai <> 'HUY')::int AS so_tem,
+            (SELECT count(*) FROM phieu_san_xuat p3 JOIN tem t3 ON t3.phieu_san_xuat_id = p3.id
+              WHERE p3.lenh_san_xuat_id = ls.id AND t3.cong_doan_dau AND t3.trang_thai <> 'HUY')::int AS so_tem_dau,
+            (SELECT count(DISTINCT d2.phan_in_id) FROM lenh_sx_dot_vai l2 JOIN dot_vai_ve d2 ON d2.id = l2.dot_vai_ve_id
+              WHERE l2.lenh_san_xuat_id = ls.id)::int AS so_phan_in
+       FROM lenh_san_xuat ls LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
+      WHERE ls.trang_thai <> 'HUY'
+        AND ls.id IN (SELECT lsd.lenh_san_xuat_id FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+                       WHERE dv.phan_in_id = $1)
+      ORDER BY ls.created_date`.replace(/\s+/g, ' ').trim(),
+    [phanInId]
+  );
+  return rows;
+}
+
+// Kế hoạch tạm của các đợt của phần in + công đoạn (`khtGdSql` — chạy cả khi chưa có cột mig 128).
+async function keHoachTamTheoCongDoan(phanInId) {
+  const { khtGdSql } = require('../../utils/luongSanXuat');
+  const { rows } = await query(
+    `SELECT kt.id, kt.dot_vai_ve_id, dv.ma_dot_vai, kt.so_luong, cs.ma_chuyen, ${khtGdSql('kt')} AS gd
+       FROM ke_hoach_tam kt JOIN dot_vai_ve dv ON dv.id = kt.dot_vai_ve_id
+       LEFT JOIN chuyen_san_xuat cs ON cs.id = kt.chuyen_id
+      WHERE kt.phan_in_id = $1 ORDER BY dv.created_date`.replace(/\s+/g, ' ').trim(),
+    [phanInId]
+  );
+  return rows;
+}
+
+// Phần in KHÁC dùng chung HSKT đang hoạt động (đổi phương án in hồ sơ là đổi cho cả các phần in này).
+async function phanInCungHskt(hsktId, phanInId) {
+  const { rows } = await query(
+    `SELECT pin.id, pin.ma_phan, pin.luong_sx FROM hskt_phan_in hp JOIN phan_in pin ON pin.id = hp.phan_in_id
+      WHERE hp.hskt_id = $1 AND hp.dang_hoat_dong AND pin.dang_hoat_dong AND pin.id <> $2 ORDER BY pin.ma_phan`
+      .replace(/\s+/g, ' ').trim(),
+    [hsktId, phanInId]
+  );
+  return rows;
+}
+
+// Đặt luồng sản xuất của phần in (đánh dấu sửa tay — phân loại Tính chất in không ghi đè). `la_in_kieng` là gương.
+async function datLuongPhanInTx(client, phanInId, luong, epTruoc, actorId) {
+  const { laKiengSql } = require('../../utils/luongSanXuat');
+  await client.query(
+    `UPDATE phan_in SET luong_sx = $2::varchar, ep_truoc = $3, la_in_kieng = ${laKiengSql('$2::varchar')}, luong_sx_sua_tay = true,
+            luong_sx_tg = CURRENT_TIMESTAMP, luong_sx_boi = $4, updated_by = $4, updated_date = CURRENT_TIMESTAMP
+      WHERE id = $1`.replace(/\s+/g, ' ').trim(),
+    [phanInId, luong, !!epTruoc, actorId]
+  );
+}
+
+// Đặt công đoạn của lệnh: `laDau` ⇒ `la_cong_doan_dau`; `gd` (tùy chọn) ⇒ đổi luôn `giai_doan` ('IN' | 'EP_UI').
+async function datCongDoanLenhTx(client, lenhIds, { laDau, gd } = {}, actorId) {
+  if (!lenhIds.length) return 0;
+  const { rowCount } = await client.query(
+    `UPDATE lenh_san_xuat SET la_cong_doan_dau = $2, giai_doan = COALESCE($3::varchar, giai_doan),
+            updated_by = $4, updated_date = CURRENT_TIMESTAMP
+      WHERE id = ANY($1::uuid[])`.replace(/\s+/g, ' ').trim(),
+    [lenhIds, !!laDau, gd || null, actorId]
+  );
+  return rowCount;
+}
+
+// Kế hoạch tạm PHẦN ÉP thành kế hoạch tạm của công đoạn duy nhất (bỏ công đoạn In) — chỉ gọi khi đã có cột (mig 128).
+async function doiKeHoachTamSangInTx(client, ids) {
+  if (!ids.length) return 0;
+  const { rowCount } = await client.query(
+    "UPDATE ke_hoach_tam SET giai_doan = 'IN' WHERE id = ANY($1::uuid[]) AND giai_doan = 'EP_UI'", [ids]);
+  return rowCount;
+}
+
+// Lệnh ÉP đã đổi sang công đoạn duy nhất ở lần BỎ CÔNG ĐOẠN IN gần nhất mà còn sống (audit `BO_CONG_DOAN.lenh_doi_gd`) —
+//   thêm lại 2 công đoạn bằng "Đổi luồng" sẽ coi chúng là lệnh IN ⇒ bên gọi chặn.
+async function lenhEpDaDoiConSong(phanInId) {
+  const { rows } = await query(
+    `SELECT ls.ma_lenh_san_xuat FROM lenh_san_xuat ls
+      WHERE ls.trang_thai <> 'HUY'
+        AND ls.id IN (SELECT (x.v)::uuid FROM (
+              SELECT jsonb_array_elements_text(a.gia_tri_moi->'lenh_doi_gd') AS v FROM audit_log a
+               WHERE a.ten_bang = 'phan_in' AND a.id_ban_ghi = $1 AND a.hanh_dong = 'BO_CONG_DOAN'
+                 AND a.gia_tri_moi->>'bo' = 'IN') x)
+      ORDER BY ls.ma_lenh_san_xuat`.replace(/\s+/g, ' ').trim(),
+    [String(phanInId)]
+  );
+  return rows.map((r) => r.ma_lenh_san_xuat);
+}
+
+// NHẢ TEM CÔNG ĐOẠN ĐẦU của các lệnh (lệnh không còn là công đoạn đầu — bỏ công đoạn kia / đổi thứ tự): tem
+//   `cong_doan_dau` ⇒ false; tem đã khô đang "Chờ công đoạn sau" (`CHO_CD_SAU`) ⇒ `DA_KHO` = vào KCS như tem thường
+//   (`quality.repository conKcsSql` hết trả 0). Tem đang in / đang phơi khô xong tự thành `DA_KHO` (`TT_SAU_KHO`).
+//   Tem đã hủy cũng gỡ cờ (mở lại tem không kẹt ở CHO_CD_SAU). Trả các tem SỐNG đã nhả.
+async function nhaTemCongDoanDauTx(client, lenhIds, actorId) {
+  if (!lenhIds.length) return [];
+  const { rows } = await client.query(
+    `UPDATE tem t SET cong_doan_dau = false,
+            trang_thai = CASE WHEN t.trang_thai = 'CHO_CD_SAU' THEN 'DA_KHO' ELSE t.trang_thai END,
+            updated_by = $2, updated_date = CURRENT_TIMESTAMP
+       FROM phieu_san_xuat ps
+      WHERE ps.id = t.phieu_san_xuat_id AND ps.lenh_san_xuat_id = ANY($1::uuid[]) AND t.cong_doan_dau
+      RETURNING t.id, t.ma_tem, t.trang_thai`.replace(/\s+/g, ' ').trim(),
+    [lenhIds, actorId]
+  );
+  return rows.filter((r) => r.trang_thai !== 'HUY');
 }
 
 // ─── TOÀN CẢNH LỆNH / PHIẾU / TEM / XÁC NHẬN của 1 phần in (19/10/2026) ──────────────────────────────────
@@ -216,7 +331,7 @@ async function toanCanh(phanInId) {
   const { SU_KIEN_CUOI_LATERAL, MO_LAI_DUOC_SQL } = require('../production/production.repository');
   const { thoInPhieuSql } = require('../../utils/thoIn');
   const { coCotThoInKh } = require('../../utils/thoInKeHoach');
-  const { khtGdSql } = require('../../utils/luongSanXuat');
+  const { khtGdSql, gdSql } = require('../../utils/luongSanXuat');
   const q1 = (sql, p) => query(sql.replace(/\s+/g, ' ').trim(), p).then((r) => r.rows);
   // KẾ HOẠCH (26/10/2026 — sửa kế hoạch ở Quản trị phần in): giờ BĐ/KT + thợ in KH của lệnh; kế hoạch tạm của các đợt.
   const coTho = await coCotThoInKh();
@@ -232,6 +347,7 @@ async function toanCanh(phanInId) {
   const lenh = await q1(`
     SELECT ls.id, ls.ma_lenh_san_xuat, ls.trang_thai, ls.so_luong_release, ls.ngay_ke_hoach, ls.created_date,
            ls.chuyen_id, ls.tg_bd_kh, ls.tg_kt_kh, ${coTho ? 'ls.tho_in_kh' : 'NULL::text AS tho_in_kh'},
+           ${gdSql('ls')} AS giai_doan,
            EXISTS (SELECT 1 FROM phieu_san_xuat px WHERE px.lenh_san_xuat_id = ls.id) AS co_phieu,
            cs.ma_chuyen, cs.ten_chuyen, lc.ma_loai AS ma_loai_chuyen,
            (SELECT count(DISTINCT d2.phan_in_id) FROM lenh_sx_dot_vai l2 JOIN dot_vai_ve d2 ON d2.id = l2.dot_vai_ve_id
@@ -307,5 +423,7 @@ async function danhMucLoaiDotVai() {
 module.exports = {
   traCuu, getPhanIn, getReady, getDotVaiList, getDotVaiRaw,
   updatePhanIn, updateDotVai, slDaInCuaDotVai, ghiAudit, danhMucLoaiDotVai, toanCanh,
+  lenhTheoCongDoan, keHoachTamTheoCongDoan, phanInCungHskt, datLuongPhanInTx, datCongDoanLenhTx, nhaTemCongDoanDauTx,
+  doiKeHoachTamSangInTx, lenhEpDaDoiConSong,
   COT_PHAN_IN, COT_DOT_VAI,
 };

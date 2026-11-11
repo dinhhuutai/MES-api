@@ -3,16 +3,21 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // LUỒNG SẢN XUẤT THEO TÍNH CHẤT IN (mig 126, 09/11/2026, người dùng chốt) — NGUỒN LUẬT DUY NHẤT, đừng chép ra chỗ khác.
 //
-//   · `phan_in.luong_sx`: THUONG (in thường — luồng hiện tại) · IN_KIENG · IN_EP (in + ép ủi) · LOGO.
+//   · `phan_in.luong_sx`: THUONG (in thường — luồng hiện tại) · IN_KIENG · IN_EP (in + ép ủi) · LOGO · KIENG_KHONG_EP.
 //     Phần in mới từ ERP tự nhận theo *Hệ thống › Tính chất in* (`tinh_chat_in.luong`); sửa tay ở Quản trị phần in.
 //   · 2 CÔNG ĐOẠN (IN_KIENG · IN_EP): mỗi đợt vải có 2 phần ở Kế hoạch — phần IN (`lenh_san_xuat.giai_doan = 'IN'`) và
 //     phần ÉP ỦI (`giai_doan = 'EP_UI'`). Mỗi phần có sức chứa release RIÊNG (= SL vải × số đầu BTP), lập kế hoạch phần
-//     nào trước cũng được, 2 lệnh chạy song song. Ép ủi chỉ lập được khi đợt đã Ready (không qua Kế hoạch tạm).
+//     nào trước cũng được, 2 lệnh chạy song song. Lệnh IN qua Test Run; lệnh ÉP ỦI vào thẳng Chờ chạy (`boQuaTestRun`).
 //   · CÔNG ĐOẠN ĐẦU (mặc định IN; `phan_in.ep_truoc` ⇒ ÉP) — lệnh mang `la_cong_doan_dau`, tem chép sang
 //     `tem.cong_doan_dau`: tem không vào KCS (khô ⇒ `CHO_CD_SAU`). Tem công đoạn CUỐI mới đi KCS → OQC → giao.
 //   · LOGO: đợt mới từ ERP vào thẳng Kế hoạch (hệ thống tự xác nhận READY), lệnh không qua Test Run / Release 2
 //     (Release 1 ⇒ chờ chạy).
 //   · Tem công đoạn IN của phần in KIẾNG phải nhập loại kiếng + hệ số kiếng.
+//   · BỎ 1 CÔNG ĐOẠN của phần in 2 công đoạn (Quản trị phần in › Luồng sản xuất, `phaninadmin.service boCongDoan` — 11/11/2026,
+//     người dùng chốt): bỏ IN (chỉ còn ép ủi) ⇒ luồng LOGO (như hàng chỉ ép EP LUN / EP DECAL…: 1 công đoạn, không qua
+//     Test Run); bỏ ÉP ⇒ In kiếng giữ kiếng (`KIENG_KHONG_EP` — 1 công đoạn, tem vẫn nhập kiếng), In + ép ⇒ In thường.
+//     Luật DUY NHẤT `luongSauKhiBo`. Lệnh của công đoạn còn lại thành lệnh của luồng 1 công đoạn: lệnh ép đổi
+//     `giai_doan` 'EP_UI' → 'IN' (= "phần chính" của đợt ở MỌI câu tính release / giai đoạn / ERP).
 //
 // ⚠ Lệnh cũ trước mig 126 KHÔNG có junction đợt cho phần ép (khung `EP_UI` + `lenh_lien_ket_id` của Gom đợt vải — prod
 //   0 lệnh). Lệnh ÉP mới GẮN đợt vải như lệnh thường ⇒ mọi câu tính "đã release" của đợt PHẢI tách theo công đoạn
@@ -21,27 +26,48 @@
 const { query } = require('../config/db');
 const { normTcin } = require('./tinhChatIn');
 
+// `KIENG_KHONG_EP` (11/11/2026): in kiếng đã BỎ công đoạn ép ủi — 1 công đoạn như In thường nhưng tem in vẫn nhập kiếng.
+//   Chỉ đặt tay ở Quản trị phần in (Tính chất in không phân loại về luồng này).
 const LUONG_SX = [
   { ma: 'THUONG', ten: 'In thường' },
   { ma: 'IN_KIENG', ten: 'In kiếng' },
   { ma: 'IN_EP', ten: 'In + ép' },
   { ma: 'LOGO', ten: 'Logo' },
+  { ma: 'KIENG_KHONG_EP', ten: 'In kiếng (không ép)' },
 ];
 const MA_LUONG_SX = new Set(LUONG_SX.map((l) => l.ma));
 const HAI_CONG_DOAN = new Set(['IN_KIENG', 'IN_EP']);
+const LUONG_KIENG = new Set(['IN_KIENG', 'KIENG_KHONG_EP']);
 const GD_IN = 'IN';
 const GD_EP = 'EP_UI';
 
 const chuanLuong = (v) => (MA_LUONG_SX.has(v) ? v : 'THUONG');
 const laHaiCongDoan = (luong) => HAI_CONG_DOAN.has(luong);
 const laLogo = (luong) => luong === 'LOGO';
+// Phần in kiếng (2 công đoạn hoặc đã bỏ ép) — nguồn của cờ gương `phan_in.la_in_kieng`.
+const laKieng = (luong) => LUONG_KIENG.has(luong);
+const laKiengSql = (expr) => `(${expr} IN ('IN_KIENG','KIENG_KHONG_EP'))`;
 // Công đoạn của 1 lệnh: chỉ 'EP_UI' là ép, còn lại (IN / NULL / '') là in.
 const chuanGd = (gd) => (gd === GD_EP ? GD_EP : GD_IN);
 // Công đoạn ĐẦU của phần in 2 công đoạn (null nếu 1 công đoạn).
 const congDoanDau = (luong, epTruoc) => (laHaiCongDoan(luong) ? (epTruoc ? GD_EP : GD_IN) : null);
 const laCongDoanDau = (luong, epTruoc, gd) => congDoanDau(luong, epTruoc) === chuanGd(gd);
-// Tem công đoạn IN của phần in kiếng ⇒ bắt buộc loại kiếng + hệ số.
-const canNhapKieng = (luong, gd) => luong === 'IN_KIENG' && chuanGd(gd) === GD_IN;
+// Tem công đoạn IN của phần in kiếng (kể cả kiếng đã bỏ ép) ⇒ bắt buộc loại kiếng + hệ số.
+const canNhapKieng = (luong, gd) => laKieng(luong) && chuanGd(gd) === GD_IN;
+// LỆNH KHÔNG QUA TEST RUN — vào thẳng Chờ chạy (`RELEASE_2`) ngay lúc tạo: phần in LOGO (mig 126) · công đoạn ÉP ỦI của phần
+//   in 2 công đoạn (11/11/2026, người dùng chốt: "in cho qua Test Run, còn ép ủi vào thẳng chờ sản xuất"). Nguồn DUY NHẤT —
+//   mọi đường tạo lệnh (Release 1 · Xác nhận kế hoạch tạm · Gom đợt vải · Lập lại KH từ gia công về xưởng) gọi hàm này.
+const boQuaTestRun = (luong, gd) => laLogo(luong) || chuanGd(gd) === GD_EP;
+// SQL cho lệnh `ls` đã có: lệnh ép ủi, hoặc lệnh mà mọi phần in đều LOGO.
+const boQuaTestRunLenhSql = (ls = 'ls') => `(${ls}.giai_doan = '${GD_EP}' OR (EXISTS (SELECT 1 FROM lenh_sx_dot_vai zbq WHERE zbq.lenh_san_xuat_id = ${ls}.id)
+  AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai zbq2 JOIN dot_vai_ve zbd ON zbd.id = zbq2.dot_vai_ve_id JOIN phan_in zbp ON zbp.id = zbd.phan_in_id
+                   WHERE zbq2.lenh_san_xuat_id = ${ls}.id AND zbp.luong_sx IS DISTINCT FROM 'LOGO')))`;
+// Luồng của phần in 2 công đoạn sau khi BỎ công đoạn `bo` ('IN' | 'EP_UI') — null nếu không phải 2 công đoạn.
+function luongSauKhiBo(luong, bo) {
+  if (!laHaiCongDoan(luong)) return null;
+  if (chuanGd(bo) === GD_IN) return 'LOGO';
+  return luong === 'IN_KIENG' ? 'KIENG_KHONG_EP' : 'THUONG';
+}
 
 // Nhãn công đoạn hiện ở màn hình — null với phần in 1 công đoạn (không vẽ badge).
 function nhanCongDoan(luong, gd) {
@@ -109,7 +135,8 @@ async function luongTheoTinhChat(tinhChatIn) {
 
 module.exports = {
   LUONG_SX, MA_LUONG_SX, HAI_CONG_DOAN, GD_IN, GD_EP,
-  chuanLuong, laHaiCongDoan, laLogo, chuanGd, congDoanDau, laCongDoanDau, canNhapKieng, nhanCongDoan,
+  chuanLuong, laHaiCongDoan, laLogo, laKieng, laKiengSql, luongSauKhiBo, boQuaTestRun, boQuaTestRunLenhSql,
+  chuanGd, congDoanDau, laCongDoanDau, canNhapKieng, nhanCongDoan,
   gdSql, daRelSql, laPhanInSql, haiCongDoanSql, khtGdSql, khtLaGdSql, khtCoCotGd, PAIN_EP, paCongDoanSql,
   bangLuongTinhChat, luongTheoTinhChat, xoaNho,
 };

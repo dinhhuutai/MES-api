@@ -33,9 +33,10 @@ const { ganThongTinPhanIn } = require('../../utils/thongTinLichSu');
 const { trongGioHanhChinh } = require('../../utils/gioHanhChinh'); // Test Run ngoài giờ ⇒ QA kiêm Release 2
 const { khoaNgc, tenNgc } = require('../../utils/nhaGiaCong'); // đợt khác nhà gia công không gom (27/10/2026)
 const { coCotBtp, datSoDauTx, coDauCho } = require('../../utils/btpKhacKh'); // BTP khác kế hoạch (mig 120, 28/10/2026)
-// Luồng theo tính chất in (mig 126, 09/11/2026): phần ÉP ỦI của phần in 2 công đoạn · Logo bỏ Test Run.
+// Luồng theo tính chất in (mig 126, 09/11/2026): phần ÉP ỦI của phần in 2 công đoạn · Logo + công đoạn ép bỏ Test Run
+//   (`boQuaTestRun` — 11/11/2026).
 const {
-  GD_IN, GD_EP, chuanGd, laHaiCongDoan, laLogo, laCongDoanDau, nhanCongDoan, khtCoCotGd,
+  GD_IN, GD_EP, chuanGd, laHaiCongDoan, laCongDoanDau, nhanCongDoan, khtCoCotGd, boQuaTestRun,
 } = require('../../utils/luongSanXuat');
 
 const TEST_TRAM = 'TEST_RUN';
@@ -46,6 +47,8 @@ const QA_CP = 'TEST_QA';
 //   tạo ra (Release 1 · xác nhận Kế hoạch tạm · Gom đợt vải · gia công → chuyền xưởng) đều vào `RELEASE_1` = màn Test Run.
 //   ĐÃ GỠ cả 3 luật đi tắt cũ: (a) đợt BO_SUNG (5I) / MAU_SO_LUONG (6I) — chốt 21/08 · (b) phần in đang in tem · (c) SL < 100.
 //   Bỏ test giờ CHỈ do QA bấm "Không test run" (`skipTestRun`). Đừng đưa lại luật đi tắt nếu người dùng chưa yêu cầu.
+//   NGOẠI LỆ CÓ CHỦ ĐÍCH theo LUỒNG (`luongSanXuat.boQuaTestRun`): phần in LOGO (mig 126) + công đoạn ÉP ỦI của phần in 2
+//   công đoạn (11/11/2026) ⇒ lệnh tạo ra vào thẳng `RELEASE_2` (Chờ chạy). Lệnh công đoạn IN vẫn qua Test Run.
 
 // ⚠ Bọc CACHE RAM (`utils/wfCache.js`, TTL 60s): bản gốc chạy **3 query TUẦN TỰ** (version → trạm →
 //   checkpoint) và được gọi ở 8 chỗ ⇒ ~75 ms độ trễ mạng thừa cho mỗi request dùng nó. Cấu hình này
@@ -420,6 +423,7 @@ async function createRelease1(body = {}, actorId, opts = {}) {
     ke_hoach_tam_count: tamCount,
     chi_tam: createdCount === 0 && tamCount > 0,
     ep_count: (kqEp && kqEp.ep_count) || 0,
+    ep_cho_chay_count: (kqEp && kqEp.ep_cho_chay_count) || 0, // lệnh ép vào thẳng Chờ chạy (`skipped_test_count` = của phần in — Logo)
     ep_chua_ready: (kqEp && kqEp.ep_chua_ready) || [],
     ep_loi: epLoi,
   };
@@ -427,8 +431,10 @@ async function createRelease1(body = {}, actorId, opts = {}) {
 
 // PHẦN ÉP ỦI (mig 126): release đợt vải của phần in 2 công đoạn thành LỆNH ÉP (`giai_doan` 'EP_UI'), sức chứa riêng
 //   (= SL vải × số đầu BTP, `utils/luongSanXuat.daRelSql`). Đợt ĐÃ Ready ⇒ lệnh; đợt chưa Ready ⇒ Kế hoạch tạm phần ép
-//   (mig 128; chưa chạy mig ⇒ trả về `ep_chua_ready`). Gom đợt cùng phần in + cùng nhà gia công vào 1 lệnh (như phần in). Lệnh ép vào Test Run như
-//   mọi lệnh (QA bấm "Không test run" nếu không cần test). CHƯA báo ERP Release 1 cho lệnh ép (ERP chưa phân biệt công đoạn).
+//   (mig 128; chưa chạy mig ⇒ trả về `ep_chua_ready`). Gom đợt cùng phần in + cùng nhà gia công vào 1 lệnh (như phần in).
+//   ⚠ 11/11/2026 (người dùng chốt): lệnh ép KHÔNG qua Test Run — vào thẳng Chờ chạy (`RELEASE_2`, `boQuaTestRun`; audit
+//   `TAO_LENH_CONG_DOAN.bo_test_run_ep`); chuyền gia công vẫn vào Gia công. Không kéo `ton_tram` của đợt (trạm theo dõi của
+//   đợt phản ánh phần IN — lệnh ép đứng riêng). CHƯA báo ERP Release 1 cho lệnh ép (ERP chưa phân biệt công đoạn).
 async function releasePhanEp({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach, tgBdKh, tgKtKh, thoIn }, actorId) {
   const thoInKh = chuanHoaThoIn(thoIn);
   const thoInChuaLuu = !!thoInKh && !(await coCotThoInKh());
@@ -529,26 +535,30 @@ async function releasePhanEp({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach,
         continue;
       }
       const maLenh = await repo.nextMaLenhTx(client);
+      const trangThai = boQuaTestRun(dv0.luong_sx, GD_EP) ? 'RELEASE_2' : 'RELEASE_1';
       const id = await repo.createLenh(client, {
-        versionId: version.id, maLenh, chuyenId, soLuongRelease: tong, ngayKeHoach, trangThai: 'RELEASE_1',
+        versionId: version.id, maLenh, chuyenId, soLuongRelease: tong, ngayKeHoach, trangThai,
         giaiDoan: GD_EP, tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null, thoInKh, laCongDoanDau: dau,
       }, actorId);
       for (const p of n) await repo.addLenhDotVai(client, id, p.dvId, actorId, p.qty);
-      await logLuongLenhTx(client, id, { giai_doan: GD_EP, luong_sx: dv0.luong_sx, la_cong_doan_dau: dau }, actorId);
-      out.push({ id, ma_lenh_san_xuat: maLenh, trang_thai: 'RELEASE_1', giai_doan: GD_EP, so_dot_vai: n.length,
+      await logLuongLenhTx(client, id, { giai_doan: GD_EP, luong_sx: dv0.luong_sx, la_cong_doan_dau: dau,
+        bo_test_run_ep: trangThai === 'RELEASE_2' }, actorId);
+      out.push({ id, ma_lenh_san_xuat: maLenh, trang_thai: trangThai, giai_doan: GD_EP, so_dot_vai: n.length,
         dot_vai_id: n[0].dvId, dot_vai_ids: n.map((p) => p.dvId) });
     }
     if (!out.length) throw new AppError('Phần ép ủi của các đợt vải đã release đủ số lượng (vừa được release ở lượt khác) — tải lại trang', { status: 409, errorCode: 'ALL_RELEASED' });
     return out;
   });
   for (const c of created) {
-    await tracking.moveDotVaiTo(c.dot_vai_ids, c.trang_thai === 'GIA_CONG' ? 'GIA_CONG' : 'RELEASE_1', actorId).catch(() => {});
+    if (c.trang_thai === 'GIA_CONG') await tracking.moveDotVaiTo(c.dot_vai_ids, 'GIA_CONG', actorId).catch(() => {});
     sockets.emit('workflow:updated', { lenhId: c.id, stage: c.trang_thai, giaiDoan: GD_EP });
   }
   sockets.emit('dashboard:refresh', {});
   const detail = await getLenhDetail(created[0].id);
   return {
     ...detail, created_summary: created, created_count: created.length, ep_count: created.length,
+    skipped_test_count: created.filter((c) => c.trang_thai === 'RELEASE_2').length,
+    ep_cho_chay_count: created.filter((c) => c.trang_thai === 'RELEASE_2').length,
     ep_chua_ready: coKhtEp ? [] : chuaReady, ke_hoach_tam_count: tamCount, gia_cong: giaCong,
     so_dot_vai: created.reduce((s, c) => s + c.so_dot_vai, 0), tho_in_chua_luu: thoInChuaLuu,
   };
@@ -716,7 +726,7 @@ async function releasePhanIn({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach,
       // Mig 126: phần in LOGO không qua Test Run / Release 2 ⇒ vào thẳng chờ chạy (`RELEASE_2`). Phần in 2 công đoạn
       //   ⇒ đánh dấu lệnh công đoạn đầu (in trước, trừ khi phần in "ép trước").
       const dv0 = cById[nhom[0].dvId] || {};
-      const trangThai = laLogo(dv0.luong_sx) ? 'RELEASE_2' : 'RELEASE_1';
+      const trangThai = boQuaTestRun(dv0.luong_sx, GD_IN) ? 'RELEASE_2' : 'RELEASE_1';
       const dau = laCongDoanDau(dv0.luong_sx, dv0.ep_truoc, GD_IN);
       const maLenh = await repo.nextMaLenhTx(client);
       const id = await repo.createLenh(client, {
@@ -849,9 +859,9 @@ async function createDotSanXuat({ items, chuyenId, ngayKeHoach, tgBdKh, tgKtKh, 
     return { ...(await getLenhDetail(gc.id)), gia_cong: true, so_luong_release: tongSL, tho_in_chua_luu: thoInChuaLuu };
   }
 
-  // MỌI LỆNH QUA TEST RUN (27/10/2026 — cùng luật `createRelease1`, xem đầu file) — trừ phần in LOGO (mig 126) vào
-  //   thẳng chờ chạy.
-  const trangThai = gd === GD_IN && laLogo(dv0.luong_sx) ? 'RELEASE_2' : 'RELEASE_1';
+  // MỌI LỆNH QUA TEST RUN (27/10/2026 — cùng luật `createRelease1`, xem đầu file) — trừ phần in LOGO (mig 126) + phần ÉP ỦI
+  //   (11/11/2026) vào thẳng chờ chạy (`boQuaTestRun`).
+  const trangThai = boQuaTestRun(dv0.luong_sx, gd) ? 'RELEASE_2' : 'RELEASE_1';
   const diTat = trangThai === 'RELEASE_2';
   const version = await wf.getActiveVersion();
   const lenhId = await withTransaction(async (client) => {
@@ -863,12 +873,14 @@ async function createDotSanXuat({ items, chuyenId, ngayKeHoach, tgBdKh, tgKtKh, 
     }, actorId);
     for (const p of plan) await repo.addLenhDotVai(client, id, p.dotVaiId, actorId, p.soLuong);
     if (gd === GD_EP || dau || diTat) {
-      await logLuongLenhTx(client, id, { giai_doan: gd, luong_sx: dv0.luong_sx, la_cong_doan_dau: dau, bo_test_run_logo: diTat, nguon: 'GOM_DOT_VAI' }, actorId);
+      await logLuongLenhTx(client, id, { giai_doan: gd, luong_sx: dv0.luong_sx, la_cong_doan_dau: dau,
+        ...(gd === GD_EP ? { bo_test_run_ep: diTat } : { bo_test_run_logo: diTat }), nguon: 'GOM_DOT_VAI' }, actorId);
     }
     return id;
   });
 
-  await tracking.moveDotVaiTo(ids, trangThai === 'RELEASE_2' ? 'RELEASE_2' : 'RELEASE_1', actorId);
+  // Lệnh ép không kéo `ton_tram` của đợt (như `releasePhanEp`).
+  if (gd === GD_IN) await tracking.moveDotVaiTo(ids, trangThai === 'RELEASE_2' ? 'RELEASE_2' : 'RELEASE_1', actorId);
   if (gd === GD_IN) {
     await qaRepo.resolveReturnsMany('TEST_RUN', ids); // release lại → tắt cờ "bị Test Run trả về"
     await repo.dongSetDaReleaseHet(ids, actorId);
@@ -1382,6 +1394,11 @@ async function rollbackLenh(lenhId, { target, lyDo, force = false, boTestRunIds 
   //   `RELEASE_1`) nhưng đã rời màn Test Run vì có `TEST_QA` DAT. Bản cũ ném NOOP đúng ca này ⇒
   //   không có đường nào sửa. Nay chỉ NOOP khi thật sự không có gì để gỡ.
   if (TARGET === 'TEST_RUN') {
+    // Lệnh ép ủi / Logo không qua Test Run (11/11/2026) ⇒ "về Test Run" vô nghĩa (QA không có gì để test) — chặn.
+    if (await repo.lenhBoQuaTestRun(lenhId)) {
+      throw new AppError(`Lệnh ${lenh.ma_lenh_san_xuat} là lệnh ép ủi / Logo — không qua Test Run, chọn đích Release 1 hoặc READY`,
+        { status: 409, errorCode: 'KHONG_QUA_TEST_RUN' });
+    }
     const laR2 = lenh.trang_thai === 'RELEASE_2';
     const coKqTest = await repo.coKetQuaTest(lenhId);
     // Lượt test người dùng BỎ TÍCH (22/09/2026) — chỉ nhận id dạng uuid, việc "có thuộc lệnh này không"
@@ -2418,9 +2435,10 @@ async function chuyenChangTheoChuyen(lenh, chuyenIdMoi, dsDot, tongSL) {
   if (laGiaCong) return lenh.trang_thai === 'GIA_CONG' ? null : 'GIA_CONG';
   if (lenh.trang_thai !== 'GIA_CONG') return null; // chuyền thường → thường: giữ nguyên chặng
 
-  // GIA_CONG → chuyền in trong xưởng: quay lại dòng chảy ở TEST RUN (27/10/2026 — mọi lệnh qua Test Run, xem đầu file).
+  // GIA_CONG → chuyền in trong xưởng: quay lại dòng chảy ở TEST RUN (27/10/2026 — mọi lệnh qua Test Run, xem đầu file);
+  //   lệnh ép ủi / Logo (`boQuaTestRun`) ⇒ thẳng Chờ chạy.
   void dsDot; void tongSL;
-  return 'RELEASE_1';
+  return (await repo.lenhBoQuaTestRun(lenh.id)) ? 'RELEASE_2' : 'RELEASE_1';
 }
 
 // Chi tiết 1 lệnh cho màn Lập kế hoạch lại: kế hoạch hiện tại + DANH SÁCH ĐỢT VẢI kèm SL release.

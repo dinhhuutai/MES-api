@@ -31,7 +31,7 @@ const { temTrongKySql } = require('../../utils/ngaySxTem');
 const { coBtpSql, soDauSql, sucChuaSql, conReleaseSql, conRelease, coDauCho } = require('../../utils/btpKhacKh');
 // Luồng sản xuất theo tính chất in (mig 126): phần in 2 công đoạn (in kiếng / in + ép) có phần ÉP ỦI release RIÊNG.
 const {
-  daRelSql, gdSql, haiCongDoanSql, GD_IN, GD_EP, chuanGd, khtGdSql, khtLaGdSql, khtCoCotGd, paCongDoanSql,
+  daRelSql, gdSql, haiCongDoanSql, GD_IN, GD_EP, chuanGd, khtGdSql, khtLaGdSql, khtCoCotGd, paCongDoanSql, boQuaTestRunLenhSql,
 } = require('../../utils/luongSanXuat');
 
 // SL vải đã ĐƯA VÀO đợt SX của 1 đợt vải = Σ lenh_sx_dot_vai.so_luong các lệnh non-HUY gắn đợt đó
@@ -1849,6 +1849,13 @@ async function phanInIdsByLenh(lenhId) {
 
 // Lệnh có đang chờ kỹ thuật làm lại không (khóa mọi thao tác test) + có phiếu SX chưa
 // + có phần in đang ở Giao nhận không (`cho_gn` — khóa test / Release 2 / xác nhận chạy, 06/10/2026).
+// Lệnh KHÔNG qua Test Run (công đoạn ép ủi / phần in Logo — `luongSanXuat.boQuaTestRunLenhSql`) — 11/11/2026.
+async function lenhBoQuaTestRun(lenhId) {
+  const { rows } = await query(
+    `SELECT ${boQuaTestRunLenhSql('ls')} AS bo_qua FROM lenh_san_xuat ls WHERE ls.id = $1`.replace(/\s+/g, ' '), [lenhId]);
+  return !!(rows[0] && rows[0].bo_qua);
+}
+
 async function lenhChoKyThuat(lenhId) {
   const { rows } = await query(
     `SELECT ${CHO_KY_THUAT_SQL('ls.id')} AS cho_ky_thuat,
@@ -2708,7 +2715,7 @@ module.exports = {
   logKeHoachTam, keHoachTamHistoryByDate, keHoachTamDoneByDate,
   listCancelableLenh, getLenhForCancel, cancelLenhOrder, cancelReadyQcForDotVai, logLenhCancel,
   cancelPhieuTemByLenhTx,
-  cancelReadyItemsByPhanIn, cancelTestResults, coKetQuaTest, testRunsChoHuy, huyTestRunsTx, phanInIdsByLenh, lenhChoKyThuat,
+  cancelReadyItemsByPhanIn, cancelTestResults, coKetQuaTest, testRunsChoHuy, huyTestRunsTx, phanInIdsByLenh, lenhChoKyThuat, lenhBoQuaTestRun,
   listLenhTraVeKh, dotPhanInCuaLenh, setThoInKh,
   listLanTestChoHuy, getLanTestForHuy,
   // Luật "lệnh đang chờ kỹ thuật làm lại" — bảng theo dõi Dashboard (siso) dùng để loại lệnh này khỏi nghẽn Test Run.
