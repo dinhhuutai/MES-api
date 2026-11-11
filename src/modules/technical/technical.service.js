@@ -491,6 +491,8 @@ async function listCandidates({ search, page, limit, offset, onlyQcReady = false
       });
     });
   });
+  // Nhận file BH (11/11/2026) — chỉ màn READY Kỹ thuật; trạng thái theo đợt của dòng (`nhanFileBh.ganVaoDong`, lỗi ⇒ bỏ qua).
+  if (!onlyQcReady) await require('./nhanFileBh').ganVaoDong(items);
   return { items, meta: buildMeta(page, limit, total) };
 }
 

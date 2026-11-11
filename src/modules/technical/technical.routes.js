@@ -3,6 +3,7 @@
 const express = require('express');
 const c = require('./technical.controller');
 const { ctl: gc } = require('./ghiChu');
+const { ctl: nf } = require('./nhanFileBh');
 const auth = require('../../middlewares/auth');
 const rbac = require('../../middlewares/rbac');
 
@@ -31,6 +32,8 @@ const GHI_CHU_GHI = ['READY_KHUON', 'READY_FILM', 'READY_MUC', 'READY_QC', 'READ
 router.get('/bat-thuong', rbac('READY_VIEW', 'READY_QC'), gc.dsBatThuong);
 router.post('/bat-thuong', rbac(...GHI_CHU_GHI), gc.danhDauBatThuong);
 router.post('/bat-thuong/go', rbac(...GHI_CHU_GHI), gc.goBatThuong);
+// NHẬN FILE BH (11/11/2026): đánh dấu đợt vải đã nhận hồ sơ cứng từ Bán hàng — quyền xác nhận READY kỹ thuật.
+router.post('/nhan-file', rbac('READY_KHUON', 'READY_FILM', 'READY_MUC'), nf.datNhanFile);
 router.get('/:phanInId/ghi-chu', rbac('READY_VIEW', 'READY_QC'), gc.cuaPhanIn);
 router.post('/:phanInId/ghi-chu', rbac(...GHI_CHU_GHI), gc.themGhiChu);
 router.get('/:phanInId', rbac('READY_VIEW'), c.detail);
