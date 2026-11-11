@@ -8,6 +8,7 @@
 //   có tính năng này, không tốn thêm chi phí truy vấn. Chỉ khi người dùng TẮT bớt nhóm mới lọc thật.
 // ⚠ Thay cho bộ lọc CỨNG "chỉ hiện hàng in Máy" (chốt rồi gỡ trong cùng ngày 2026-08-04).
 const { query } = require('../config/db');
+const { paCongDoanSql } = require('./luongSanXuat');
 
 const PAIN_MAY = 2;
 const PAIN_BAN = 1;
@@ -145,14 +146,17 @@ function nhomDuocHien(cf) {
 
 // Dựng điều kiện SQL cho 1 trang. `pinExpr` = biểu thức id phần in trong câu gọi (vd 'pin.id').
 // Trả 'TRUE' khi bật hết (không lọc) và 'FALSE' khi tắt hết (ẩn sạch — đúng ý người cấu hình).
-function dieuKienPain(cf, pinExpr) {
+// `gdExpr` (tùy chọn) = biểu thức công đoạn của dòng / lệnh: công đoạn ÉP ỦI ⇒ PA Ép (`luongSanXuat.paCongDoanSql`), không
+//   theo PA của HSKT (là PA phần in) ⇒ thuộc nhóm "Khác".
+function dieuKienPain(cf, pinExpr, gdExpr = null) {
   const { vals, khac } = nhomDuocHien(cf || BAT_HET);
   if (vals.length === 3 && khac) return 'TRUE';
   if (vals.length === 0 && !khac) return 'FALSE';
   // `pa` = phương án in của HSKT đang hoạt động (NULL nếu phần in không có HSKT).
-  const pa = `(SELECT h_m.phuong_an_in FROM hskt_phan_in hp_m
+  const paHskt = `(SELECT h_m.phuong_an_in FROM hskt_phan_in hp_m
                  JOIN ho_so_ky_thuat h_m ON h_m.id = hp_m.hskt_id AND h_m.dang_hoat_dong
                 WHERE hp_m.phan_in_id = ${pinExpr} AND hp_m.dang_hoat_dong LIMIT 1)`;
+  const pa = gdExpr ? paCongDoanSql(paHskt, gdExpr) : paHskt;
   const ve = [];
   if (vals.length) ve.push(`${pa} = ANY(ARRAY[${vals.join(',')}])`);
   // "Khác" = chưa xác định (0) · phần in không có HSKT active (NULL) · Logo (4) / Ép (5) — mọi PA ngoài Máy/Bàn/Robot
@@ -161,11 +165,11 @@ function dieuKienPain(cf, pinExpr) {
   return `(${ve.join(' OR ')})`.replace(/\s+/g, ' ');
 }
 
-// 3 biến thể theo mức đối tượng của câu truy vấn gọi.
-const theoPhanIn = (cf, pinCol) => dieuKienPain(cf, pinCol);
+// 3 biến thể theo mức đối tượng của câu truy vấn gọi. Mức lệnh / phiếu tự lấy công đoạn của lệnh.
+const theoPhanIn = (cf, pinCol, gdExpr = null) => dieuKienPain(cf, pinCol, gdExpr);
 
 const theoLenh = (cf, lenhCol) => {
-  const dk = dieuKienPain(cf, 'dv_m.phan_in_id');
+  const dk = dieuKienPain(cf, 'dv_m.phan_in_id', `(SELECT ls_g.giai_doan FROM lenh_san_xuat ls_g WHERE ls_g.id = ${lenhCol})`);
   if (dk === 'TRUE') return 'TRUE';
   if (dk === 'FALSE') return 'FALSE';
   return `EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd_m JOIN dot_vai_ve dv_m ON dv_m.id = lsd_m.dot_vai_ve_id
@@ -174,10 +178,11 @@ const theoLenh = (cf, lenhCol) => {
 
 // Tem/KCS/Sửa/OQC/Giao: nối tem → phiếu → lệnh → đợt vải → phần in.
 const theoPhieu = (cf, phieuCol) => {
-  const dk = dieuKienPain(cf, 'dv_m.phan_in_id');
+  const dk = dieuKienPain(cf, 'dv_m.phan_in_id', 'ls_g.giai_doan');
   if (dk === 'TRUE') return 'TRUE';
   if (dk === 'FALSE') return 'FALSE';
   return `EXISTS (SELECT 1 FROM phieu_san_xuat ps_m
+            JOIN lenh_san_xuat ls_g ON ls_g.id = ps_m.lenh_san_xuat_id
             JOIN lenh_sx_dot_vai lsd_m ON lsd_m.lenh_san_xuat_id = ps_m.lenh_san_xuat_id
             JOIN dot_vai_ve dv_m ON dv_m.id = lsd_m.dot_vai_ve_id
            WHERE ps_m.id = ${phieuCol} AND ${dk})`.replace(/\s+/g, ' ');
@@ -220,12 +225,13 @@ function vaDieuKien(a, b) {
   return `(${a} AND ${b})`;
 }
 
-// Lấy điều kiện cho 1 trang trong 1 lần gọi (dùng ở repository).
-async function dkTrang(maTrang, muc, col) {
+// Lấy điều kiện cho 1 trang trong 1 lần gọi (dùng ở repository). `opts.gd` (mức phần in) = biểu thức công đoạn của DÒNG
+//   (Release 1 / Kế hoạch tạm: dòng ép ủi ⇒ PA Ép).
+async function dkTrang(maTrang, muc, col, opts = {}) {
   const cf = (await loadCauHinhPain())[maTrang] || BAT_HET;
   const dkPain = muc === 'lenh' ? theoLenh(cf, col)
     : muc === 'phieu' ? theoPhieu(cf, col)
-      : theoPhanIn(cf, col);
+      : theoPhanIn(cf, col, opts.gd || null);
   if (muc !== 'lenh' && muc !== 'phieu') return dkPain; // mức phần in: chưa có chuyền → bỏ qua loại chuyền
   const danhMuc = await loadLoaiChuyen();
   const dkLoai = dieuKienLoaiChuyen(cf.loai_chuyen || {}, danhMuc,

@@ -64,6 +64,13 @@ const laPhanInSql = (ls = 'ls') => `${ls}.giai_doan IS DISTINCT FROM '${GD_EP}'`
 // SQL: phần in `pin` có 2 công đoạn.
 const haiCongDoanSql = (pin = 'pin') => `(${pin}.luong_sx IN ('IN_KIENG','IN_EP'))`;
 
+// PHƯƠNG ÁN IN CỦA CÔNG ĐOẠN: dòng / lệnh công đoạn ÉP ỦI luôn mang PA **Ép** (5 — `utils/hskt.js PHUONG_AN_IN`), không
+//   mang PA của HSKT (là PA của phần IN). Áp ở Release 1 (chip lọc, badge, Excel), Kế hoạch tạm, màn mức lệnh (Test Run ·
+//   Release 2 · Lập lại KH) và bộ lọc *Hiển thị theo PA in* (`utils/phuongAnIn.js` — Ép thuộc nhóm "Khác"). PA của HSKT giữ
+//   ở cột `phuong_an_in_hskt` (ô ↻ đổi PA chỉ ở dòng in). FE đọc thẳng `phuong_an_in` BE trả (không có gương).
+const PAIN_EP = 5;
+const paCongDoanSql = (paExpr, gdExpr) => `(CASE WHEN ${gdExpr} = '${GD_EP}' THEN ${PAIN_EP} ELSE ${paExpr} END)`;
+
 // KẾ HOẠCH TẠM THEO CÔNG ĐOẠN (mig 128): `ke_hoach_tam.giai_doan` 'IN' | 'EP_UI' — mỗi đợt tối đa 1 dòng / công đoạn
 //   (phần ép của đợt chưa Ready cũng lưu kế hoạch tạm được, lập phần nào trước cũng được). Đọc qua `to_jsonb` ⇒ câu chạy
 //   được cả khi chưa chạy mig (thiếu cột ⇒ mọi dòng là 'IN'). ⚠ Mọi câu đọc `ke_hoach_tam` theo ĐỢT phải lọc công đoạn
@@ -103,6 +110,6 @@ async function luongTheoTinhChat(tinhChatIn) {
 module.exports = {
   LUONG_SX, MA_LUONG_SX, HAI_CONG_DOAN, GD_IN, GD_EP,
   chuanLuong, laHaiCongDoan, laLogo, chuanGd, congDoanDau, laCongDoanDau, canNhapKieng, nhanCongDoan,
-  gdSql, daRelSql, laPhanInSql, haiCongDoanSql, khtGdSql, khtLaGdSql, khtCoCotGd,
+  gdSql, daRelSql, laPhanInSql, haiCongDoanSql, khtGdSql, khtLaGdSql, khtCoCotGd, PAIN_EP, paCongDoanSql,
   bangLuongTinhChat, luongTheoTinhChat, xoaNho,
 };

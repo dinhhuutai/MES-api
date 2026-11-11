@@ -30,7 +30,9 @@ const { temTrongKySql } = require('../../utils/ngaySxTem');
 // BTP khác kế hoạch (mig 120): đợt có cờ release được 2 × SL vải (2 đầu tấm vải, 2 kế hoạch) — nguồn luật duy nhất.
 const { coBtpSql, soDauSql, sucChuaSql, conReleaseSql, conRelease, coDauCho } = require('../../utils/btpKhacKh');
 // Luồng sản xuất theo tính chất in (mig 126): phần in 2 công đoạn (in kiếng / in + ép) có phần ÉP ỦI release RIÊNG.
-const { daRelSql, gdSql, haiCongDoanSql, GD_IN, GD_EP, chuanGd, khtGdSql, khtLaGdSql, khtCoCotGd } = require('../../utils/luongSanXuat');
+const {
+  daRelSql, gdSql, haiCongDoanSql, GD_IN, GD_EP, chuanGd, khtGdSql, khtLaGdSql, khtCoCotGd, paCongDoanSql,
+} = require('../../utils/luongSanXuat');
 
 // SL vải đã ĐƯA VÀO đợt SX của 1 đợt vải = Σ lenh_sx_dot_vai.so_luong các lệnh non-HUY gắn đợt đó
 // (mig 052: SL đưa vào theo TỪNG đợt nằm ở junction — đúng cả khi 1 lệnh gồm nhiều đợt).
@@ -45,8 +47,11 @@ const daRelGd = (gd) => daRelSql('dv', `'${chuanGd(gd)}'`);
 // quét 1 code phần/barcode HSKT là chọn cả nhóm — xem ScanCollectModal).
 const HSKT_SUB = (pinCol, col) =>
   `(SELECT ${col} FROM hskt_phan_in hp JOIN ho_so_ky_thuat h ON h.id=hp.hskt_id WHERE hp.phan_in_id=${pinCol} AND hp.dang_hoat_dong AND h.dang_hoat_dong LIMIT 1)`;
-const hsktCols = (pinCol) => `
-  ${HSKT_SUB(pinCol, 'h.phuong_an_in')} AS phuong_an_in,
+// `gdExpr` (biểu thức công đoạn của dòng / lệnh): có ⇒ dòng công đoạn ÉP ỦI mang PA Ép (`luongSanXuat.paCongDoanSql`),
+//   PA của HSKT để ở `phuong_an_in_hskt`.
+const hsktCols = (pinCol, gdExpr = null) => `
+  ${gdExpr ? paCongDoanSql(HSKT_SUB(pinCol, 'h.phuong_an_in'), gdExpr) : HSKT_SUB(pinCol, 'h.phuong_an_in')} AS phuong_an_in,
+  ${HSKT_SUB(pinCol, 'h.phuong_an_in')} AS phuong_an_in_hskt,
   ${HSKT_SUB(pinCol, 'h.barcode_hskt')} AS barcode_hskt,
   ${HSKT_SUB(pinCol, 'h.inset')} AS hskt_inset,
   ${HSKT_SUB(pinCol, 'h.id')} AS hskt_id`;
@@ -66,7 +71,7 @@ const hsktCols = (pinCol) => `
 //   được; đợt chưa Ready thì phần nào cũng lưu kế hoạch tạm). Xếp 2 dòng của cùng đợt liền nhau, công đoạn ĐẦU trước
 //   (`ep_truoc` ⇒ ép trước).
 async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
-  const dkPain = await dkTrang('KH_RELEASE1', 'pin', 'pin.id');
+  const dkPain = await dkTrang('KH_RELEASE1', 'pin', 'pin.id', { gd: 'g.gd' });
   const SEARCH = `($1 = '' OR pin.ma_phan ~* $1 OR kh.ten_khach_hang ~* $1
                   OR mh.ma_hang ~* $1 OR pin.mau_vai ~* $1
                   OR pin.kich_vai ~* $1 OR pin.kich_phim ~* $1
@@ -105,7 +110,7 @@ async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
            ${conReleaseSql('dv', DA_GD)}::int AS con_release,
            ${coBtpSql('dv')} AS btp_khac_kh, ${soDauSql('dv')} AS so_dau_btp,
            gsx.gom_set_id, gsx.ma_set,
-           ${hsktCols('pin.id')}
+           ${hsktCols('pin.id', 'g.gd')}
     ${FROM}
     ORDER BY pin.mau_vai, pin.ma_phan, dv.ma_dot_vai,
              (g.gd = CASE WHEN pin.ep_truoc THEN '${GD_EP}' ELSE '${GD_IN}' END) DESC
@@ -609,7 +614,7 @@ const PHAN_INFO_LATERAL = `
            pin.so_luong_don_hang, pin.tinh_chat_in, pin.luong_sx, pin.ep_truoc,
            dv.so_luong_vai_ve, dv.ngay_vai_ve, dv.han_giao_hang, ldv.ten_loai AS loai_dot_vai,
            ${ngcLenh('ls.id')} AS nha_gia_cong,
-           ${hsktCols('pin.id')}
+           ${hsktCols('pin.id', 'ls.giai_doan')}
     FROM lenh_sx_dot_vai lsd
     JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
     JOIN phan_in pin ON pin.id = dv.phan_in_id
@@ -1341,7 +1346,7 @@ const KHT_TD_TINH_TRANG = `CASE
 const KHT_TD_LOAI_NGAY = ['NGAY_KE_HOACH', 'NGAY_LAP'];
 
 async function keHoachTamTheoDoi({ search = '', tuNgay = '', denNgay = '', loaiNgay = 'NGAY_KE_HOACH', limit = 2000 }) {
-  const dkPain = await dkTrang('KH_TAM', 'pin', 'pin.id');
+  const dkPain = await dkTrang('KH_TAM', 'pin', 'pin.id', { gd: 'k.gd' });
   const SEARCH = `($1 = '' OR pin.ma_phan ~* $1 OR kh.ten_khach_hang ~* $1 OR mh.ma_hang ~* $1
                   OR pin.mau_vai ~* $1 OR dv.ma_dot_vai ~* $1 OR dh.ma_don_hang ~* $1 OR cs.ten_chuyen ~* $1)`;
   // Ngày lọc = NGÀY KH SẢN XUẤT: dòng còn sống lấy từ bảng, dòng đã release lấy từ payload audit
@@ -1370,7 +1375,7 @@ async function keHoachTamTheoDoi({ search = '', tuNgay = '', denNgay = '', loaiN
            pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim,
            pin.tinh_chat_in, pin.so_luong_don_hang,
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
-           ${hsktCols('pin.id')},
+           ${hsktCols('pin.id', 'k.gd')},
            ${KHT_TD_TINH_TRANG} AS tinh_trang,
            k.lap_dau AS tg_lap_ke_hoach, k.moc_xac_nhan AS tg_xac_nhan,
            nd.ho_ten AS nguoi_lap,
@@ -1409,7 +1414,7 @@ async function keHoachTamTheoDoi({ search = '', tuNgay = '', denNgay = '', loaiN
 // `locPain` = false ⇒ bỏ cấu hình *Hiển thị theo PA in* (tab "Hủy kế hoạch tạm" ở *Hủy lệnh xác nhận* — trang
 //   đó cố ý không lọc, §5.7, để không có dòng nào bị ẩn khỏi chỗ hủy).
 async function listKeHoachTamRows({ search = '', offset = 0, limit = 200, locPain = true }) {
-  const dkPain = locPain ? await dkTrang('KH_TAM', 'pin', 'pin.id') : 'TRUE';
+  const dkPain = locPain ? await dkTrang('KH_TAM', 'pin', 'pin.id', { gd: khtGdSql('kt') }) : 'TRUE';
   const SEARCH = `($1 = '' OR pin.ma_phan ~* $1 OR kh.ten_khach_hang ~* $1
                   OR mh.ma_hang ~* $1 OR pin.mau_vai ~* $1 OR dv.ma_dot_vai ~* $1)`;
   const FROM = `
@@ -1433,7 +1438,7 @@ async function listKeHoachTamRows({ search = '', offset = 0, limit = 200, locPai
            pin.so_luong_don_hang,
            pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in, dv.barcode, pin.barcode AS barcode_phan_in, dv.nha_gia_cong,
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
-           ${hsktCols('pin.id')},
+           ${hsktCols('pin.id', khtGdSql('kt'))},
            (SELECT gs.ma_set FROM gom_set_dot_vai gsd JOIN gom_set gs ON gs.id = gsd.gom_set_id
              WHERE gsd.dot_vai_ve_id = dv.id AND gs.trang_thai = 'MO' LIMIT 1) AS ma_set,
            ${qcDotSql('dv', 'pin.id')} AS qc_done
@@ -1861,7 +1866,7 @@ async function lenhChoKyThuat(lenhId) {
 // Khối "Test Run trả về" đầu màn Release 1: 1 dòng / (lệnh × đợt vải) của lệnh còn cờ TEST_RUN_KH, lệnh vẫn
 // `RELEASE_1` chưa phiếu. Lệnh đang ở Giao nhận thì để GN giữ (không hiện). Lọc phương án in như màn Release 1.
 async function listLenhTraVeKh() {
-  const dkPain = await dkTrang('KH_RELEASE1', 'pin', 'pin.id');
+  const dkPain = await dkTrang('KH_RELEASE1', 'pin', 'pin.id', { gd: 'ls.giai_doan' });
   const colTho = (await coCotThoInKh()) ? 'ls.tho_in_kh' : 'NULL::text AS tho_in_kh';
   const sql = `
     SELECT ls.id AS lenh_id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.ngay_ke_hoach, ls.tg_bd_kh, ls.tg_kt_kh,
@@ -1870,7 +1875,7 @@ async function listLenhTraVeKh() {
            dv.nha_gia_cong, COALESCE(lsd.so_luong, 0)::int AS sl_release_dot,
            pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in,
            pin.so_luong_don_hang, ldv.ten_loai AS loai_dot_vai, mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
-           ${hsktCols('pin.id')},
+           ${hsktCols('pin.id', 'ls.giai_doan')},
            tv.ly_do AS tra_ve_ly_do, tv.created_date AS tra_ve_tg, tv.nguoi AS tra_ve_nguoi, tv.so_lan AS tra_ve_so_lan
     FROM lenh_san_xuat ls
     JOIN LATERAL (SELECT q.ly_do, q.created_date, nd.ho_ten AS nguoi,
