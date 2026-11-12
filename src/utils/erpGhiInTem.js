@@ -177,9 +177,13 @@ const KENH = {
     //   `Kieng` ⇒ `@pKieng nvarchar(20)` (mã hàng hóa ERP của loại kiếng) · `HsKieng` ⇒ `@pHsKieng int` (1 tấm chia bao
     //   nhiêu phần) · `SoluongKieng` ⇒ `@pSoluongKieng int` (số lượng kiếng NGƯỜI IN NHẬP cho tem). Tem thường ⇒ '' / 0 / 0.
     //   Router `docs/erp-router/ghi-in-tem.js` (3 tham số proc KHÔNG có mặc định ⇒ router luôn truyền đủ).
+    // ⚠ 12/11/2026 proc SF0 ALTER thêm `@pSLBSCty int` · `@pSLBSKhachHang int` (SL bổ sung do CÔNG TY / do KHÁCH HÀNG, không mặc
+    //   định ⇒ router luôn truyền). Số nhập theo ĐỢT VẢI bổ sung ⇒ chỉ TEM ĐẦU của đợt mang số, tem sau 0 (người dùng chốt —
+    //   cộng phiếu ERP ra đúng số đợt). Tem không bổ sung ⇒ 0 / 0. Xem `production.repository duLieuGhiInTem`.
     them: (b, r = {}) => ({
       Labtp: r.Labtp ? 1 : 0, LabtpCuoi: r.LabtpCuoi ? 1 : 0,
       Kieng: chuoi(r.Kieng, 20), HsKieng: soNguyen(r.HsKieng), SoluongKieng: soNguyen(r.SoluongKieng),
+      SLBSCty: soNguyen(r.SLBSCty), SLBSKhachHang: soNguyen(r.SLBSKhachHang),
     }),
   },
   ERP_GUI_SUA_DAT: {
@@ -274,6 +278,10 @@ function taoPayload(r, { idMes, soLuong = null, soLuongHuy = 0, soLuongThieu = 0
       : r.so_luong_kieng != null ? Number(r.so_luong_kieng) || 0
         : Number(r.he_so_kieng) > 0
           ? Math.ceil((soLuong != null ? Number(soLuong) || 0 : Number(r.so_luong) || 0) / Number(r.he_so_kieng)) : 0,
+    // SL bổ sung công ty / khách (proc SF0 12/11/2026) — chỉ kênh ERP_GHI_IN_TEM đọc. Số của các đợt BỔ SUNG trong phạm vi
+    //   tem, CHỈ ở tem đầu của đợt (`la_tem_dau_dot`) — tem sau 0 để ERP cộng không gấp đôi.
+    SLBSCty: r.la_tem_dau_dot ? Number(r.sl_bs_cty) || 0 : 0,
+    SLBSKhachHang: r.la_tem_dau_dot ? Number(r.sl_bs_khach) || 0 : 0,
     // Không thuộc 20 trường (`chuanHoa` bỏ đi) — chỉ để kênh `thieuGioLayMocTao` bù Tugio/Dengio.
     MocTao: r.moc_tao || null,
     // Cũng không thuộc 20 trường: mã số nhân viên của tài khoản ca trưởng ⇒ `chuanHoa` đặt vào `Catruong`.

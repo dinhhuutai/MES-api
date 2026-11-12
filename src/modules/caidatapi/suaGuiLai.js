@@ -52,6 +52,7 @@ function kenh20(ma, them = {}) {
     batBuoc: ['IDMES', 'BarcodeIn'],
     maHien: (b) => b.BarcodeIn,
     ...(them.kiem ? { kiem: them.kiem } : {}),
+    ...(them.macDinh ? { macDinh: them.macDinh } : {}),
   };
 }
 
@@ -79,8 +80,13 @@ const KENH = {
   // In kiếng (10/11/2026, proc SF0): Kieng (@pKieng nvarchar(20), mã hàng hóa ERP) · HsKieng (@pHsKieng int) ·
   //   SoluongKieng (@pSoluongKieng int).
   ERP_GHI_IN_TEM: kenh20('ERP_GHI_IN_TEM', {
-    truong: ['Labtp', 'LabtpCuoi', 'Kieng', 'HsKieng', 'SoluongKieng'], so: ['Labtp', 'LabtpCuoi', 'HsKieng', 'SoluongKieng'],
+    // SL bổ sung (12/11/2026, proc SF0): SLBSCty (@pSLBSCty int) · SLBSKhachHang (@pSLBSKhachHang int).
+    truong: ['Labtp', 'LabtpCuoi', 'Kieng', 'HsKieng', 'SoluongKieng', 'SLBSCty', 'SLBSKhachHang'],
+    so: ['Labtp', 'LabtpCuoi', 'HsKieng', 'SoluongKieng', 'SLBSCty', 'SLBSKhachHang'],
     kiem: kiemDauBtp, dai: { Kieng: 20 },
+    // Thân CŨ (gửi trước khi proc thêm tham số) thiếu khóa ⇒ điền mặc định khi "Sửa & gửi" — proc SF0 không có giá trị mặc
+    //   định cho các tham số này, thiếu là lỗi "expects parameter … not supplied" (router ERP truyền thẳng khóa của thân).
+    macDinh: { Labtp: 0, LabtpCuoi: 0, Kieng: '', HsKieng: 0, SoluongKieng: 0, SLBSCty: 0, SLBSKhachHang: 0 },
   }),
   ERP_GUI_KIEM_PHAM: kenh20('ERP_GUI_KIEM_PHAM'),
   ERP_GUI_TEM_GIA_CONG: kenh20('ERP_GUI_TEM_GIA_CONG'),

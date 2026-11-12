@@ -1902,6 +1902,15 @@ async function duLieuGhiInTem(capTem = [], ngayCt = null) {
   const coTo = await phieuCoCotToIn();
   // SL kiếng người in nhập (mig 127) — chưa có cột ⇒ NULL, `taoPayload` lùi về ⌈SL ÷ hệ số⌉.
   const cotSlKieng = (await temCoCot('so_luong_kieng')) ? 't.so_luong_kieng' : 'NULL::int';
+  // SL BỔ SUNG CÔNG TY / KHÁCH (proc SF0 12/11/2026, `@pSLBSCty` · `@pSLBSKhachHang`): số nhập theo ĐỢT VẢI bổ sung (mig 079)
+  //   ⇒ Σ các đợt BO_SUNG của lệnh và CHỈ TEM ĐẦU mang số (`la_tem_dau_dot` = tem 15 sống sớm nhất của lệnh). Lệnh GOM SET
+  //   nhiều phần in + lượt in chỉ định đợt (`pv`) ⇒ chỉ đợt đó, tem đầu = sớm nhất trong các tem đã gửi SF0 cùng
+  //   `IDDotNhanvai`. Lệnh 1 phần in luôn xét MỨC LỆNH (khớp "Gửi lại" — `guiLai` không truyền đợt; và in nhiều tem 1 lượt
+  //   chưa có dòng SF0 của tem cùng lượt). Tem bị hủy ⇒ tem kế tiếp thành tem đầu (lần gửi sau). Chưa có cột ⇒ 0.
+  const coSlBs = await coCotSlBoSung();
+  const cotBs = coSlBs
+    ? 'COALESCE(SUM(dv.sl_bo_sung_cty), 0)::int AS cty, COALESCE(SUM(dv.sl_bo_sung_khach), 0)::int AS khach'
+    : '0 AS cty, 0 AS khach';
   // ⚠ `ddh_sub_id` đọc từ **PHẦN IN** (mig 088), không còn ở `dot_vai_ve`: DDHSUBID ứng 1:1 với phần
   //   in (= 3 số cuối của `BarcodePTHDH`). Lệnh gom set vẫn lấy đúng subID của phần in mà lượt in
   //   chỉ định qua `dotVaiId`, vì LATERAL `info` đã lọc theo đợt vải đó rồi mới lấy `pin.*`.
@@ -1928,6 +1937,17 @@ async function duLieuGhiInTem(capTem = [], ngayCt = null) {
            ${PCT_CHUYEN_TRUONG} AS chuyen_truong, ndct.ho_ten AS ca_truong, ndct.ten_dang_nhap AS ca_truong_msnv,
            ${PCT_THO_IN(',')} AS tho_in,
            info.barcode AS id_dot_nhan_vai, info.ddh_sub_id, info.ddh_id, info.la_bo_sung,
+           bs.cty AS sl_bs_cty, bs.khach AS sl_bs_khach,
+           (t.tem_goc_id IS NULL AND NOT EXISTS (
+              SELECT 1 FROM tem t2 JOIN phieu_san_xuat p2 ON p2.id = t2.phieu_san_xuat_id
+               WHERE p2.lenh_san_xuat_id = ps.lenh_san_xuat_id AND t2.id <> t.id AND t2.tem_goc_id IS NULL
+                 AND t2.trang_thai <> 'HUY' AND t2.ma_tem NOT LIKE 'HT-%'
+                 AND (t2.created_date < t.created_date OR (t2.created_date = t.created_date AND t2.id < t.id))
+                 AND (pv.dot_vai_id IS NULL OR EXISTS (
+                   SELECT 1 FROM audit_log a2 WHERE a2.ten_bang = 'tem' AND a2.id_ban_ghi = t2.id::text
+                      AND a2.hanh_dong IN ('ERP_GHI_IN_TEM', 'ERP_GHI_IN_TEM_LOI')
+                      AND COALESCE(a2.gia_tri_moi->'gui'->>'IDDotNhanvai', a2.gia_tri_moi->'payload'->>'IDDotNhanvai') = info.barcode))
+           )) AS la_tem_dau_dot,
            (SELECT count(*) FROM lenh_sx_dot_vai l2
              WHERE l2.lenh_san_xuat_id = COALESCE(ls.lenh_lien_ket_id, ls.id))::int AS so_dot_cua_lenh,
            to_char(COALESCE($3::date, (now() ${VN})::date), 'YYYY/MM/DD') AS ngay_ct,
@@ -1956,6 +1976,11 @@ async function duLieuGhiInTem(capTem = [], ngayCt = null) {
       CROSS JOIN LATERAL (
         SELECT COALESCE(t.ngay_ca, (t.created_date ${VN})::date) AS ngay
       ) nen
+      CROSS JOIN LATERAL (
+        SELECT CASE WHEN (SELECT count(DISTINCT dvp.phan_in_id) FROM lenh_sx_dot_vai lp JOIN dot_vai_ve dvp ON dvp.id = lp.dot_vai_ve_id
+                          WHERE lp.lenh_san_xuat_id = COALESCE(ls.lenh_lien_ket_id, ls.id)) > 1
+                    THEN inp.dot_vai_id ELSE NULL END AS dot_vai_id
+      ) pv
       LEFT JOIN LATERAL (
         SELECT x.bd, CASE WHEN (x.bd ${VN}) > t.created_date + interval '2 hours' THEN interval '1 day' ELSE interval '0' END AS lui
           FROM (SELECT nen.ngay + t.gio_sx_bd
@@ -1973,7 +1998,15 @@ async function duLieuGhiInTem(capTem = [], ngayCt = null) {
         WHERE lsd.lenh_san_xuat_id = COALESCE(ls.lenh_lien_ket_id, ls.id)
           AND (inp.dot_vai_id IS NULL OR dv.id = inp.dot_vai_id)
         ORDER BY dv.ma_dot_vai LIMIT 1
-      ) info ON true`;
+      ) info ON true
+      LEFT JOIN LATERAL (
+        SELECT ${cotBs}
+        FROM lenh_sx_dot_vai lsd
+        JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+        JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id AND ldv.ma_loai = 'BO_SUNG'
+        WHERE lsd.lenh_san_xuat_id = COALESCE(ls.lenh_lien_ket_id, ls.id)
+          AND (pv.dot_vai_id IS NULL OR dv.id = pv.dot_vai_id)
+      ) bs ON true`;
   const { rows } = await query(sql.replace(/\s+/g, ' '), [temIds, dotVaiIds, ngayCt || null]);
   return rows;
 }
