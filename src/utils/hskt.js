@@ -15,6 +15,9 @@ const PAIN_HOP_LE = [1, 2, 3, 4, 5];
 //   Sửa tay (`pa_in_sua_tay`) vẫn thắng tất cả.
 const PAIN_THEO_ERP = [4, 5];
 const laPainTheoErp = (pain) => PAIN_THEO_ERP.includes(Number(pain));
+// PHẦN IN LUỒNG LOGO (`phan_in.luong_sx = 'LOGO'`, theo *Tính chất in*) ⇒ PA tự động = Logo (4) dù ERP gửi Bàn / Máy / Robot /
+//   chưa xác định (ERP gửi Ép 5 thì giữ Ép). Sửa tay vẫn thắng. Nguồn luật: `erpsync.repository painTuDongLogo`.
+const PAIN_LOGO = 4;
 
 // SỐ CUỐI của `barcode_hskt` = phương án in (đối chiếu dữ liệu thật ERP: 278/278 dòng đúng, TRONG ĐÓ
 // 14 dòng `Pain=0` ↔ barcode kết thúc `0`; barcode luôn 12 chữ số, 11 số đầu duy nhất 1:1 ⇒ 11 số
@@ -40,5 +43,5 @@ function applyPainToBarcode(barcode, pain) {
 const canApplyPain = (barcode) => BARCODE_RE.test(String(barcode ?? '').trim());
 
 module.exports = {
-  PHUONG_AN_IN, PAIN_HOP_LE, PAIN_THEO_ERP, MO_TA_PAIN, BARCODE_RE, isValidPain, laPainTheoErp, applyPainToBarcode, canApplyPain,
+  PHUONG_AN_IN, PAIN_HOP_LE, PAIN_THEO_ERP, PAIN_LOGO, MO_TA_PAIN, BARCODE_RE, isValidPain, laPainTheoErp, applyPainToBarcode, canApplyPain,
 };

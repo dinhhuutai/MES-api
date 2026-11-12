@@ -455,6 +455,9 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
     // + Quét MỌI hồ sơ có đợt BỔ SUNG mà chưa phải Bàn (tự lành hồ sơ cũ — luật khóa chặt 26/09/2026).
     try { for (const id of await repo.hsktBoSungSaiPain()) hsktTouched.add(id); }
     catch (e) { console.error(`[erp-sync] ✗ Quét hồ sơ bổ sung sai PA in lỗi: ${e.message}`); }
+    // + Quét MỌI hồ sơ có phần in luồng LOGO mà PA chưa phải Logo / Ép ⇒ post-pass đổi sang Logo.
+    try { for (const id of await repo.hsktLogoSaiPain()) hsktTouched.add(id); }
+    catch (e) { console.error(`[erp-sync] ✗ Quét hồ sơ Logo sai PA in lỗi: ${e.message}`); }
     for (const hid of hsktTouched) {
       try {
         const r = await repo.applyPainTheoSanLuong(hid, actorId);

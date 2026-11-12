@@ -2,7 +2,7 @@
 
 const { query, withTransaction } = require('../../config/db');
 // Số cuối `barcode_hskt` = phương án in (mig 064) — dùng chung với trang Hồ sơ kỹ thuật.
-const { applyPainToBarcode, isValidPain, laPainTheoErp, PAIN_THEO_ERP } = require('../../utils/hskt');
+const { applyPainToBarcode, isValidPain, laPainTheoErp, PAIN_THEO_ERP, PAIN_LOGO } = require('../../utils/hskt');
 const { tachDsMa, soMaVuaCot, NGAN_CACH } = require('../../utils/maPhanIn');
 const { coCotGia, TEN_COT: TEN_COT_GIA } = require('../../utils/giaPhanIn');
 // Khóa đồng bộ ERP của phần in admin đã sửa tay (mig 116) — xem đầu file utils/khoaErp.js.
@@ -793,7 +793,28 @@ async function setDotVaiKtCanKiemTra(dotVaiIds, val) {
 // ⇒ phần in đó KHÔNG có HSKT ⇒ mọi màn hiện "Phương án in = —". Nay vẫn tạo HSKT (barcode NULL, ma_hskt
 // = code phần) để giữ phương án in; không quét được bằng mã vạch (không có) và KHÔNG gom set (cần barcode).
 // Khi ERP gửi barcode thật về sau, bản không-barcode bị vô hiệu hóa để không tồn tại 2 HSKT active.
-async function upsertHsktNoBarcode(client, { pinId, maPhan, pain, inset, actorId }) {
+// ─── PHẦN IN LUỒNG LOGO ⇒ PHƯƠNG ÁN IN = LOGO (4) ─────────────────────────────
+// Hàng nhóm Logo (*Tính chất in* luồng LOGO ⇒ `phan_in.luong_sx = 'LOGO'`) ERP hay gửi Pain Bàn ⇒ ở Release 1 rơi vào chip Bàn.
+//   PA tự động của hồ sơ có phần in luồng Logo = Logo, trừ khi ERP gửi Ép (5) ⇒ giữ Ép. `pa_in_sua_tay` vẫn thắng (caller xét).
+//   Áp ở: tạo / cập nhật HSKT từ ERP (`upsertHsktForPin`, `upsertHsktNoBarcode`) + post-pass `applyPainTheoSanLuong`
+//   + quét tự lành `hsktLogoSaiPain` mỗi lượt đồng bộ (phần in đổi luồng sang Logo ở Quản trị phần in / Tính chất in).
+const HSKT_CO_LOGO_SQL = (hsktExpr) => `EXISTS (SELECT 1 FROM hskt_phan_in hpl JOIN phan_in pl ON pl.id = hpl.phan_in_id AND pl.dang_hoat_dong WHERE hpl.hskt_id = ${hsktExpr} AND hpl.dang_hoat_dong AND pl.luong_sx = 'LOGO')`;
+const painTuDongLogo = (pain) => (laPainTheoErp(pain) ? Number(pain) : PAIN_LOGO);
+async function laPhanInLogo(client, pinId) {
+  if (!pinId) return false;
+  const { rows } = await client.query("SELECT 1 FROM phan_in WHERE id = $1 AND luong_sx = 'LOGO'", [pinId]);
+  return rows.length > 0;
+}
+async function hsktCoLogo(client, hsktId, pinId) {
+  if (await laPhanInLogo(client, pinId)) return true;
+  if (!hsktId) return false;
+  const { rows } = await client.query(`SELECT ${HSKT_CO_LOGO_SQL('$1')} AS co`, [hsktId]);
+  return !!(rows[0] && rows[0].co);
+}
+
+async function upsertHsktNoBarcode(client, { pinId, maPhan, pain: painErp, inset, actorId }) {
+  // Phần in luồng Logo ⇒ PA Logo (trừ ERP gửi Ép) — `painTuDongLogo`.
+  const pain = (await laPhanInLogo(client, pinId)) ? painTuDongLogo(painErp) : painErp;
   const { rows: cur } = await client.query(
     `SELECT h.id, h.phuong_an_in, h.pa_in_sua_tay FROM hskt_phan_in hp JOIN ho_so_ky_thuat h ON h.id = hp.hskt_id
       WHERE hp.phan_in_id = $1 AND hp.dang_hoat_dong AND h.dang_hoat_dong AND h.barcode_hskt IS NULL LIMIT 1`,
@@ -898,7 +919,8 @@ async function applyPainTheoSanLuong(hsktId, actorId = null) {
     const h = cur[0];
     const { rows: [sl] } = await client.query(
       `SELECT COALESCE(SUM(dv.so_luong_vai_ve),0)::int AS tong,
-              count(*) FILTER (WHERE ldv.ma_loai IN (${LUON_IN_BAN_SQL}))::int AS n_luon_ban
+              count(*) FILTER (WHERE ldv.ma_loai IN (${LUON_IN_BAN_SQL}))::int AS n_luon_ban,
+              ${HSKT_CO_LOGO_SQL('$1::uuid')} AS co_logo
          FROM hskt_phan_in hp
          JOIN phan_in pin ON pin.id = hp.phan_in_id AND pin.dang_hoat_dong
          JOIN dot_vai_ve dv ON dv.phan_in_id = pin.id AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY')
@@ -907,7 +929,9 @@ async function applyPainTheoSanLuong(hsktId, actorId = null) {
     const tong = Number(sl.tong) || 0;
     // ⚠⚠ ĐỢT BỔ SUNG THẮNG NGƯỠNG SẢN LƯỢNG — xem `LOAI_LUON_IN_BAN` ở đầu khối.
     const coLuonBan = Number(sl.n_luon_ban) > 0;
-    const pain = coLuonBan ? PAIN_BAN : (tong >= NGUONG_VAI_IN_MAY ? PAIN_MAY : PAIN_BAN);
+    // ⚠⚠ Phần in luồng LOGO ⇒ Logo, thắng cả sản lượng lẫn bổ sung — `painTuDongLogo` (đầu khối HSKT).
+    const coLogo = sl.co_logo === true;
+    const pain = coLogo ? PAIN_LOGO : coLuonBan ? PAIN_BAN : (tong >= NGUONG_VAI_IN_MAY ? PAIN_MAY : PAIN_BAN);
     // ⚠⚠ Logo / Ép (Pain 4 / 5) là LOẠI hàng do ERP quyết, không phải Bàn ↔ Máy theo sản lượng ⇒ không đè (kể cả có đợt
     //   bổ sung) — `utils/hskt.js PAIN_THEO_ERP`. Trước đây ERP gửi Pain 5, 1 giây sau luật bổ sung kéo về Bàn.
     if (laPainTheoErp(h.phuong_an_in)) return { doi: false, tong, pain: Number(h.phuong_an_in), bo_qua: 'logo_ep' };
@@ -918,7 +942,9 @@ async function applyPainTheoSanLuong(hsktId, actorId = null) {
       'SELECT phan_in_id FROM hskt_phan_in WHERE hskt_id=$1 AND dang_hoat_dong LIMIT 1', [hsktId]);
     // Ghi RÕ LÝ DO vào lịch sử HSKT: 2 luật cho ra cùng giá trị 1 (Bàn) nhưng vì lý do khác hẳn nhau —
     // không ghi rõ thì sau này không ai truy được vì sao hồ sơ 3000 m lại ra in Bàn.
-    const lyDo = coLuonBan
+    const lyDo = coLogo
+      ? 'phần in thuộc nhóm Logo (Tính chất in) ⇒ phương án in Logo'
+      : coLuonBan
       ? `có đợt vải BỔ SUNG ⇒ luôn in Bàn (tổng ${tong} pcs, bỏ qua ngưỡng ${NGUONG_VAI_IN_MAY})`
       : `tự động theo sản lượng: ${tong} pcs vải ${tong >= NGUONG_VAI_IN_MAY ? '≥' : '<'} `
         + `${NGUONG_VAI_IN_MAY} ⇒ ${pain === PAIN_MAY ? 'in Máy' : 'in Bàn'}`;
@@ -967,6 +993,14 @@ async function hsktBoSungSaiPain() {
   return rows.map((r) => r.id);
 }
 
+// Mọi HSKT active có phần in luồng LOGO mà PA chưa phải Logo / Ép, chưa sửa tay — job ERP quét MỖI LƯỢT rồi đưa vào post-pass
+//   `applyPainTheoSanLuong` (tự lành hồ sơ cũ + phần in đổi luồng sang Logo sau khi đã có hồ sơ).
+async function hsktLogoSaiPain() {
+  const { rows } = await query(
+    `SELECT DISTINCT h.id FROM ho_so_ky_thuat h JOIN hskt_phan_in hp ON hp.hskt_id = h.id AND hp.dang_hoat_dong JOIN phan_in pin ON pin.id = hp.phan_in_id AND pin.dang_hoat_dong AND pin.luong_sx = 'LOGO' WHERE h.dang_hoat_dong AND NOT COALESCE(h.pa_in_sua_tay,false) AND COALESCE(h.phuong_an_in,0) NOT IN (${PAIN_THEO_ERP.join(',')})`);
+  return rows.map((r) => r.id);
+}
+
 // `daDoiPain` (Set, tùy chọn — 1 Set / lượt đồng bộ): hồ sơ đã đổi phương án in theo Pain Logo / Ép của ERP trong lượt này
 //   ⇒ dòng sau của cùng hồ sơ không đổi nữa (chốt chống đổi qua lại nếu ERP gửi lẫn Pain trong 1 lượt).
 async function upsertHsktForPin({ pinId, barcodeHskt, pain, inset, maDonReady, maPhan, actorId = null, daDoiPain = null }) {
@@ -991,6 +1025,10 @@ async function upsertHsktForPin({ pinId, barcodeHskt, pain, inset, maDonReady, m
       [barcodeHskt]
     );
     let hsktId; let phienBan; let curPain;
+    // Phần in luồng Logo (hoặc hồ sơ đã có phần in Logo) ⇒ PA Logo, trừ ERP gửi Ép — `painTuDongLogo`.
+    //   ⚠ Phải áp TRƯỚC nhánh "ra khỏi 4 / 5 theo ERP" bên dưới: không thì ERP gửi Bàn kéo hồ sơ khỏi Logo, post-pass đưa lại
+    //   Logo ⇒ +2 phiên bản mỗi 5 phút (đúng kiểu sự cố vòng lặp Pain 04/08).
+    if (await hsktCoLogo(client, act.length ? act[0].id : null, pinId)) pain = painTuDongLogo(pain);
     if (!act.length) {
       const ins = await client.query(
         `INSERT INTO ho_so_ky_thuat (barcode_hskt, barcode_hskt_goc, ma_hskt, phuong_an_in, inset, phien_ban, ma_don_ready, dang_hoat_dong, created_by) VALUES ($1,$1,$1,$2,$3,1,$4,true,$5) RETURNING id`,
@@ -1077,5 +1115,5 @@ module.exports = {
   ganLuongSx, readyCheckpointIds, simulateReadyDone, isPhanInReleased, canLamLaiReady, flagLamLaiReady,
   chiHuyQcReady, reopenReadyForPhanIn, setDotVaiKtCanKiemTra,
   upsertHsktForPin, eligibleDotVaiByIds, openSetByGhiChu,
-  applyPainTheoSanLuong, NGUONG_VAI_IN_MAY, LOAI_LUON_IN_BAN, hsktCoBoSung, hsktBoSungSaiPain, moLaiPhanInCoDotMoi,
+  applyPainTheoSanLuong, NGUONG_VAI_IN_MAY, LOAI_LUON_IN_BAN, hsktCoBoSung, hsktBoSungSaiPain, hsktLogoSaiPain, moLaiPhanInCoDotMoi,
 };
