@@ -248,7 +248,11 @@ function dungThanMoi(k, cu, sua) {
   if (!sua || typeof sua !== 'object' || Array.isArray(sua)) {
     throw new AppError('Thiếu dữ liệu sửa', { status: 422, errorCode: 'THIEU_DU_LIEU' });
   }
+  // Khóa kênh khai mặc định (`macDinh`) mà thân cũ thiếu / rỗng ⇒ điền mặc định (vd SLBSCty = 0 của SF0).
   const moi = { ...cu };
+  for (const [t, v] of Object.entries(k.macDinh || {})) {
+    if (moi[t] === undefined || moi[t] === null || (typeof v === 'number' && moi[t] === '')) moi[t] = v;
+  }
   const doi = {};
   const loi = [];
   const duocSua = new Set(k.truong.filter((t) => !k.khoa.includes(t) && !k.guong[t]));
