@@ -363,6 +363,30 @@ async function getLenhBasic(lenhId) {
   return rows[0] || null;
 }
 
+// LỆNH CÔNG ĐOẠN CÒN LẠI của cùng phần in (phần in 2 công đoạn: in kiếng / in + ép, mig 126) — sidebar Sản xuất hiện để
+//   người in thấy rõ mình đang ở công đoạn nào và lệnh kia đang ở đâu (bấm nhầm lệnh ép khi định in kiếng). Chỉ lệnh sống.
+async function lenhCongDoanKhac(lenhId, giaiDoan) {
+  const gdKhac = giaiDoan === 'EP_UI' ? 'IN' : 'EP_UI';
+  const { rows } = await query(
+    `SELECT ls2.id, ls2.ma_lenh_san_xuat, ls2.trang_thai, ls2.so_luong_release, ls2.la_cong_doan_dau,
+            (CASE WHEN ls2.giai_doan = 'EP_UI' THEN 'EP_UI' ELSE 'IN' END) AS giai_doan,
+            COALESCE(ps.chuyen_id, ls2.chuyen_id) AS chuyen_id, cs.ma_chuyen, cs.ten_chuyen, (ps.id IS NOT NULL) AS dang_chay
+       FROM lenh_san_xuat ls2
+       LEFT JOIN LATERAL (SELECT p.id, p.chuyen_id FROM phieu_san_xuat p WHERE p.lenh_san_xuat_id = ls2.id AND p.trang_thai = 'DANG_CHAY'
+                           ORDER BY p.created_date DESC LIMIT 1) ps ON true
+       LEFT JOIN chuyen_san_xuat cs ON cs.id = COALESCE(ps.chuyen_id, ls2.chuyen_id)
+      WHERE ls2.id <> $1 AND ls2.trang_thai <> 'HUY'
+        AND (CASE WHEN ls2.giai_doan = 'EP_UI' THEN 'EP_UI' ELSE 'IN' END) = $2
+        AND EXISTS (SELECT 1 FROM lenh_sx_dot_vai a JOIN dot_vai_ve da ON da.id = a.dot_vai_ve_id
+                     JOIN dot_vai_ve db ON db.phan_in_id = da.phan_in_id
+                     JOIN lenh_sx_dot_vai b ON b.dot_vai_ve_id = db.id AND b.lenh_san_xuat_id = ls2.id
+                    WHERE a.lenh_san_xuat_id = $1)
+      ORDER BY (ps.id IS NOT NULL) DESC, ls2.created_date DESC LIMIT 5`.replace(/\s+/g, ' '),
+    [lenhId, gdKhac]
+  );
+  return rows;
+}
+
 // Danh sách đợt vải / phần in của 1 lệnh. Dùng cho: ô chọn "vải hủy/thiếu theo phần in",
 // modal IN TEM theo gom set và modal PHÂN CÔNG (mỗi phần in 1 dòng: khách hàng → loại đợt vải).
 // `sl_vao_sx` = SL vải của đợt đó đưa vào đợt SX (lenh_sx_dot_vai.so_luong) → trần in tem TỪNG đợt.
@@ -2808,6 +2832,9 @@ async function insertVuotHistory(client, h, actorId) {
 }
 
 module.exports = {
+  // Ngày chứng từ của tem (alias `t`) — Excel tồn KCS lọc theo ngày CT đọc CHUNG.
+  NGAY_CT_TEM_SQL,
+  lenhCongDoanKhac,
   // Luật "tem in đã hủy mở lại được" (alias t / ps / ls / h) — Quản trị phần in đọc CHUNG (19/10/2026).
   SU_KIEN_CUOI_LATERAL, MO_LAI_DUOC_SQL,
   // Vải hủy / thiếu theo tem (21/10/2026, mig 118) + số chờ gắn tem của phiếu.

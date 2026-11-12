@@ -162,8 +162,13 @@ const listKcsTon = (opt, gomDangPhoi = true) => listCandByCon(
 //   phút phơi — cùng công thức trường tem `so_phut_phoi`) · IDMES phiếu in tem SF0 đã gửi ERP (khóa `soctcu` bên ERP).
 async function thongTinTonKcs(temIds = []) {
   if (!temIds.length) return [];
+  // Ngày chứng từ (luật DUY NHẤT `production.repository NGAY_CT_TEM_SQL`) — nạp lười để khỏi vòng require.
+  const { NGAY_CT_TEM_SQL } = require('../production/production.repository');
   const { rows } = await query(
     `SELECT t.id AS tem_id, to_char(t.ngay_ca, 'YYYY-MM-DD') AS ngay_ca, info.mau_in, info.tinh_chat_in, info.do_in,
+            left(${NGAY_CT_TEM_SQL}, 10) AS ngay_ct,
+            to_char(t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh', 'YYYY-MM-DD') AS ngay_in_vn,
+            to_char(t.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh', 'HH24:MI') AS gio_in_vn,
             phoi.tg_bd_phoi, phoi.tg_kt_phoi, phoi.trang_thai AS phoi_trang_thai,
             CASE WHEN phoi.tg_kt_phoi IS NULL OR phoi.tg_bd_phoi IS NULL THEN NULL
                  ELSE GREATEST(0, ROUND(EXTRACT(EPOCH FROM (phoi.tg_kt_phoi - phoi.tg_bd_phoi)) / 60))::int END AS so_phut_phoi,

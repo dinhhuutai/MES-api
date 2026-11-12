@@ -733,7 +733,7 @@ async function suaKeHoachLenh(phanInId, lenhId, body = {}, actorId) {
   if (!l) throw new AppError('Lệnh không thuộc phần in này (hoặc đã hủy)', { status: 404, errorCode: 'NOT_FOUND' });
   const kq = await planningService.replan(lenhId, {
     chuyenId: body.chuyenId || null, ngayKeHoach: body.ngayKeHoach, tgBdKh: body.tgBdKh || null, tgKtKh: body.tgKtKh || null,
-    slRelease: body.slRelease || null, thoIn: body.thoIn, lyDo: LY(ly),
+    slRelease: body.slRelease || null, thoIn: body.thoIn, dinhMuc: body.dinhMuc, lyDo: LY(ly),
     btp: typeof body.btp === 'boolean' ? body.btp : undefined,
   }, actorId, { choDaChay: true, nguon: 'QUAN_TRI_PHAN_IN' });
   await repo.ghiAudit('lenh_san_xuat', lenhId, 'QUAN_TRI_SUA_KE_HOACH',
@@ -753,7 +753,7 @@ async function suaKeHoachTam(phanInId, ktId, body = {}, actorId) {
   if (!body.ngayKeHoach) throw new AppError('Chọn ngày sản xuất theo kế hoạch', { status: 422, errorCode: 'NO_NGAY' });
   const kq = await planningService.updateKeHoachTam(ktId, {
     chuyenId: body.chuyenId, ngayKeHoach: body.ngayKeHoach, soLuong: body.soLuong,
-    tgBdKh: body.tgBdKh || null, tgKtKh: body.tgKtKh || null, thoIn: body.thoIn,
+    tgBdKh: body.tgBdKh || null, tgKtKh: body.tgKtKh || null, thoIn: body.thoIn, dinhMuc: body.dinhMuc,
   }, actorId);
   await repo.ghiAudit('ke_hoach_tam', ktId, 'QUAN_TRI_SUA_KE_HOACH',
     { chuyen_id: kt.chuyen_id, ngay_ke_hoach: kt.ngay_ke_hoach, tg_bd_kh: kt.tg_bd_kh, tg_kt_kh: kt.tg_kt_kh, so_luong: kt.so_luong, tho_in_kh: kt.tho_in_kh },

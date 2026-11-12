@@ -93,6 +93,9 @@ async function getRun(lenhId) {
            phan_cong: phieu ? await phanCongHienThi(lenh, phieu, phanCong) : phanCong,
            goi_y_tem: await goiYTemMeta(lenhId, phieu?.id),
            cong_doan: nhanCongDoan(lenh.luong_sx, lenh.giai_doan), // "In kiếng" / "In" / "Ép ủi" — null với phần in 1 công đoạn
+           // Phần in 2 công đoạn ⇒ lệnh của công đoạn CÒN LẠI (sidebar hiện khung công đoạn — chống bấm nhầm lệnh). Lỗi ⇒ [].
+           cong_doan_khac: nhanCongDoan(lenh.luong_sx, lenh.giai_doan)
+             ? await repo.lenhCongDoanKhac(lenhId, lenh.giai_doan).catch(() => []) : [],
            kieng: await kiengCuaLenh(lenh),
            so_phan_in: soPhanIn, co_gom_set: soPhanIn > 1 };
 }

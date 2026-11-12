@@ -24,6 +24,12 @@ const kcsCandidates = dsTem('quality.kcs', (f) => service.listKcsCandidates(f));
 // Excel tồn chưa kiểm (khuôn ERP) — chỉ tải khi bấm xuất ⇒ không cache. `gomDangPhoi=0` ⇒ chỉ tem đã khô.
 const kcsTonChuaKiem = asyncHandler(async (req, res) => ok(res, await service.tonChuaKiemKcs({
   ...candFilters(req.query), gomDangPhoi: String(req.query.gomDangPhoi ?? '1') !== '0',
+  // Lọc theo NGÀY CHỨNG TỪ của tem (hộp xuất Excel) — chỉ nhận đúng dạng YYYY-MM-DD.
+  ctTu: /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.ctTu || '')) ? req.query.ctTu : null,
+  ctDen: /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.ctDen || '')) ? req.query.ctDen : null,
+  // Giờ (HH:MM) ghép với ngày CT — mốc tem = ngày CT + giờ in tem.
+  gioTu: /^([01]\d|2[0-3]):[0-5]\d$/.test(String(req.query.gioTu || '')) ? req.query.gioTu : null,
+  gioDen: /^([01]\d|2[0-3]):[0-5]\d$/.test(String(req.query.gioDen || '')) ? req.query.gioDen : null,
 })));
 const recordKcs = asyncHandler(async (req, res) =>
   ok(res, await service.recordKcs(req.params.temId, req.body, req.user.id), 'Đã ghi nhận KCS'));

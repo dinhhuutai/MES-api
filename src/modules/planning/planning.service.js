@@ -15,6 +15,7 @@ const { STAGE_LABEL } = require('../../utils/stage'); // nhãn giai đoạn — 
 const { kiemCap } = require('../../utils/phuongAnChuyen'); // luật PA in ↔ loại chuyền (chặn ở Release 1)
 const { tinhNangBat } = require('../../utils/caiDatTinhNang'); // công tắc bật/tắt luật trên (mig 087)
 const { coCotThoInKh, chuanHoaThoIn } = require('../../utils/thoInKeHoach'); // thợ in kế hoạch (mig 111)
+const { coCotDinhMuc, chuanHoaDinhMuc } = require('../../utils/dinhMucKeHoach'); // định mức kế hoạch SP / giờ (mig 129)
 const { LOAI_TRA_VE_KH } = require('../../utils/traVeKeHoach'); // Test Run trả về Kế hoạch (giữ lệnh)
 const { NHOM_CA_RIENG, ngayCaKeHoach, loaiChuyenTinhCa } = require('../../utils/ca'); // nhóm cài ca riêng được (mig 112; KHAC = chuyền khác, 09/10/2026)
 const sockets = require('../../sockets');
@@ -263,11 +264,11 @@ async function autoPlanCandidates({ search }) {
 // GIA CÔNG: đợt SX gửi ra ngoài gia công → KHÔNG in trong xưởng. Release 1 / Tạo đợt SX chỉ TẠO LỆNH
 // ở trạng thái 'GIA_CONG' (đậu ở màn "Gia công" của Kế hoạch); chưa tạo phiếu/tem, CHƯA qua OQC.
 // Kế hoạch bấm "Chuyển OQC" (confirmGiaCongToOqc) mới tạo phiếu HOAN_TAT + tem CHO_OQC và sang OQC.
-async function createGiaCongLenh(client, { versionId, chuyenId, junctions, tongSL, ngayKeHoach, tgBdKh, tgKtKh, thoInKh, giaiDoan, laCongDoanDau }, actorId) {
+async function createGiaCongLenh(client, { versionId, chuyenId, junctions, tongSL, ngayKeHoach, tgBdKh, tgKtKh, thoInKh, giaiDoan, laCongDoanDau, dinhMuc }, actorId) {
   const maLenh = await repo.nextMaLenhTx(client);
   const lenhId = await repo.createLenh(client, {
     versionId, maLenh, chuyenId, soLuongRelease: tongSL, ngayKeHoach, trangThai: 'GIA_CONG', giaiDoan: giaiDoan || GD_IN,
-    tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null, thoInKh, laCongDoanDau,
+    tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null, thoInKh, laCongDoanDau, dinhMuc,
   }, actorId);
   for (const j of junctions) await repo.addLenhDotVai(client, lenhId, j.dotVaiId, actorId, j.soLuong);
   return { id: lenhId, ma_lenh_san_xuat: maLenh };
@@ -435,8 +436,9 @@ async function createRelease1(body = {}, actorId, opts = {}) {
 //   ⚠ 11/11/2026 (người dùng chốt): lệnh ép KHÔNG qua Test Run — vào thẳng Chờ chạy (`RELEASE_2`, `boQuaTestRun`; audit
 //   `TAO_LENH_CONG_DOAN.bo_test_run_ep`); chuyền gia công vẫn vào Gia công. Không kéo `ton_tram` của đợt (trạm theo dõi của
 //   đợt phản ánh phần IN — lệnh ép đứng riêng). CHƯA báo ERP Release 1 cho lệnh ép (ERP chưa phân biệt công đoạn).
-async function releasePhanEp({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach, tgBdKh, tgKtKh, thoIn }, actorId) {
+async function releasePhanEp({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach, tgBdKh, tgKtKh, thoIn, dinhMuc: dinhMucIn }, actorId) {
   const thoInKh = chuanHoaThoIn(thoIn);
+  const dinhMuc = chuanHoaDinhMuc(dinhMucIn) ?? null; // định mức kế hoạch SP / giờ (mig 129)
   const thoInChuaLuu = !!thoInKh && !(await coCotThoInKh());
   const dangOGn = await repo.phanInDangOGnTheoDot(dotVaiIds);
   if (dangOGn.length) {
@@ -482,7 +484,7 @@ async function releasePhanEp({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach,
       if (qty <= 0) continue;
       await repo.upsertKeHoachTam({
         dotVaiId: dvId, phanInId: byId[dvId].phan_in_id, chuyenId, ngayKeHoach,
-        tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null, soLuong: qty, thoInKh, giaiDoan: GD_EP,
+        tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null, soLuong: qty, thoInKh, dinhMuc, giaiDoan: GD_EP,
       }, actorId);
       tamCount += 1;
     }
@@ -528,7 +530,7 @@ async function releasePhanEp({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach,
       if (giaCong) {
         const gc = await createGiaCongLenh(client, {
           versionId: version.id, chuyenId, junctions: n.map((p) => ({ dotVaiId: p.dvId, soLuong: p.qty })),
-          tongSL: tong, ngayKeHoach, tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null, thoInKh,
+          tongSL: tong, ngayKeHoach, tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null, thoInKh, dinhMuc,
           giaiDoan: GD_EP, laCongDoanDau: dau,
         }, actorId);
         out.push({ ...gc, trang_thai: 'GIA_CONG', giai_doan: GD_EP, so_dot_vai: n.length, dot_vai_id: n[0].dvId, dot_vai_ids: n.map((p) => p.dvId) });
@@ -538,7 +540,7 @@ async function releasePhanEp({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach,
       const trangThai = boQuaTestRun(dv0.luong_sx, GD_EP) ? 'RELEASE_2' : 'RELEASE_1';
       const id = await repo.createLenh(client, {
         versionId: version.id, maLenh, chuyenId, soLuongRelease: tong, ngayKeHoach, trangThai,
-        giaiDoan: GD_EP, tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null, thoInKh, laCongDoanDau: dau,
+        giaiDoan: GD_EP, tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null, thoInKh, dinhMuc, laCongDoanDau: dau,
       }, actorId);
       for (const p of n) await repo.addLenhDotVai(client, id, p.dvId, actorId, p.qty);
       await logLuongLenhTx(client, id, { giai_doan: GD_EP, luong_sx: dv0.luong_sx, la_cong_doan_dau: dau,
@@ -573,8 +575,9 @@ async function logLuongLenhTx(client, lenhId, moi, actorId) {
   );
 }
 
-async function releasePhanIn({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach, tgBdKh, tgKtKh, thoIn, btpKhacKh }, actorId, opts = {}) {
+async function releasePhanIn({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach, tgBdKh, tgKtKh, thoIn, btpKhacKh, dinhMuc: dinhMucIn }, actorId, opts = {}) {
   const thoInKh = chuanHoaThoIn(thoIn);
+  const dinhMuc = chuanHoaDinhMuc(dinhMucIn) ?? null; // định mức kế hoạch SP / giờ (mig 129)
   const thoInChuaLuu = !!thoInKh && !(await coCotThoInKh());
   const batBtp = !!btpKhacKh && (await coCotBtp());
   const btpChuaLuu = !!btpKhacKh && !batBtp;
@@ -626,7 +629,7 @@ async function releasePhanIn({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach,
     if (qty <= 0) continue;
     await repo.upsertKeHoachTam({
       dotVaiId: dvId, phanInId: qcMap[dvId]?.phan_in_id, chuyenId, ngayKeHoach,
-      tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null, soLuong: qty, thoInKh,
+      tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null, soLuong: qty, thoInKh, dinhMuc,
     }, actorId);
     tamCount += 1;
     tamIds.push(dvId);
@@ -694,7 +697,7 @@ async function releasePhanIn({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach,
           //   ⇒ lệnh gia công release từ màn Release 1 mất giờ kế hoạch (fix 2026-08-12).
           versionId: version.id, chuyenId, junctions: nhom.map((p) => ({ dotVaiId: p.dvId, soLuong: p.qty })),
           tongSL: nhom.reduce((s, p) => s + p.qty, 0), ngayKeHoach,
-          tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null, thoInKh,
+          tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null, thoInKh, dinhMuc,
           laCongDoanDau: laCongDoanDau(dv0.luong_sx, dv0.ep_truoc, GD_IN),
         }, actorId);
         if (batBtp) await datSoDauTx(client, nhom.map((p) => p.dvId), actorId, { them: true, nguon: 'RELEASE_1' });
@@ -731,7 +734,7 @@ async function releasePhanIn({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach,
       const maLenh = await repo.nextMaLenhTx(client);
       const id = await repo.createLenh(client, {
         versionId: version.id, maLenh, chuyenId, soLuongRelease: tong, ngayKeHoach, trangThai,
-        tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null, thoInKh, laCongDoanDau: dau,
+        tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null, thoInKh, dinhMuc, laCongDoanDau: dau,
       }, actorId);
       for (const p of nhom) await repo.addLenhDotVai(client, id, p.dvId, actorId, p.qty);
       if (trangThai === 'RELEASE_2' || dau) {
@@ -776,10 +779,11 @@ async function releasePhanIn({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach,
 //   lệnh gia công / kế hoạch tạm khi phần in chưa Ready; không chọn ⇒ NULL; thiếu cột ⇒ vẫn tạo, trả `tho_in_chua_luu`).
 // `giaiDoan` (mig 126): 'IN' (mặc định) | 'EP_UI' — gom đợt cho phần ÉP ỦI của phần in 2 công đoạn (sức chứa riêng).
 //   ⚠ Bản cũ TỰ tạo thêm lệnh ép (holding CHO_IN_XONG) cho phần in kiếng — ĐÃ BỎ: phần ép nay lập kế hoạch riêng.
-async function createDotSanXuat({ items, chuyenId, ngayKeHoach, tgBdKh, tgKtKh, thoIn, giaiDoan }, actorId) {
+async function createDotSanXuat({ items, chuyenId, ngayKeHoach, tgBdKh, tgKtKh, thoIn, giaiDoan, dinhMuc: dinhMucIn }, actorId) {
   if (!chuyenId) throw new AppError('Chọn chuyền sản xuất', { status: 422, errorCode: 'NO_CHUYEN' });
   const gd = chuanGd(giaiDoan);
   const thoInKh = chuanHoaThoIn(thoIn);
+  const dinhMuc = chuanHoaDinhMuc(dinhMucIn) ?? null; // định mức kế hoạch SP / giờ (mig 129)
   const thoInChuaLuu = !!thoInKh && !(await coCotThoInKh());
   const plan = (Array.isArray(items) ? items : [])
     .map((i) => ({ dotVaiId: i.dotVaiId, soLuong: Number(i.soLuong) }))
@@ -827,7 +831,7 @@ async function createDotSanXuat({ items, chuyenId, ngayKeHoach, tgBdKh, tgKtKh, 
     for (const p of plan) {
       await repo.upsertKeHoachTam({
         dotVaiId: p.dotVaiId, phanInId: byId[p.dotVaiId]?.phan_in_id, chuyenId, ngayKeHoach,
-        tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null, soLuong: p.soLuong, thoInKh, giaiDoan: gd,
+        tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null, soLuong: p.soLuong, thoInKh, dinhMuc, giaiDoan: gd,
       }, actorId);
     }
     sockets.emit('dashboard:refresh', {});
@@ -847,7 +851,7 @@ async function createDotSanXuat({ items, chuyenId, ngayKeHoach, tgBdKh, tgKtKh, 
       await kiemLaiConReleaseTx(client, [plan.map((p) => ({ dvId: p.dotVaiId, qty: p.soLuong }))], true, gd);
       return createGiaCongLenh(client, {
         versionId: version.id, chuyenId, junctions: plan.map((p) => ({ dotVaiId: p.dotVaiId, soLuong: p.soLuong })),
-        tongSL, ngayKeHoach, tgBdKh, tgKtKh, thoInKh, giaiDoan: gd, laCongDoanDau: dau,
+        tongSL, ngayKeHoach, tgBdKh, tgKtKh, thoInKh, dinhMuc, giaiDoan: gd, laCongDoanDau: dau,
       }, actorId);
     });
     if (gd === GD_IN) {
@@ -869,7 +873,7 @@ async function createDotSanXuat({ items, chuyenId, ngayKeHoach, tgBdKh, tgKtKh, 
     const maLenh = await repo.nextMaLenhTx(client);
     const id = await repo.createLenh(client, {
       versionId: version.id, maLenh, chuyenId, soLuongRelease: tongSL, ngayKeHoach, trangThai, giaiDoan: gd,
-      tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null, thoInKh, laCongDoanDau: dau,
+      tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null, thoInKh, dinhMuc, laCongDoanDau: dau,
     }, actorId);
     for (const p of plan) await repo.addLenhDotVai(client, id, p.dotVaiId, actorId, p.soLuong);
     if (gd === GD_EP || dau || diTat) {
@@ -1778,7 +1782,7 @@ async function confirmKeHoachTam(id, actorId) {
   const res = await createRelease1({
     ...(gd === GD_EP ? { dotVaiIdsEp: [kt.dot_vai_ve_id] } : { dotVaiIds: [kt.dot_vai_ve_id] }), chuyenId: kt.chuyen_id,
     soLuongRelease: kt.so_luong != null ? kt.so_luong : undefined,
-    ngayKeHoach: kt.ngay_ke_hoach, tgBdKh: kt.tg_bd_kh, tgKtKh: kt.tg_kt_kh, thoIn: kt.tho_in_kh,
+    ngayKeHoach: kt.ngay_ke_hoach, tgBdKh: kt.tg_bd_kh, tgKtKh: kt.tg_kt_kh, thoIn: kt.tho_in_kh, dinhMuc: kt.dinh_muc_kh,
   }, actorId, { nguonErp: 'KE_HOACH_TAM' });
   await repo.deleteKeHoachTam(id);
   await repo.logKeHoachTam('XAC_NHAN_KE_HOACH_TAM', kt.dot_vai_ve_id, {
@@ -1794,17 +1798,18 @@ const gdAudit = (kt) => (chuanGd(kt && kt.giai_doan) === GD_EP ? { giai_doan: GD
 
 // Sửa kế hoạch tạm — 19/10/2026 sửa được cả giờ BĐ/KT + thợ in như panel Release 1. Khóa không gửi (undefined)
 //   ⇒ giữ nguyên (bên gọi cũ chỉ gửi chuyền/SL/ngày). Thợ in chuẩn hóa như `createRelease1`; rỗng = xóa.
-async function updateKeHoachTam(id, { chuyenId, ngayKeHoach, soLuong, tgBdKh, tgKtKh, thoIn }, actorId) {
+async function updateKeHoachTam(id, { chuyenId, ngayKeHoach, soLuong, tgBdKh, tgKtKh, thoIn, dinhMuc }, actorId) {
   const kt = await repo.getKeHoachTam(id);
   if (!kt) throw new AppError('Kế hoạch tạm không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   const sl = soLuong != null && soLuong !== '' ? Number(soLuong) : null;
   if (sl != null && !(sl > 0)) throw new AppError('Số lượng release phải lớn hơn 0', { status: 422, errorCode: 'INVALID_QTY' });
   const guiGio = tgBdKh !== undefined || tgKtKh !== undefined;
   const thoMoi = thoIn !== undefined ? chuanHoaThoIn(thoIn) : undefined;
+  const dmMoi = chuanHoaDinhMuc(dinhMuc); // undefined = giữ (mig 129)
   const res = await repo.updateKeHoachTam(id, {
     chuyenId, ngayKeHoach, soLuong: sl,
     ...(guiGio ? { tgBdKh: tgBdKh || null, tgKtKh: tgKtKh || null } : {}),
-    thoInKh: thoMoi,
+    thoInKh: thoMoi, dinhMuc: dmMoi,
   }, actorId);
   if (!res) throw new AppError('Không cập nhật được kế hoạch tạm', { status: 409, errorCode: 'UPDATE_FAILED' });
   const thoInChuaLuu = !!thoMoi && !(await coCotThoInKh());
@@ -1812,6 +1817,7 @@ async function updateKeHoachTam(id, { chuyenId, ngayKeHoach, soLuong, tgBdKh, tg
     chuyen_id: chuyenId || null, ngay_ke_hoach: ngayKeHoach || null, so_luong: sl,
     ...(guiGio ? { gio_bd: gioCua(tgBdKh), gio_kt: gioCua(tgKtKh) } : {}),
     ...(thoMoi !== undefined && !thoInChuaLuu ? { tho_in: thoMoi } : {}),
+    ...(dmMoi !== undefined ? { dinh_muc_gio: dmMoi } : {}),
     ...gdAudit(kt),
   }, actorId);
   sockets.emit('dashboard:refresh', {});
@@ -2284,7 +2290,7 @@ function gioCua(v) {
 // `btp` (29/10/2026, người dùng: "thêm nút BTP ở Lập lại kế hoạch và Sửa kế hoạch — tích thì hiện lại ở Release 1, bỏ thì
 //   mất"): `true` = THÊM 1 ĐẦU BTP cho mọi đợt của lệnh (đợt hiện lại ở Release 1 với còn = SL vải) · `false` = BỎ đầu đang
 //   chờ (đợt rời Release 1) · không gửi = giữ nguyên. Luật `utils/btpKhacKh.datSoDauTx`; chưa mig 120 ⇒ trả `btp_chua_luu`.
-async function replan(lenhId, { chuyenId, ngayKeHoach, lyDo, tgBdKh, tgKtKh, slRelease, thoIn, btp }, actorId, opts = {}) {
+async function replan(lenhId, { chuyenId, ngayKeHoach, lyDo, tgBdKh, tgKtKh, slRelease, thoIn, btp, dinhMuc }, actorId, opts = {}) {
   if (!ngayKeHoach) throw new AppError('Chọn ngày sản xuất theo kế hoạch', { status: 422, errorCode: 'NO_NGAY' });
   // Lý do KHÔNG bắt buộc (chốt 2026-08-14) — dời ngày/chuyền là việc điều độ hằng ngày, bắt nhập lý do
   // mỗi lần chỉ khiến người dùng gõ cho có. Vẫn ghi vào audit khi có nhập.
@@ -2374,6 +2380,10 @@ async function replan(lenhId, { chuyenId, ngayKeHoach, lyDo, tgBdKh, tgKtKh, slR
   const coTho = guiTho && (await coCotThoInKh());
   const thoMoi = coTho ? chuanHoaThoIn(thoIn) : undefined;
   const doiTho = coTho && (thoMoi || null) !== (lenh.tho_in_kh || null);
+  // Định mức kế hoạch SP / giờ (mig 129) — như thợ in: không gửi = giữ; rỗng = xóa. Kiểm định dạng TRƯỚC mọi thao tác ghi.
+  const dmMoi = chuanHoaDinhMuc(dinhMuc);
+  const coDm = dmMoi !== undefined && (await coCotDinhMuc());
+  const doiDm = coDm && (dmMoi ?? null) !== (lenh.dinh_muc_kh ?? null);
   // BTP — chỉ khi bên gọi GỬI `btp` boolean và DB đã có cột (dò TRƯỚC transaction).
   const guiBtp = typeof btp === 'boolean';
   const coBtp = guiBtp && (await coCotBtp());
@@ -2382,7 +2392,8 @@ async function replan(lenhId, { chuyenId, ngayKeHoach, lyDo, tgBdKh, tgKtKh, slR
   let btpDoi = [];
   await withTransaction(async (client) => {
     await repo.updateLenhPlan(client, lenhId,
-      { chuyenId: newChuyen, ngayKeHoach, tgBdKh: bdMoi, tgKtKh: ktMoi, thoInKh: doiTho ? thoMoi : undefined }, actorId);
+      { chuyenId: newChuyen, ngayKeHoach, tgBdKh: bdMoi, tgKtKh: ktMoi, thoInKh: doiTho ? thoMoi : undefined,
+        dinhMuc: doiDm ? dmMoi : undefined }, actorId);
     if (changMoi) await repo.setLenhTrangThaiTx(client, lenhId, changMoi, actorId);
     if (items.length) slMoi = await repo.updateReleaseTx(client, lenhId, items, actorId);
     // Sau khi ghi SL release mới ⇒ "phần đã lập" tính đúng số mới.
@@ -2394,11 +2405,13 @@ async function replan(lenhId, { chuyenId, ngayKeHoach, lyDo, tgBdKh, tgKtKh, slR
       { chuyen_id: lenh.chuyen_id || null, ngay_ke_hoach: toDateStr(lenh.ngay_ke_hoach),
         gio_bd: gioCua(lenh.tg_bd_kh), gio_kt: gioCua(lenh.tg_kt_kh),
         ...(items.length ? { so_luong_release: slCu } : {}),
-        ...(doiTho ? { tho_in_kh: lenh.tho_in_kh || null } : {}) },
+        ...(doiTho ? { tho_in_kh: lenh.tho_in_kh || null } : {}),
+        ...(doiDm ? { dinh_muc_gio: lenh.dinh_muc_kh ?? null } : {}) },
       { chuyen_id: newChuyen || null, ngay_ke_hoach: ngayMoi, ly_do: lyDoSach,
         gio_bd: gioCua(bdMoi), gio_kt: gioCua(ktMoi),
         ...(items.length ? { so_luong_release: slMoi } : {}),
         ...(doiTho ? { tho_in_kh: thoMoi } : {}),
+        ...(doiDm ? { dinh_muc_gio: dmMoi } : {}),
         ...(btpDoi.length ? { btp: btp ? 'THEM_DAU' : 'BO_DAU', btp_dot: btpDoi } : {}),
         ...(opts.nguon ? { nguon: opts.nguon } : {}) },
       actorId);
@@ -2414,6 +2427,7 @@ async function replan(lenhId, { chuyenId, ngayKeHoach, lyDo, tgBdKh, tgKtKh, slR
   return {
     id: lenhId, so_luong_release: slMoi, trang_thai: changMoi || lenh.trang_thai,
     ...(guiTho && !coTho ? { tho_in_chua_luu: true } : {}),
+    ...(dmMoi != null && !coDm ? { dinh_muc_chua_luu: true } : {}),
     ...(guiBtp ? { btp_doi: btpDoi, ...(coBtp ? {} : { btp_chua_luu: true }) } : {}),
   };
 }
@@ -2459,7 +2473,7 @@ async function suaKeHoachTuDsRelease(lenhId, body = {}, actorId) {
   if (!ly) throw new AppError('Nhập lý do sửa kế hoạch', { status: 422, errorCode: 'NO_LY_DO' });
   return replan(lenhId, {
     chuyenId: body.chuyenId || null, ngayKeHoach: body.ngayKeHoach, tgBdKh: body.tgBdKh || null, tgKtKh: body.tgKtKh || null,
-    slRelease: body.slRelease || null, thoIn: body.thoIn, lyDo: ly,
+    slRelease: body.slRelease || null, thoIn: body.thoIn, dinhMuc: body.dinhMuc, lyDo: ly,
     btp: typeof body.btp === 'boolean' ? body.btp : undefined,
   }, actorId, { choDaChay: true, nguon: 'DS_RELEASE' });
 }

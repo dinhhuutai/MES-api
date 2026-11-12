@@ -23,6 +23,7 @@ const { CHO_GN_SQL, LENH_CHO_GN_SQL } = require('../../utils/traVeGn');
 // để "Danh sách release" và các màn khác không bao giờ ra 2 con số đá nhau.
 const { dominantStageScalar, STAGE_LABEL, lenhStageCase } = require('../../utils/stage');
 const { coCotThoInKh } = require('../../utils/thoInKeHoach');
+const { coCotDinhMuc, cotDinhMucSql } = require('../../utils/dinhMucKeHoach'); // định mức kế hoạch SP / giờ (mig 129)
 const { cotGiaSql } = require('../../utils/giaPhanIn');
 const { LOAI_TRA_VE_KH, LENH_CHO_KH_SQL } = require('../../utils/traVeKeHoach');
 const { khoaNgcLenhSql } = require('../../utils/nhaGiaCong');
@@ -377,11 +378,13 @@ const KT_QUA_DEM = (bd, kt) => `(CASE WHEN ${kt}::timestamptz < ${bd}::timestamp
 //   có cột (`coCotThoInKh` dò trước — hàm này chạy trong transaction, đừng để lỗi 42703).
 // `data.laCongDoanDau` (mig 126) — lệnh công đoạn ĐẦU của phần in 2 công đoạn (tem không vào KCS). Chỉ ghi cột khi true
 //   (mặc định của cột là false) ⇒ đường tạo lệnh thường không đụng cột mới.
+// `data.dinhMuc` (mig 129) — định mức kế hoạch (SP / giờ); chỉ ghi khi có giá trị VÀ đã có cột.
 async function createLenh(client, data, actorId) {
   const themTho = data.thoInKh !== undefined && (await coCotThoInKh());
   const themCd = !!data.laCongDoanDau;
-  const cotThem = `${themTho ? ', tho_in_kh' : ''}${themCd ? ', la_cong_doan_dau' : ''}`;
-  const thamThem = [...(themTho ? [data.thoInKh || null] : []), ...(themCd ? [true] : [])];
+  const themDm = data.dinhMuc != null && (await coCotDinhMuc());
+  const cotThem = `${themTho ? ', tho_in_kh' : ''}${themCd ? ', la_cong_doan_dau' : ''}${themDm ? ', dinh_muc_gio' : ''}`;
+  const thamThem = [...(themTho ? [data.thoInKh || null] : []), ...(themCd ? [true] : []), ...(themDm ? [data.dinhMuc] : [])];
   const { rows } = await client.query(
     `INSERT INTO lenh_san_xuat
        (workflow_version_id, ma_lenh_san_xuat, chuyen_id, so_luong_release, ngay_ke_hoach, trang_thai,
@@ -900,9 +903,10 @@ async function listReplanCandidates({ search = '', offset = 0, limit = 50, loc =
     ${PHAN_INFO_LATERAL}`;
   // Thợ in kế hoạch (mig 111) — cột "Thợ in" + đổ sẵn panel; thiếu cột ⇒ NULL.
   const colTho = (await coCotThoInKh()) ? 'ls.tho_in_kh' : 'NULL::text AS tho_in_kh';
+  const colDm = await cotDinhMucSql('ls');
   const dataSql = `
     SELECT ls.id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.ngay_ke_hoach, ls.chuyen_id, ls.trang_thai,
-           ls.tg_bd_kh, ls.tg_kt_kh, ${colTho},
+           ls.tg_bd_kh, ls.tg_kt_kh, ${colTho}, ${colDm},
            (${lenhStageCase('ls.id', 'ls.trang_thai')}) AS giai_doan_hien_tai,
            EXISTS (SELECT 1 FROM phieu_san_xuat ps2 WHERE ps2.lenh_san_xuat_id = ls.id) AS co_phieu,
            cs.ma_chuyen, cs.ten_chuyen,
@@ -1234,7 +1238,8 @@ async function cancelGiaCongTemTx(client, { temId, phieuId, lenhId, lenhTrangTha
 //   ⇒ null = kế hoạch mới không có thợ, ghi đè đúng). Chép sang lệnh khi xác nhận kế hoạch tạm.
 // `giaiDoan` (mig 128): 'IN' (mặc định) | 'EP_UI' — kế hoạch tạm của PHẦN ÉP ỦI. Chưa chạy mig ⇒ phần ép không lưu được
 //   (409 EP_CHUA_READY — bên gọi nên kiểm `khtCoCotGd()` trước). Audit mang `giai_doan` cho dòng ép (id_ban_ghi vẫn = đợt).
-async function upsertKeHoachTam({ dotVaiId, phanInId, chuyenId, ngayKeHoach, tgBdKh, tgKtKh, soLuong, thoInKh, giaiDoan }, actorId) {
+// `dinhMuc` (mig 129): định mức kế hoạch SP / giờ — như thợ in: chỉ ghi khi bên gọi truyền khóa + đã có cột.
+async function upsertKeHoachTam({ dotVaiId, phanInId, chuyenId, ngayKeHoach, tgBdKh, tgKtKh, soLuong, thoInKh, giaiDoan, dinhMuc }, actorId) {
   const gd = chuanGd(giaiDoan);
   const coGd = await khtCoCotGd();
   if (gd === GD_EP && !coGd) {
@@ -1247,16 +1252,19 @@ async function upsertKeHoachTam({ dotVaiId, phanInId, chuyenId, ngayKeHoach, tgB
   const thamSo = [dotVaiId, phanInId, chuyenId || null, ngayKeHoach || null, tgBdKh || null, tgKtKh || null, soLuong || null, actorId];
   if (themTho) { thamSo.push(thoInKh || null); cot.push('tho_in_kh'); gt.push(`$${thamSo.length}`); }
   if (coGd) { thamSo.push(gd); cot.push('giai_doan'); gt.push(`$${thamSo.length}`); }
+  const themDm = dinhMuc !== undefined && (await coCotDinhMuc());
+  if (themDm) { thamSo.push(dinhMuc || null); cot.push('dinh_muc_gio'); gt.push(`$${thamSo.length}`); }
   await query(
     `INSERT INTO ke_hoach_tam (${cot.join(', ')}) VALUES (${gt.join(', ')})
      ON CONFLICT (dot_vai_ve_id${coGd ? ', giai_doan' : ''}) DO UPDATE SET chuyen_id=EXCLUDED.chuyen_id, ngay_ke_hoach=EXCLUDED.ngay_ke_hoach,
        tg_bd_kh=EXCLUDED.tg_bd_kh, tg_kt_kh=EXCLUDED.tg_kt_kh, so_luong=EXCLUDED.so_luong, trang_thai='CHO',
-       ${themTho ? 'tho_in_kh=EXCLUDED.tho_in_kh,' : ''} updated_by=EXCLUDED.created_by, updated_date=now()`.replace(/\s+/g, ' '),
+       ${themTho ? 'tho_in_kh=EXCLUDED.tho_in_kh,' : ''} ${themDm ? 'dinh_muc_gio=EXCLUDED.dinh_muc_gio,' : ''} updated_by=EXCLUDED.created_by, updated_date=now()`.replace(/\s+/g, ' '),
     thamSo
   );
   await logKeHoachTam('LUU_KE_HOACH_TAM', dotVaiId, {
     chuyen_id: chuyenId || null, ngay_ke_hoach: ngayKeHoach || null, so_luong: soLuong || null,
     ...(themTho && thoInKh ? { tho_in: thoInKh } : {}), ...(gd === GD_EP ? { giai_doan: GD_EP } : {}),
+    ...(themDm && dinhMuc ? { dinh_muc_gio: dinhMuc } : {}),
   }, actorId);
 }
 
@@ -1430,11 +1438,12 @@ async function listKeHoachTamRows({ search = '', offset = 0, limit = 200, locPai
     WHERE kt.trang_thai = 'CHO' AND pin.dang_hoat_dong AND dv.trang_thai <> 'DA_HUY'
       AND ${dkPain} AND ${SEARCH}`;
   const colTho = (await coCotThoInKh()) ? 'kt.tho_in_kh' : 'NULL::text AS tho_in_kh';
+  const colDm = await cotDinhMucSql('kt');
   const dataSql = `
     SELECT kt.id, kt.dot_vai_ve_id, kt.phan_in_id, kt.chuyen_id, kt.ngay_ke_hoach, kt.tg_bd_kh, kt.tg_kt_kh, kt.so_luong,
            ${khtGdSql('kt')} AS giai_doan, pin.luong_sx, pin.ep_truoc,
            COALESCE(kt.updated_date, kt.created_date) AS tg_lap, ndl.ho_ten AS nguoi_lap,
-           ${colTho}, dv.ma_dot_vai, dv.han_giao_hang, dv.so_luong_vai_ve, dv.ngay_vai_ve, cs.ten_chuyen, ldv.ten_loai AS loai_dot_vai,
+           ${colTho}, ${colDm}, dv.ma_dot_vai, dv.han_giao_hang, dv.so_luong_vai_ve, dv.ngay_vai_ve, cs.ten_chuyen, ldv.ten_loai AS loai_dot_vai,
            pin.so_luong_don_hang,
            pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.tinh_chat_in, dv.barcode, pin.barcode AS barcode_phan_in, dv.nha_gia_cong,
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
@@ -1471,9 +1480,10 @@ async function getOpenSetOfDotVai(dotVaiId) {
 
 async function getKeHoachTam(id) {
   const colTho = (await coCotThoInKh()) ? 'kt.tho_in_kh' : 'NULL::text AS tho_in_kh';
+  const colDm = await cotDinhMucSql('kt');
   const { rows } = await query(
     `SELECT kt.id, kt.dot_vai_ve_id, kt.phan_in_id, kt.chuyen_id, kt.ngay_ke_hoach, kt.tg_bd_kh, kt.tg_kt_kh, kt.so_luong,
-            ${colTho}, ${khtGdSql('kt')} AS giai_doan,
+            ${colTho}, ${colDm}, ${khtGdSql('kt')} AS giai_doan,
             EXISTS (SELECT 1 FROM dot_vai_ve zdv WHERE zdv.id = kt.dot_vai_ve_id AND ${qcDotSql('zdv', 'kt.phan_in_id')}) AS qc_done
      FROM ke_hoach_tam kt WHERE kt.id = $1`.replace(/\s+/g, ' '),
     [id]
@@ -1484,7 +1494,7 @@ async function getKeHoachTam(id) {
 // Cập nhật bản kế hoạch tạm (chuyền / SL release / ngày kế hoạch + giờ BĐ/KT + thợ in — 19/10/2026, như panel
 //   Release 1). `tgBdKh`/`tgKtKh`/`thoInKh` = undefined ⇒ GIỮ giá trị cũ (bên gọi cũ không gửi); null ⇒ xóa.
 //   Giờ KT đi qua `KT_QUA_DEM` như mọi câu ghi `tg_kt_kh`. Thợ in chỉ ghi khi đã có cột (mig 111).
-async function updateKeHoachTam(id, { chuyenId, ngayKeHoach, soLuong, tgBdKh, tgKtKh, thoInKh }, actorId) {
+async function updateKeHoachTam(id, { chuyenId, ngayKeHoach, soLuong, tgBdKh, tgKtKh, thoInKh, dinhMuc }, actorId) {
   const params = [id, chuyenId || null, ngayKeHoach || null, soLuong != null ? soLuong : null, actorId];
   const set = ['chuyen_id = $2', 'ngay_ke_hoach = $3', 'so_luong = $4'];
   if (tgBdKh !== undefined || tgKtKh !== undefined) {
@@ -1495,6 +1505,10 @@ async function updateKeHoachTam(id, { chuyenId, ngayKeHoach, soLuong, tgBdKh, tg
   if (thoInKh !== undefined && (await coCotThoInKh())) {
     params.push(thoInKh || null);
     set.push(`tho_in_kh = $${params.length}`);
+  }
+  if (dinhMuc !== undefined && (await coCotDinhMuc())) {
+    params.push(dinhMuc || null);
+    set.push(`dinh_muc_gio = $${params.length}`);
   }
   const { rows } = await query(
     `UPDATE ke_hoach_tam
@@ -1940,9 +1954,10 @@ async function logLenhCancel(lenhId, maLenh, lyDo, actorId) {
 async function getLenhForReplan(lenhId) {
   // `tho_in_kh` (mig 111) — dò cột; thiếu ⇒ NULL (màn Lập lại kế hoạch vẫn chạy, chỉ không lưu thợ in).
   const coTho = await coCotThoInKh();
+  const colDm = await cotDinhMucSql('ls');
   const { rows } = await query(
     `SELECT ls.id, ls.ma_lenh_san_xuat, ls.trang_thai, ls.chuyen_id, ls.ngay_ke_hoach,
-            ls.so_luong_release, ls.tg_bd_kh, ls.tg_kt_kh, ${coTho ? 'ls.tho_in_kh' : 'NULL::text AS tho_in_kh'},
+            ls.so_luong_release, ls.tg_bd_kh, ls.tg_kt_kh, ${coTho ? 'ls.tho_in_kh' : 'NULL::text AS tho_in_kh'}, ${colDm},
             EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = ls.id) AS co_phieu,
             ${GIA_CONG_DA_CHUYEN} AS da_nhan
      FROM lenh_san_xuat ls WHERE ls.id = $1`.replace(/\s+/g, ' '),
@@ -2034,12 +2049,16 @@ async function updateReleaseTx(client, lenhId, items, actorId) {
 // cùng 2 cột mà Release 1 / Tạo đợt SX ghi) — service đã ghép sẵn ngày + giờ trước khi gọi.
 // `thoInKh` (07/10/2026, mig 111): `undefined` = GIỮ NGUYÊN thợ in kế hoạch; chuỗi/null = ghi đè. ⚠ Bên gọi
 //   phải dò cột (`coCotThoInKh`) và CHỈ truyền khi đã có cột — chạy trong transaction, lỗi 42703 abort cả lượt.
-async function updateLenhPlan(client, lenhId, { chuyenId, ngayKeHoach, tgBdKh, tgKtKh, thoInKh }, actorId) {
-  const coTho = thoInKh !== undefined;
+// `dinhMuc` (mig 129): như `thoInKh` — undefined = giữ; số / null = ghi đè. Bên gọi dò cột (`coCotDinhMuc`).
+async function updateLenhPlan(client, lenhId, { chuyenId, ngayKeHoach, tgBdKh, tgKtKh, thoInKh, dinhMuc }, actorId) {
+  const params = [lenhId, chuyenId, ngayKeHoach || null, tgBdKh || null, tgKtKh || null, actorId];
+  const them = [];
+  if (thoInKh !== undefined) { params.push(thoInKh); them.push(`tho_in_kh = $${params.length},`); }
+  if (dinhMuc !== undefined) { params.push(dinhMuc); them.push(`dinh_muc_gio = $${params.length},`); }
   await client.query(
     `UPDATE lenh_san_xuat SET chuyen_id = $2, ngay_ke_hoach = $3, tg_bd_kh = $4, tg_kt_kh = ${KT_QUA_DEM('$4', '$5')},
-       ${coTho ? 'tho_in_kh = $7,' : ''} updated_by = $6, updated_date = CURRENT_TIMESTAMP WHERE id = $1`.replace(/\s+/g, ' '),
-    [lenhId, chuyenId, ngayKeHoach || null, tgBdKh || null, tgKtKh || null, actorId, ...(coTho ? [thoInKh] : [])]
+       ${them.join(' ')} updated_by = $6, updated_date = CURRENT_TIMESTAMP WHERE id = $1`.replace(/\s+/g, ' '),
+    params
   );
 }
 
@@ -2550,9 +2569,11 @@ async function releaseListByDate(date, mode = 'KE_HOACH', denNgay = null) {
   const colTho = (await coCotThoInKh()) ? 'ls.tho_in_kh' : 'NULL::text AS tho_in_kh';
   // 4 giá của phần in (mig 113, ERP `GiaIn`/`Giaep`/`giainkieng`/`Dongia`) — cột "Doanh thu" = `don_gia` × SL release của dòng (`sl_release_phan`); thiếu cột ⇒ NULL.
   const colGia = await cotGiaSql('pin');
+  // Định mức kế hoạch của lệnh (mig 129, SP / giờ) — `dinh_muc_kh`; `cs.dinh_muc_gio` bên dưới là định mức CHUYỀN.
+  const colDm = await cotDinhMucSql('ls');
   const sql = `
     SELECT ls.id AS lenh_id, ls.ma_lenh_san_xuat, ls.so_luong_release, ls.ngay_ke_hoach, ls.created_date,
-           ls.tg_bd_kh, ls.tg_kt_kh, ls.giai_doan, ls.trang_thai AS lenh_trang_thai, ${colTho},
+           ls.tg_bd_kh, ls.tg_kt_kh, ls.giai_doan, ls.trang_thai AS lenh_trang_thai, ${colTho}, ${colDm},
            pin.id AS phan_in_id, ${colGia},
            ${mode === 'IN_TEM' ? 'NULL::text' : dominantStageScalar('pin.id')} AS giai_doan_hien_tai,
            cs.ma_chuyen, cs.ten_chuyen, cs.dinh_muc_gio, lc.ma_loai AS ma_loai_chuyen, lc.ten_loai AS ten_loai_chuyen,

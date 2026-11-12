@@ -46,7 +46,10 @@ async function listKcsCandidates({ search, filters }) {
 //   Mỗi dòng = dòng `TEM_CTX` (+ cờ OQC trả về để FE lọc như màn) + giờ SX từ/đến · tổ in · thợ in · mã ngày ca · GC màu vải
 //   (ĐÚNG luật đã gửi ERP SF0 — đọc qua `production.repository.duLieuGhiInTem`, đừng chép luật giờ ca đêm) + màu in · tính
 //   chất in · độ in · ngày ca · phiên phơi · IDMES SF0 (`thongTinTonKcs`). Chỉ đọc.
-async function tonChuaKiemKcs({ search, filters, gomDangPhoi = true }) {
+// `ctTu` / `ctDen` ('YYYY-MM-DD', tùy chọn) + `gioTu` / `gioDen` ('HH:MM', tùy chọn): lọc theo MỐC của tem = NGÀY CHỨNG TỪ
+//   (ngày CT người in nhập — `NGAY_CT_TEM_SQL`; tem cũ chưa ghi ⇒ ngày in giờ VN) ghép GIỜ IN TEM (giờ VN — ngày CT không có
+//   giờ). Khoảng [ctTu gioTu, ctDen gioDen], thiếu giờ ⇒ 00:00 / 23:59. Lọc sau khi gắn thông tin (tồn KCS vài nghìn tem).
+async function tonChuaKiemKcs({ search, filters, gomDangPhoi = true, ctTu = null, ctDen = null, gioTu = null, gioDen = null }) {
   try { await prodRepo.promoteFinishedDrying(); } catch (e) { /* bỏ qua */ }
   const rows = await repo.listKcsTon({ search, filters }, gomDangPhoi);
   if (!rows.length) return rows;
@@ -58,10 +61,22 @@ async function tonChuaKiemKcs({ search, filters, gomDangPhoi = true }) {
   ]);
   const theoErp = new Map(erp.map((x) => [x.tem_id, x]));
   const theoThem = new Map(them.map((x) => [x.tem_id, x]));
-  return rows.map((r) => {
+  const ngayCtCua = (id) => { const x = theoThem.get(id) || {}; return x.ngay_ct || x.ngay_in_vn || null; };
+  // Mốc 'YYYY-MM-DD HH:MM' — so chuỗi đúng thứ tự thời gian.
+  const tu = ctTu ? `${ctTu} ${gioTu || '00:00'}` : null;
+  const den = ctDen ? `${ctDen} ${gioDen || '23:59'}` : null;
+  const trongKy = (id) => {
+    if (!tu && !den) return true;
+    const d = ngayCtCua(id);
+    if (!d) return false;
+    const m = `${d} ${(theoThem.get(id) || {}).gio_in_vn || '00:00'}`;
+    return (!tu || m >= tu) && (!den || m <= den);
+  };
+  return rows.filter((r) => trongKy(r.tem_id)).map((r) => {
     const e = theoErp.get(r.tem_id) || {};
     const x = theoThem.get(r.tem_id) || {};
     return {
+      ngay_ct: ngayCtCua(r.tem_id),
       ...r,
       tra_ve: rm[r.tem_id] || null, tra_ve_ly_do: rm[r.tem_id]?.ly_do || null,
       ma_ngay_ca: e.ma_ngay_ca || null, gc_mau_vai: e.gc_mau_vai || null, ma_to: e.ma_to || null,
