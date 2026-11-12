@@ -1182,8 +1182,9 @@ async function logGopLenhTx(client, lenhId, hanhDong, cu, moi, actorId) {
 // Đọc + KHÓA tem trong transaction (FOR UPDATE) — guard "chưa kiểm" phải kiểm lại sau khi khóa (CLAUDE.md §9).
 async function docTemSuaTx(client, temId) {
   const cotLo = (await temCoCot('ma_lo')) ? 't.ma_lo' : 'NULL::text AS ma_lo';
+  const cotGc = (await temCoCotGcMauVai()) ? 't.gc_mau_vai' : 'NULL::text AS gc_mau_vai';
   const { rows } = await client.query(
-    `SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.phieu_san_xuat_id, t.tem_goc_id, t.ma_ngay_ca, ${cotLo},
+    `SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.phieu_san_xuat_id, t.tem_goc_id, t.ma_ngay_ca, ${cotLo}, ${cotGc},
             COALESCE(t.btp_truoc, false) AS btp_truoc,
             to_char(t.ngay_ca, 'YYYY-MM-DD') AS ngay_ca,
             to_char(t.gio_sx_bd, 'HH24:MI') AS gio_sx_bd, to_char(t.gio_sx_kt, 'HH24:MI') AS gio_sx_kt,
@@ -1212,6 +1213,7 @@ async function capNhatTemSuaTx(client, temId, d, actorId) {
   if ('gioBd' in d) dat('gio_sx_bd', d.gioBd, '::time');
   if ('gioKt' in d) dat('gio_sx_kt', d.gioKt, '::time');
   if ('chuyenRiengId' in d) dat('chuyen_id', d.chuyenRiengId, '::uuid');
+  if ('gcMauVai' in d) dat('gc_mau_vai', d.gcMauVai);
   if (!sets.length) return;
   await client.query(`UPDATE tem SET ${sets.join(', ')}, updated_date = CURRENT_TIMESTAMP, updated_by = $2 WHERE id = $1`, p);
   // Tem 17 của tem này đi cùng chuyền (cùng phiếu, mỗi tem con mang giá trị riêng).

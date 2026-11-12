@@ -504,6 +504,12 @@ async function suaTem(temId, body = {}, actorId) {
     moi.maNgayCa = m;
     moi.ngayCa = `20${m.slice(0, 2)}-${m.slice(2, 4)}-${m.slice(4, 6)}`;
   }
+  // GC MÀU VẢI (ghi chú màu vải của tem, ERP SF0 `GCMauvai`) — sửa được cả khi tem đã kiểm (không đụng sổ cái); rỗng = xóa.
+  if (body.gcMauVai !== undefined) {
+    const gc = String(body.gcMauVai || '').replace(/\s+/g, ' ').trim();
+    if (gc.length > 200) throw new AppError('GC màu vải tối đa 200 ký tự', { status: 422, errorCode: 'GC_MAU_VAI_QUA_DAI' });
+    moi.gcMauVai = gc || null;
+  }
   // NGÀY CHỨNG TỪ (27/10/2026, người dùng yêu cầu): tem không lưu cột ngày CT — ngày CT là của phiếu in tem đã gửi ERP
   //   (`audit_log` ERP_GHI_IN_TEM `gui.Ngayct`). Sửa = gửi lại phiếu cùng IDMES với ngày CT mới (`guiLai opts.ngayCt`);
   //   tem chưa từng gửi ERP thì không có gì để sửa (409 CHUA_GUI_ERP).
@@ -578,6 +584,7 @@ async function suaTem(temId, body = {}, actorId) {
     if ('gioBd' in moi && moi.gioBd !== (t.gio_sx_bd || null)) doi.gioBd = moi.gioBd;
     if ('gioKt' in moi && moi.gioKt !== (t.gio_sx_kt || null)) doi.gioKt = moi.gioKt;
     if ('maNgayCa' in moi && moi.maNgayCa !== (t.ma_ngay_ca || null)) { doi.maNgayCa = moi.maNgayCa; doi.ngayCa = moi.ngayCa; }
+    if ('gcMauVai' in moi && moi.gcMauVai !== (t.gc_mau_vai || null)) doi.gcMauVai = moi.gcMauVai;
     const doiChuyen = chuyenMoi && String(chuyenMoi.id) !== String(t.chuyen_id);
     if (doiChuyen) {
       if (!(await coCotChuyenTem())) {
@@ -604,6 +611,7 @@ async function suaTem(temId, body = {}, actorId) {
     const lo = 'maNgayCa' in doi ? await repo.doiMaLoTheoNgayCaTx(client, t, doi.maNgayCa) : null;
     if (pcMoi) await repo.ghiPhanCongTemTx(client, temId, pcMoi, pcCu, actorId);
     const cu = { so_luong: t.so_luong, gio_sx_bd: t.gio_sx_bd, gio_sx_kt: t.gio_sx_kt, ma_ngay_ca: t.ma_ngay_ca, ngay_ca: t.ngay_ca,
+      ...('gcMauVai' in doi ? { gc_mau_vai: t.gc_mau_vai || null } : {}),
       ...(ngayCtMoi ? { ngay_ct: dongErp.ngay_ct || null } : {}),
       ...(lo ? { ma_lo: lo.cu } : {}),
       ...(doiChuyen ? { chuyen_id: t.chuyen_id } : {}),
@@ -615,6 +623,7 @@ async function suaTem(temId, body = {}, actorId) {
       ...('gioBd' in doi ? { gio_sx_bd: doi.gioBd } : {}),
       ...('gioKt' in doi ? { gio_sx_kt: doi.gioKt } : {}),
       ...('maNgayCa' in doi ? { ma_ngay_ca: doi.maNgayCa, ngay_ca: doi.ngayCa } : {}),
+      ...('gcMauVai' in doi ? { gc_mau_vai: doi.gcMauVai } : {}),
       ...(lo ? { ma_lo: lo.moi } : {}),
       ...(doiChuyen ? { chuyen_id: chuyenMoi.id, ma_chuyen: chuyenMoi.ma_chuyen } : {}),
       ...(pcMoi ? { phan_cong: pcMoi } : {}),
