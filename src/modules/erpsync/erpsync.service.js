@@ -19,10 +19,11 @@ const { normTcin, tapBoQua } = require('../../utils/tinhChatIn');
 
 const NGUON = 'phieu_nhan_vai_60';          // API DUY NHẤT → đợt vải vào thẳng READY
 
-// Loại kinh doanh (`loaikd`) CHỈ LẤY khi đồng bộ: 3I = số lượng (SO_LUONG) · 5I = bổ sung (BO_SUNG)
-// · 6I = mẫu số lượng (MAU_SO_LUONG, mig 070). Mọi loại khác → BỎ QUA. (Trước đây lọc theo khách hàng
-// 'SL' + blacklist 8I/2I; nay bỏ lọc khách, chuyển sang whitelist loaikd cho rõ ràng.) Thêm/bớt mã ở đây.
-const LAY_LOAIKD = new Set(['3I', '5I', '6I']);
+// Loại kinh doanh (`loaikd`) BỊ CHẶN khi đồng bộ: CHỈ 1I = hàng MẪU (chưa đưa lên MES) + dòng thiếu loaikd. Mọi loại khác
+//   đều lấy: 3I số lượng · 5I bổ sung · 6I mẫu số lượng · 2I logo · 4I in kiếng (map loại đợt ở `LOAIKD_MAP`; mã lạ ⇒ Số
+//   lượng). Luồng sản xuất (logo / in kiếng…) vẫn theo *Tính chất in*, không theo loaikd. Thêm/bớt mã chặn ở đây.
+const BO_LOAIKD = new Set(['1I']);
+const laLoaikdBoQua = (loaikd) => { const k = clean(loaikd).toUpperCase(); return !k || BO_LOAIKD.has(k); };
 
 const md5 = (s) => crypto.createHash('md5').update(s).digest('hex');
 const clean = (v) => (v == null ? '' : String(v).trim());
@@ -239,19 +240,21 @@ async function processRow(r, maPhan, maDotVai, loaiDotVaiId, tgChuyenReady) {
   });
 }
 
-// Map trường ERP `loaikd` → loại đợt vải CHUẨN đã seed: 3I = SO_LUONG · 5I = BO_SUNG · 6I = MAU_SO_LUONG.
-// Thiếu / mã khác → mặc định SO_LUONG. Chỉ TRA id loại có sẵn (không tạo loại rác kiểu '3I').
-const LOAIKD_MAP = { '3I': 'SO_LUONG', '5I': 'BO_SUNG', '6I': 'MAU_SO_LUONG' };
+// Map trường ERP `loaikd` → loại đợt vải CHUẨN đã seed: 3I = SO_LUONG · 5I = BO_SUNG · 6I = MAU_SO_LUONG ·
+//   2I = LOGO · 4I = IN_KIENG (mig 130). Thiếu / mã khác → mặc định SO_LUONG. Chỉ TRA id loại có sẵn (không tạo loại rác
+//   kiểu '3I'); loại chưa seed (chưa chạy mig) ⇒ lùi SO_LUONG. ⚠ Release 1 gửi ERP ĐẢO bảng này (`release1Erp.loaiKd`) ⇒
+//   mỗi mã ERP phải có loại đợt RIÊNG, gộp 2 mã vào 1 loại là ERP nhận sai `Loaikd`.
+const LOAIKD_MAP = { '3I': 'SO_LUONG', '5I': 'BO_SUNG', '6I': 'MAU_SO_LUONG', '2I': 'LOGO', '4I': 'IN_KIENG' };
 
 // ⚠ ĐÃ GỠ `LOAIKD_NGUYEN_SL`/`laNguyenSoLuong` (chốt 07/08/2026): luật DELTA lũy kế bị bỏ HOÀN TOÀN
 // nên MỌI loại đợt đều lấy nguyên `received_qty` — không còn loại nào cần "ngoại lệ" nữa.
-// (Mig 070 vẫn giữ nguyên vai trò khác của `6I`: seed danh mục loại đợt "Mẫu số lượng" + whitelist `LAY_LOAIKD`.)
+// (Mig 070 seed loại đợt "Mẫu số lượng" cho `6I`; mig 130 seed "Logo" cho `2I` + "In kiếng" cho `4I`.)
 function makeLoaiResolver() {
   const cache = new Map();
   return async (loaikd) => {
     const maLoai = LOAIKD_MAP[clean(loaikd).toUpperCase()] || 'SO_LUONG';
     if (cache.has(maLoai)) return cache.get(maLoai);
-    const id = await repo.getLoaiDotVaiId(maLoai);
+    const id = (await repo.getLoaiDotVaiId(maLoai)) || (maLoai !== 'SO_LUONG' ? await repo.getLoaiDotVaiId('SO_LUONG') : null);
     cache.set(maLoai, id);
     return id;
   };
@@ -304,7 +307,7 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
     try { await repo.saveSyncRaw(logId, rawText); }
     catch (e) { console.error(`[erp-sync] ✗ Lưu chuỗi thô lỗi: ${e.message}`); }
 
-    // Lọc dòng: bỏ khi thiếu code_part, loaikd ngoài {3I,5I}, hoặc tính chất in ngoài phạm vi. (Không lọc khách.)
+    // Lọc dòng: bỏ khi thiếu code_part, loaikd bị chặn (1I hàng mẫu / trống), hoặc tính chất in ngoài phạm vi. (Không lọc khách.)
     const seen = new Map();
     // ⚠ `buildKeys` chạy trên TOÀN BỘ dòng rồi mới lọc phạm vi: khóa đợt vải phụ thuộc thứ tự xuất hiện
     //   trong nhóm trùng, lọc trước là có thể lệch khóa với lần job chạy ⇒ đẻ đợt vải trùng.
@@ -312,7 +315,7 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
     const boTcin = await tapBoQua();
     const prepared = rows.map((r) => {
       const noCode = !clean(r.code_part);
-      const isBoLoai = !LAY_LOAIKD.has(clean(r.loaikd).toUpperCase());
+      const isBoLoai = laLoaikdBoQua(r.loaikd);
       const isBoTcin = boTcin.has(normTcin(erpTinhChatIn(r)));
       const { maPhan, maDotVai } = buildKeys(r, seen);
       return { r, maPhan, maDotVai, skip: noCode || isBoLoai || isBoTcin, noCode, isBoLoai, isBoTcin };
@@ -474,7 +477,7 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
     if (gn && gn.so_bo_qua) notes.push(`bỏ qua ${gn.so_bo_qua} dòng của đợt đã trả về GN (ERP chưa xác nhận lại)`);
     if (gnTraLai.length) notes.push(`ERP gửi lại ${gnTraLai.length} phần in trả về GN: ${gnTraLai.map((x) => x.ma_phan).join(', ')}`);
     if (soKhongCode) notes.push(`bỏ qua ${soKhongCode} dòng không có code_part`);
-    if (soBoLoai) notes.push(`bỏ qua ${soBoLoai} dòng loaikd ngoài ${[...LAY_LOAIKD].join('/')}`);
+    if (soBoLoai) notes.push(`bỏ qua ${soBoLoai} dòng loaikd ${[...BO_LOAIKD].join('/')} (hàng mẫu) / trống`);
     if (soBoTcin) notes.push(`bỏ qua ${soBoTcin} dòng tính chất in ngoài phạm vi`);
     if (soDoiPain) notes.push(`đổi phương án in theo sản lượng: ${soDoiPain} HSKT`);
     if (daGhiDe.length) notes.push(`gán lại đơn/mã hàng: ${daGhiDe.filter((x) => x && x.doi).length}/${daGhiDe.length} phần in`);
@@ -552,7 +555,7 @@ function moTaDongErp(p, daCo) {
     key: p.maDotVai,
     da_co_trong_mes: daCo.has(p.maDotVai),
     bo_qua: p.skip,
-    ly_do_bo_qua: p.noCode ? 'Không có code_part' : p.isBoLoai ? `loaikd ${clean(r.loaikd) || '—'} ngoài 3I/5I/6I`
+    ly_do_bo_qua: p.noCode ? 'Không có code_part' : p.isBoLoai ? (clean(r.loaikd) ? `loaikd ${clean(r.loaikd)} — hàng mẫu, chưa đưa lên MES` : 'Thiếu loaikd')
       : p.isBoTcin ? `Tính chất in ${erpTinhChatIn(r)} ngoài phạm vi` : null,
     khach: clean(r.customer_name), don_hang: clean(r.order_name), ma_hang: clean(r.item_name),
     ddh_id: erpDdhId(r), ddh_sub_id: erpDdhSubId(r), pain: erpPain(r), loaikd: clean(r.loaikd) || null,
@@ -592,7 +595,7 @@ async function xemTruocCodePhan({ codeParts, ngay } = {}, actorId) {
     return {
       r, maPhan, maDotVai,
       noCode: !clean(r.code_part),
-      isBoLoai: !LAY_LOAIKD.has(clean(r.loaikd).toUpperCase()),
+      isBoLoai: laLoaikdBoQua(r.loaikd),
       isBoTcin: boTcin.has(normTcin(erpTinhChatIn(r))),
     };
   }).map((p) => ({ ...p, skip: p.noCode || p.isBoLoai || p.isBoTcin }))
