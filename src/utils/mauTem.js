@@ -110,6 +110,9 @@ const TRUONG_TEM = Object.freeze([
   // Của ĐÚNG lượt KCS đang in (1 tem kiểm nhiều lượt) nên ghép ở trình duyệt (`KcsPage`), KHÔNG có trong `getTemLabelData`.
   { ma: 'nguoi_kiem_kcs', ten: 'Người kiểm (nhập lúc in) — tem KCS giao', kieu: 'chu', nhom: 'KCS' },
   { ma: 'tg_kiem_kcs', ten: 'Giờ xác nhận kiểm — tem KCS giao', kieu: 'ngay', nhom: 'KCS' },
+  // SL ĐẠT của ĐÚNG lượt KCS đang in (cột "SL đạt" sidebar Đã hoàn thành). Khác `so_luong` ở nút này = SL KIỂM của
+  // lượt (đạt + hư/sửa + hủy) — trừ lượt kiểm một phần thì `so_luong` cũng = phần đạt (tem 17). Ghép ở `KcsPage`.
+  { ma: 'sl_dat_kcs', ten: 'SL ĐẠT của lượt KCS — tem KCS giao', kieu: 'so', nhom: 'KCS' },
   // ─── NHÓM "GIA CÔNG" — CHỈ CÓ GIÁ TRỊ Ở VỊ TRÍ IN `GIA_CONG_IN_TEM_VE` (tem 13 "TH VỀ") ────────
   // ⚠⚠ Tem 13 KHÔNG dựng từ bản ghi `tem` — nó ghép từ dữ liệu LỆNH GIA CÔNG ở trình duyệt
   //   (`GiaCongPage.buildVeLabel`), nên `getTemLabelData` KHÔNG hề biết mấy trường này. Nút in KHÁC
