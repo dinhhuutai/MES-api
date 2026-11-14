@@ -134,6 +134,11 @@ const maHoacTen = (v, traMa) => (traMa && traMa(v)) || chiLayTen(v);
 // 2 trường NGƯỜI ở mức phiếu (danh sách thợ in xử lý riêng vì ngăn bằng dấu phẩy).
 const TRUONG_TEN = new Set(['Chuyentruong', 'Catruong']);
 
+// SF0: 3 trường người trống (sau chuẩn hóa) ⇒ `-`.
+const TRUONG_NGUOI_GACH = ['Catruong', 'Chuyentruong', 'dsthoin'];
+const gachNeuTrong = (b = {}) => Object.fromEntries(TRUONG_NGUOI_GACH
+  .map((k) => [k, String(b[k] == null ? '' : b[k]).trim() || '-']));
+
 // Chuẩn hóa 1 bản ghi về đúng kiểu + độ dài mà proc nhận. Trường chuỗi thiếu → `''`, số thiếu → `0`,
 // riêng 3 trường ngày giờ thiếu → `null` (xem `ngayGio`).
 // `traMa` = hàm `(họ tên) → mã số nhân viên | null` (`maNhanVien.boTraMaNhanVien`); không truyền ⇒ gửi tên gọi.
@@ -180,7 +185,9 @@ const KENH = {
     // ⚠ 12/11/2026 proc SF0 ALTER thêm `@pSLBSCty int` · `@pSLBSKhachHang int` (SL bổ sung do CÔNG TY / do KHÁCH HÀNG, không mặc
     //   định ⇒ router luôn truyền). Số nhập theo ĐỢT VẢI bổ sung ⇒ chỉ TEM ĐẦU của đợt mang số, tem sau 0 (người dùng chốt —
     //   cộng phiếu ERP ra đúng số đợt). Tem không bổ sung ⇒ 0 / 0. Xem `production.repository duLieuGhiInTem`.
+    // ⚠ 14/11/2026 (người dùng chốt): CHỈ SF0 — ca trưởng / chuyền trưởng / thợ in TRỐNG ⇒ gửi `-` (không gửi chuỗi rỗng).
     them: (b, r = {}) => ({
+      ...gachNeuTrong(b),
       Labtp: r.Labtp ? 1 : 0, LabtpCuoi: r.LabtpCuoi ? 1 : 0,
       Kieng: chuoi(r.Kieng, 20), HsKieng: soNguyen(r.HsKieng), SoluongKieng: soNguyen(r.SoluongKieng),
       SLBSCty: soNguyen(r.SLBSCty), SLBSKhachHang: soNguyen(r.SLBSKhachHang),

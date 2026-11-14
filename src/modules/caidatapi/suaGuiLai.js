@@ -20,7 +20,7 @@
 
 const env = require('../../config/env');
 const AppError = require('../../utils/AppError');
-const { goiErp } = require('../../utils/erpApiChung');
+const { goiErp, SO_TRUONG_MA_LOI } = require('../../utils/erpApiChung');
 const { ngayGioErp } = require('../../utils/erpNgayGio');
 const { KENH: KENH_20, THU_TU_TRUONG, DAI_TOI_DA, laMaTemErp } = require('../../utils/erpGhiInTem');
 const { API_HUY, LY_DO_TOI_DA } = require('../../utils/erpHuy');
@@ -118,13 +118,14 @@ const KENH = {
     dai: { IDMes: 20, nhanvien: 20, Maquet: 20, DsMaloi: 4000 },
     khoa: ['IDMes'], guong: {}, maTem: ['Maquet'],
     batBuoc: ['IDMes', 'Maquet', 'DsMaloi'],
-    // Bộ ba `mã lỗi, SL sửa, SL hủy` (xem `erpApiChung.dsMaLoi`) — lệch 1 ô là ERP đọc sai MỌI bộ ba phía sau.
+    // Bộ bốn `mã lỗi, SL hủy, SL sửa, SL đạt` (xem `erpApiChung.dsMaLoi`) — lệch 1 ô là ERP đọc sai MỌI bộ phía sau.
     kiem: (b) => {
+      const n = SO_TRUONG_MA_LOI;
       const p = tachDs(b.DsMaloi);
-      if (!b.DsMaloi || p.length % 3 !== 0) return { DsMaloi: 'Phải là các bộ ba "mã lỗi,SL sửa,SL hủy" ngăn dấu phẩy' };
-      for (let i = 0; i < p.length; i += 3) {
-        if (!p[i] || !/^\d+$/.test(p[i + 1]) || !/^\d+$/.test(p[i + 2])) {
-          return { DsMaloi: `Bộ ba thứ ${i / 3 + 1} sai ("${p.slice(i, i + 3).join(',')}") — cần mã lỗi + 2 số nguyên` };
+      if (!b.DsMaloi || p.length % n !== 0) return { DsMaloi: 'Phải là các bộ bốn "mã lỗi,SL hủy,SL sửa,SL đạt" ngăn dấu phẩy' };
+      for (let i = 0; i < p.length; i += n) {
+        if (!p[i] || p.slice(i + 1, i + n).some((x) => !/^\d+$/.test(x))) {
+          return { DsMaloi: `Bộ thứ ${i / n + 1} sai ("${p.slice(i, i + n).join(',')}") — cần mã lỗi + 3 số nguyên (hủy, sửa, đạt)` };
         }
       }
       return null;

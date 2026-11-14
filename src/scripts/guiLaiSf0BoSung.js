@@ -5,14 +5,14 @@
 // (proc `MES_spr_MES2SF0` ALTER 12/11/2026). Gửi lại = CHÍNH nút "Gửi lại" ở Cài đặt API (`caidatapi/guiLai`): GIỮ IDMES +
 // Ngày CT của lần gửi trước ⇒ proc ghi đè đúng phiếu cũ, không đẻ phiếu mới; số lượng in / vải hủy / thiếu như lần trước.
 //
-// PHẠM VI: tem 15 còn sống của các LỆNH có đợt vải BỔ SUNG, in trong khoảng ngày (giờ VN, mặc định 11 → 12/11/2026),
+// PHẠM VI: tem 15 còn sống của các LỆNH có đợt vải BỔ SUNG, in trong khoảng ngày (giờ VN, mặc định CẢ THÁNG 11/2026),
 //   + TEM ĐẦU của chính các lệnh đó nếu tem đầu in TRƯỚC khoảng ngày — vì luật mới chỉ tem đầu mang số bổ sung (tem sau
 //   gửi 0), không gửi lại tem đầu thì số của đợt không bao giờ sang ERP.
 //   Tem chưa từng gửi SF0 (không có dòng lịch sử) ⇒ bỏ qua, liệt kê ra cho biết.
 //
 // CÁCH CHẠY (trên MÁY CHỦ production, thư mục backend — SAU KHI deploy BE bản có 2 tham số này VÀ ERP đã thay router
 // `/ghi-in-tem` theo `docs/erp-router/ghi-in-tem.js`):
-//     node src/scripts/guiLaiSf0BoSung.js                          ← XEM THỬ (mặc định 2026-11-11 → 2026-11-12), không gửi gì
+//     node src/scripts/guiLaiSf0BoSung.js                          ← XEM THỬ (mặc định 2026-11-01 → 2026-11-30), không gửi gì
 //     node src/scripts/guiLaiSf0BoSung.js 2026-11-11 2026-11-12    ← xem thử khoảng ngày khác
 //     node src/scripts/guiLaiSf0BoSung.js --gui                    ← GỬI THẬT (tuần tự, từng tem 1)
 //
@@ -28,8 +28,8 @@ const { guiLai } = require('../modules/caidatapi/guiLai');
 
 const args = process.argv.slice(2);
 const ngays = args.filter((a) => /^\d{4}-\d{2}-\d{2}$/.test(a));
-const TU = ngays[0] || '2026-11-11';
-const DEN = ngays[1] || ngays[0] || '2026-11-12';
+const TU = ngays[0] || '2026-11-01';
+const DEN = ngays[1] || ngays[0] || '2026-11-30';
 const GUI = args.includes('--gui');
 const NGUOI = (args.find((a) => a.startsWith('--nguoi=')) || '--nguoi=admin').slice('--nguoi='.length);
 

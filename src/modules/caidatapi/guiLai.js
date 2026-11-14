@@ -5,7 +5,7 @@
 //
 // Chỉ 5 API ĐẨY dữ liệu mới có nút (API XIN SỐ — mã tem 15/17/13, ID phiếu giao — gọi lại là TIÊU thêm
 // một số của ERP, vô nghĩa). Mỗi API gửi lại bằng CHÍNH hàm nghiệp vụ của nó (dựng lại dữ liệu mới
-// nhất), KHÔNG tự chép payload cũ ⇒ các bản vá payload (vd `BarcodeSua`, `DsMaloi` = mã,SL sửa,SL hủy) tự áp dụng.
+// nhất), KHÔNG tự chép payload cũ ⇒ các bản vá payload (vd `BarcodeSua`, `DsMaloi` = mã,SL hủy,SL sửa,SL đạt) tự áp dụng.
 //
 // ⚠⚠ DÙNG LẠI IDMES CŨ của dòng lịch sử: 3 proc `MES2SK6` · `MES2SU6` · `MES2SQ0` đều XÓA phiếu cùng
 //   `Soctcu` rồi tạo lại ⇒ gửi lại không đẻ phiếu trùng bên ERP. Dòng cũ không có IDMES ⇒ cấp số mới.
@@ -162,10 +162,10 @@ async function guiLai(ma, auditId, actorId, opts = {}) {
   if (ma === 'ERP_GUI_PHAN_LOAI_LOI') {
     const plRepo = require('../quality/phanloailoi.repository');
     const phieu = await plRepo.getPhieuTheoTem(id);
-    const dsLoi = phieu ? erp.dsMaLoi(phieu.dong) : '';
-    if (!dsLoi) throw new AppError('Tem chưa có phiếu phân loại lỗi (có mã lỗi) — không có dữ liệu để gửi', { status: 409, errorCode: 'THIEU_DU_LIEU' });
-    const { rows: t } = await query('SELECT ma_tem FROM tem WHERE id = $1', [id]);
+    const { rows: t } = await query('SELECT ma_tem, COALESCE(sl_kcs_dat, 0)::int AS sl_kcs_dat FROM tem WHERE id = $1', [id]);
     if (!t[0]) throw new AppError('Tem không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+    const dsLoi = phieu ? erp.dsMaLoi(phieu.dong, t[0].sl_kcs_dat) : '';
+    if (!dsLoi) throw new AppError('Tem chưa có phiếu phân loại lỗi (có mã lỗi) — không có dữ liệu để gửi', { status: 409, errorCode: 'THIEU_DU_LIEU' });
     chanChuaCoMa(t[0].ma_tem);
     const idMes = idMesCu(g) ?? await capIdMes('gui-erp-phan-loai-loi');
     const kq = await erp.guiPhanLoaiLoi({

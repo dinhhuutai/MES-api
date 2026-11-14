@@ -173,22 +173,21 @@ async function goiErp(maApi, {
 // Proc `MES2SU6` / `MES2SQ0` chỉ nhận MỘT chuỗi cho toàn bộ chi tiết (không có tham số số lượng),
 // nên định dạng 2 chuỗi này LÀ hợp đồng dữ liệu — đặt ở đây để chỉ có 1 nguồn, sửa 1 chỗ.
 
-// `DsMaloi` = các BỘ BA `mã lỗi, SL SỬA, SL HỦY` nối tiếp, ngăn bằng dấu phẩy:
-//   `L1,2,0,L3,5,1` = lỗi L1 sửa 2 hủy 0; lỗi L3 sửa 5 hủy 1. Ví dụ thật: KCS hư 24 → phân loại
-//   20 sửa + 4 hủy ⇒ `HA1,20,4` (KHÔNG phải `HA1,24,4`).
-// ⚠⚠ ĐỔI LẠI 30/09/2026 (người dùng chốt: số giữa = SL SỬA). Lịch sử: 16/09 gửi SL sửa → 26/09 đổi sang
-//   TỔNG HƯ vì SP `MES_spr_MES2SU6` lúc đó tính `SoluongSuaNhe = Soluong − SoluongHuy` → 30/09 về lại SL sửa.
-//   ⚠ Nếu proc ERP VẪN còn phép trừ đó thì ERP sẽ ghi SL sửa = sửa − hủy (vd 16 thay vì 20) — phải để
-//   bên ERP bỏ phép trừ, ĐỪNG sửa lại ở đây mà không hỏi người dùng.
-// ⚠ Bỏ dòng KHÔNG có mã lỗi: gửi ô rỗng làm LỆCH VỊ TRÍ mọi bộ ba phía sau (ERP đọc sai toàn bộ).
+// `DsMaloi` = các BỘ BỐN `mã lỗi, SL HỦY, SL SỬA, SL ĐẠT` nối tiếp, ngăn bằng dấu phẩy (proc `MES2SU6`:
+//   `Maloi,soluongloi,soluongsua,soluongdat` — `soluongloi` là SL HỦY):
+//   `DS1,5,20,100,DS2,15,3,100` = lỗi DS1 hủy 5 sửa 20; lỗi DS2 hủy 15 sửa 3; tem đạt 100.
+// ⚠ SL ĐẠT là của CẢ TEM (`tem.sl_kcs_dat` — đạt KCS của tem gốc) ⇒ LẶP LẠI giống nhau ở mọi bộ bốn.
+// ⚠ Bỏ dòng KHÔNG có mã lỗi: gửi ô rỗng làm LỆCH VỊ TRÍ mọi bộ phía sau (ERP đọc sai toàn bộ).
 // ⚠ Mã lỗi chứa dấu phẩy sẽ phá cấu trúc ⇒ thay bằng khoảng trắng (đo prod: không mã nào có dấu phẩy).
-function dsMaLoi(dong = []) {
+const SO_TRUONG_MA_LOI = 4;
+function dsMaLoi(dong = [], slDat = 0) {
+  const dat = Math.max(0, Math.trunc(Number(slDat) || 0));
   return dong
     .filter((d) => d && d.ma_loi)
     .map((d) => {
       const sua = Number(d.so_luong_sua) || 0;
       const huy = Number(d.so_luong_huy) || 0;
-      return [String(d.ma_loi).replace(/,/g, ' ').trim(), sua, huy].join(',');
+      return [String(d.ma_loi).replace(/,/g, ' ').trim(), huy, sua, dat].join(',');
     })
     .join(',');
 }
@@ -366,5 +365,5 @@ async function guiDsHuyVai(cap, { actorId = null, idKetNoi = null, idBanGhi = nu
 
 module.exports = {
   layIdPhieuGiao, guiPhieuGiao, guiPhanLoaiLoi, guiDsHuyVai, goiErp,
-  tenDangNhap, catChuoi, ngayGio, dsMaLoi, dsTemGiao,
+  tenDangNhap, catChuoi, ngayGio, dsMaLoi, SO_TRUONG_MA_LOI, dsTemGiao,
 };

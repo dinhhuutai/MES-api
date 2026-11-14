@@ -250,7 +250,8 @@ const existsMaBienPhap = async (ma) => (
 // ⚠ Trả `null` khi không thấy tem — bên gọi bỏ qua lần gửi, KHÔNG ném lỗi.
 async function chiTietGuiErp(temId, rows = []) {
   const { rows: t } = await query(
-    `SELECT ma_tem, to_char((now() AT TIME ZONE 'Asia/Ho_Chi_Minh'), 'YYYY/MM/DD HH24:MI:SS') AS ngay_phan_loai
+    `SELECT ma_tem, COALESCE(sl_kcs_dat, 0)::int AS sl_kcs_dat,
+            to_char((now() AT TIME ZONE 'Asia/Ho_Chi_Minh'), 'YYYY/MM/DD HH24:MI:SS') AS ngay_phan_loai
        FROM tem WHERE id = $1`, [temId]
   );
   if (!t.length) return null;
@@ -266,6 +267,7 @@ async function chiTietGuiErp(temId, rows = []) {
   const mBp = new Map(bp.map((x) => [x.id, x]));
   return {
     ma_tem: t[0].ma_tem,
+    sl_kcs_dat: t[0].sl_kcs_dat,
     ngay_phan_loai: t[0].ngay_phan_loai,
     dong: rows.map((r) => ({
       ma_loi: mLl.get(r.loaiLoiId)?.ma_loi || null,

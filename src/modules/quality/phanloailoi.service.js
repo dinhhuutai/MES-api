@@ -116,7 +116,7 @@ async function guiErpPhanLoaiLoi(temId, { rows }, actorId) {
   try {
     const ct = await repo.chiTietGuiErp(temId, rows);
     if (!ct) return;
-    const dsLoi = dsMaLoi(ct.dong);
+    const dsLoi = dsMaLoi(ct.dong, ct.sl_kcs_dat);
     if (!dsLoi) {
       console.warn(`[gui-erp-phan-loai-loi] ⏭ Tem ${ct.ma_tem}: không dòng nào có MÃ LỖI — bỏ qua lời gọi ERP`);
       return;
