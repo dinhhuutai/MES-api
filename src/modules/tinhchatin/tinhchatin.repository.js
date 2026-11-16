@@ -7,7 +7,7 @@ const { MA_TCIN_SQL } = require('../../utils/tinhChatIn');
 //   (đã chạy theo luồng cũ; đổi thì dùng Quản trị phần in). Trả số phần in đổi.
 async function apLuongChoPhanInTx(client, ma, luong) {
   const { rowCount } = await client.query(
-    `UPDATE phan_in pin SET luong_sx = $2::varchar, la_in_kieng = ($2::varchar = 'IN_KIENG'), luong_sx_tg = CURRENT_TIMESTAMP
+    `UPDATE phan_in pin SET luong_sx = $2::varchar, la_in_kieng = ($2::varchar IN ('IN_KIENG','KIENG_KHONG_EP')), luong_sx_tg = CURRENT_TIMESTAMP
       WHERE ${MA_TCIN_SQL('pin.tinh_chat_in')} = $1 AND NOT pin.luong_sx_sua_tay
         AND pin.luong_sx IS DISTINCT FROM $2::varchar
         AND NOT EXISTS (SELECT 1 FROM dot_vai_ve dv JOIN lenh_sx_dot_vai lsd ON lsd.dot_vai_ve_id = dv.id
@@ -18,6 +18,34 @@ async function apLuongChoPhanInTx(client, ma, luong) {
   return rowCount;
 }
 
+// Cột `ready_che_do` (mig 131 — READY theo công đoạn). Cache khi CÓ.
+let _coCheDo = false;
+async function coCotCheDo() {
+  if (_coCheDo) return true;
+  const { rows } = await query("SELECT 1 FROM information_schema.columns WHERE table_name = 'tinh_chat_in' AND column_name = 'ready_che_do' LIMIT 1");
+  _coCheDo = rows.length > 0;
+  return _coCheDo;
+}
+
+// Cột `kt_yeu_cau` (mig 133 — yêu cầu KT của công đoạn Ép/Logo). Cache khi CÓ.
+let _coKtYc = false;
+async function coCotKtYc() {
+  if (_coKtYc) return true;
+  const { rows } = await query("SELECT 1 FROM information_schema.columns WHERE table_name = 'tinh_chat_in' AND column_name = 'kt_yeu_cau' LIMIT 1");
+  _coKtYc = rows.length > 0;
+  return _coKtYc;
+}
+// Cột `kt_hskt` (mig 134 — công đoạn Ép/Logo phải xác nhận HSKT). Cache khi CÓ.
+let _coKtHskt = false;
+async function coCotKtHskt() {
+  if (_coKtHskt) return true;
+  const { rows } = await query("SELECT 1 FROM information_schema.columns WHERE table_name = 'tinh_chat_in' AND column_name = 'kt_hskt' LIMIT 1");
+  _coKtHskt = rows.length > 0;
+  return _coKtHskt;
+}
+// Thiếu cột (chưa mig 134) ⇒ false (không cần HSKT) — khớp `utils/tech.js ktHsktSql`.
+const COT_KT_YC = "COALESCE(to_jsonb(t)->>'kt_yeu_cau', 'KHUON_MUC') AS kt_yeu_cau, COALESCE((to_jsonb(t)->>'kt_hskt')::boolean, false) AS kt_hskt";
+
 async function coBang() {
   const { rows } = await query("SELECT to_regclass('public.tinh_chat_in') AS bang");
   return !!rows[0].bang;
@@ -26,7 +54,8 @@ async function coBang() {
 // Danh mục đang dùng + người / giờ sửa gần nhất.
 async function danhMuc() {
   const { rows } = await query(
-    `SELECT t.id, t.ma_chuan, t.ten, t.luong, t.bo_qua, t.ghi_chu, t.updated_date, nd.ho_ten AS nguoi_sua
+    `SELECT t.id, t.ma_chuan, t.ten, t.luong, t.bo_qua, t.ghi_chu, t.updated_date, nd.ho_ten AS nguoi_sua, COALESCE(to_jsonb(t)->>'ready_che_do', 'RIENG') AS ready_che_do,
+            ${COT_KT_YC}
        FROM tinh_chat_in t LEFT JOIN nguoi_dung nd ON nd.id = t.updated_by
       WHERE t.dang_hoat_dong`.replace(/\s+/g, ' ')
   );
@@ -67,32 +96,44 @@ async function demPhanInCua(client, ma) {
 // Đọc + khóa các dòng (kể cả dòng đã ẩn — thêm lại thì bật lại, không đẻ dòng trùng).
 async function docTheoMaTx(client, dsMa) {
   const { rows } = await client.query(
-    `SELECT id, ma_chuan, ten, luong, bo_qua, ghi_chu, dang_hoat_dong FROM tinh_chat_in WHERE ma_chuan = ANY($1::text[]) FOR UPDATE`, [dsMa]
+    `SELECT t.id, t.ma_chuan, t.ten, t.luong, t.bo_qua, t.ghi_chu, t.dang_hoat_dong, COALESCE(to_jsonb(t)->>'ready_che_do', 'RIENG') AS ready_che_do, ${COT_KT_YC} FROM tinh_chat_in t WHERE t.ma_chuan = ANY($1::text[]) FOR UPDATE`, [dsMa]
   );
   return rows;
 }
 
 async function docTheoIdTx(client, id) {
   const { rows } = await client.query(
-    'SELECT id, ma_chuan, ten, luong, bo_qua, ghi_chu, dang_hoat_dong FROM tinh_chat_in WHERE id = $1 FOR UPDATE', [id]
+    `SELECT t.id, t.ma_chuan, t.ten, t.luong, t.bo_qua, t.ghi_chu, t.dang_hoat_dong, COALESCE(to_jsonb(t)->>'ready_che_do', 'RIENG') AS ready_che_do, ${COT_KT_YC} FROM tinh_chat_in t WHERE t.id = $1 FOR UPDATE`, [id]
   );
   return rows[0] || null;
 }
 
+// Cột tùy chọn theo migration đã chạy: `ready_che_do` (mig 131) · `kt_yeu_cau` (mig 133) · `kt_hskt` (mig 134).
+async function cotTuyChon(d) {
+  const cot = [];
+  if (await coCotCheDo()) cot.push(['ready_che_do', d.ready_che_do || 'RIENG']);
+  if (await coCotKtYc()) cot.push(['kt_yeu_cau', d.kt_yeu_cau || 'KHUON_MUC']);
+  if (await coCotKtHskt()) cot.push(['kt_hskt', d.kt_hskt !== false]);
+  return cot;
+}
+
 async function themTx(client, d, actorId) {
+  const them = await cotTuyChon(d);
+  const vals = [d.ma_chuan, d.ten, d.luong, d.bo_qua, d.ghi_chu, actorId || null, ...them.map(([, v]) => v)];
   const { rows } = await client.query(
-    `INSERT INTO tinh_chat_in (ma_chuan, ten, luong, bo_qua, ghi_chu, created_by, updated_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $6) RETURNING id`.replace(/\s+/g, ' '),
-    [d.ma_chuan, d.ten, d.luong, d.bo_qua, d.ghi_chu, actorId || null]
+    `INSERT INTO tinh_chat_in (ma_chuan, ten, luong, bo_qua, ghi_chu, created_by, updated_by${them.map(([c]) => `, ${c}`).join('')})
+     VALUES ($1, $2, $3, $4, $5, $6, $6${them.map((_, i) => `, $${7 + i}`).join('')}) RETURNING id`.replace(/\s+/g, ' '),
+    vals
   );
   return rows[0].id;
 }
 
 async function suaTx(client, id, d, actorId) {
+  const them = await cotTuyChon(d);
   await client.query(
-    `UPDATE tinh_chat_in SET luong = $2, bo_qua = $3, ghi_chu = $4, dang_hoat_dong = true,
+    `UPDATE tinh_chat_in SET luong = $2, bo_qua = $3, ghi_chu = $4, dang_hoat_dong = true${them.map(([c], i) => `, ${c} = $${6 + i}`).join('')},
             updated_by = $5, updated_date = CURRENT_TIMESTAMP WHERE id = $1`.replace(/\s+/g, ' '),
-    [id, d.luong, d.bo_qua, d.ghi_chu, actorId || null]
+    [id, d.luong, d.bo_qua, d.ghi_chu, actorId || null, ...them.map(([, v]) => v)]
   );
 }
 
@@ -111,4 +152,4 @@ async function logTx(client, id, hanhDong, cu, moi, actorId) {
   );
 }
 
-module.exports = { coBang, danhMuc, demPhanIn, demDotErp, demPhanInCua, docTheoMaTx, docTheoIdTx, themTx, suaTx, anTx, logTx, apLuongChoPhanInTx };
+module.exports = { coCotCheDo, coCotKtYc, coCotKtHskt, coBang, danhMuc, demPhanIn, demDotErp, demPhanInCua, docTheoMaTx, docTheoIdTx, themTx, suaTx, anTx, logTx, apLuongChoPhanInTx };

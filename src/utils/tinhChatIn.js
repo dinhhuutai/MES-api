@@ -11,18 +11,64 @@
 // ─────────────────────────────────────────────────────────────────────────────
 const { query } = require('../config/db');
 
-// ⚠ 09/11/2026 (mig 126): IN_KIENG · IN_EP · LOGO ĐÃ CÓ LUỒNG RIÊNG — phần in mới nhận `phan_in.luong_sx` theo cột `luong`
-//   của bảng này (`utils/luongSanXuat.js`). `KHAC` = các tính chất người dùng bảo "thuộc nhóm khác, chưa đụng tới"
-//   (chỉ ép · ép kiếng · in + logo ép · logo + ép nhựa · DANKEO / LS…): vào MES thì đi luồng in thường.
-const LUONG = [
-  { ma: 'THUONG', ten: 'In thường', da_lam: true },
-  { ma: 'IN_KIENG', ten: 'In kiếng', da_lam: true },
-  { ma: 'IN_EP', ten: 'In + ép', da_lam: true },
-  { ma: 'LOGO', ten: 'Logo', da_lam: true },
-  { ma: 'KHAC', ten: 'Nhóm khác (chưa làm)', da_lam: false },
-  { ma: 'CHUA_PHAN_LOAI', ten: 'Chưa phân loại', da_lam: false },
+// ⚠⚠ 4 CÔNG ĐOẠN **In · In kiếng · Logo · Ép** (16/11/2026, người dùng chốt "tách toggle logo với ép ra lại" — bản 14/11 gộp
+//   Ép/Logo 1 công tắc). Mỗi tính chất in = TỔ HỢP công đoạn; số công đoạn của phần in = số công tắc bật. Trang *Tính chất in*
+//   bật/tắt 4 công tắc; cột `luong` của bảng LƯU MÃ CỦA TỔ HỢP (bảng dưới — 1–1, không cần migration). Phần in mới nhận
+//   `phan_in.luong_sx` theo `luongSxTheoPhanLoai` (`utils/luongSanXuat.js`).
+//   · Logo và Ép đều là công đoạn loại ép (`luong_sx` LOGO 1 công đoạn · IN_EP / IN_KIENG phần ép `EP_UI`) — tách công tắc để
+//     biết công đoạn là Logo hay Ép (nhãn, đối chiếu loaikd: 2I = đơn logo + ép, kiếng ủi 3I = Ép).
+//   · `sx` = luồng chạy của phần in. Tổ hợp CHƯA có luồng sản xuất (In + In kiếng, Logo + Ép, ≥ 3 công đoạn) ⇒ `tam: true`,
+//     tạm chạy luồng ghi ở `sx` (trang hiện cảnh báo).
+//   · Mã cũ giữ nghĩa: `LOGO` nay = chỉ Logo (bản 14/11 = "Ép/Logo"), `IN_EP` = In + Ép, `IN_KIENG` = In kiếng + Ép (kiếng
+//     ủi), `BA_CONG_DOAN` = In + In kiếng + Ép — tính chất ép cũ đang mã `LOGO` phải chuyển sang `EP` bằng script
+//     `database/scripts/tinh_chat_in_tach_logo_ep_1611.sql` (luồng sản xuất không đổi).
+//   · `KHAC` (cũ, "nhóm khác chưa làm") không còn chọn được — đọc như chưa phân loại.
+const CD_KHOA = ['in', 'kieng', 'logo', 'ep'];
+const CD_TEN = { in: 'In', kieng: 'In kiếng', logo: 'Logo', ep: 'Ép' };
+const cdDu = (cd) => Object.fromEntries(CD_KHOA.map((k) => [k, !!(cd && cd[k])]));
+const LUONG_DAT_TEN = [
+  { ma: 'THUONG', ten: 'In', cd: { in: true }, sx: 'THUONG' },
+  { ma: 'KIENG_KHONG_EP', ten: 'In kiếng', cd: { kieng: true }, sx: 'KIENG_KHONG_EP' },
+  { ma: 'LOGO', ten: 'Logo', cd: { logo: true }, sx: 'LOGO' },
+  { ma: 'EP', ten: 'Ép', cd: { ep: true }, sx: 'LOGO' },
+  { ma: 'IN_EP', ten: 'In + Ép', cd: { in: true, ep: true }, sx: 'IN_EP' },
+  { ma: 'IN_LOGO', ten: 'In + Logo', cd: { in: true, logo: true }, sx: 'IN_EP' },
+  { ma: 'IN_KIENG', ten: 'In kiếng + Ép (kiếng ủi)', cd: { kieng: true, ep: true }, sx: 'IN_KIENG' },
+  { ma: 'KIENG_LOGO', ten: 'In kiếng + Logo', cd: { kieng: true, logo: true }, sx: 'IN_KIENG' },
+  { ma: 'LOGO_EP', ten: 'Logo + Ép', cd: { logo: true, ep: true }, sx: 'LOGO', tam: true },
+  { ma: 'IN_VA_KIENG', ten: 'In + In kiếng', cd: { in: true, kieng: true }, sx: 'KIENG_KHONG_EP', tam: true },
+  { ma: 'BA_CONG_DOAN', ten: 'In + In kiếng + Ép', cd: { in: true, kieng: true, ep: true }, sx: 'IN_KIENG', tam: true },
 ];
+const khoaCd = (cd) => CD_KHOA.map((k) => (cd && cd[k] ? 1 : 0)).join('');
+// Luồng sản xuất tạm cho tổ hợp chưa đặt tên (≥ 3 công đoạn…): có kiếng ⇒ kiếng (+ ép nếu có loại ép); có In + loại ép ⇒ IN_EP…
+function sxTam(cd) {
+  const ep = cd.logo || cd.ep;
+  if (cd.kieng) return ep ? 'IN_KIENG' : 'KIENG_KHONG_EP';
+  if (cd.in) return ep ? 'IN_EP' : 'THUONG';
+  return ep ? 'LOGO' : 'THUONG';
+}
+const LUONG = (() => {
+  const daCo = new Map(LUONG_DAT_TEN.map((l) => [khoaCd(l.cd), l]));
+  const out = LUONG_DAT_TEN.map((l) => ({ ...l, cd: cdDu(l.cd), da_lam: true, tam: !!l.tam }));
+  for (let n = 1; n < 16; n += 1) { // tổ hợp còn lại (tên ghép, mã `CD_<4 bit>`) — để công tắc nào bật cũng lưu được
+    const cd = Object.fromEntries(CD_KHOA.map((k, i) => [k, !!(n & (8 >> i))]));
+    if (daCo.has(khoaCd(cd))) continue;
+    out.push({ ma: `CD_${khoaCd(cd)}`, ten: CD_KHOA.filter((k) => cd[k]).map((k) => CD_TEN[k]).join(' + '), cd, sx: sxTam(cd), da_lam: true, tam: true });
+  }
+  out.push({ ma: 'CHUA_PHAN_LOAI', ten: 'Chưa phân loại', cd: cdDu({}), sx: 'THUONG', da_lam: false, tam: false });
+  return out;
+})();
 const MA_LUONG = new Set(LUONG.map((l) => l.ma));
+const THEO_MA = new Map(LUONG.map((l) => [l.ma, l]));
+const THEO_CD = new Map(LUONG.map((l) => [khoaCd(l.cd), l.ma]));
+// Mã luồng phân loại của 1 tổ hợp công đoạn `{ in, kieng, logo, ep }`.
+const luongTuCongDoan = (cd) => THEO_CD.get(khoaCd(cdDu(cd)));
+// Tổ hợp có công đoạn loại ép (Logo hoặc Ép) — cột "Kỹ thuật Ép/Logo" / "Xác nhận HSKT" chỉ có nghĩa với tổ hợp này.
+const coCongDoanEp = (cd) => !!(cd && (cd.ep || cd.logo));
+// Tổ hợp công đoạn của 1 mã luồng phân loại (mã lạ / KHAC ⇒ không công đoạn nào).
+const congDoanCuaLuong = (ma) => ({ ...(THEO_MA.get(ma) || THEO_MA.get('CHUA_PHAN_LOAI')).cd });
+// Luồng SẢN XUẤT của phần in ứng với 1 mã phân loại (chưa phân loại / mã lạ ⇒ in thường).
+const luongSxTheoPhanLoai = (ma) => (THEO_MA.get(ma) || THEO_MA.get('CHUA_PHAN_LOAI')).sx;
 
 // Danh sách bỏ qua dự phòng — ĐÚNG hằng `BO_TINH_CHAT_IN` trước mig 123 (cũng là dữ liệu ban đầu `bo_qua = true` của bảng).
 const BO_QUA_MAC_DINH_RAW = [
@@ -60,4 +106,7 @@ async function tapBoQua() {
   }
 }
 
-module.exports = { LUONG, MA_LUONG, BO_QUA_MAC_DINH_RAW, BO_QUA_MAC_DINH, normTcin, MA_TCIN_SQL, tapBoQua };
+module.exports = {
+  LUONG, MA_LUONG, BO_QUA_MAC_DINH_RAW, BO_QUA_MAC_DINH, normTcin, MA_TCIN_SQL, tapBoQua,
+  luongTuCongDoan, congDoanCuaLuong, luongSxTheoPhanLoai, coCongDoanEp, CD_KHOA, CD_TEN,
+};

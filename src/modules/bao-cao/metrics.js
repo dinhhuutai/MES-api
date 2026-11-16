@@ -12,7 +12,7 @@
 const { query } = require('../../config/db');
 const dashboardRepo = require('../dashboard/dashboard.repository');
 const { dominantStageScalar } = require('../../utils/stage');
-const { techDoneSql, techDoneSqlByPin, KHUON_OPT_SQL_LIST, khongReadyTuDongSql, dotMucDatSql } = require('../../utils/tech');
+const { techDoneSql, techDoneSqlByPin, KHUON_OPT_SQL_LIST, khongReadyTuDongSql, dotMucDatSql, ktYcSql } = require('../../utils/tech');
 const { nguonPhanIn } = require('../../utils/siSoTram');
 
 // ─── CACHE 3 TRUY VẤN NẶNG DÙNG CHUNG NHIỀU METRIC ──────────────────────────
@@ -144,9 +144,12 @@ const cpDoneToday = (maCp) => {
 // Đếm phần in đang HOẠT ĐỘNG, CHƯA QC-READY và CHƯA xác nhận mã checkpoint `maCp` (đang chờ mục đó).
 // KHUON: bỏ khách II/AD (Khuôn không bắt buộc nên không tính là "chờ khuôn").
 const readyChoCp = (maCp) => {
+  // 16/11/2026: + yêu cầu KT của công đoạn Ép/Logo theo tính chất in (`tech.ktYcSql`) — mục không bắt buộc thì không "chờ".
+  const yc = ktYcSql('pin.id');
   const khuonExtra = (maCp === 'KHUON' || maCp === 'FILM') // khách gia công II/AD miễn cả Khuôn lẫn Film
-    ? ` AND (SELECT kh.ten_khach_hang FROM ma_hang mh JOIN don_hang dh ON dh.id = mh.don_hang_id JOIN khach_hang kh ON kh.id = dh.khach_hang_id WHERE mh.id = pin.ma_hang_id) NOT IN (${KHUON_OPT_SQL_LIST})`
-    : '';
+    ? ` AND (SELECT kh.ten_khach_hang FROM ma_hang mh JOIN don_hang dh ON dh.id = mh.don_hang_id JOIN khach_hang kh ON kh.id = dh.khach_hang_id WHERE mh.id = pin.ma_hang_id) NOT IN (${KHUON_OPT_SQL_LIST})
+        AND ${yc} NOT IN ('MUC','KHONG')${maCp === 'FILM' ? " AND pin.luong_sx IS DISTINCT FROM 'LOGO'" : ''}`
+    : (maCp === 'MUC' ? ` AND ${yc} NOT IN ('KHUON','KHONG')` : '');
   // ⚠⚠ THEO ĐỢT VẢI (25/09/2026): phần in CÒN ĐỢT ĐANG CHỜ ở READY (đã lên READY, chưa release) mà
   //   đợt đó chưa xác nhận mục — ĐÚNG luật `dotMucDatSql` của màn READY + nguồn "Open chờ <mục>".
   //   Bản cũ đọc dòng TỔNG ⇒ đợt 1 đã xác nhận thì đợt 2 mới về không được đếm là "chờ".
@@ -236,7 +239,7 @@ const DEFS = [
       GROUP BY kq.phan_in_id
     ) t JOIN phan_in pin ON pin.id = t.phan_in_id JOIN ma_hang mh ON mh.id = pin.ma_hang_id
       JOIN don_hang dh ON dh.id = mh.don_hang_id JOIN khach_hang kh ON kh.id = dh.khach_hang_id
-      WHERE ${TODAY_TS('t.tgmax')} AND ${techDoneSql('kh.ten_khach_hang', 't.hk', 't.hf', 't.hm')}`) },
+      WHERE ${TODAY_TS('t.tgmax')} AND ${techDoneSql('kh.ten_khach_hang', 't.hk', 't.hf', 't.hm', 't.phan_in_id')}`) },
   { ma: 'QC_READY_HOM_NAY', ten: 'Phần in QC-READY hôm nay', nhom: 'Kỹ thuật (hôm nay)', don_vi: 'phần',
     mo_ta: 'Số phần in được QC xác nhận READY (QC_XAC_NHAN=DAT) trong hôm nay.',
     run: () => scalar(cpDoneToday('QC_XAC_NHAN')) },

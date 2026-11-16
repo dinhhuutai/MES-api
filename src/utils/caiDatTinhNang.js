@@ -46,6 +46,17 @@ const DANH_MUC_TINH_NANG = [
       + 'không cần lý do nữa.',
     macDinh: true,
   },
+  {
+    // 16/11/2026 (mig 134): công tắc TỔNG — từng tính chất bật/tắt riêng ở trang Tính chất in (cột "Xác nhận HSKT").
+    // ⚠ SQL đọc thẳng bảng (`utils/tech.js ktHsktSql`, thiếu dòng = BẬT) ⇒ đổi mã ở đây phải đổi cả `MA_TN_HSKT_EP`.
+    ma: 'READY_EP_XAC_NHAN_HSKT',
+    ten: 'Công đoạn Ép/Logo phải xác nhận HSKT ở READY',
+    mo_ta: 'Tính chất in có Ép/Logo (và đang bật "Xác nhận HSKT" ở Hệ thống › Tính chất in) thì dòng Ép/Logo ở READY '
+      + 'phải xác nhận thêm mục HSKT (quyền READY_HSKT) mới sang QC được.',
+    khi_tat: 'Bỏ mục HSKT ở mọi tính chất — Ép/Logo chỉ xác nhận Khuôn / Mực như cấu hình.',
+    canh_bao: 'Tắt thì dòng Ép/Logo đang chờ HSKT sang QC ngay, không ai kiểm hồ sơ kỹ thuật.',
+    macDinh: true,
+  },
 ];
 
 const MA_HOP_LE = new Set(DANH_MUC_TINH_NANG.map((x) => x.ma));

@@ -12,18 +12,21 @@ const { thamSoLichSu } = require('../../utils/lichSuTim');
 // Map mục kỹ thuật → quyền tương ứng (xác nhận theo từng bộ phận).
 const ITEM_PERM = { KHUON: 'READY_KHUON', FILM: 'READY_FILM', MUC: 'READY_MUC', HSKT: 'READY_HSKT' };
 
+// READY theo công đoạn (14/11/2026): `giaiDoan` = bộ checklist ('EP_UI' = công đoạn Ép/Logo, còn lại = bộ gốc).
+const gdTu = (v) => (v === 'EP_UI' ? 'EP_UI' : 'IN');
+
 const config = asyncHandler(async (req, res) => ok(res, await service.getConfig()));
 
 // Danh sách READY / QC READY dùng chung kết quả giữa mọi người xem (`utils/cacheDoc.js` — ghi là hết hiệu lực ngay).
 const candidates = asyncHandler(async (req, res) => {
   const { page, limit, offset } = getPaging(req.query, { tranToiDa: TRAN_TAI_HET });
-  const opts = { search: req.query.search || '', page, limit, offset };
+  const opts = { search: req.query.search || '', page, limit, offset, gd: gdTu(req.query.giaiDoan) };
   return ok(res, await nhoDoc('ready.candidates', opts, () => service.listCandidates(opts)));
 });
 
 const qcCandidates = asyncHandler(async (req, res) => {
   const { page, limit, offset } = getPaging(req.query, { tranToiDa: TRAN_TAI_HET });
-  const opts = { search: req.query.search || '', page, limit, offset, onlyQcReady: true };
+  const opts = { search: req.query.search || '', page, limit, offset, onlyQcReady: true, gd: gdTu(req.query.giaiDoan) };
   return ok(res, await nhoDoc('ready.candidates', opts, () => service.listCandidates(opts)));
 });
 
@@ -40,7 +43,7 @@ const dsDot = (v) => [...new Set((Array.isArray(v) ? v : String(v || '').split('
   .map((x) => String(x).trim()).filter(laUuid))];
 
 const detail = asyncHandler(async (req, res) => ok(res,
-  await service.getDetail(req.params.phanInId, dsDot(req.query.dotVaiIds))));
+  await service.getDetail(req.params.phanInId, dsDot(req.query.dotVaiIds), gdTu(req.query.giaiDoan))));
 
 const history = asyncHandler(async (req, res) => {
   const scope = req.query.scope === 'qc' ? 'qc' : 'tech';
@@ -63,7 +66,7 @@ const confirmItem = asyncHandler(async (req, res) => {
     throw new AppError(`Không có quyền xác nhận mục này (${perm})`, { status: 403, errorCode: 'FORBIDDEN', details: [perm] });
   }
   const data = await service.confirmItem(req.params.phanInId, ma, req.body.value, req.user.id, req.body.phuong_an_in,
-    dsDot(req.body.dotVaiIds));
+    dsDot(req.body.dotVaiIds), gdTu(req.body.giaiDoan));
   return ok(res, data, 'Đã xác nhận');
 });
 
@@ -80,7 +83,7 @@ const confirmItemsBatch = asyncHandler(async (req, res) => {
     }
   }
   const data = await service.confirmItemsBatch(req.params.phanInId, items, req.user.id, req.body.phuong_an_in,
-    dsDot(req.body.dotVaiIds));
+    dsDot(req.body.dotVaiIds), gdTu(req.body.giaiDoan));
   return ok(res, data, 'Đã xác nhận các mục đã chọn');
 });
 
@@ -93,14 +96,14 @@ const confirmBulk = asyncHandler(async (req, res) => {
     throw new AppError(`Không có quyền xác nhận mục ${ma} (${perm})`, { status: 403, errorCode: 'FORBIDDEN', details: [perm] });
   }
   const ids = Array.isArray(req.body.phanInIds) ? req.body.phanInIds : [];
-  const data = await service.confirmItemBulk(ids, ma, req.body.value, req.user.id);
+  const data = await service.confirmItemBulk(ids, ma, req.body.value, req.user.id, gdTu(req.body.giaiDoan));
   return ok(res, data, `Đã xác nhận ${data.okCount} phần in`);
 });
 
 // `dotVaiIds` (tùy chọn) = QC xác nhận THEO ĐỢT VẢI (21/09/2026).
 const confirmQC = asyncHandler(async (req, res) => {
   const dv = Array.isArray(req.body?.dotVaiIds) ? req.body.dotVaiIds : [];
-  return ok(res, await service.confirmQC(req.params.phanInId, req.user.id, dv), 'Đã QC xác nhận');
+  return ok(res, await service.confirmQC(req.params.phanInId, req.user.id, dv, gdTu(req.body?.giaiDoan)), 'Đã QC xác nhận');
 });
 
 // Nhận `items: [{ id, dot_vai_ids }]` (theo đợt) hoặc `phanInIds` (cũ, mức phần in).
@@ -116,14 +119,14 @@ const cancelItem = asyncHandler(async (req, res) => {
   // `dotVaiId` (09/10/2026) — hủy lượt xác nhận THEO ĐỢT VẢI (tab Hủy xác nhận READY), thiếu = mức phần in như cũ.
   const dotVaiId = req.body.dotVaiId ? String(req.body.dotVaiId) : null;
   if (dotVaiId && !/^[0-9a-f-]{36}$/i.test(dotVaiId)) throw new AppError('Mã đợt vải không hợp lệ', { status: 422, errorCode: 'INVALID' });
-  const data = await service.cancelItem(req.params.phanInId, ma, req.user.id, dotVaiId);
+  const data = await service.cancelItem(req.params.phanInId, ma, req.user.id, dotVaiId, gdTu(req.body.giaiDoan));
   return ok(res, data, 'Đã hủy xác nhận');
 });
 
 // Bỏ tích 1 mục kỹ thuật (trong luồng Quét/tích) — quyền tech, khác hủy xác nhận (READY_CANCEL).
 const uncheckItem = asyncHandler(async (req, res) => {
   const ma = String(req.params.ma || '').toUpperCase();
-  const data = await service.uncheckItem(req.params.phanInId, ma, req.user.id, dsDot(req.body && req.body.dotVaiIds));
+  const data = await service.uncheckItem(req.params.phanInId, ma, req.user.id, dsDot(req.body && req.body.dotVaiIds), gdTu(req.body && req.body.giaiDoan));
   return ok(res, data, 'Đã bỏ tích');
 });
 

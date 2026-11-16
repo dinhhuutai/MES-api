@@ -285,10 +285,11 @@ function taoPayload(r, { idMes, soLuong = null, soLuongHuy = 0, soLuongThieu = 0
       : r.so_luong_kieng != null ? Number(r.so_luong_kieng) || 0
         : Number(r.he_so_kieng) > 0
           ? Math.ceil((soLuong != null ? Number(soLuong) || 0 : Number(r.so_luong) || 0) / Number(r.he_so_kieng)) : 0,
-    // SL bổ sung công ty / khách (proc SF0 12/11/2026) — chỉ kênh ERP_GHI_IN_TEM đọc. Số của các đợt BỔ SUNG trong phạm vi
-    //   tem, CHỈ ở tem đầu của đợt (`la_tem_dau_dot`) — tem sau 0 để ERP cộng không gấp đôi.
-    SLBSCty: r.la_tem_dau_dot ? Number(r.sl_bs_cty) || 0 : 0,
-    SLBSKhachHang: r.la_tem_dau_dot ? Number(r.sl_bs_khach) || 0 : 0,
+    // SL bổ sung công ty / khách (proc SF0 12/11/2026) — chỉ kênh ERP_GHI_IN_TEM đọc. ⚠ 16/11/2026 (mig 135, người dùng chốt
+    //   "theo từng 1 tem"): MỖI TEM gửi số của chính nó (`tem.sl_bo_sung_*`, nhập lúc in / Sửa tem). DB chưa chạy mig 135
+    //   (`co_bs_tem` false) ⇒ luật cũ: Σ các đợt BỔ SUNG, CHỈ ở tem đầu (`la_tem_dau_dot`), tem sau 0.
+    SLBSCty: r.co_bs_tem ? Number(r.tem_bs_cty) || 0 : (r.la_tem_dau_dot ? Number(r.sl_bs_cty) || 0 : 0),
+    SLBSKhachHang: r.co_bs_tem ? Number(r.tem_bs_khach) || 0 : (r.la_tem_dau_dot ? Number(r.sl_bs_khach) || 0 : 0),
     // Không thuộc 20 trường (`chuanHoa` bỏ đi) — chỉ để kênh `thieuGioLayMocTao` bù Tugio/Dengio.
     MocTao: r.moc_tao || null,
     // Cũng không thuộc 20 trường: mã số nhân viên của tài khoản ca trưởng ⇒ `chuanHoa` đặt vào `Catruong`.
@@ -359,9 +360,9 @@ function erpProxy() {
   } catch { return undefined; }
 }
 
-// Gửi 1 bản ghi. KHÔNG NÉM LỖI — luôn trả { ok, body, data? , error? }.
-// `maApi` = kênh trong `KENH` (mặc định `ERP_GHI_IN_TEM` ⇒ mọi call-site cũ không đổi).
-async function ghiInTem(row, { maApi = 'ERP_GHI_IN_TEM' } = {}) {
+// Dựng ĐÚNG thân sẽ gửi ERP của 1 bản ghi (chuẩn hóa + mã số nhân viên + trường riêng của kênh), KHÔNG gửi.
+//   Dùng chung cho `ghiInTem` và bộ sinh script SQL Server (`scripts/taoSqlServerGuiLai.js`).
+async function dungThanGui(row, maApi = 'ERP_GHI_IN_TEM') {
   const k = KENH[maApi] || KENH.ERP_GHI_IN_TEM;
   const vao = k.thieuGioLayMocTao && row.MocTao
     ? { ...row, Tugio: row.Tugio || row.MocTao, Dengio: row.Dengio || row.MocTao }
@@ -380,6 +381,14 @@ async function ghiInTem(row, { maApi = 'ERP_GHI_IN_TEM' } = {}) {
       + ` (tên gõ tay hoặc trùng họ tên) — gửi TÊN GỌI (tem ${body.BarcodeIn})`);
   }
   if (k.them) Object.assign(body, k.them(body, vao));
+  return body;
+}
+
+// Gửi 1 bản ghi. KHÔNG NÉM LỖI — luôn trả { ok, body, data? , error? }.
+// `maApi` = kênh trong `KENH` (mặc định `ERP_GHI_IN_TEM` ⇒ mọi call-site cũ không đổi).
+async function ghiInTem(row, { maApi = 'ERP_GHI_IN_TEM' } = {}) {
+  const k = KENH[maApi] || KENH.ERP_GHI_IN_TEM;
+  const body = await dungThanGui(row, maApi);
   // Tắt ở Hệ thống > Cài đặt API (mig 083); chưa có dòng cấu hình thì lấy mặc định `.env`.
   if (!(await apiBat(maApi))) {
     console.log(`[${k.nhan}] ⏸ ĐANG TẮT (Hệ thống > Cài đặt API) — bỏ qua tem ${body.BarcodeIn}`);
@@ -421,5 +430,5 @@ async function ghiInTem(row, { maApi = 'ERP_GHI_IN_TEM' } = {}) {
 }
 
 module.exports = {
-  ghiInTem, chuanHoa, taoPayload, THU_TU_TRUONG, DAI_TOI_DA, KENH, laMaTemErp, ghiChuaCoMaErp, ghiChuaGuiDuoc,
+  ghiInTem, dungThanGui, chuanHoa, taoPayload, THU_TU_TRUONG, DAI_TOI_DA, KENH, laMaTemErp, ghiChuaCoMaErp, ghiChuaGuiDuoc,
 };

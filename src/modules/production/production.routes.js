@@ -31,6 +31,7 @@ router.get('/tem/:temId/vai', rbac('PROD_RUN', 'PROD_MONITOR'), c.xemVaiTem);
 router.put('/tem/:temId/vai', rbac('PROD_RUN'), c.suaVaiTheoTem);
 // Sửa SL in / giờ SX / mã ngày ca của tem (Danh sách tem in, 25/10/2026) — lý do bắt buộc, gửi lại ERP cùng IDMES.
 router.put('/tem/:temId/sua', rbac('PROD_RUN'), c.suaTem);
+router.get('/tem/:temId/bo-sung', rbac('PROD_RUN', 'PROD_MONITOR'), c.temBoSung);
 // Gộp các lệnh cùng code phần + cùng chuyền thành 1 lệnh (25/10/2026) — sidebar nhiều lệnh gọi trước khi in tem.
 router.post('/gop-lenh', rbac('PROD_RUN'), c.gopLenh);
 // Tách lệnh gom đợt khác nhà gia công thành mỗi NGC 1 lệnh (27/10/2026) — nút ở sidebar sản xuất.

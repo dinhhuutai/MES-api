@@ -24,6 +24,11 @@ const NGUON = 'phieu_nhan_vai_60';          // API DUY NHẤT → đợt vải v
 //   lượng). Luồng sản xuất (logo / in kiếng…) vẫn theo *Tính chất in*, không theo loaikd. Thêm/bớt mã chặn ở đây.
 const BO_LOAIKD = new Set(['1I']);
 const laLoaikdBoQua = (loaikd) => { const k = clean(loaikd).toUpperCase(); return !k || BO_LOAIKD.has(k); };
+// PHỤ KIỆN KÈM THEO (17/11/2026, người dùng chốt): màu vải ERP có "(PK)" — vd "KEO (PK)", "KEO(PK)", "FIML(PK)" ⇒ KHÔNG đưa lên
+//   MES. ⚠ Bắt đúng dạng CÓ NGOẶC (cho phép khoảng trắng trong ngoặc): màu "PUMPKIN" cũng chứa "PK". Đo raw prod 17/11: chỉ
+//   trường `fabric_color` từng mang "(PK)".
+const PHU_KIEN_RE = /\(\s*PK\s*\)/i;
+const laPhuKien = (r) => PHU_KIEN_RE.test(clean(r && r.fabric_color));
 
 const md5 = (s) => crypto.createHash('md5').update(s).digest('hex');
 const clean = (v) => (v == null ? '' : String(v).trim());
@@ -307,7 +312,8 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
     try { await repo.saveSyncRaw(logId, rawText); }
     catch (e) { console.error(`[erp-sync] ✗ Lưu chuỗi thô lỗi: ${e.message}`); }
 
-    // Lọc dòng: bỏ khi thiếu code_part, loaikd bị chặn (1I hàng mẫu / trống), hoặc tính chất in ngoài phạm vi. (Không lọc khách.)
+    // Lọc dòng: bỏ khi thiếu code_part, loaikd bị chặn (1I hàng mẫu / trống), tính chất in ngoài phạm vi, hoặc phụ kiện "(PK)"
+    //   ở màu vải. (Không lọc khách.)
     const seen = new Map();
     // ⚠ `buildKeys` chạy trên TOÀN BỘ dòng rồi mới lọc phạm vi: khóa đợt vải phụ thuộc thứ tự xuất hiện
     //   trong nhóm trùng, lọc trước là có thể lệch khóa với lần job chạy ⇒ đẻ đợt vải trùng.
@@ -317,8 +323,9 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
       const noCode = !clean(r.code_part);
       const isBoLoai = laLoaikdBoQua(r.loaikd);
       const isBoTcin = boTcin.has(normTcin(erpTinhChatIn(r)));
+      const isPhuKien = laPhuKien(r);
       const { maPhan, maDotVai } = buildKeys(r, seen);
-      return { r, maPhan, maDotVai, skip: noCode || isBoLoai || isBoTcin, noCode, isBoLoai, isBoTcin };
+      return { r, maPhan, maDotVai, skip: noCode || isBoLoai || isBoTcin || isPhuKien, noCode, isBoLoai, isBoTcin, isPhuKien };
     }).filter((p) => !chiCodePhan || chiCodePhan.has(clean(p.r.code_part).toUpperCase()));
 
     try {
@@ -336,7 +343,7 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
       gn = await require('../suathongtin/gnErp').truocDongBo({ rows, prepared, theoDoiVang: !duLieu && nguon === NGUON });
     } catch (e) { console.error(`[erp-sync] ✗ Bước phần in trả về GN lỗi: ${e.message}`); }
 
-    let soMoi = 0; let soCapNhat = 0; let soBoQua = 0; let soKhongCode = 0; let soBoLoai = 0; let soBoTcin = 0;
+    let soMoi = 0; let soCapNhat = 0; let soBoQua = 0; let soKhongCode = 0; let soBoLoai = 0; let soBoTcin = 0; let soPhuKien = 0;
     const errors = [];
     const newDotVaiIds = [];
     // Nhóm gom set: khóa = "<BarcodeHKT>#<Inset>" (Inset≠0) → { barcodeHskt, inset, dotVaiIds, pinIds }.
@@ -350,12 +357,13 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
       if (p.skip) {
         soBoQua += 1;
         if (p.noCode) soKhongCode += 1; else if (p.isBoLoai) soBoLoai += 1; else if (p.isBoTcin) soBoTcin += 1;
+        else if (p.isPhuKien) soPhuKien += 1;
         continue;
       }
       if (gn && gn.boQua.has(p)) { soBoQua += 1; continue; } // đợt đã hủy bên ERP, ERP chưa xác nhận lại
       // `laDotMoi` = lần sync NÀY có đợt vải MỚI vào READY (insert mới, hoặc promote đợt cũ còn kẹt).
       // Tách khỏi `intoReady` (chỉ nghĩa "dòng xử lý xong") vì luật KTCankiemtra chỉ áp cho ĐỢT MỚI.
-      let pinId = null; let affectedDotVaiIds = []; let intoReady = false; let laDotMoi = false; let luongPin = null;
+      let pinId = null; let affectedDotVaiIds = []; let intoReady = false; let laDotMoi = false;
       try {
         const tgPhoi = Number(p.r.tgphoi);
         // Upsert theo `ma_dot_vai` (idempotent): đợt mới thì tạo, đợt đã có thì cập nhật —
@@ -365,7 +373,7 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
         if (inserted) { soMoi += 1; newDotVaiIds.push(dotVaiId); } else soCapNhat += 1;
         pinId = pid; affectedDotVaiIds = [dotVaiId]; intoReady = true; laDotMoi = !!inserted;
         // Luồng sản xuất của phần in MỚI theo *Tính chất in* (mig 126) — phần in đã có luồng thì giữ (đổi ở Quản trị phần in).
-        try { luongPin = await repo.ganLuongSx(pid, erpTinhChatIn(p.r)); }
+        try { await repo.ganLuongSx(pid, erpTinhChatIn(p.r)); }
         catch (e) { console.error(`[erp-sync] ✗ Gán luồng sản xuất lỗi (${p.maPhan}): ${e.message}`); }
         // Chờ khô (`tgphoi`) + 4 giá của phần in (`GiaIn` · `Giaep` · `giainkieng` · `Dongia`, mig 113) — 1 câu.
         await repo.capNhatPhanInPhu(pid, {
@@ -412,8 +420,9 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
           catch (e) { console.error(`[erp-sync] ✗ Mở lại phần in có đợt mới lỗi (${p.maPhan}): ${e.message}`); }
           try {
             // ⚠ Truyền đợt vải vừa nhận để ghi vào `ghi_chu` (biết ĐỢT NÀO kích hoạt lần tự động này).
-            // LOGO (mig 126): không qua Kỹ thuật / IQC ⇒ đợt mới vào thẳng Kế hoạch như KTCankiemtra=0.
-            if (ktCan === 0 || luongPin === 'LOGO') await repo.simulateReadyDone(pinId, affectedDotVaiIds); // giả lập KT xong → Release 1
+            // ⚠ 14/11/2026 (người dùng chốt): LOGO / Ép NAY QUA Kỹ thuật + QA READY như mọi phần in — đã gỡ nhánh
+            //   `luongPin === 'LOGO'` (mig 126 cho Logo vào thẳng Kế hoạch). Chỉ còn ERP `KTCankiemtra=0` tự xác nhận.
+            if (ktCan === 0) await repo.simulateReadyDone(pinId, affectedDotVaiIds); // giả lập KT xong → Release 1
             // KTCankiemtra=1 & phần in đã xong READY một lần rồi (đợt trước ĐÃ RELEASE **hoặc** đã QC
             // xác nhận READY dù chưa release) → đợt vải mới phải qua kỹ thuật lại.
             // ⚠⚠ TỪ 16/09/2026 CHỈ GẮN CỜ, KHÔNG hủy xác nhận READY của phần in (`flagLamLaiReady`
@@ -479,6 +488,7 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
     if (soKhongCode) notes.push(`bỏ qua ${soKhongCode} dòng không có code_part`);
     if (soBoLoai) notes.push(`bỏ qua ${soBoLoai} dòng loaikd ${[...BO_LOAIKD].join('/')} (hàng mẫu) / trống`);
     if (soBoTcin) notes.push(`bỏ qua ${soBoTcin} dòng tính chất in ngoài phạm vi`);
+    if (soPhuKien) notes.push(`bỏ qua ${soPhuKien} dòng phụ kiện (PK)`);
     if (soDoiPain) notes.push(`đổi phương án in theo sản lượng: ${soDoiPain} HSKT`);
     if (daGhiDe.length) notes.push(`gán lại đơn/mã hàng: ${daGhiDe.filter((x) => x && x.doi).length}/${daGhiDe.length} phần in`);
     if (errors.length) notes.push(`lỗi ${errors.length}/${rows.length}: ${errors.slice(0, 3).join(' | ')}`);
@@ -556,7 +566,8 @@ function moTaDongErp(p, daCo) {
     da_co_trong_mes: daCo.has(p.maDotVai),
     bo_qua: p.skip,
     ly_do_bo_qua: p.noCode ? 'Không có code_part' : p.isBoLoai ? (clean(r.loaikd) ? `loaikd ${clean(r.loaikd)} — hàng mẫu, chưa đưa lên MES` : 'Thiếu loaikd')
-      : p.isBoTcin ? `Tính chất in ${erpTinhChatIn(r)} ngoài phạm vi` : null,
+      : p.isBoTcin ? `Tính chất in ${erpTinhChatIn(r)} ngoài phạm vi`
+        : p.isPhuKien ? `Phụ kiện kèm theo (màu vải ${clean(r.fabric_color)}) — không đưa lên MES` : null,
     khach: clean(r.customer_name), don_hang: clean(r.order_name), ma_hang: clean(r.item_name),
     ddh_id: erpDdhId(r), ddh_sub_id: erpDdhSubId(r), pain: erpPain(r), loaikd: clean(r.loaikd) || null,
     so_luong: r.received_qty ?? null, so_luong_don_hang: r.order_qty ?? null,
@@ -597,8 +608,9 @@ async function xemTruocCodePhan({ codeParts, ngay } = {}, actorId) {
       noCode: !clean(r.code_part),
       isBoLoai: laLoaikdBoQua(r.loaikd),
       isBoTcin: boTcin.has(normTcin(erpTinhChatIn(r))),
+      isPhuKien: laPhuKien(r),
     };
-  }).map((p) => ({ ...p, skip: p.noCode || p.isBoLoai || p.isBoTcin }))
+  }).map((p) => ({ ...p, skip: p.noCode || p.isBoLoai || p.isBoTcin || p.isPhuKien }))
     .filter((p) => tapCode.has(clean(p.r.code_part).toUpperCase()));
 
   const [hienTai, daCo] = await Promise.all([
@@ -711,6 +723,7 @@ async function capNhatCodePhan({ token, chon } = {}, actorId) {
 }
 
 module.exports = {
+  laPhuKien,
   syncPhieuNhanVai, history, rawData, autoGomSetByHskt, xemTruocCodePhan, capNhatCodePhan,
   // export để kiểm thực
   _runSync: runSync, _XEM_TRUOC: XEM_TRUOC,

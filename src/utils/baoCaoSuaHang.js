@@ -70,12 +70,24 @@ const mocKy = (tuNgay, denNgay) => ({
 });
 
 // Dòng thời gian "chờ sửa" của 1 tem (thuần) ⇒ [{ t, d, loai, dat?, huy?, luot? }] đã sắp, Σ d = con_sua hiện tại.
+// ⚠ 14/11/2026 — NHẬN SỬA (mig 132, `utils/choSua.js`): khi có `r.co_nhan`, hàng vào "chờ sửa" của báo cáo = LƯỢT NHẬN SỬA
+//   (`r.nhan`), không còn là lúc KCS ghi hư; phần chưa nhận nằm ở Chờ nhận sửa, không phải tồn của tổ sửa. Tem dữ liệu cũ
+//   (lượt nhận 'CU' của mig 132 — `r.cu`) vẫn tính từ lượt KCS như trước. Khớp cuối = phần ĐANG SỬA (`r.dang_sua`).
+//   Hủy tem sửa sau mig 132 trừ đúng phần đã nhận (`d_nhan` của audit), bản ghi cũ trừ cả `sl`.
 function suKienTem(r) {
   const ev = [];
+  const coNhan = !!r.co_nhan;
   const kcs = mangJson(r.kcs).map((k) => ({ tg: ms(k.tg), hu: duong(k.hu) })).filter((k) => k.tg != null);
   const coPhanLoai = r.pll_huy != null || r.pll_sua != null;
   const huyLuot = coPhanLoai ? chiaHuyTheoLuot(kcs, r.pll_huy) : kcs.map(() => 0);
-  kcs.forEach((k, i) => { const d = k.hu - huyLuot[i]; if (d) ev.push({ t: k.tg, d, loai: 'KCS' }); });
+  if (!coNhan || r.cu) kcs.forEach((k, i) => { const d = k.hu - huyLuot[i]; if (d) ev.push({ t: k.tg, d, loai: 'KCS' }); });
+  if (coNhan) {
+    mangJson(r.nhan).forEach((n) => {
+      const t = ms(n.tg);
+      const sl = duong(n.sl);
+      if (t != null && sl) ev.push({ t, d: sl, loai: 'NHAN' });
+    });
+  }
 
   const sua = mangJson(r.sua).map((s) => ({ ...s, tg: ms(s.tg), dat: duong(s.dat), huy: duong(s.huy) }))
     .filter((s) => s.tg != null);
@@ -83,7 +95,7 @@ function suKienTem(r) {
 
   mangJson(r.huy_tem).forEach((a) => {
     const t = ms(a.tg);
-    const sl = duong(a.sl);
+    const sl = coNhan && a.dn != null ? Math.abs(so(a.dn)) : duong(a.sl);
     if (t == null || !sl) return;
     ev.push({ t, d: a.hd === 'MO_TEM_SUA' ? sl : -sl, loai: 'TEM_SUA' });
   });
@@ -100,7 +112,9 @@ function suKienTem(r) {
   }
 
   // Khớp sổ cái hiện tại (màn Sửa): phần lệch ⇒ ĐIỀU CHỈNH ở mốc vào sửa.
-  const conNay = Math.max(0, so(r.sl_kcs_sua) - so(r.sl_sua_dat) - so(r.sl_sua_huy));
+  const conNay = coNhan && r.dang_sua != null
+    ? Math.max(0, so(r.dang_sua))
+    : Math.max(0, so(r.sl_kcs_sua) - so(r.sl_sua_dat) - so(r.sl_sua_huy));
   const lech = conNay - ev.reduce((s, e) => s + e.d, 0);
   if (lech) {
     const t0 = ms(r.tg_vao) ?? (ev.length ? Math.min(...ev.map((e) => e.t)) : null);
@@ -190,7 +204,7 @@ function dungBaoCaoSuaHang({ tuNgay, denNgay, slaPhut = null, bayGio = Date.now(
         return;
       }
       t.nhan += e.d;
-      if (e.loai === 'KCS') t.nhan_kcs += e.d;
+      if (e.loai === 'KCS' || e.loai === 'NHAN') t.nhan_kcs += e.d;
       else if (e.loai === 'TRA_VE') t.nhan_tra_ve += e.d;
       else t.nhan_khac += e.d;
     });

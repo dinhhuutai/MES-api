@@ -65,7 +65,8 @@ const SL_LENH = `COALESCE((SELECT sum(xlsd.so_luong)::int
 // `mocKtXongDotSql`, `relRoiReadyDotSql`. Không phụ thuộc kỳ ⇒ mỗi phần in góp CÙNG một số vào cả 4 ô (bất biến giữ).
 // ⚠ Chỉ chạy trong `siso.repository` (đọc `q.id`, `q.tg_vao`, `q.ten_khach_hang` của dòng phần in).
 const slDotReady = (laQa) => {
-  const kt = mocKtXongDotSql('q.ten_khach_hang', 'zm.khuon', 'zm.muc');
+  // Yêu cầu KT theo tính chất in (công đoạn Ép/Logo — 16/11/2026); KT không cần mục nào ⇒ xong lúc đợt vào READY.
+  const kt = mocKtXongDotSql('q.ten_khach_hang', 'zm.khuon', 'zm.muc', 'zd.phan_in_id', 'COALESCE(zd.tg_chuyen_ready, zd.created_date)');
   const conO = laQa
     ? `${kt} IS NOT NULL AND COALESCE(LEAST(zm.qc, zm.rel), 'infinity'::timestamptz) >= q.tg_vao`
     : `COALESCE(LEAST(${kt}, zm.qc, zm.rel), 'infinity'::timestamptz) >= q.tg_vao`;

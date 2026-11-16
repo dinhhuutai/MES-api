@@ -108,6 +108,11 @@ async function main() {
   console.log(`\nXong: gửi được ${ok}/${coGui.length}${loi.length ? ` · lỗi ${loi.length} (xem trên — gửi lại tay ở Cài đặt API › Lịch sử)` : ''}`);
 }
 
-main()
-  .catch((e) => { console.error(`[sf0-bo-sung] ✗ ${e.message}`); process.exitCode = 1; })
-  .finally(() => pool.end().catch(() => {}));
+if (require.main === module) {
+  main()
+    .catch((e) => { console.error(`[sf0-bo-sung] ✗ ${e.message}`); process.exitCode = 1; })
+    .finally(() => pool.end().catch(() => {}));
+}
+
+// Câu chọn tem dùng lại ở bộ sinh script SQL Server (`taoSqlServerGuiLai.js`).
+module.exports = { SQL_TEM_BO_SUNG: SQL };

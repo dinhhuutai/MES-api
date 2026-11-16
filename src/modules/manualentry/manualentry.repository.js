@@ -5,7 +5,7 @@ const { soDauSql, conRelease } = require('../../utils/btpKhacKh');
 const AppError = require('../../utils/AppError');
 const { mauTim } = require('../../utils/timKiem');
 const { chuanHoaDsMa } = require('../../utils/maPhanIn');
-const { luongTheoTinhChat } = require('../../utils/luongSanXuat');
+const { luongTheoTinhChat, lenhChinhCuaDotSql } = require('../../utils/luongSanXuat');
 
 // ─── Tra cứu để chọn "có sẵn" ────────────────────────────────────────────────
 async function searchKhach(q, limit = 30) {
@@ -118,7 +118,7 @@ async function createChainTx(client, p, actorId) {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,CURRENT_TIMESTAMP) RETURNING id, ma_phan`,
       [maHangId, ma, p.phanIn?.mau_vai || null, p.phanIn?.kich_vai || null, p.phanIn?.kich_phim || null,
         p.phanIn?.tinh_chat_in || null, p.phanIn?.do_in || null, p.phanIn?.mau_in || null,
-        p.phanIn?.so_luong_don_hang ?? null, luongSx === 'IN_KIENG', p.phanIn?.thoi_gian_cho_kho_phut ?? null,
+        p.phanIn?.so_luong_don_hang ?? null, luongSx === 'IN_KIENG' || luongSx === 'KIENG_KHONG_EP', p.phanIn?.thoi_gian_cho_kho_phut ?? null,
         chuanHoaDsMa(p.phanIn?.barcode), p.phanIn?.ddh_sub_id || null, p.phanIn?.ghi_chu || null, actorId, luongSx]
     );
     phanInId = r.rows[0].id;
@@ -162,7 +162,7 @@ async function searchVaiVe(q, limit = 40) {
             pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim,
             mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
             COALESCE((SELECT SUM(COALESCE(lsd.so_luong,0)) FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id
-               WHERE lsd.dot_vai_ve_id=dv.id AND ls.trang_thai<>'HUY' AND ls.giai_doan IS DISTINCT FROM 'EP_UI'),0)::int AS da_release
+               WHERE lsd.dot_vai_ve_id=dv.id AND ls.trang_thai<>'HUY' AND ${lenhChinhCuaDotSql('ls', 'dv', 'pin.luong_sx')}),0)::int AS da_release
      FROM dot_vai_ve dv
      JOIN phan_in pin ON pin.id = dv.phan_in_id AND pin.dang_hoat_dong
      JOIN ma_hang mh ON mh.id = pin.ma_hang_id

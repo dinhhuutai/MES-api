@@ -10,6 +10,7 @@ const { mauTim } = require('../../utils/timKiem');
 const { MOC_VAO_TEM } = require('../../utils/siSoTram');
 const LS = require('../../utils/lichSuTim');
 const { kcsTachIdSql, laTemSuaSql, slKcsTachSql } = require('../../utils/temCon');
+const { vaoSuaDuocSql, xuLySql, daNhanSql, dangSuaSql, choNhanSql, coNhanSua } = require('../../utils/choSua');
 
 // SỔ CÁI SỐ LƯỢNG tem (migration 043): SL còn lại từng công đoạn (dùng cho lọc + hiển thị).
 // con_kcs tính theo TỔNG CẦN KIỂM = so_luong + sl_chenh_lech (dư/thiếu — mig 044).
@@ -70,6 +71,7 @@ const TEM_CTX = `
          ${CON_KCS} AS con_kcs, ${CON_SUA} AS con_sua, ${CON_OQC} AS con_oqc, ${CON_GIAO} AS con_giao,
          ${CON_OQC_KCS} AS con_oqc_kcs, ${CON_OQC_SUA} AS con_oqc_sua,
          ls.ma_lenh_san_xuat, cs.ma_chuyen, cs.ten_chuyen,
+         ls.giai_doan, info.luong_sx,
          info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.mau_vai, info.kich_vai, info.kich_phim,
          __TG_VAO__ AS tg_vao,
          CASE WHEN lc_gc.ma_loai = 'GIA_CONG' THEN 0 ELSE sla.sla_phut END AS sla_phut,
@@ -86,7 +88,7 @@ const TEM_CTX = `
   LEFT JOIN chuyen_san_xuat cs ON cs.id = __CHUYEN_TEM__
   LEFT JOIN loai_chuyen lc_gc ON lc_gc.id = cs.loai_chuyen_id
   LEFT JOIN LATERAL (
-    SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim
+    SELECT kh.ten_khach_hang, dh.ma_don_hang, mh.ma_hang, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.luong_sx
     FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
     JOIN phan_in pin ON pin.id = dv.phan_in_id
     JOIN ma_hang mh ON mh.id = pin.ma_hang_id
@@ -154,8 +156,13 @@ async function listCandByCon(condExpr, { search = '', filters = {} } = {}, maTra
 const listKcsCand = (opt) => listCandByCon(`t.trang_thai = 'DA_KHO' AND ${CON_KCS} > 0`, opt, 'SX_KCS');
 // TỒN CHƯA KIỂM (Excel "Danh sách phiếu nhật ký kiểm phẩm chưa kiểm" của màn KCS, 10/11/2026): tem còn phần chưa kiểm,
 //   đã khô (= hàng đợi KCS) + tùy chọn tem ĐANG PHƠI / mới in (chưa tới KCS). Cùng bộ lọc + cấu hình hiển thị của màn KCS.
-const listKcsTon = (opt, gomDangPhoi = true) => listCandByCon(
-  `t.trang_thai IN (${gomDangPhoi ? "'IN','DANG_PHOI','DA_KHO'" : "'DA_KHO'"}) AND ${CON_KCS} > 0`, opt, 'SX_KCS');
+// `phoi` (15/11/2026): 'TAT_CA' = đã phơi xong + chưa phơi xong · 'DA_KHO' = chỉ đã phơi xong (hàng đợi KCS) · 'CHUA_KHO' = chỉ
+//   tem CHƯA phơi xong (đang phơi / mới in chưa lên xe phơi). Tham số cũ true/false = TAT_CA/DA_KHO.
+const TT_TON_KCS = { TAT_CA: "'IN','DANG_PHOI','DA_KHO'", DA_KHO: "'DA_KHO'", CHUA_KHO: "'IN','DANG_PHOI'" };
+const listKcsTon = (opt, phoi = 'TAT_CA') => {
+  const k = phoi === true ? 'TAT_CA' : (phoi === false ? 'DA_KHO' : phoi);
+  return listCandByCon(`t.trang_thai IN (${TT_TON_KCS[k] || TT_TON_KCS.TAT_CA}) AND ${CON_KCS} > 0`, opt, 'SX_KCS');
+};
 
 // Thông tin THÊM cho Excel tồn chưa kiểm (không có trong `TEM_CTX` — giữ danh sách màn KCS nhẹ): màu in · tính chất in ·
 //   độ in (phần in đại diện của lệnh, cùng thứ tự `TEM_CTX info`) · ngày ca · phiên phơi MỚI NHẤT (giờ bắt đầu / tháo ·
@@ -194,7 +201,25 @@ async function thongTinTonKcs(temIds = []) {
   return rows;
 }
 // Sửa: hủy tem sửa = xóa SL sửa khỏi sổ cái ⇒ con_sua về 0 ⇒ tem tự rời hàng đợi (không cần cờ ẩn).
-const listSuaCand = (opt) => listCandByCon(`${CON_SUA} > 0`, opt, 'SX_SUA');
+// ⚠ 14/11/2026 (luật `utils/choSua.js`): màn Sửa chỉ có phần ĐANG SỬA = đã phân loại lỗi + đã NHẬN SỬA (mig 132) mà chưa
+//   sửa xong. Phần chờ nhận nằm ở *Hệ thống › Chờ nhận sửa* (`listChoNhanSua`). Service đổi `con_sua` của dòng = đang sửa.
+const listSuaCand = async (opt) => listCandByCon(
+  `${dangSuaSql('t', await coNhanSua())} > 0 AND ${vaoSuaDuocSql('t')}`, opt, 'SX_SUA');
+// Chờ nhận sửa (đã phân loại, còn phần chưa nhận). Chỉ gọi khi đã chạy mig 132.
+const listChoNhanSua = (opt) => listCandByCon(`${choNhanSql('t', true)} > 0 AND ${vaoSuaDuocSql('t')}`, opt, 'SX_SUA');
+// Số phần sửa của từng tem (đã nhận / đang sửa / chờ nhận / mốc phân loại). `client` ⇒ đọc trong transaction đang mở.
+async function soSuaCuaTem(temIds, client) {
+  if (!temIds || !temIds.length) return [];
+  const co = await coNhanSua();
+  const run = client ? client.query.bind(client) : query;
+  const { rows } = await run(`SELECT t.id AS tem_id, t.ma_tem, t.sl_kcs_sua, ${xuLySql('t')} AS da_xu_ly,
+      ${daNhanSql('t', co)} AS da_nhan, ${dangSuaSql('t', co)} AS dang_sua, ${choNhanSql('t', co)} AS cho_nhan,
+      (t.sl_kcs_sua - ${xuLySql('t')}) AS con_sua, ${co ? 't.sl_nhan_sua' : 'NULL::int'} AS sl_nhan_sua,
+      ${vaoSuaDuocSql('t')} AS vao_sua_duoc,
+      (SELECT min(p.created_date) FROM phan_loai_loi p WHERE p.tem_id = t.id) AS tg_phan_loai
+    FROM tem t WHERE t.id = ANY($1::uuid[])`.replace(/\s+/g, ' '), [temIds]);
+  return rows;
+}
 const listOqcCand = (opt) => listCandByCon(`${CON_OQC} > 0`, opt, 'CL_OQC');
 
 async function getTemBasic(temId) {
@@ -1138,7 +1163,8 @@ async function temDoneByDate(table, date) {
   // KCS: + `kcs_id` (khóa ghi người kiểm) + NGƯỜI KIỂM đã nhập lúc in (03/11/2026 — xem `luuNguoiKiemKcs`).
   // + `ma_tem_17` (mig 122) = tem 17 của lượt kiểm một phần — nhãn in ra phải mang mã này, không phải mã tem 15.
   const kcsCols = table === 'kcs'
-    ? `, x.id AS kcs_id, nkk.nguoi_kiem, nkk.nguoi_kiem_id, ${await sqlMa17CuaLuotKcs('x')} AS ma_tem_17`
+    ? `, x.id AS kcs_id, nkk.nguoi_kiem, nkk.nguoi_kiem_id, ${await sqlMa17CuaLuotKcs('x')} AS ma_tem_17,
+       (COALESCE(x.so_luong_loi, 0) + COALESCE(x.so_luong_huy, 0)) AS so_luong_loi`
     : '';
   const kcsJoin = table === 'kcs'
     ? `LEFT JOIN LATERAL (SELECT a.gia_tri_moi->>'nguoi_kiem' AS nguoi_kiem, a.gia_tri_moi->>'nguoi_kiem_id' AS nguoi_kiem_id
@@ -1506,7 +1532,8 @@ async function listTemSuaDaHuy({ search = '' } = {}) {
   return rows.map((r) => {
     const v = typeof r.gia_tri_moi === 'string' ? JSON.parse(r.gia_tri_moi || '{}') : (r.gia_tri_moi || {});
     const { gia_tri_moi, ...rest } = r;
-    return { ...rest, sl_huy: Number(v.sl) || 0, da_cong_huy: !!v.da_cong_huy, ly_do: v.ly_do || null, tu_dong: !!v.tu_dong };
+    return { ...rest, sl_huy: Number(v.sl) || 0, da_cong_huy: !!v.da_cong_huy, ly_do: v.ly_do || null, tu_dong: !!v.tu_dong,
+      d_nhan: Number(v.d_nhan) || 0 };
   });
 }
 
@@ -1515,8 +1542,10 @@ async function listTemSuaDaHuy({ search = '' } = {}) {
 async function getTemSuaRows(temIds, client) {
   if (!temIds || temIds.length === 0) return [];
   const run = client ? client.query.bind(client) : query;
+  const co = await coNhanSua();
   const { rows } = await run(
     `SELECT t.id AS tem_id, t.ma_tem, t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy, t.sl_sua_dat, t.sl_sua_huy,
+            ${co ? 't.sl_nhan_sua' : 'NULL::int'} AS sl_nhan_sua,
             (t.sl_kcs_sua - (t.sl_sua_dat + t.sl_sua_huy)) AS con_sua,
             ${conKcsSql()} AS con_kcs
      FROM tem t WHERE t.id = ANY($1::uuid[])`.replace(/\s+/g, ' '),
@@ -1528,13 +1557,18 @@ const getTemSuaRow = async (temId) => (await getTemSuaRows([temId]))[0] || null;
 
 // Cộng delta vào sổ cái sửa/hủy của NHIỀU tem trong 1 câu lệnh (unnest) — tránh N round-trip.
 // items = [{ temId, dSua, dHuy }] (hủy: dSua=-x, dHuy=+x|0 · mở lại: dSua=+x, dHuy=-x|0).
+// `dNhan` (mig 132, Nhận sửa): delta `sl_nhan_sua` — hủy tem sửa hạ phần đã nhận xuống phần đã sửa xong (hư mới sau này phải
+//   nhận lại), mở lại cộng trả đúng số đó. Chưa chạy mig 132 ⇒ bỏ qua.
 async function applyTemSuaLedgerMany(client, items, actorId) {
   if (!items || items.length === 0) return;
+  const co = await coNhanSua();
   await client.query(
     `UPDATE tem t SET sl_kcs_sua = t.sl_kcs_sua + v.ds, sl_kcs_huy = t.sl_kcs_huy + v.dh,
+       ${co ? 'sl_nhan_sua = GREATEST(t.sl_nhan_sua + v.dn, 0),' : ''}
        updated_by = $4, updated_date = CURRENT_TIMESTAMP
-     FROM unnest($1::uuid[], $2::int[], $3::int[]) AS v(id, ds, dh) WHERE t.id = v.id`.replace(/\s+/g, ' '),
-    [items.map((i) => i.temId), items.map((i) => i.dSua), items.map((i) => i.dHuy), actorId]
+     FROM unnest($1::uuid[], $2::int[], $3::int[], $5::int[]) AS v(id, ds, dh, dn) WHERE t.id = v.id`.replace(/\s+/g, ' '),
+    [items.map((i) => i.temId), items.map((i) => i.dSua), items.map((i) => i.dHuy), actorId,
+      items.map((i) => Number(i.dNhan) || 0)]
   );
 }
 
@@ -1605,7 +1639,7 @@ module.exports = {
   listTemSua, listTemSuaDaHuy, getTemSuaRow, getTemSuaRows, applyTemSuaLedgerMany, logTemSuaMany,
   getTemsForMerge, addTemSoLuong, logGopTem,
   listCancelKcs, listCancelSua, listCancelOqc, getCancelKcsRow, getCancelSuaRow, getCancelOqcRow, logCancelQc,
-  listKcsCand, listKcsTon, thongTinTonKcs, listSuaCand, listOqcCand, caPartsForTems, prevConfirmerByTems, tgKiemByTems, getTemBasic, setTemTrangThai, setTemStatusQty,
+  listKcsCand, listKcsTon, thongTinTonKcs, listSuaCand, listChoNhanSua, soSuaCuaTem, listOqcCand, caPartsForTems, prevConfirmerByTems, tgKiemByTems, getTemBasic, setTemTrangThai, setTemStatusQty,
   getTemLedger, addKcsLedger, addSuaLedger, addOqcLedger, addGiaoLedger, reduceKcsDat, reduceSuaDat,
   getTemConCuaGoc, getTemConById, coCotSuaTemCon, taoTemCon, congSlTemCon, congSuaTach, huyTemConNeuRong,
   coKcsTach, taoTemConKcs, congKcsTach, temConCuaLuotKcs,

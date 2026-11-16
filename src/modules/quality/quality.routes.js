@@ -27,6 +27,12 @@ router.get('/sua/done', rbac('SUA'), c.suaDone);
 // ⚠ Route TĨNH phải đặt TRƯỚC `/sua/:temId` — nếu không sẽ bị route động nuốt (temId='nguoi-sua'
 //   → lỗi 'invalid input syntax for type uuid'), cùng bẫy với nhóm `/sua/tem-sua/*` bên dưới.
 router.post('/sua/nguoi-sua', rbac('SUA'), c.luuNguoiSua);
+// NHẬN SỬA (mig 132): danh sách chờ nhận + lịch sử nhận (đọc — mở cho cả Phân loại lỗi / KCS / quản trị) · nhận / hủy lượt
+//   nhận (quyền SUA). `/sua/nhan` là route TĨNH 2 đoạn ⇒ PHẢI đứng trước `/sua/:temId`.
+router.get('/sua/cho-nhan', rbac('SUA', 'PHAN_LOAI_LOI', 'KCS', 'WORKFLOW_VIEW'), c.choNhanSua);
+router.get('/sua/nhan-lich-su', rbac('SUA', 'PHAN_LOAI_LOI', 'KCS', 'WORKFLOW_VIEW'), c.lichSuNhanSua);
+router.post('/sua/nhan', rbac('SUA'), c.nhanSua);
+router.post('/sua/nhan/:id/huy', rbac('SUA'), c.huyNhanSua);
 // Gửi LẠI sửa đạt sang ERP (proc MES_spr_MES2SK6) cho 1 lượt trượt — 4 đoạn nên không va `/sua/:temId`.
 router.post('/sua/luot/:suaId/gui-lai-erp', rbac('SUA'), c.guiLaiErpSua);
 router.post('/sua/:temId', rbac('SUA'), c.recordSua);

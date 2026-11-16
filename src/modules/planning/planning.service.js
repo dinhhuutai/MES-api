@@ -2,6 +2,7 @@
 
 const { withTransaction } = require('../../config/db');
 const repo = require('./planning.repository');
+const { tachKeHoachGoc } = require('./keHoachGoc'); // Danh sách release giữ kế hoạch gốc khi Sản xuất gộp lệnh
 const qaRepo = require('../quality/quality.repository'); // qc_tra_ve dùng chung
 const productionRepo = require('../production/production.repository'); // phiếu+tem gia công (→ OQC)
 const chuyenRepo = require('../chuyen/chuyen.repository');
@@ -37,7 +38,7 @@ const { coCotBtp, datSoDauTx, coDauCho } = require('../../utils/btpKhacKh'); // 
 // Luồng theo tính chất in (mig 126, 09/11/2026): phần ÉP ỦI của phần in 2 công đoạn · Logo + công đoạn ép bỏ Test Run
 //   (`boQuaTestRun` — 11/11/2026).
 const {
-  GD_IN, GD_EP, chuanGd, laHaiCongDoan, laCongDoanDau, nhanCongDoan, khtCoCotGd, boQuaTestRun,
+  GD_IN, GD_EP, chuanGd, laHaiCongDoan, laCongDoanDau, nhanCongDoan, khtCoCotGd, boQuaTestRun, giaCongDuoc,
 } = require('../../utils/luongSanXuat');
 
 const TEST_TRAM = 'TEST_RUN';
@@ -283,7 +284,9 @@ async function createGiaCongLenh(client, { versionId, chuyenId, junctions, tongS
 // cho release LẺ từng phần in: set nửa Ready nửa không nay là trạng thái BÌNH THƯỜNG (phần Ready đi
 // trước, phần chưa Ready đi sau). Giữ luật cũ thì bấm trả về 1 phần in sẽ **xóa công đã làm của các
 // phần in khác trong set** — làm quá tay, và người bấm không hề thấy chúng trên màn hình.
-async function traVeKyThuat({ dotVaiId, lyDo }, actorId) {
+// `giaiDoan` (14/11/2026 — READY theo công đoạn): dòng Ép/Logo trả về ⇒ chỉ làm lại READY của công đoạn ép.
+async function traVeKyThuat({ dotVaiId, lyDo, giaiDoan }, actorId) {
+  const gdTv = chuanGd(giaiDoan);
   if (!dotVaiId) throw new AppError('Thiếu đợt vải', { status: 400, errorCode: 'EMPTY' });
   const reason = (lyDo || '').trim();
   if (!reason) throw new AppError('Nhập lý do trả về Kỹ thuật', { status: 422, errorCode: 'NO_LY_DO' });
@@ -292,7 +295,7 @@ async function traVeKyThuat({ dotVaiId, lyDo }, actorId) {
 
   // ⚠ Guard chỉ xét ĐÚNG đợt vải được bấm (trước đây xét cả set). Đợt đã release thì phải hủy lệnh
   //   trước, vì mở lại READY khi lệnh còn sống sẽ cho ra "chưa Ready mà đã ở Test Run".
-  if (await repo.dotVaiReleasedOne(dotVaiId)) {
+  if (await repo.dotVaiReleasedOne(dotVaiId, gdTv)) {
     throw new AppError('Đợt vải đã release — hãy hủy lệnh trước khi trả về Kỹ thuật',
       { status: 409, errorCode: 'RELEASED' });
   }
@@ -301,7 +304,7 @@ async function traVeKyThuat({ dotVaiId, lyDo }, actorId) {
   //   *Lịch sử* + *Đã hoàn thành* của màn READY không mất dấu công tổ kỹ thuật đã làm. Phần in vẫn
   //   quay về màn READY vì `qc_done` đã false; kỹ thuật biết phải làm lại gì qua badge + lý do.
   //   Chi tiết đánh đổi: `erpsync.repository.chiHuyQcReady`.
-  await erpRepo.chiHuyQcReady(pinId);
+  await erpRepo.chiHuyQcReady(pinId, gdTv);
   await repo.auditTraVeKyThuat(pinId, dotVaiId, reason, actorId);
   // Ghi qc_tra_ve loai='RELEASE1' (mức phần in) → màn READY/QC READY hiện badge + LÝ DO trả về;
   // cờ tự tắt khi QC xác nhận READY lại (technical.confirmQC → resolveReturns('RELEASE1')).
@@ -347,6 +350,40 @@ async function kiemPainVsChuyen(dotVaiIds, chuyenId) {
     loi.length === 1 ? dau.thong_diep : `${loi.length} phần in có phương án in không khớp loại chuyền. ${dau.thong_diep}`,
     { status: 422, errorCode: dau.ma_loi, details: loi }
   );
+}
+
+// ⚠⚠ IN KIẾNG · ÉP/LOGO KHÔNG GIA CÔNG (14/11/2026, người dùng chốt — ca thật: xác nhận hàng loạt Kế hoạch tạm trên chuyền
+//   gia công HUNGANH kéo 2 phần in kiếng khách II vào Gia công). Chuyền loại GIA_CONG + công đoạn không gia công được
+//   (`luongSanXuat.giaCongDuoc`: chỉ công đoạn In thường) ⇒ 422 `KHONG_GIA_CONG`, kiểm TRƯỚC mọi thao tác ghi (kể cả lưu
+//   Kế hoạch tạm). Gọi ở mọi đường đặt chuyền: Release 1 (phần in + phần ép, gồm Xác nhận KH tạm) · Gom đợt vải · Sửa KH
+//   tạm · Lập lại kế hoạch · release / KH tạm theo set (cũ).
+//   `rows` = [{ ma_phan, luong_sx, giai_doan? }] — `gd` mặc định cho dòng không mang `giai_doan`.
+function nemNeuKhongGiaCong(rows, gd) {
+  const sai = [...new Set(rows.filter((r) => !giaCongDuoc(r.luong_sx, r.giai_doan || gd)).map((r) => r.ma_phan))];
+  if (!sai.length) return;
+  throw new AppError(`${sai.join(', ')}: hàng in kiếng / ép-logo không đưa lên chuyền gia công — chọn chuyền trong xưởng`,
+    { status: 422, errorCode: 'KHONG_GIA_CONG', details: sai });
+}
+async function kiemKhongGiaCong(dotVaiIds, chuyenId, gd = GD_IN) {
+  if (!chuyenId || !dotVaiIds || !dotVaiIds.length) return;
+  if ((await repo.getChuyenLoai(chuyenId)) !== 'GIA_CONG') return;
+  nemNeuKhongGiaCong(await repo.luongPhanInTheoDot(dotVaiIds), gd);
+}
+async function kiemKhongGiaCongLenh(lenhId, chuyenId) {
+  if (!chuyenId || (await repo.getChuyenLoai(chuyenId)) !== 'GIA_CONG') return;
+  nemNeuKhongGiaCong(await repo.luongPhanInTheoLenh(lenhId), GD_IN);
+}
+
+// ⚠⚠ ĐỢT THEO CÔNG ĐOẠN (16/11/2026, người dùng chốt — luật `utils/luongSanXuat.dotGd`): đợt của phần in kiếng ủi chỉ thuộc 1
+//   công đoạn theo loaikd (4I ⇒ In kiếng, đợt khác ⇒ Ép). Lập kế hoạch đợt cho công đoạn kia ⇒ 422 `SAI_CONG_DOAN_DOT`, kiểm
+//   TRƯỚC mọi thao tác ghi (cả nhánh Kế hoạch tạm). `info` = dòng của `repo.getDotVaiForCompose(ids, gd)` (có `thuoc`).
+const TEN_GD_DOT = { [GD_IN]: 'In kiếng (4I)', [GD_EP]: 'Ép' };
+function kiemDotDungCongDoan(info, gd) {
+  const sai = (info || []).filter((r) => r.thuoc === false);
+  if (!sai.length) return;
+  const ds = sai.map((r) => `${r.ma_phan} · đợt ${r.ma_dot_vai} (công đoạn ${TEN_GD_DOT[r.cong_doan_dot] || r.cong_doan_dot})`);
+  throw new AppError(`Đợt vải không thuộc công đoạn ${chuanGd(gd) === GD_EP ? 'Ép' : 'In kiếng'} — phần in kiếng ủi: đợt 4I là công đoạn In kiếng, đợt khác là công đoạn Ép: ${ds.join('; ')}`,
+    { status: 422, errorCode: 'SAI_CONG_DOAN_DOT', details: sai.map((r) => ({ dot_vai_id: r.id, ma_phan: r.ma_phan, cong_doan_dot: r.cong_doan_dot })) });
 }
 
 // Chia `tong` cho các đợt theo thứ tự `ids`, mỗi đợt tối đa phần còn (`conMap`). Trả Map dvId → SL (đợt không nhận
@@ -445,6 +482,7 @@ async function releasePhanEp({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach,
     throw new AppError(`${dangOGn.join(', ')} đang chờ Giao nhận sửa thông tin — chưa release được`,
       { status: 409, errorCode: 'DANG_O_GN', details: dangOGn });
   }
+  await kiemKhongGiaCong(dotVaiIds, chuyenId, GD_EP);
   const info = await repo.getDotVaiForCompose(dotVaiIds, GD_EP);
   const byId = Object.fromEntries(info.map((r) => [r.id, r]));
   const khongHaiCd = info.filter((r) => !laHaiCongDoan(r.luong_sx));
@@ -452,6 +490,7 @@ async function releasePhanEp({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach,
     throw new AppError(`${[...new Set(khongHaiCd.map((r) => r.ma_phan))].join(', ')} không có công đoạn ép ủi (luồng in thường / logo)`,
       { status: 422, errorCode: 'KHONG_CO_EP' });
   }
+  kiemDotDungCongDoan(info, GD_EP);
   const readyIds = dotVaiIds.filter((id) => byId[id]?.qc_done);
   const waitIds = dotVaiIds.filter((id) => byId[id] && !byId[id].qc_done);
   const chuaReady = [...new Set(waitIds.map((id) => byId[id].ma_phan))];
@@ -599,9 +638,11 @@ async function releasePhanIn({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach,
   //   (Tạo đợt SX · Kế hoạch tạm xác nhận · Lập kế hoạch lại · Đổi chuyền ở Sản xuất) CỐ Ý KHÔNG
   //   chặn — nếu sau này muốn bịt thì gọi đúng khối này ở đó, đừng chép luật ra chỗ mới.
   await kiemPainVsChuyen(dotVaiIds, chuyenId);
+  await kiemKhongGiaCong(dotVaiIds, chuyenId, GD_IN); // in kiếng / Logo không gia công (14/11/2026)
 
   // KẾ HOẠCH TẠM (mig 058): tách đợt ĐÃ QC (Ready xong → release ngay) vs CHƯA QC (→ lưu kế hoạch tạm).
   const qcInfo = await repo.getDotVaiForCompose(dotVaiIds);
+  kiemDotDungCongDoan(qcInfo, GD_IN); // đợt Ép của phần in kiếng ủi không lập phần in kiếng (16/11/2026)
   const qcMap = Object.fromEntries(qcInfo.map((r) => [r.id, r]));
   const readyIds = dotVaiIds.filter((id) => qcMap[id]?.qc_done);
   const waitIds = dotVaiIds.filter((id) => !qcMap[id]?.qc_done);
@@ -791,8 +832,10 @@ async function createDotSanXuat({ items, chuyenId, ngayKeHoach, tgBdKh, tgKtKh, 
   if (plan.length === 0) throw new AppError('Chọn ít nhất một đợt vải và nhập số lượng > 0', { status: 422, errorCode: 'NO_ITEM' });
 
   const ids = plan.map((p) => p.dotVaiId);
+  await kiemKhongGiaCong(ids, chuyenId, gd);
   const info = await repo.getDotVaiForCompose(ids, gd);
   const byId = Object.fromEntries(info.map((r) => [r.id, r]));
+  kiemDotDungCongDoan(info, gd);
   if (gd === GD_EP) {
     const sai = info.filter((r) => !laHaiCongDoan(r.luong_sx));
     if (sai.length) {
@@ -969,6 +1012,7 @@ async function releaseSet(setId, { chuyenId, soLuongRelease, ngayKeHoach, tgBdKh
 
   const version = await wf.getActiveVersion();
   const dotVaiIds = members.map((m) => m.dot_vai_id);
+  await kiemKhongGiaCong(dotVaiIds, chuyenId, GD_IN);
   const soLuong = soLuongRelease != null ? soLuongRelease : members.reduce((s, m) => s + (m.so_luong || 0), 0);
   // ⚠ GIA CÔNG: release SET lên chuyền loại `GIA_CONG` phải ra lệnh `trang_thai='GIA_CONG'` để ĐẬU Ở
   // màn Kế hoạch > Gia công — giống hệt đường release ĐỢT LẺ (`createRelease1`). Thiếu nhánh này thì
@@ -1436,7 +1480,7 @@ async function rollbackLenh(lenhId, { target, lyDo, force = false, boTestRunIds 
     // không phải đảo gì) rồi mới hủy lệnh — cùng 1 transaction để không áp dụng nửa vời.
     if (force && lenh.co_phieu) await repo.cancelPhieuTemByLenhTx(client, lenhId, actorId);
     await repo.cancelLenhOrder(client, lenhId, actorId);
-    if (TARGET === 'READY') await repo.cancelReadyQcForDotVai(client, dotVaiIds, actorId);
+    if (TARGET === 'READY') await repo.cancelReadyQcForDotVai(client, dotVaiIds, actorId, lenh.giai_doan);
   });
   const ghiChu = force
     ? `[${TARGET}] (HỦY TÙY CHỌN từ ${lenh.trang_thai}${lenh.so_tem ? `, hủy ${lenh.so_tem} tem` : ''}) ${lyDo || ''}`.trim()
@@ -1563,7 +1607,7 @@ async function returnTestRunToReady(lenhId, { checklists, lyDo, loai, nguon }, a
     //   nên khuôn/film/mực CŨ không dùng được về mặt VẬT LÝ — giữ lại là nói dối "đã có khuôn" cho
     //   một phương án in khác hẳn. Đây là hành động khác bản chất với "test lỗi" (nó còn hủy cả lệnh).
     if (doiPaIn && chosen.length) await repo.cancelReadyItemsByPhanIn(client, pinIds, chosen, actorId);
-    await repo.cancelReadyQcForDotVai(client, dotVaiIds, actorId);                // QC phải duyệt lại
+    await repo.cancelReadyQcForDotVai(client, dotVaiIds, actorId, lenh.giai_doan); // QC phải duyệt lại (công đoạn của lệnh)
     // ĐỔI PHƯƠNG ÁN IN → HỦY LỆNH trong CÙNG transaction ⇒ đợt vải quay về pool Release 1.
     // ⚠ Đã chặn `co_phieu` ở trên nên chắc chắn chưa in tem — không phải dọn tem/phiếu.
     // ⚠ `cancelLenhOrder` cũng lo luôn việc mở lại gom set nếu đợt vải thuộc set đã đóng.
@@ -1739,6 +1783,7 @@ async function keHoachTamSet(setId, { chuyenId, ngayKeHoach, tgBdKh, tgKtKh }, a
   if (members.some((m) => m.da_release)) {
     throw new AppError('Có đợt vải trong set đã được release', { status: 409, errorCode: 'ALREADY_RELEASED' });
   }
+  await kiemKhongGiaCong(members.map((m) => m.dot_vai_id), chuyenId, GD_IN);
   for (const m of members) {
     await repo.upsertKeHoachTam({
       dotVaiId: m.dot_vai_id, phanInId: m.phan_in_id, chuyenId, ngayKeHoach,
@@ -1768,6 +1813,12 @@ async function confirmKeHoachTam(id, actorId) {
   // Mig 128: kế hoạch tạm PHẦN ÉP ⇒ còn release / lệnh / tạo lệnh đều theo công đoạn ép (`releasePhanEp`).
   const gd = chuanGd(kt.giai_doan);
   const [con] = await repo.getDotVaiRemaining([kt.dot_vai_ve_id], gd);
+  // Kế hoạch tạm lập cho công đoạn mà đợt không thuộc (lập trước luật "đợt theo công đoạn" 16/11/2026) ⇒ báo rõ, KHÔNG
+  //   tự dọn (người lập phải biết để lập lại đúng dòng).
+  if (con && !con.thuoc) {
+    throw new AppError(`Kế hoạch tạm này lập cho công đoạn ${gd === GD_EP ? 'Ép' : 'In kiếng'} nhưng đợt vải thuộc công đoạn ${TEN_GD_DOT[con.cong_doan_dot] || con.cong_doan_dot} — xóa kế hoạch tạm rồi lập lại ở dòng đúng công đoạn`,
+      { status: 422, errorCode: 'SAI_CONG_DOAN_DOT' });
+  }
   if (!con || con.con_release <= 0) {
     const l = await repo.lenhMoiNhatCuaDotVai(kt.dot_vai_ve_id, gd);
     await repo.deleteKeHoachTam(id);
@@ -1803,6 +1854,7 @@ async function updateKeHoachTam(id, { chuyenId, ngayKeHoach, soLuong, tgBdKh, tg
   if (!kt) throw new AppError('Kế hoạch tạm không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   const sl = soLuong != null && soLuong !== '' ? Number(soLuong) : null;
   if (sl != null && !(sl > 0)) throw new AppError('Số lượng release phải lớn hơn 0', { status: 422, errorCode: 'INVALID_QTY' });
+  if (chuyenId) await kiemKhongGiaCong([kt.dot_vai_ve_id], chuyenId, chuanGd(kt.giai_doan));
   const guiGio = tgBdKh !== undefined || tgKtKh !== undefined;
   const thoMoi = thoIn !== undefined ? chuanHoaThoIn(thoIn) : undefined;
   const dmMoi = chuanHoaDinhMuc(dinhMuc); // undefined = giữ (mig 129)
@@ -2310,6 +2362,9 @@ async function replan(lenhId, { chuyenId, ngayKeHoach, lyDo, tgBdKh, tgKtKh, slR
   }
 
   const newChuyen = chuyenId || lenh.chuyen_id; // không gửi thì giữ chuyền cũ
+  // In kiếng / Ép-Logo không gia công (14/11/2026) — chỉ chặn khi ĐỔI sang chuyền gia công (lệnh đang gia công từ trước vẫn
+  //   dời ngày / chuyển về chuyền xưởng được).
+  if (chuyenId && chuyenId !== lenh.chuyen_id && !laGiaCong) await kiemKhongGiaCongLenh(lenhId, newChuyen);
 
   // ⚠⚠ ĐÃ NHẬN HÀNG VỀ RỒI THÌ KHÔNG ĐƯỢC RỜI KHỎI GIA CÔNG. Tem đã nhận đang đi tiếp sang OQC; đổi
   //   sang chuyền in trong xưởng sẽ kéo lệnh về `RELEASE_1`/`RELEASE_2` (xem `chuyenChangTheoChuyen`)
@@ -2596,10 +2651,14 @@ function nhanTestRelease(r) {
 //   · `so_lenh` để biết số ĐỢT SẢN XUẤT (khác số dòng khi có gom set).
 async function releaseList(date, mode = 'KE_HOACH', denNgay = null) {
   if (!date) throw new AppError('Thiếu ngày', { status: 422, errorCode: 'NO_DATE' });
-  const [raw, modeMap] = await Promise.all([
+  const [goc, modeMap] = await Promise.all([
     repo.releaseListByDate(date, mode, denNgay),
     repo.caModeMap().catch(() => new Map()),
   ]);
+  // KẾ HOẠCH GỐC khi Sản xuất gộp lệnh (`keHoachGoc.js`): lệnh bị gộp hiện lại ở đúng ngày của nó. Lỗi ⇒ danh sách theo
+  //   lệnh như cũ (chỉ là cách hiện, không chặn).
+  let raw = goc;
+  try { raw = await tachKeHoachGoc(goc, date, mode); } catch (e) { console.error('[release-list] tách kế hoạch gốc lỗi:', e.message); }
   // SL đã in / SL giao THEO CODE PHẦN (mọi lệnh sống của phần in, cả đợt vải trước — 29/10/2026) ⇒ `sl_da_in_pin` /
   //   `sl_da_giao_pin` ở MỌI dòng. `sl_da_in` (của chính lệnh) giữ cho cột "SL IN" + các cột sau sản xuất.
   const theoPin = mode === 'IN_TEM' ? new Map()
@@ -2613,10 +2672,14 @@ async function releaseList(date, mode = 'KE_HOACH', denNgay = null) {
     return HAU[String(ngayCaKeHoach(vn, null, modeMap, loaiChuyenTinhCa(r.ma_loai_chuyen || null, r.ma_chuyen))).slice(-2)] || '';
   };
   const daThay = new Set();
+  const daThaySo = new Set(); // số sổ cái tem thuộc LỆNH ĐANG CHẠY ⇒ phần kế hoạch gộp chung chỉ hiện 1 lần
   const items = raw.map((r) => {
     const dongDau = !daThay.has(r.lenh_id);
     daThay.add(r.lenh_id);
-    const mucLenh = (v) => (dongDau ? v : null); // số sổ cái tem chỉ có ở mức LỆNH (tem không lưu phần in)
+    const khoaSo = `${r.lenh_chay_id || r.lenh_id}`;
+    const dauSo = !daThaySo.has(khoaSo);
+    daThaySo.add(khoaSo);
+    const mucLenh = (v) => (dongDau && dauSo ? v : null); // số sổ cái tem chỉ có ở mức LỆNH (tem không lưu phần in)
     return {
       ...r,
       la_dong_dau: dongDau,

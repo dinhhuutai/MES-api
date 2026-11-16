@@ -24,16 +24,17 @@
 //   (`daRelSql`) — không thì phần ép ăn vào sức chứa của phần in.
 // ─────────────────────────────────────────────────────────────────────────────
 const { query } = require('../config/db');
-const { normTcin } = require('./tinhChatIn');
+const { normTcin, luongSxTheoPhanLoai } = require('./tinhChatIn');
 
-// `KIENG_KHONG_EP` (11/11/2026): in kiếng đã BỎ công đoạn ép ủi — 1 công đoạn như In thường nhưng tem in vẫn nhập kiếng.
-//   Chỉ đặt tay ở Quản trị phần in (Tính chất in không phân loại về luồng này).
+// Luồng = tổ hợp công đoạn: THUONG = In · KIENG_KHONG_EP = In kiếng · LOGO = Logo hoặc Ép (1 công đoạn loại ép) · IN_EP = In +
+//   Ép/Logo · IN_KIENG = In kiếng + Ép (kiếng ủi). Tính chất in phân loại theo 4 công tắc In · In kiếng · Logo · Ép
+//   (`utils/tinhChatIn.js`, 16/11/2026 tách Logo khỏi Ép) ⇒ phần in mới nhận luồng tương ứng.
 const LUONG_SX = [
   { ma: 'THUONG', ten: 'In thường' },
-  { ma: 'IN_KIENG', ten: 'In kiếng' },
-  { ma: 'IN_EP', ten: 'In + ép' },
-  { ma: 'LOGO', ten: 'Logo' },
-  { ma: 'KIENG_KHONG_EP', ten: 'In kiếng (không ép)' },
+  { ma: 'IN_KIENG', ten: 'In kiếng + Ép (kiếng ủi)' },
+  { ma: 'IN_EP', ten: 'In + Ép/Logo' },
+  { ma: 'LOGO', ten: 'Ép/Logo' },
+  { ma: 'KIENG_KHONG_EP', ten: 'In kiếng' },
 ];
 const MA_LUONG_SX = new Set(LUONG_SX.map((l) => l.ma));
 const HAI_CONG_DOAN = new Set(['IN_KIENG', 'IN_EP']);
@@ -62,6 +63,10 @@ const boQuaTestRun = (luong, gd) => laLogo(luong) || chuanGd(gd) === GD_EP;
 const boQuaTestRunLenhSql = (ls = 'ls') => `(${ls}.giai_doan = '${GD_EP}' OR (EXISTS (SELECT 1 FROM lenh_sx_dot_vai zbq WHERE zbq.lenh_san_xuat_id = ${ls}.id)
   AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai zbq2 JOIN dot_vai_ve zbd ON zbd.id = zbq2.dot_vai_ve_id JOIN phan_in zbp ON zbp.id = zbd.phan_in_id
                    WHERE zbq2.lenh_san_xuat_id = ${ls}.id AND zbp.luong_sx IS DISTINCT FROM 'LOGO')))`;
+// GIA CÔNG THEO CÔNG ĐOẠN (14/11/2026, người dùng chốt: "in kiếng, logo/ép thì không có gia công"): chỉ công đoạn IN
+//   (in thường) đưa lên chuyền gia công được. Công đoạn ÉP/LOGO, phần in LOGO và công đoạn in của phần in KIẾNG ⇒ không.
+//   Nguồn DUY NHẤT — `planning.service kiemKhongGiaCong` gọi ở mọi đường đặt chuyền gia công.
+const giaCongDuoc = (luong, gd) => chuanGd(gd) === GD_IN && !laLogo(luong) && !laKieng(luong);
 // Luồng của phần in 2 công đoạn sau khi BỎ công đoạn `bo` ('IN' | 'EP_UI') — null nếu không phải 2 công đoạn.
 function luongSauKhiBo(luong, bo) {
   if (!laHaiCongDoan(luong)) return null;
@@ -69,10 +74,10 @@ function luongSauKhiBo(luong, bo) {
   return luong === 'IN_KIENG' ? 'KIENG_KHONG_EP' : 'THUONG';
 }
 
-// Nhãn công đoạn hiện ở màn hình — null với phần in 1 công đoạn (không vẽ badge).
+// Nhãn công đoạn hiện ở màn hình — null với phần in 1 công đoạn (không vẽ badge). Kiếng ủi ⇒ "In kiếng" / "Ép" (16/11/2026).
 function nhanCongDoan(luong, gd) {
   if (!laHaiCongDoan(luong)) return null;
-  if (chuanGd(gd) === GD_EP) return 'Ép ủi';
+  if (chuanGd(gd) === GD_EP) return luong === 'IN_KIENG' ? 'Ép' : 'Ép/Logo';
   return luong === 'IN_KIENG' ? 'In kiếng' : 'In';
 }
 
@@ -89,6 +94,35 @@ function daRelSql(dv = 'dv', gd = `'${GD_IN}'`) {
 const laPhanInSql = (ls = 'ls') => `${ls}.giai_doan IS DISTINCT FROM '${GD_EP}'`;
 // SQL: phần in `pin` có 2 công đoạn.
 const haiCongDoanSql = (pin = 'pin') => `(${pin}.luong_sx IN ('IN_KIENG','IN_EP'))`;
+
+// ⚠⚠ ĐỢT VẢI THEO CÔNG ĐOẠN (16/11/2026, người dùng chốt) — phần in KIẾNG ỦI (luồng IN_KIENG = In kiếng + Ép) được ERP gửi
+//   lên 2 LẦN, mỗi lần (= 1 đợt vải) là MỘT công đoạn, nhìn `loaikd`: **4I (loại đợt `IN_KIENG`) ⇒ công đoạn In kiếng ('IN')**;
+//   đợt khác (3I số lượng · 5I bổ sung · 6I mẫu SL · 2I) ⇒ **công đoạn Ép ('EP_UI')**. Đợt CHỈ có sức chứa ở công đoạn của
+//   nó ⇒ Release 1 / Kế hoạch tạm / Gom đợt vải ra 1 dòng / đợt; ở READY đợt nằm ở dòng của công đoạn nó; "đã release" của
+//   đợt = lệnh của chính công đoạn đó. Phần in có mấy công đoạn vẫn theo *Tính chất in* (`phan_in.luong_sx`). Phần in 2 công
+//   đoạn khác (In + Ép/Logo — ERP chỉ gửi 1 lần) GIỮ luật cũ: 1 đợt ra cả 2 công đoạn (`dotGd` = null).
+const LUONG_THEO_DOT = new Set(['IN_KIENG']);
+const LOAI_DOT_KIENG = 'IN_KIENG'; // loại đợt của loaikd 4I (`erpsync.service LOAIKD_MAP`)
+const theoDot = (luong) => LUONG_THEO_DOT.has(luong);
+// Công đoạn của 1 đợt: 'IN' | 'EP_UI' — null = đợt có cả 2 công đoạn (hoặc phần in 1 công đoạn).
+function dotGd(luong, maLoaiDot) {
+  if (!theoDot(luong)) return null;
+  return maLoaiDot === LOAI_DOT_KIENG ? GD_IN : GD_EP;
+}
+const dotThuocGd = (luong, maLoaiDot, gd) => { const g = dotGd(luong, maLoaiDot); return !g || g === chuanGd(gd); };
+// SQL: công đoạn của đợt `dv` ('IN' | 'EP_UI' | NULL). `luongExpr` = luồng phần in nếu câu đã JOIN phần in (vd 'pin.luong_sx'),
+//   bỏ trống ⇒ tự tra phần in của đợt.
+function dotGdSql(dv = 'dv', luongExpr = null) {
+  const l = luongExpr || `(SELECT zgp.luong_sx FROM phan_in zgp WHERE zgp.id = ${dv}.phan_in_id)`;
+  return `(CASE WHEN ${l} IN (${[...LUONG_THEO_DOT].map((x) => `'${x}'`).join(',')}) THEN (CASE WHEN ${dv}.loai_dot_vai_id = (SELECT zgl.id FROM loai_dot_vai zgl WHERE zgl.ma_loai = '${LOAI_DOT_KIENG}' LIMIT 1) THEN '${GD_IN}' ELSE '${GD_EP}' END) END)`;
+}
+// SQL: đợt `dv` có phần của công đoạn `gd` (literal 'IN' / 'EP_UI' hoặc biểu thức).
+const dotThuocGdSql = (dv, gd, luongExpr = null) => `(COALESCE(${dotGdSql(dv, luongExpr)}, ${gd}) = ${gd})`;
+// SQL: công đoạn "CHÍNH" của đợt — đợt 1 công đoạn ⇒ công đoạn đó; còn lại ⇒ IN (phần in, như trước). "Đã release / đã rời
+//   Release 1" của ĐỢT đi theo lệnh của công đoạn này.
+const gdChinhDotSql = (dv, luongExpr = null) => `COALESCE(${dotGdSql(dv, luongExpr)}, '${GD_IN}')`;
+// SQL: lệnh `ls` là lệnh CHÍNH của đợt `dv`.
+const lenhChinhCuaDotSql = (ls, dv, luongExpr = null) => `(${gdSql(ls)} = ${gdChinhDotSql(dv, luongExpr)})`;
 
 // PHƯƠNG ÁN IN CỦA CÔNG ĐOẠN: dòng / lệnh công đoạn ÉP ỦI luôn mang PA **Ép** (5 — `utils/hskt.js PHUONG_AN_IN`), không
 //   mang PA của HSKT (là PA của phần IN). Áp ở Release 1 (chip lọc, badge, Excel), Kế hoạch tạm, màn mức lệnh (Test Run ·
@@ -127,16 +161,16 @@ async function bangLuongTinhChat() {
   return map;
 }
 const xoaNho = () => { nho = { luc: 0, map: null }; };
-// Luồng phần in suy từ phân loại tính chất in (KHAC / CHUA_PHAN_LOAI / không có ⇒ THUONG).
+// Luồng phần in suy từ phân loại tính chất in (chưa phân loại / không có ⇒ THUONG — luật ở `tinhChatIn.luongSxTheoPhanLoai`).
 async function luongTheoTinhChat(tinhChatIn) {
-  const l = (await bangLuongTinhChat()).get(normTcin(tinhChatIn));
-  return HAI_CONG_DOAN.has(l) || l === 'LOGO' ? l : 'THUONG';
+  return luongSxTheoPhanLoai((await bangLuongTinhChat()).get(normTcin(tinhChatIn)));
 }
 
 module.exports = {
   LUONG_SX, MA_LUONG_SX, HAI_CONG_DOAN, GD_IN, GD_EP,
-  chuanLuong, laHaiCongDoan, laLogo, laKieng, laKiengSql, luongSauKhiBo, boQuaTestRun, boQuaTestRunLenhSql,
+  chuanLuong, laHaiCongDoan, laLogo, laKieng, laKiengSql, luongSauKhiBo, boQuaTestRun, boQuaTestRunLenhSql, giaCongDuoc,
   chuanGd, congDoanDau, laCongDoanDau, canNhapKieng, nhanCongDoan,
   gdSql, daRelSql, laPhanInSql, haiCongDoanSql, khtGdSql, khtLaGdSql, khtCoCotGd, PAIN_EP, paCongDoanSql,
   bangLuongTinhChat, luongTheoTinhChat, xoaNho,
+  LUONG_THEO_DOT, LOAI_DOT_KIENG, theoDot, dotGd, dotThuocGd, dotGdSql, dotThuocGdSql, gdChinhDotSql, lenhChinhCuaDotSql,
 };

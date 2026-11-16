@@ -94,7 +94,7 @@ async function listTemGiao({ cheDo = 'SAN_SANG', search = '', filters = {}, ngay
             ${laTemSuaSql('t')} AS la_tem_sua,
             GREATEST(0, COALESCE(t.sl_oqc_dat_sua,0) - COALESCE(t.sl_da_giao_sua,0)) AS con_giao_sua,
             GREATEST(0, (COALESCE(t.sl_oqc_dat,0)-COALESCE(t.sl_oqc_dat_sua,0)) - (COALESCE(t.sl_da_giao,0)-COALESCE(t.sl_da_giao_sua,0))) AS con_giao_kcs,
-            t.sl_oqc_dat, t.sl_da_giao, ls.ma_lenh_san_xuat,
+            t.sl_oqc_dat, t.sl_da_giao, ls.ma_lenh_san_xuat, ls.giai_doan, (SELECT pcd.luong_sx FROM lenh_sx_dot_vai lcd JOIN dot_vai_ve dcd ON dcd.id = lcd.dot_vai_ve_id JOIN phan_in pcd ON pcd.id = dcd.phan_in_id WHERE lcd.lenh_san_xuat_id = ls.id LIMIT 1) AS luong_sx,
             (SELECT string_agg(DISTINCT pin.ma_phan, ', ')
                FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
                JOIN phan_in pin ON pin.id = dv.phan_in_id WHERE lsd.lenh_san_xuat_id = ls.id) AS phan_list,

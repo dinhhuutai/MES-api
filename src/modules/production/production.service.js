@@ -92,7 +92,7 @@ async function getRun(lenhId) {
            dot_vai: dotVai, vai_huy: vaiHuy, vai_cho_tem: vaiTrong(vaiCho) ? null : vaiCho,
            phan_cong: phieu ? await phanCongHienThi(lenh, phieu, phanCong) : phanCong,
            goi_y_tem: await goiYTemMeta(lenhId, phieu?.id),
-           cong_doan: nhanCongDoan(lenh.luong_sx, lenh.giai_doan), // "In kiếng" / "In" / "Ép ủi" — null với phần in 1 công đoạn
+           cong_doan: nhanCongDoan(lenh.luong_sx, lenh.giai_doan), // "In kiếng" / "In" / "Ép" (kiếng ủi) / "Ép/Logo" — null với phần in 1 công đoạn
            // Phần in 2 công đoạn ⇒ lệnh của công đoạn CÒN LẠI (sidebar hiện khung công đoạn — chống bấm nhầm lệnh). Lỗi ⇒ [].
            cong_doan_khac: nhanCongDoan(lenh.luong_sx, lenh.giai_doan)
              ? await repo.lenhCongDoanKhac(lenhId, lenh.giai_doan).catch(() => []) : [],
@@ -570,6 +570,10 @@ async function suaTem(temId, body = {}, actorId) {
   }
   // ⚠ Vải hủy / thiếu KHÔNG sửa ở đây — khối "Vải hủy / thiếu" của panel tem (`suaVaiTheoTem`) đã ghi + gửi lại ERP cùng
   //   IDMES (người dùng 28/10/2026: "có rồi thì đỡ phải thêm chỗ sửa tem").
+  // SL BỔ SUNG DO CÔNG TY / KHÁCH CỦA TEM (16/11/2026, mig 135 — theo TỪNG TEM): `body.slBsCty` / `body.slBsKhach` (không gửi
+  //   khóa = không sửa; trống = xóa). Σ ≤ SL in của tem (SL mới nếu đang sửa SL). Đi ERP ở SF0 của CHÍNH tem ⇒ gửi lại như sửa
+  //   trường khác. Sửa được cả khi tem đã kiểm.
+  const coBsVao = body.slBsCty !== undefined || body.slBsKhach !== undefined;
 
   const kq = await withTransaction(async (client) => {
     const t = await repo.docTemSuaTx(client, temId);
@@ -585,6 +589,20 @@ async function suaTem(temId, body = {}, actorId) {
     if ('gioKt' in moi && moi.gioKt !== (t.gio_sx_kt || null)) doi.gioKt = moi.gioKt;
     if ('maNgayCa' in moi && moi.maNgayCa !== (t.ma_ngay_ca || null)) { doi.maNgayCa = moi.maNgayCa; doi.ngayCa = moi.ngayCa; }
     if ('gcMauVai' in moi && moi.gcMauVai !== (t.gc_mau_vai || null)) doi.gcMauVai = moi.gcMauVai;
+    const slBsCu = (Number(t.sl_bo_sung_cty) || 0) + (Number(t.sl_bo_sung_khach) || 0);
+    if (coBsVao) {
+      const cuCty = t.sl_bo_sung_cty == null ? null : Number(t.sl_bo_sung_cty);
+      const cuKhach = t.sl_bo_sung_khach == null ? null : Number(t.sl_bo_sung_khach);
+      const vao = {
+        slBsCty: body.slBsCty !== undefined ? body.slBsCty : cuCty,
+        slBsKhach: body.slBsKhach !== undefined ? body.slBsKhach : cuKhach,
+      };
+      const bs = await boSungTem(vao, 'soLuong' in moi ? moi.soLuong : Number(t.so_luong));
+      if (bs.slBsCty !== cuCty || bs.slBsKhach !== cuKhach) { doi.slBsCty = bs.slBsCty; doi.slBsKhach = bs.slBsKhach; }
+    } else if ('soLuong' in moi && slBsCu > moi.soLuong) {
+      throw new AppError(`SL in mới (${moi.soLuong}) nhỏ hơn SL bổ sung của tem (${slBsCu}) — sửa SL bổ sung trước`,
+        { status: 422, errorCode: 'BO_SUNG_VUOT_SL' });
+    }
     const doiChuyen = chuyenMoi && String(chuyenMoi.id) !== String(t.chuyen_id);
     if (doiChuyen) {
       if (!(await coCotChuyenTem())) {
@@ -611,6 +629,7 @@ async function suaTem(temId, body = {}, actorId) {
     const lo = 'maNgayCa' in doi ? await repo.doiMaLoTheoNgayCaTx(client, t, doi.maNgayCa) : null;
     if (pcMoi) await repo.ghiPhanCongTemTx(client, temId, pcMoi, pcCu, actorId);
     const cu = { so_luong: t.so_luong, gio_sx_bd: t.gio_sx_bd, gio_sx_kt: t.gio_sx_kt, ma_ngay_ca: t.ma_ngay_ca, ngay_ca: t.ngay_ca,
+      ...('slBsCty' in doi ? { sl_bo_sung_cty: t.sl_bo_sung_cty ?? null, sl_bo_sung_khach: t.sl_bo_sung_khach ?? null } : {}),
       ...('gcMauVai' in doi ? { gc_mau_vai: t.gc_mau_vai || null } : {}),
       ...(ngayCtMoi ? { ngay_ct: dongErp.ngay_ct || null } : {}),
       ...(lo ? { ma_lo: lo.cu } : {}),
@@ -627,6 +646,7 @@ async function suaTem(temId, body = {}, actorId) {
       ...(lo ? { ma_lo: lo.moi } : {}),
       ...(doiChuyen ? { chuyen_id: chuyenMoi.id, ma_chuyen: chuyenMoi.ma_chuyen } : {}),
       ...(pcMoi ? { phan_cong: pcMoi } : {}),
+      ...('slBsCty' in doi ? { sl_bo_sung_cty: doi.slBsCty, sl_bo_sung_khach: doi.slBsKhach } : {}),
     };
     await repo.logSuaTemTx(client, temId, cu, ghiMoi, actorId);
     return {
@@ -649,8 +669,11 @@ async function suaTem(temId, body = {}, actorId) {
   //   SỬA ĐẠT (SK6) · OQC (QO6) đã gửi của tem cũng mang chuyền (`banin`) + phân công ⇒ đổi chuyền / phân công thì gửi
   //   lại cả các lượt đó (cùng IDMES — proc ghi đè, như nút "Gửi lại ERP"), tuần tự, ngầm. Lượt đã hủy ⇒ guiLai 409, bỏ qua.
   //   Trước đó chỉ gửi lại phiếu in tem (SF0) — tự chốt 05/11 "Sửa chuyền chỉ gửi lại SF0" đã bỏ.
+  // ⚠ 16/11/2026 (người dùng: "tất cả sửa gì ở tem in đều gửi lại ERP"): các lượt đó dựng từ CÙNG dữ liệu tem (giờ SX, GC
+  //   màu vải, SL bổ sung, chuyền, phân công…) ⇒ MỌI lần sửa tem đều gửi lại, trừ khi chỉ đổi Ngày CT (của riêng phiếu SF0;
+  //   mỗi lượt sau giữ Ngày CT của nó).
   let soLuotSau = 0;
-  if (kq.doi.chuyenRiengId !== undefined || kq.doi.phanCong) {
+  if (Object.keys(kq.doi).some((k) => k !== 'ngayCt')) {
     const luot = await repo.luotErpSauInCuaTem(temId).catch(() => []);
     soLuotSau = luot.length;
     if (luot.length) {
@@ -925,8 +948,9 @@ async function luuLyDoBoSungDotVai(dotVaiId, { lyDoId, ghiChu, slCty, slKhach },
   const res = await repo.setLyDoBoSungChoDotVai(dotVaiId, {
     lyDoId: lyDoId || null,
     ghiChu: (ghiChu || '').trim() || null,
-    slCty: soNguyenKhongAm(slCty),
-    slKhach: soNguyenKhongAm(slKhach),
+    // 16/11/2026 (mig 135): SL bổ sung nay nhập THEO TEM — giao diện chỉ gửi ghi chú; không gửi khóa ⇒ KHÔNG đụng 2 cột SL của đợt.
+    slCty: slCty === undefined ? undefined : soNguyenKhongAm(slCty),
+    slKhach: slKhach === undefined ? undefined : soNguyenKhongAm(slKhach),
   }, actorId);
   if (!res.ghiLyDo && !res.ghiSl) {
     throw new AppError('Chưa chạy migration 077/079 nên chưa ghi được thông tin bổ sung', { status: 409, errorCode: 'THIEU_MIGRATION' });
@@ -1252,6 +1276,32 @@ const temMeta = (b = {}) => {
   };
 };
 
+// SL BỔ SUNG DO CÔNG TY / KHÁCH CỦA TỪNG TEM (16/11/2026, mig 135 — người dùng chốt "theo từng 1 tem"): 2 ô nhập lúc in tem
+//   (sidebar 1 lệnh: 1 bộ cho lượt, "Số tem" N ⇒ MỖI tem cùng số · bảng in nhiều dòng: mỗi dòng 1 bộ) + sửa ở Sửa tem.
+//   Trống ⇒ null. Số nguyên ≥ 0, Σ (công ty + khách) ≤ SL in của tem (là phần bổ sung NẰM TRONG tem). Đi ERP SF0
+//   `@pSLBSCty` / `@pSLBSKhachHang` của đúng tem đó (`erpGhiInTem.taoPayload`). Chưa chạy mig 135 mà có số ⇒ 409.
+async function boSungTem(src, soLuong, nhan = '') {
+  const so = (v, ten) => {
+    if (v === '' || v == null) return null;
+    const n = Number(v);
+    if (!Number.isInteger(n) || n < 0) {
+      throw new AppError(`${nhan ? `${nhan}: ` : ''}${ten} phải là số nguyên ≥ 0`, { status: 422, errorCode: 'SL_BO_SUNG_SAI' });
+    }
+    return n;
+  };
+  const slBsCty = so(src && src.slBsCty, 'SL bổ sung do công ty');
+  const slBsKhach = so(src && src.slBsKhach, 'SL bổ sung do khách hàng');
+  if (slBsCty == null && slBsKhach == null) return { slBsCty: null, slBsKhach: null };
+  if ((slBsCty || 0) + (slBsKhach || 0) > Number(soLuong)) {
+    throw new AppError(`${nhan ? `${nhan}: ` : ''}SL bổ sung (công ty ${slBsCty || 0} + khách ${slBsKhach || 0}) lớn hơn SL in của tem (${soLuong})`,
+      { status: 422, errorCode: 'BO_SUNG_VUOT_SL' });
+  }
+  if (!(await repo.temCoCotBoSung())) {
+    throw new AppError('Chưa chạy migration 135 nên chưa lưu được SL bổ sung theo tem', { status: 409, errorCode: 'CHUA_MIGRATION_135' });
+  }
+  return { slBsCty, slBsKhach };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // BÁO NGƯỢC LÊN ERP MỖI LẦN IN TEM (`POST /ghi-in-tem` → proc `MES_spr_MES2SF0`)
 //
@@ -1359,7 +1409,7 @@ async function printTem(phieuId, soLuong, actorId, body) {
   // Mig 126/127: tem in kiếng ⇒ bắt buộc loại kiếng + hệ số + SL kiếng (trước khi xin mã tem ERP); tem công đoạn đầu
   //   không vào KCS.
   const kieng = await loaiKieng.kiemKiengIn(canNhapKieng(lenh?.luong_sx, lenh?.giai_doan), body);
-  const metaCd = { congDoanDau: !!lenh?.la_cong_doan_dau, ...kieng };
+  const metaCd = { congDoanDau: !!lenh?.la_cong_doan_dau, ...kieng, ...(await boSungTem(body, qty)) };
 
   // In tem xong tự đưa vào xe phơi mặc định + bắt đầu đếm ngược ngay.
   const xe = await repo.getDefaultXePhoi();
@@ -1429,6 +1479,11 @@ async function printTemBatch(phieuId, items, actorId, body) {
       heSoKieng: it.heSoKieng !== undefined ? it.heSoKieng : body?.heSoKieng,
       slKieng: it.slKieng !== undefined ? it.slKieng : body?.slKieng,
     },
+    // SL bổ sung công ty / khách RIÊNG từng dòng (= từng tem, mig 135); khóa nào không gửi ⇒ theo ô chung của lượt.
+    boSung: {
+      slBsCty: it.slBsCty !== undefined ? it.slBsCty : body?.slBsCty,
+      slBsKhach: it.slBsKhach !== undefined ? it.slBsKhach : body?.slBsKhach,
+    },
   }));
   const list = dongVao.filter((it) => it.soLuong > 0);
   // Vải hủy / vải thiếu nhập NGAY TRONG bảng In tem: dòng có in tem ⇒ gắn vào tem của dòng; dòng KHÔNG in tem (SL in
@@ -1496,6 +1551,8 @@ async function printTemBatch(phieuId, items, actorId, body) {
     const nhan = list.length > 1 ? `Dòng ${list.indexOf(it) + 1}${d && d.ma_phan ? ` (${d.ma_phan})` : ''}` : '';
     // eslint-disable-next-line no-await-in-loop
     it.kiengDong = await loaiKieng.kiemKiengIn(canKieng, it.kieng, { nhan, nho: nhoKieng });
+    // eslint-disable-next-line no-await-in-loop
+    it.boSungDong = await boSungTem(it.boSung, it.soLuong, nhan);
   }
   const metaCd = { congDoanDau: !!lenh?.la_cong_doan_dau };
 
@@ -1517,7 +1574,7 @@ async function printTemBatch(phieuId, items, actorId, body) {
       const maTem = maTemList[i];
       // GC màu vải nhập RIÊNG từng dòng ở modal gom set → ưu tiên `it.gcMauVai`; không có thì dùng ô chung.
       const temId = await repo.createTem(client, {
-        phieuId, maTem, soLuong: it.soLuong, ...meta, ...metaCd, ...it.kiengDong,
+        phieuId, maTem, soLuong: it.soLuong, ...meta, ...metaCd, ...it.kiengDong, ...it.boSungDong,
         gcMauVai: (it.gcMauVai || '').trim() || meta.gcMauVai,
         ...(it.btpTruoc !== undefined ? { btpTruoc: it.btpTruoc } : {}),
         ...(it.btpCuoi !== undefined ? { btpCuoi: it.btpCuoi } : {}),
@@ -2118,7 +2175,7 @@ async function traVeKyThuat(lenhId, { lyDo }, actorId) {
   //   `reopenReadyForPhanIn` hủy sạch, làm mất dấu công tổ kỹ thuật ở 2 sidebar *Lịch sử* +
   //   *Đã hoàn thành* (2 nguồn đó chỉ đọc dòng `DAT`). Đánh đổi: `erpsync.repository.chiHuyQcReady`.
   for (const pinId of pinIds) {
-    await erpsyncRepo.chiHuyQcReady(pinId);
+    await erpsyncRepo.chiHuyQcReady(pinId, lenh.giai_doan); // chỉ QC của công đoạn của lệnh (14/11/2026)
     await planningRepo.auditTraVeKyThuat(pinId, null, reason, actorId);
     // Dùng lại loai 'RELEASE1' (mức phần in) ⇒ màn READY/QC READY hiện sẵn badge + lý do mà KHÔNG
     // phải sửa gì bên `technical` (nó đọc `activeReturnsMap('RELEASE1', …)`); cờ tự tắt khi QC xác

@@ -49,9 +49,9 @@ async function listKcsCandidates({ search, filters }) {
 // `ctTu` / `ctDen` ('YYYY-MM-DD', tùy chọn) + `gioTu` / `gioDen` ('HH:MM', tùy chọn): lọc theo MỐC của tem = NGÀY CHỨNG TỪ
 //   (ngày CT người in nhập — `NGAY_CT_TEM_SQL`; tem cũ chưa ghi ⇒ ngày in giờ VN) ghép GIỜ IN TEM (giờ VN — ngày CT không có
 //   giờ). Khoảng [ctTu gioTu, ctDen gioDen], thiếu giờ ⇒ 00:00 / 23:59. Lọc sau khi gắn thông tin (tồn KCS vài nghìn tem).
-async function tonChuaKiemKcs({ search, filters, gomDangPhoi = true, ctTu = null, ctDen = null, gioTu = null, gioDen = null }) {
+async function tonChuaKiemKcs({ search, filters, gomDangPhoi = true, phoi = null, ctTu = null, ctDen = null, gioTu = null, gioDen = null }) {
   try { await prodRepo.promoteFinishedDrying(); } catch (e) { /* bỏ qua */ }
-  const rows = await repo.listKcsTon({ search, filters }, gomDangPhoi);
+  const rows = await repo.listKcsTon({ search, filters }, phoi || (gomDangPhoi ? 'TAT_CA' : 'DA_KHO'));
   if (!rows.length) return rows;
   const ids = rows.map((r) => r.tem_id);
   const [rm, erp, them] = await Promise.all([
@@ -476,6 +476,17 @@ async function gopTem({ targetTemId, sourceTemIds }, actorId) {
 async function listSuaCandidates({ search, filters }) {
   const rows = await repo.listSuaCand({ search, filters });
   if (rows.length === 0) return rows;
+  // 14/11/2026 (Nhận sửa, `utils/choSua.js`): `con_sua` của dòng = phần ĐANG SỬA (đã nhận, chưa sửa) — FE tính "cần sửa"
+  //   theo cột này. Tổng còn phải sửa ở `con_sua_tong`, phần chưa nhận ở `cho_nhan_sua`.
+  const so = new Map((await repo.soSuaCuaTem(rows.map((r) => r.tem_id))).map((x) => [x.tem_id, x]));
+  rows.forEach((r) => {
+    const x = so.get(r.tem_id);
+    if (!x) return;
+    r.con_sua_tong = r.con_sua;
+    r.con_sua = Number(x.dang_sua) || 0;
+    r.cho_nhan_sua = Number(x.cho_nhan) || 0;
+    r.da_nhan_sua = Number(x.da_nhan) || 0;
+  });
   // Suy ca sản xuất: giờ/tuần VN (query nhẹ riêng) + loại ca của tuần (Ngắn/Dài).
   const [parts, map] = await Promise.all([
     repo.caPartsForTems(rows.map((r) => r.tem_id)),
@@ -496,15 +507,28 @@ async function listSuaCandidates({ search, filters }) {
 async function recordSua(temId, body, actorId) {
   const tem = await repo.getTemLedger(temId);
   if (!tem) throw new AppError('Tem không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
-  const conSua = Number(tem.con_sua) || 0;
-  if (conSua <= 0) throw new AppError('Tem không còn phần chờ sửa', { status: 409, errorCode: 'DONE' });
+  if ((Number(tem.con_sua) || 0) <= 0) throw new AppError('Tem không còn phần chờ sửa', { status: 409, errorCode: 'DONE' });
+  // 14/11/2026 (luật `utils/choSua.js`): hàng hư phải qua PHÂN LOẠI LỖI rồi NHẬN SỬA — chỉ sửa được phần ĐÃ NHẬN.
+  const [so0] = await repo.soSuaCuaTem([temId]);
+  if (!so0 || !so0.vao_sua_duoc) {
+    throw new AppError(`Tem ${tem.ma_tem} chưa phân loại lỗi — vào Phân loại lỗi chia sửa/hủy trước rồi mới sửa`,
+      { status: 409, errorCode: 'CHUA_PHAN_LOAI_LOI' });
+  }
+  const conSua = Number(so0.dang_sua) || 0;
+  if (conSua <= 0) {
+    throw new AppError(`Tem ${tem.ma_tem} chưa nhận sửa (${so0.cho_nhan} pcs đang chờ nhận) — bấm "Nhận sửa" trước`,
+      { status: 409, errorCode: 'CHUA_NHAN_SUA' });
+  }
 
   const huyThang = num(body.soLuongHuyThang);
   const suaDat = num(body.soLuongSuaDat);
   const suaHuy = num(body.soLuongSuaHuy) + huyThang;
   const total = suaDat + suaHuy; // SL xử lý lần này
   if (total <= 0) throw new AppError('Nhập số lượng sửa', { status: 422, errorCode: 'EMPTY' });
-  if (total > conSua) throw new AppError(`SL sửa lần này (${total}) vượt SL cần sửa còn lại (${conSua})`, { status: 422, errorCode: 'OVER' });
+  if (total > conSua) {
+    throw new AppError(`SL sửa lần này (${total}) vượt SL đã nhận sửa còn lại (${conSua})${Number(so0.cho_nhan) > 0
+      ? ` — còn ${so0.cho_nhan} pcs chưa nhận, bấm "Nhận sửa" thêm` : ''}`, { status: 422, errorCode: 'OVER' });
+  }
 
   const ghiChu = [body.ghiChu, huyThang > 0 ? `Hủy thẳng: ${huyThang}` : null].filter(Boolean).join(' · ') || null;
   // NGƯỜI SỬA (tùy chọn, 09/11/2026 — modal "Tích tem" trang Sửa nhập từng dòng rồi "Xác nhận và in tem"): ghi luôn vào
@@ -536,8 +560,10 @@ async function recordSua(temId, body, actorId) {
   await withTransaction(async (client) => {
     // ⚠ Khóa tem + kiểm lại trong transaction (21/10/2026 — cùng lỗi 2 người lưu cùng lúc như KCS). Sửa cho phép
     //   xử lý TỪNG PHẦN ⇒ 2 lượt cùng lúc vẫn hợp lệ nếu tổng còn đủ; chỉ chặn khi vượt phần còn lại MỚI.
-    const moi = await repo.getTemLedger(temId, { client, khoa: true });
-    conSuaMoi = Number(moi.con_sua) || 0;
+    await repo.getTemLedger(temId, { client, khoa: true });
+    // Đọc lại PHẦN ĐANG SỬA (đã nhận) sau khi khóa — luật Nhận sửa (`utils/choSua.js`).
+    const [soMoi] = await repo.soSuaCuaTem([temId], client);
+    conSuaMoi = Number(soMoi && soMoi.dang_sua) || 0;
     if (total > conSuaMoi) {
       throw new AppError(`Tem ${tem.ma_tem} vừa được người khác xác nhận sửa — còn ${conSuaMoi} pcs chờ sửa, tải lại rồi nhập lại`,
         { status: 409, errorCode: 'DA_DOI' });
@@ -603,10 +629,15 @@ const listTemSuaCancelable = ({ search } = {}) => repo.listTemSua({ search });
 const listTemSuaDeleted = ({ search } = {}) => repo.listTemSuaDaHuy({ search });
 
 // Hủy: dồn con_sua sang hủy khi đã có SL đạt KCS, ngược lại chỉ trừ SL sửa.
+// Nhận sửa (mig 132): phần ĐÃ NHẬN hạ xuống phần đã sửa xong (sau hủy `sl_kcs_sua` = phần đó) ⇒ hư mới sau này (KCS kiểm lại)
+//   phải nhận lại, không lọt thẳng vào màn Sửa. `dNhan` ≤ 0, lưu vào audit để Mở lại cộng trả.
 const planHuy = (t) => {
   const x = Number(t.con_sua) || 0;
   const daCongHuy = (Number(t.sl_kcs_dat) || 0) > 0;
-  return { temId: t.tem_id, ma_tem: t.ma_tem, sl: x, da_cong_huy: daCongHuy, dSua: -x, dHuy: daCongHuy ? x : 0 };
+  const xuLy = (Number(t.sl_sua_dat) || 0) + (Number(t.sl_sua_huy) || 0);
+  const nhan = t.sl_nhan_sua == null ? null : Number(t.sl_nhan_sua) || 0;
+  const dNhan = nhan == null ? 0 : Math.min(nhan, xuLy) - nhan;
+  return { temId: t.tem_id, ma_tem: t.ma_tem, sl: x, da_cong_huy: daCongHuy, dSua: -x, dHuy: daCongHuy ? x : 0, dNhan };
 };
 
 // Đọc + validate cả lô TRƯỚC khi ghi (không áp dụng một phần khi 1 tem trong lô hỏng); 1 query đọc cho cả lô.
@@ -641,7 +672,7 @@ async function applyHuyTemSua(client, plans, reason, actorId, tuDong) {
   // Snapshot delta để "Mở lại tem sửa" đảo ngược chính xác.
   await repo.logTemSuaMany(client, 'HUY_TEM_SUA', plans.map((p) => ({
     temId: p.temId,
-    payload: { ma_tem: p.ma_tem, ly_do: reason, tu_dong: !!tuDong, sl: p.sl, da_cong_huy: p.da_cong_huy },
+    payload: { ma_tem: p.ma_tem, ly_do: reason, tu_dong: !!tuDong, sl: p.sl, da_cong_huy: p.da_cong_huy, d_nhan: p.dNhan || 0 },
   })), actorId);
 }
 
@@ -670,7 +701,8 @@ async function moTemSua(temIds, lyDo, actorId) {
     if (!r.da_cong_huy && (Number(r.con_kcs) || 0) < x) {
       throw new AppError(`Tem ${r.ma_tem}: ${x} pcs đã được KCS kiểm lại — không mở lại được`, { status: 409, errorCode: 'LEDGER' });
     }
-    plans.push({ temId: id, ma_tem: r.ma_tem, sl: x, da_cong_huy: r.da_cong_huy, dSua: x, dHuy: r.da_cong_huy ? -x : 0 });
+    plans.push({ temId: id, ma_tem: r.ma_tem, sl: x, da_cong_huy: r.da_cong_huy, dSua: x, dHuy: r.da_cong_huy ? -x : 0,
+      dNhan: -(Number(r.d_nhan) || 0) });
   }
 
   await withTransaction(async (client) => {

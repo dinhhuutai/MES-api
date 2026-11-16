@@ -2,6 +2,7 @@
 
 const service = require('./quality.service');
 const plService = require('./phanloailoi.service');
+const nhanSuaService = require('./nhansua.service');
 const asyncHandler = require('../../utils/asyncHandler');
 const { ok } = require('../../utils/response');
 const AppError = require('../../utils/AppError');
@@ -24,6 +25,8 @@ const kcsCandidates = dsTem('quality.kcs', (f) => service.listKcsCandidates(f));
 // Excel tồn chưa kiểm (khuôn ERP) — chỉ tải khi bấm xuất ⇒ không cache. `gomDangPhoi=0` ⇒ chỉ tem đã khô.
 const kcsTonChuaKiem = asyncHandler(async (req, res) => ok(res, await service.tonChuaKiemKcs({
   ...candFilters(req.query), gomDangPhoi: String(req.query.gomDangPhoi ?? '1') !== '0',
+  // 15/11/2026: TAT_CA | DA_KHO (đã phơi xong) | CHUA_KHO (chưa phơi xong) — có thì thắng `gomDangPhoi`.
+  phoi: ['TAT_CA', 'DA_KHO', 'CHUA_KHO'].includes(String(req.query.phoi || '')) ? String(req.query.phoi) : null,
   // Lọc theo NGÀY CHỨNG TỪ của tem (hộp xuất Excel) — chỉ nhận đúng dạng YYYY-MM-DD.
   ctTu: /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.ctTu || '')) ? req.query.ctTu : null,
   ctDen: /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.ctDen || '')) ? req.query.ctDen : null,
@@ -37,6 +40,21 @@ const gopTem = asyncHandler(async (req, res) =>
   ok(res, await service.gopTem(req.body, req.user.id), 'Đã gộp tem'));
 
 const suaCandidates = dsTem('quality.sua', (f) => service.listSuaCandidates(f));
+// NHẬN SỬA (mig 132) — trang Hệ thống › Chờ nhận sửa + nút "Nhận sửa" ở màn Sửa.
+const choNhanSua = dsTem('quality.sua-cho-nhan', (f) => nhanSuaService.listChoNhan(f));
+const ngayHop = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? v : null);
+const lichSuNhanSua = asyncHandler(async (req, res) => {
+  const tuNgay = ngayHop(req.query.tuNgay) || ngayHomNayVN();
+  return ok(res, await nhanSuaService.lichSuNhan({
+    tuNgay, denNgay: ngayHop(req.query.denNgay) || tuNgay, search: String(req.query.search || '').trim(),
+  }));
+});
+const nhanSua = asyncHandler(async (req, res) => {
+  const r = await nhanSuaService.nhanSua(req.body || {}, req.user.id);
+  return ok(res, r, `Đã nhận sửa ${r.so_tem} tem · ${r.tong_sl} pcs`);
+});
+const huyNhanSua = asyncHandler(async (req, res) =>
+  ok(res, await nhanSuaService.huyNhanSua(req.params.id, (req.body || {}).lyDo, req.user.id), 'Đã hủy lượt nhận sửa'));
 const recordSua = asyncHandler(async (req, res) =>
   ok(res, await service.recordSua(req.params.temId, req.body, req.user.id), 'Đã ghi nhận sửa'));
 
@@ -158,6 +176,7 @@ const bpToggle = asyncHandler(async (req, res) => { await plService.doiTrangThai
 module.exports = {
   plList, plTraTem, plChiTiet, plLuu, bpList, bpCreate, bpUpdate, bpToggle,
   kcsCandidates, kcsTonChuaKiem, recordKcs, gopTem, suaCandidates, recordSua, oqcCandidates, recordOqc,
+  choNhanSua, lichSuNhanSua, nhanSua, huyNhanSua,
   kcsHistory, suaHistory, oqcHistory,
   kcsDone, suaDone, oqcDone, oqcFinishList, inlineDone, luuNguoiSua, luuNguoiKiemKcs, guiLaiErpSua,
   inlineCandidates, inlineLoaiLoi, inlineHistory, recordInline,

@@ -81,6 +81,15 @@ async function luu(temId, { dong = [], ghiChu = '' } = {}, actorId) {
       { status: 409, errorCode: 'DA_SUA_ROI' }
     );
   }
+  // Nhận sửa (mig 132, `utils/choSua.js`): tổ sửa đã nhận bao nhiêu thì tổng SỬA không được nhỏ hơn số đó.
+  const [so] = await qualityRepo.soSuaCuaTem([temId]);
+  const daNhan = so && so.sl_nhan_sua != null ? Number(so.da_nhan) || 0 : 0;
+  if (tongSua < daNhan) {
+    throw new AppError(
+      `Tổ sửa đã nhận ${daNhan} pcs của tem này — tổng SỬA không được nhỏ hơn ${daNhan} (hủy lượt nhận sửa ở Hệ thống › Chờ nhận sửa trước)`,
+      { status: 409, errorCode: 'DA_NHAN_SUA' }
+    );
+  }
 
   await withTransaction(async (client) => {
     const phieuId = await repo.upsertPhieuTx(
@@ -173,6 +182,12 @@ async function huy(temId, lyDo, actorId) {
   if (daXuLySua > 0) {
     throw new AppError(`Tem này đã xác nhận sửa ${daXuLySua} pcs — hủy xác nhận Sửa trước rồi mới hủy phân loại lỗi`,
       { status: 409, errorCode: 'DA_XAC_NHAN_SUA' });
+  }
+  // Nhận sửa (mig 132): đã nhận sửa (chưa sửa) ⇒ hủy lượt nhận trước — không thì hàng đang ở màn Sửa mà phiếu đã mất.
+  const [so] = await qualityRepo.soSuaCuaTem([temId]);
+  if (so && so.sl_nhan_sua != null && (Number(so.da_nhan) || 0) > 0) {
+    throw new AppError(`Tổ sửa đã nhận ${so.da_nhan} pcs của tem này — hủy lượt nhận sửa (Hệ thống › Chờ nhận sửa) trước rồi mới hủy phân loại lỗi`,
+      { status: 409, errorCode: 'DA_NHAN_SUA' });
   }
 
   await withTransaction(async (client) => {

@@ -48,20 +48,20 @@
 //   không viết comment `-- …` bên trong chuỗi SQL; chú thích để ngoài như file này.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const { khongReadyTuDongSql, conDotChuaReadySql, conDotChoQcSql, qcMoLaiSql } = require('./tech');
+const { khongReadyTuDongSql, conDotChuaReadySql, conDotChoQcSql, qcMoLaiSql, mocKtXongDotSql } = require('./tech');
 // BTP khác kế hoạch (mig 120): đợt có cờ rời Release 1 khi đã release đủ 2 × SL vải.
 const { sucChuaSql } = require('./btpKhacKh');
 // Kế hoạch tạm theo công đoạn (mig 128): dải Theo dõi Release 1 / Kế hoạch tạm vẫn chỉ đếm PHẦN IN ⇒ chỉ dòng 'IN'
 //   (không lọc thì đợt có thêm kế hoạch tạm phần ép ra 2 dòng ⇒ đếm đôi).
-const { khtLaGdSql } = require('./luongSanXuat');
-const KHT_PHAN_IN = (kt) => khtLaGdSql(kt);
+// ⚠ 16/11/2026 (đợt theo công đoạn — `luongSanXuat.gdChinhDotSql`): đợt Ép của phần in kiếng ủi chỉ có phần ép ⇒ "dòng
+//   chính" của đợt là công đoạn của chính nó (câu dùng phải có alias `dv` + `pin`).
+const { khtLaGdSql, gdChinhDotSql, lenhChinhCuaDotSql } = require('./luongSanXuat');
+const { vaoSuaDuocSql, mocVaoLoSuaSql, nhanJ, dangSuaJ, tgNhanJ } = require('./choSua');
+const KHT_PHAN_IN = (kt) => khtLaGdSql(kt, gdChinhDotSql('dv', 'pin.luong_sx'));
 
 const VN = "AT TIME ZONE 'Asia/Ho_Chi_Minh'";
 
-// Khách được miễn Khuôn — phải khớp Y HỆT `utils/tech.js` `KHUON_OPTIONAL_KH`, lệch là sĩ số đá nhau
-// với chính màn READY.
-const KHUON_OPTIONAL_KH = ['II', 'AD'];
-const KH_MIEN_KHUON = `ARRAY['${KHUON_OPTIONAL_KH.join("','")}']`;
+// Khách được miễn Khuôn (II/AD) + yêu cầu KT theo tính chất in: luật ở `utils/tech.js` (`mocKtXongDotSql`) — đừng chép ra đây.
 
 // 1 LATERAL gộp MỌI mốc READY của phần in (đủ mục KT + QC). `n_km = 2` nghĩa là có CẢ Khuôn lẫn Mực.
 // ⚠ KHÔNG xét FILM — Film tự đạt theo Khuôn (CLAUDE.md §6), đưa vào là tạo lỗ hổng.
@@ -69,6 +69,7 @@ const LAT_READY = (pinCol) => `LEFT JOIN LATERAL (
   SELECT count(*) FILTER (WHERE xcp.ma_checkpoint IN ('KHUON','MUC'))::int AS n_km,
          max(xkq.tg_xac_nhan) FILTER (WHERE xcp.ma_checkpoint IN ('KHUON','MUC')) AS moc_km,
          max(xkq.tg_xac_nhan) FILTER (WHERE xcp.ma_checkpoint = 'MUC') AS moc_muc,
+         max(xkq.tg_xac_nhan) FILTER (WHERE xcp.ma_checkpoint = 'KHUON') AS moc_khuon,
          max(xkq.tg_xac_nhan) FILTER (WHERE xcp.ma_checkpoint = 'QC_XAC_NHAN') AS moc_qc,
          (SELECT max(xd.tg_xac_nhan) FROM ready_xac_nhan_dot xd JOIN checkpoint xdc ON xdc.id = xd.checkpoint_id
            WHERE xd.phan_in_id = ${pinCol} AND xd.trang_thai = 'DAT' AND xdc.ma_checkpoint IN ('KHUON','MUC')) AS moc_dot_kt,
@@ -81,8 +82,12 @@ const LAT_READY = (pinCol) => `LEFT JOIN LATERAL (
 // Mốc "kỹ thuật làm xong" — khách II/AD chỉ cần Mực, còn lại cần đủ Khuôn + Mực.
 // ⚠ Khớp theo `ten_khach_hang` Y HỆT `utils/tech.js` (ERP set ma = ten; đối chiếu prod: đúng 2 khách
 //   `II`/`AD`, ma = ten). Trước đây dùng `ma_khach_hang` — cùng kết quả nhưng lệch nguồn luật.
-const MOC_KT_XONG = "CASE WHEN kh.ten_khach_hang = ANY(" + KH_MIEN_KHUON + ") THEN rdy.moc_muc"
-  + ' WHEN rdy.n_km = 2 THEN rdy.moc_km END';
+// ⚠ 16/11/2026: theo YÊU CẦU KT của công đoạn Ép/Logo (tính chất in — `tech.mocKtXongDotSql` có phần in); không cần mục nào
+//   ⇒ xong lúc đợt sống mới nhất lên READY. Luật chung (Khuôn + Mực; II/AD chỉ Mực) cho ra đúng như công thức cũ
+//   (`CASE WHEN khách II/AD THEN moc_muc WHEN n_km = 2 THEN moc_km END`).
+const VAO_READY_PIN = `(SELECT max(COALESCE(zvr.tg_chuyen_ready, zvr.created_date)) FROM dot_vai_ve zvr
+  WHERE zvr.phan_in_id = pin.id AND zvr.trang_thai NOT IN ('DA_GOP','DA_HUY'))`;
+const MOC_KT_XONG = mocKtXongDotSql('kh.ten_khach_hang', 'rdy.moc_khuon', 'rdy.moc_muc', 'pin.id', VAO_READY_PIN);
 
 // ⚠⚠ LỐI THOÁT THỨ HAI CỦA READY — "đã release nên rời màn" (fix 16/08/2026).
 // Bản đầu chỉ cho READY một lối ra duy nhất (đủ mục KT / QC xác nhận) ⇒ phần in được release THẲNG
@@ -202,10 +207,9 @@ const NGUON_TEM = ({ tgVao, tgRa, dk, them = '' }) => `SELECT dv.phan_in_id, ${t
 const MOC_VAO_TEM = {
   // KCS: tem KHÔ xong (vào hàng đợi kiểm); chưa qua xe phơi ⇒ lúc in tem.
   KIEM: (t) => `COALESCE((SELECT max(zmt1.tg_kt_phoi) FROM tem_xe_phoi zmt1 WHERE zmt1.tem_id = ${t}.id), ${t}.created_date)`,
-  // Sửa: lần KCS ĐẦU có hàng phải sửa. COALESCE mốc in tem: `sl_kcs_sua` có thể do Phân loại lỗi GHI ĐÈ mà
-  //   dòng `kcs` không có `so_luong_loi`.
-  SUA: (t) => `COALESCE((SELECT min(zmt2.created_date) FROM kcs zmt2 WHERE zmt2.tem_id = ${t}.id
-    AND COALESCE(zmt2.so_luong_loi,0) > 0), ${t}.created_date)`,
+  // Sửa (14/11/2026): tem chỉ vào Sửa khi đã PHÂN LOẠI LỖI + NHẬN SỬA ⇒ mốc = lượt nhận mở lô đang sửa (`tem.tg_nhan_sua`,
+  //   mig 132); chưa có ⇒ lúc phân loại xong (luật trước mig 132). Luật ở `utils/choSua.js`.
+  SUA: (t) => mocVaoLoSuaSql(t),
   // OQC: lần ĐẦU có hàng ĐẠT (KCS hoặc Sửa). Hàng GIA CÔNG không có dòng `kcs` (seed sẵn `sl_kcs_dat`) ⇒ mốc in tem.
   // ⚠ Bỏ lượt KCS một phần đã tách sang tem 17 (mig 122): hàng lượt đó đi OQC trên tem 17 (mốc = lúc tạo tem 17). Không bỏ
   //   thì phần còn lại của tem gốc bị đo từ lượt đầu ⇒ vừa kiểm xong đã "nghẽn" ở OQC.
@@ -329,7 +333,7 @@ const DV = {
     LEFT JOIN LATERAL (SELECT sum(xlsd.so_luong)::int AS da_release,
         max(xls.created_date) AS tg_release_cuoi
       FROM lenh_sx_dot_vai xlsd JOIN lenh_san_xuat xls ON xls.id = xlsd.lenh_san_xuat_id
-      WHERE xlsd.dot_vai_ve_id = dv.id AND xls.trang_thai <> 'HUY' AND xls.giai_doan IS DISTINCT FROM 'EP_UI') rel ON true
+      WHERE xlsd.dot_vai_ve_id = dv.id AND xls.trang_thai <> 'HUY' AND ${lenhChinhCuaDotSql('xls', 'dv', 'pin.luong_sx')}) rel ON true
     WHERE dv.trang_thai NOT IN ('DA_GOP','DA_HUY') AND dv.tg_chuyen_ready IS NOT NULL`,
 
   // KẾ HOẠCH TẠM (mig 058): lập kế hoạch SỚM cho đợt vải chưa QC. Vào = lần LƯU gần nhất,
@@ -351,17 +355,17 @@ const DV = {
       cs.ma_chuyen, lct.ma_loai AS ma_loai_chuyen,
       COALESCE(kht.ngay_ke_hoach, kt.ngay_kh_audit) AS ngay_ke_hoach,
       rel.tg_release_cuoi AS ngay_release, NULL::text AS ma_tem
-    FROM (SELECT xa.id_ban_ghi,
+    FROM (SELECT xa.id_ban_ghi, COALESCE(xa.gia_tri_moi->>'giai_doan', 'IN') AS gd,
             max(xa.thoi_gian) FILTER (WHERE xa.hanh_dong = 'LUU_KE_HOACH_TAM') AS moc_vao,
             max(xa.thoi_gian) FILTER (WHERE xa.hanh_dong IN ('XAC_NHAN_KE_HOACH_TAM','XOA_KE_HOACH_TAM')) AS moc_ra,
             (array_agg((xa.gia_tri_moi->>'ngay_ke_hoach')::date ORDER BY xa.thoi_gian DESC)
                FILTER (WHERE xa.gia_tri_moi->>'ngay_ke_hoach' IS NOT NULL))[1] AS ngay_kh_audit,
             (array_agg(xa.gia_tri_moi->>'chuyen_id' ORDER BY xa.thoi_gian DESC)
                FILTER (WHERE xa.gia_tri_moi->>'chuyen_id' IS NOT NULL))[1] AS chuyen_id_audit
-          FROM audit_log xa WHERE xa.ten_bang = 'ke_hoach_tam' AND COALESCE(xa.gia_tri_moi->>'giai_doan', 'IN') = 'IN'
-          GROUP BY xa.id_ban_ghi) kt
+          FROM audit_log xa WHERE xa.ten_bang = 'ke_hoach_tam'
+          GROUP BY xa.id_ban_ghi, 2) kt
     JOIN dot_vai_ve dv ON dv.id::text = kt.id_ban_ghi
-    JOIN phan_in pin ON pin.id = dv.phan_in_id AND pin.dang_hoat_dong
+    JOIN phan_in pin ON pin.id = dv.phan_in_id AND pin.dang_hoat_dong AND kt.gd = ${gdChinhDotSql('dv', 'pin.luong_sx')}
     LEFT JOIN ke_hoach_tam kht ON kht.dot_vai_ve_id = dv.id AND kht.trang_thai = 'CHO' AND ${KHT_PHAN_IN('kht')}
     LEFT JOIN chuyen_san_xuat cs ON cs.id = COALESCE(kht.chuyen_id, kt.chuyen_id_audit::uuid)
     LEFT JOIN loai_chuyen lct ON lct.id = cs.loai_chuyen_id
@@ -432,15 +436,13 @@ const DV = {
              WHERE xk.tem_id = t.id) kc ON true`,
   }),
 
-  // Sửa: vào = lần KCS đầu tiên có hàng phải sửa, ra = sửa hết phần chờ.
-  // ⚠ COALESCE về mốc tạo tem: `sl_kcs_sua` có thể do màn "Phân loại lỗi" GHI ĐÈ mà dòng `kcs`
-  //   tương ứng không có `so_luong_loi` — thiếu mốc vào thì cả tem bị loại khỏi sĩ số, im lặng.
+  // Sửa (14/11/2026 — luật `utils/choSua.js`): chỉ hàng ĐÃ NHẬN SỬA. Vào = lượt nhận mở lô đang sửa (`tg_nhan_sua`),
+  //   ra = sửa hết phần đã nhận (phần CHỜ NHẬN không tính — nó ở trang Chờ nhận sửa). Chưa chạy mig 132 ⇒ đã nhận =
+  //   toàn bộ phần sửa (luật cũ). Tem nhận nhiều lô: khoảng đo theo lô HIỆN TẠI (ngày cũ là xấp xỉ, như OQC trả về).
   SUA: NGUON_TEM({
     tgVao: MOC_VAO_TEM.SUA('t'),
-    tgRa: `CASE WHEN COALESCE(t.sl_kcs_sua,0)
-                     - (COALESCE(t.sl_sua_dat,0)+COALESCE(t.sl_sua_huy,0)) <= 0
-                THEN sa.moc_sua END`,
-    dk: "t.trang_thai <> 'HUY' AND COALESCE(t.sl_kcs_sua,0) > 0",
+    tgRa: `CASE WHEN ${dangSuaJ('t')} <= 0 THEN COALESCE(GREATEST(sa.moc_sua, ${tgNhanJ('t')}), t.updated_date) END`,
+    dk: `t.trang_thai <> 'HUY' AND COALESCE(t.sl_kcs_sua,0) > 0 AND ${nhanJ('t')} > 0 AND ${vaoSuaDuocSql('t')}`,
     them: `LEFT JOIN LATERAL (SELECT max(xs.created_date) AS moc_sua FROM sua xs
              WHERE xs.tem_id = t.id) sa ON true`,
   }),

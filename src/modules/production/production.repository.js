@@ -851,7 +851,7 @@ async function listCancelableTem({ search = '', offset = 0, limit = 50 }) {
            OR ${lenhPhanInMatch('ls.id', '$1')})`;
   const dataSql = `
     SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.created_date,
-           ls.id AS lenh_id, ls.ma_lenh_san_xuat, ps.id AS phieu_id,
+           ls.id AS lenh_id, ls.ma_lenh_san_xuat, ps.id AS phieu_id, ls.giai_doan, info.luong_sx,
            cs.ma_chuyen, cs.ten_chuyen,
            info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan,
            info.mau_vai, info.kich_vai, info.kich_phim,
@@ -956,6 +956,13 @@ async function listTemDaIn({
   const JOIN_KHUNG = dk.some((x) => /\binfo\./.test(x)) ? JOIN_GOC : JOIN_GOC.replace(PHAN_INFO_LATERAL, '');
   const FROM = `${JOIN_KHUNG} ${WHERE_GOC}`;
   const cotMaLo = (await temCoCot('ma_lo')) ? 't.ma_lo' : 'NULL::text AS ma_lo';   // mig 114
+  // SL bổ sung do công ty / khách CỦA TEM (mig 135) + lệnh có đợt vải BỔ SUNG không (sidebar + Sửa tem chỉ hiện khi có).
+  const coBsTem = await temCoCotBoSung();
+  const cotBsTem = `${coBsTem ? 't.sl_bo_sung_cty, t.sl_bo_sung_khach' : 'NULL::int AS sl_bo_sung_cty, NULL::int AS sl_bo_sung_khach'},
+           ${coBsTem} AS co_bs_tem,
+           EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsb JOIN dot_vai_ve dvb ON dvb.id = lsb.dot_vai_ve_id
+                     JOIN loai_dot_vai ldb ON ldb.id = dvb.loai_dot_vai_id AND ldb.ma_loai = 'BO_SUNG'
+                    WHERE lsb.lenh_san_xuat_id = ls.id) AS co_dot_bo_sung`;
   const { soVai, ERP_VAI_LATERAL } = await vaiTemSql();
   // Chọn trang TRƯỚC (chỉ khóa + cột sắp xếp), rồi mới tính nhãn phần in · sự kiện hủy · số ERP cho đúng các tem của trang.
   const dataSql = `
@@ -970,10 +977,10 @@ async function listTemDaIn({
              + COALESCE(t.sl_oqc_dat,0) + COALESCE(t.sl_da_giao,0)) > 0 AS da_kiem,
            COALESCE(${MO_LAI_DUOC_SQL}, false) AS mo_lai_duoc,
            to_char(t.gio_sx_bd, 'HH24:MI') AS gio_sx_bd, to_char(t.gio_sx_kt, 'HH24:MI') AS gio_sx_kt,
-           t.btp_truoc, t.btp_cuoi, t.gc_mau_vai,
+           t.btp_truoc, t.btp_cuoi, t.gc_mau_vai, ${cotBsTem},
            t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy, t.sl_sua_dat, t.sl_sua_huy,
            t.sl_oqc_dat, t.sl_da_giao, t.sl_chenh_lech,
-           ls.id AS lenh_id, ls.ma_lenh_san_xuat, ps.id AS phieu_id,
+           ls.id AS lenh_id, ls.ma_lenh_san_xuat, ps.id AS phieu_id, ls.giai_doan, info.luong_sx,
            cs.ma_chuyen, cs.ten_chuyen, lc.ma_loai AS ma_loai_chuyen,
            info.phan_in_id, info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan,
            info.mau_vai, info.kich_vai, info.kich_phim, info.tinh_chat_in, info.mau_in, info.do_in,
@@ -1183,8 +1190,9 @@ async function logGopLenhTx(client, lenhId, hanhDong, cu, moi, actorId) {
 async function docTemSuaTx(client, temId) {
   const cotLo = (await temCoCot('ma_lo')) ? 't.ma_lo' : 'NULL::text AS ma_lo';
   const cotGc = (await temCoCotGcMauVai()) ? 't.gc_mau_vai' : 'NULL::text AS gc_mau_vai';
+  const cotBs = (await temCoCotBoSung()) ? 't.sl_bo_sung_cty, t.sl_bo_sung_khach' : 'NULL::int AS sl_bo_sung_cty, NULL::int AS sl_bo_sung_khach';
   const { rows } = await client.query(
-    `SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.phieu_san_xuat_id, t.tem_goc_id, t.ma_ngay_ca, ${cotLo}, ${cotGc},
+    `SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.phieu_san_xuat_id, t.tem_goc_id, t.ma_ngay_ca, ${cotLo}, ${cotGc}, ${cotBs},
             COALESCE(t.btp_truoc, false) AS btp_truoc,
             to_char(t.ngay_ca, 'YYYY-MM-DD') AS ngay_ca,
             to_char(t.gio_sx_bd, 'HH24:MI') AS gio_sx_bd, to_char(t.gio_sx_kt, 'HH24:MI') AS gio_sx_kt,
@@ -1214,6 +1222,9 @@ async function capNhatTemSuaTx(client, temId, d, actorId) {
   if ('gioKt' in d) dat('gio_sx_kt', d.gioKt, '::time');
   if ('chuyenRiengId' in d) dat('chuyen_id', d.chuyenRiengId, '::uuid');
   if ('gcMauVai' in d) dat('gc_mau_vai', d.gcMauVai);
+  // SL bổ sung do công ty / khách CỦA TEM (mig 135) — service đã kiểm có cột.
+  if ('slBsCty' in d) dat('sl_bo_sung_cty', d.slBsCty);
+  if ('slBsKhach' in d) dat('sl_bo_sung_khach', d.slBsKhach);
   if (!sets.length) return;
   await client.query(`UPDATE tem SET ${sets.join(', ')}, updated_date = CURRENT_TIMESTAMP, updated_by = $2 WHERE id = $1`, p);
   // Tem 17 của tem này đi cùng chuyền (cùng phiếu, mỗi tem con mang giá trị riêng).
@@ -1680,6 +1691,8 @@ async function temCoCot(ten) {
 const temCoCotNgayCa = () => temCoCot('ngay_ca');       // mig 066
 const temCoCotMaNgayCa = () => temCoCot('ma_ngay_ca');  // mig 068
 const temCoCotGcMauVai = () => temCoCot('gc_mau_vai');  // mig 071
+// SL bổ sung do công ty / khách THEO TỪNG TEM (mig 135, 16/11/2026) — trước đó số nằm ở đợt vải (`dot_vai_ve.sl_bo_sung_*`).
+const temCoCotBoSung = () => temCoCot('sl_bo_sung_cty');
 
 // ─── MÃ LÔ của tem sản xuất (mig 114: cột `tem.ma_lo` + bảng đếm `tem_lo_counter`, 13/10/2026) ───────────────
 // Cả cột lẫn bảng đếm cùng 1 migration; chỉ nhớ khi ĐÃ có (chạy mig xong là nhận ngay, không cần restart BE).
@@ -1725,7 +1738,8 @@ async function capMaLo(client, { maNgayCa, maTem }) {
 // `congDoanDau` · `loaiKiengId` · `heSoKieng` (mig 126) · `slKieng` (mig 127): tem công đoạn đầu (không vào KCS) + loại /
 //   hệ số / SL kiếng người in nhập của tem in kiếng — chỉ ghi cột khi có giá trị (tem thường không đụng cột mới);
 //   chưa chạy mig 127 ⇒ bỏ cột SL kiếng (tem vẫn in, ERP nhận số tự tính — `erpGhiInTem.taoPayload`).
-async function createTem(client, { phieuId, maTem, soLuong, ngayCa, maNgayCa, gioBd, gioKt, btpTruoc, btpCuoi, gcMauVai, congDoanDau, loaiKiengId, heSoKieng, slKieng }, actorId) {
+// `slBsCty` · `slBsKhach` (mig 135): SL bổ sung do công ty / khách của CHÍNH tem này (null = không nhập).
+async function createTem(client, { phieuId, maTem, soLuong, ngayCa, maNgayCa, gioBd, gioKt, btpTruoc, btpCuoi, gcMauVai, congDoanDau, loaiKiengId, heSoKieng, slKieng, slBsCty, slBsKhach }, actorId) {
   const base = [phieuId, maTem, soLuong, actorId];
   if (await temCoCotNgayCa()) {
     const coMa = await temCoCotMaNgayCa();
@@ -1738,6 +1752,9 @@ async function createTem(client, { phieuId, maTem, soLuong, ngayCa, maNgayCa, gi
     if (loaiKiengId) {
       cot.push('loai_kieng_id'); val.push(loaiKiengId); cot.push('he_so_kieng'); val.push(heSoKieng);
       if (slKieng != null && (await temCoCot('so_luong_kieng'))) { cot.push('so_luong_kieng'); val.push(slKieng); }
+    }
+    if ((slBsCty != null || slBsKhach != null) && (await temCoCotBoSung())) {
+      cot.push('sl_bo_sung_cty'); val.push(slBsCty ?? null); cot.push('sl_bo_sung_khach'); val.push(slBsKhach ?? null);
     }
     const maLo = await capMaLo(client, { maNgayCa, maTem });
     if (maLo) { cot.push('ma_lo'); val.push(maLo); }
@@ -1908,6 +1925,11 @@ async function duLieuGhiInTem(capTem = [], ngayCt = null) {
   //   `IDDotNhanvai`. Lệnh 1 phần in luôn xét MỨC LỆNH (khớp "Gửi lại" — `guiLai` không truyền đợt; và in nhiều tem 1 lượt
   //   chưa có dòng SF0 của tem cùng lượt). Tem bị hủy ⇒ tem kế tiếp thành tem đầu (lần gửi sau). Chưa có cột ⇒ 0.
   const coSlBs = await coCotSlBoSung();
+  // ⚠ 16/11/2026 (mig 135, người dùng chốt "theo từng 1 tem"): có cột `tem.sl_bo_sung_*` ⇒ MỖI TEM gửi số của CHÍNH nó
+  //   (`co_bs_tem`, `erpGhiInTem.taoPayload`); luật "Σ đợt ở tem đầu" bên dưới chỉ còn cho DB chưa chạy mig 135.
+  const coBsTem = await temCoCotBoSung();
+  const cotBsTem = coBsTem ? 't.sl_bo_sung_cty AS tem_bs_cty, t.sl_bo_sung_khach AS tem_bs_khach, true AS co_bs_tem'
+    : 'NULL::int AS tem_bs_cty, NULL::int AS tem_bs_khach, false AS co_bs_tem';
   const cotBs = coSlBs
     ? 'COALESCE(SUM(dv.sl_bo_sung_cty), 0)::int AS cty, COALESCE(SUM(dv.sl_bo_sung_khach), 0)::int AS khach'
     : '0 AS cty, 0 AS khach';
@@ -1937,7 +1959,7 @@ async function duLieuGhiInTem(capTem = [], ngayCt = null) {
            ${PCT_CHUYEN_TRUONG} AS chuyen_truong, ndct.ho_ten AS ca_truong, ndct.ten_dang_nhap AS ca_truong_msnv,
            ${PCT_THO_IN(',')} AS tho_in,
            info.barcode AS id_dot_nhan_vai, info.ddh_sub_id, info.ddh_id, info.la_bo_sung,
-           bs.cty AS sl_bs_cty, bs.khach AS sl_bs_khach,
+           bs.cty AS sl_bs_cty, bs.khach AS sl_bs_khach, ${cotBsTem},
            (t.tem_goc_id IS NULL AND NOT EXISTS (
               SELECT 1 FROM tem t2 JOIN phieu_san_xuat p2 ON p2.id = t2.phieu_san_xuat_id
                WHERE p2.lenh_san_xuat_id = ps.lenh_san_xuat_id AND t2.id <> t.id AND t2.tem_goc_id IS NULL
@@ -2667,7 +2689,8 @@ async function setLyDoBoSungChoDotVai(dotVaiId, { lyDoId, ghiChu, slCty, slKhach
     set.push(`ly_do_bo_sung_id = $${vals.push(lyDoId || null)}`);
     set.push(`ghi_chu_bo_sung = $${vals.push(ghiChu || null)}`);
   }
-  if (coSl) {
+  // `slCty`/`slKhach` undefined (16/11/2026 — SL bổ sung nay theo tem, giao diện chỉ gửi ghi chú) ⇒ giữ nguyên 2 cột của đợt.
+  if (coSl && (slCty !== undefined || slKhach !== undefined)) {
     set.push(`sl_bo_sung_cty = $${vals.push(slCty == null ? null : slCty)}`);
     set.push(`sl_bo_sung_khach = $${vals.push(slKhach == null ? null : slKhach)}`);
   }
@@ -2677,6 +2700,36 @@ async function setLyDoBoSungChoDotVai(dotVaiId, { lyDoId, ghiChu, slCty, slKhach
     vals
   );
   return { ghiLyDo: coLyDo, ghiSl: coSl };
+}
+
+// ĐỢT VẢI BỔ SUNG (loại BO_SUNG) của lệnh chứa tem + SL bổ sung do Công ty / Khách đã ghi (16/11/2026 — Sửa tem ở Danh sách
+//   tem in). Chỉ đợt BO_SUNG vì phiếu in tem SF0 chỉ cộng các đợt này (`duLieuGhiInTem` `bs`). Chưa chạy mig 079 ⇒ [].
+async function dotBoSungCuaTem(temId, client = null) {
+  if (!(await coCotSlBoSung())) return [];
+  const run = client ? client.query.bind(client) : query;
+  const { rows } = await run(
+    `SELECT dv.id AS dot_vai_ve_id, dv.ma_dot_vai, pin.ma_phan, dv.so_luong_vai_ve, dv.sl_bo_sung_cty, dv.sl_bo_sung_khach,
+            ls.id AS lenh_id
+       FROM tem t
+       JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+       JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+       JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = COALESCE(ls.lenh_lien_ket_id, ls.id)
+       JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+       JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id AND ldv.ma_loai = 'BO_SUNG'
+       JOIN phan_in pin ON pin.id = dv.phan_in_id
+      WHERE t.id = $1 ORDER BY dv.ma_dot_vai`.replace(/\s+/g, ' '), [temId]);
+  return rows;
+}
+async function datSlBoSungTx(client, dotVaiId, { slCty, slKhach }, actorId) {
+  await client.query(`UPDATE dot_vai_ve SET sl_bo_sung_cty = $2, sl_bo_sung_khach = $3, updated_by = $4,
+      updated_date = CURRENT_TIMESTAMP WHERE id = $1`.replace(/\s+/g, ' '), [dotVaiId, slCty, slKhach, actorId || null]);
+}
+// Tem 15 SỐNG của lệnh (mọi phiếu) — tìm tem đầu mang số bổ sung sang ERP sau khi sửa.
+async function temSongCuaLenh(lenhId) {
+  const { rows } = await query(`SELECT t.id FROM tem t JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+     WHERE ps.lenh_san_xuat_id = $1 AND t.tem_goc_id IS NULL AND t.trang_thai <> 'HUY' AND t.ma_tem NOT LIKE 'HT-%'`
+    .replace(/\s+/g, ' '), [lenhId]);
+  return rows.map((r) => r.id);
 }
 
 // Thông tin bổ sung đã ghi của các đợt vải trong 1 lệnh — sidebar hiện lại giá trị đã lưu.
@@ -2874,7 +2927,7 @@ module.exports = {
   SU_KIEN_CUOI_LATERAL, MO_LAI_DUOC_SQL,
   // Vải hủy / thiếu theo tem (21/10/2026, mig 118) + số chờ gắn tem của phiếu.
   vaiHuyCoCotTem, vaiTemSql, docVaiChoTem, ghiVaiChoTem, vaiCuaTem, vaiErpCuaTem, logSuaVaiTem,
-  temCoCot,
+  temCoCot, temCoCotBoSung,
   getVuotContext, listUnreleasedDotVaiForPhanIn, incLenhRelease, insertVuotHistory,
   listProductionCandidates, getPrintedTotal, getPrintedTach, getDefaultXePhoi, nextMaPhieu, createPhieu, setLenhChuyen, setLenhTrangThai, getLenhBasic,
   setPhieuChuyen, getChuyenById, logDoiChuyen,
@@ -2900,5 +2953,5 @@ module.exports = {
   docLenhTachTx, tachLenhNgcTx,
   listToIn, createToIn, updateToIn, setToInActive, existsMaToIn, getToIn, phieuCoCotToIn, dongBoToInTuCsx,
   listLyDoBoSung, createLyDoBoSung, updateLyDoBoSung, setLyDoBoSungActive, existsMaLyDoBoSung,
-  getLyDoBoSung, setLyDoBoSungChoDotVai, lyDoBoSungByLenh,
+  getLyDoBoSung, setLyDoBoSungChoDotVai, lyDoBoSungByLenh, dotBoSungCuaTem, datSlBoSungTx, temSongCuaLenh,
 };

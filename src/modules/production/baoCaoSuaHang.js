@@ -18,6 +18,7 @@ const { MOC_VAO_TEM } = require('../../utils/siSoTram');
 const { coPhanLoaiLoi } = require('./baoCaoKiemHang');
 const { thoInPhieuSql } = require('../../utils/thoIn');
 const { coCotThoInKh } = require('../../utils/thoInKeHoach');
+const { coNhanSua, dangSuaSql } = require('../../utils/choSua');
 
 const VN = "AT TIME ZONE 'Asia/Ho_Chi_Minh'";
 const W0 = `(($1::date + time '06:00') ${VN})`;
@@ -41,9 +42,17 @@ async function docTem(tuNgay, denNgay) {
     ? `LEFT JOIN LATERAL (SELECT sum(c.so_luong_sua)::int AS pll_sua, sum(c.so_luong_huy)::int AS pll_huy
       FROM phan_loai_loi p JOIN phan_loai_loi_ct c ON c.phan_loai_loi_id = p.id WHERE p.tem_id = t.id) pll ON true`
     : 'LEFT JOIN LATERAL (SELECT NULL::int AS pll_sua, NULL::int AS pll_huy) pll ON true';
+  // 14/11/2026 — NHẬN SỬA (mig 132): có bảng ⇒ kèm lượt nhận (`nhan`), cờ dữ liệu cũ (`cu`), phần ĐANG SỬA (`dang_sua`).
+  const co = await coNhanSua();
+  const nhanCols = co
+    ? `, true AS co_nhan, ${dangSuaSql('t', true)} AS dang_sua,
+      EXISTS (SELECT 1 FROM nhan_sua zc WHERE zc.tem_id = t.id AND zc.loai = 'CU' AND NOT zc.da_huy) AS cu,
+      (SELECT json_agg(json_build_object('tg', n.created_date, 'sl', n.so_luong) ORDER BY n.created_date)
+        FROM nhan_sua n WHERE n.tem_id = t.id AND n.loai = 'NHAN' AND NOT n.da_huy) AS nhan`
+    : '';
   const sql = `WITH tk AS (SELECT k.tem_id FROM kcs k WHERE COALESCE(k.so_luong_loi,0) > 0 AND k.created_date < ${W1}
       UNION SELECT s.tem_id FROM sua s WHERE s.created_date < ${W1})
-    SELECT t.id AS tem_id, t.ma_tem, t.sl_kcs_sua, t.sl_sua_dat, t.sl_sua_huy, ${MOC_VAO_TEM.SUA('t')} AS tg_vao,
+    SELECT t.id AS tem_id, t.ma_tem, t.sl_kcs_sua, t.sl_sua_dat, t.sl_sua_huy, ${MOC_VAO_TEM.SUA('t')} AS tg_vao${nhanCols},
       ls.ma_lenh_san_xuat, cs.ma_chuyen, cs.ten_chuyen, lc.ma_loai AS ma_loai_chuyen,
       pi.phan_in_ids, pi.ma_phan, pi.khach, pi.po, pi.ma_hang, pi.mau_vai, pi.kich_vai, pi.kich_phim, pll.pll_sua, pll.pll_huy,
       ps.chuyen_truong, ${thoInPhieuSql('ps.id')} AS tho_in, ${colThoKh} AS tho_in_kh,
@@ -55,7 +64,8 @@ async function docTem(tuNgay, denNgay) {
         FROM sua s LEFT JOIN nguoi_dung nd ON nd.id = s.created_by WHERE s.tem_id = t.id AND ${chuaHuy('sua', 's')}) AS sua,
       (SELECT json_agg(r.created_date ORDER BY r.created_date) FROM qc_tra_ve r
         WHERE r.tem_id = t.id AND r.loai = 'OQC_SUA') AS tra_ve,
-      (SELECT json_agg(json_build_object('tg', a.thoi_gian, 'hd', a.hanh_dong, 'sl', a.gia_tri_moi->>'sl') ORDER BY a.thoi_gian)
+      (SELECT json_agg(json_build_object('tg', a.thoi_gian, 'hd', a.hanh_dong, 'sl', a.gia_tri_moi->>'sl',
+          'dn', a.gia_tri_moi->>'d_nhan') ORDER BY a.thoi_gian)
         FROM audit_log a WHERE a.ten_bang = 'tem' AND a.id_ban_ghi = t.id::text AND a.hanh_dong IN ${TEM_SUA_AUDIT}) AS huy_tem
     FROM (SELECT DISTINCT tem_id FROM tk) x
     JOIN tem t ON t.id = x.tem_id AND t.tem_goc_id IS NULL AND t.trang_thai <> 'HUY'
@@ -72,7 +82,8 @@ async function docTem(tuNgay, denNgay) {
       LEFT JOIN ma_hang mh ON mh.id = pin.ma_hang_id LEFT JOIN don_hang dh ON dh.id = mh.don_hang_id
       LEFT JOIN khach_hang kh ON kh.id = dh.khach_hang_id
       WHERE lsd.lenh_san_xuat_id = COALESCE(ls.lenh_lien_ket_id, ls.id)) pi ON true
-    WHERE (COALESCE(t.sl_kcs_sua,0) - COALESCE(t.sl_sua_dat,0) - COALESCE(t.sl_sua_huy,0)) > 0
+    WHERE ${co ? `${dangSuaSql('t', true)} > 0` : '(COALESCE(t.sl_kcs_sua,0) - COALESCE(t.sl_sua_dat,0) - COALESCE(t.sl_sua_huy,0)) > 0'}
+      ${co ? `OR EXISTS (SELECT 1 FROM nhan_sua n2 WHERE n2.tem_id = t.id AND n2.created_date >= ${W0})` : ''}
       OR EXISTS (SELECT 1 FROM kcs k2 WHERE k2.tem_id = t.id AND COALESCE(k2.so_luong_loi,0) > 0 AND k2.created_date >= ${W0})
       OR EXISTS (SELECT 1 FROM sua s2 WHERE s2.tem_id = t.id AND s2.created_date >= ${W0})
       OR EXISTS (SELECT 1 FROM qc_tra_ve r2 WHERE r2.tem_id = t.id AND r2.loai = 'OQC_SUA' AND r2.created_date >= ${W0})

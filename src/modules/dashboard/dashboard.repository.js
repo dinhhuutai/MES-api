@@ -15,7 +15,8 @@ const { kcsTachIdSql, slKcsTachSql } = require('../../utils/temCon');
 
 // "Đủ mục KT" (READY) trong flowRows: dùng cờ hk/hf/hm của CTE `kt` + tên khách của đợt (b.ten_khach_hang).
 // Khách II/AD: Khuôn không bắt buộc (chỉ cần Film + Mực). Xem utils/tech.js.
-const KT_DONE_FLOW = techDoneSql('b.ten_khach_hang', 'COALESCE(kt.hk,false)', 'COALESCE(kt.hf,false)', 'COALESCE(kt.hm,false)');
+// 16/11/2026: + phần in ⇒ yêu cầu KT của công đoạn Ép/Logo theo tính chất in (`tech.ktYcSql`).
+const KT_DONE_FLOW = techDoneSql('b.ten_khach_hang', 'COALESCE(kt.hk,false)', 'COALESCE(kt.hf,false)', 'COALESCE(kt.hm,false)', 'b.phan_in_id');
 
 // Đợt vải gắn lệnh trên chuyền loại GIA_CONG (gia công) — ở OQC KHÔNG tính SLA (sla_phut=0 ⇒ luôn OK).
 const GIA_CONG_DOT = (dv) => `EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id=lsd.lenh_san_xuat_id AND ls.trang_thai<>'HUY' JOIN chuyen_san_xuat cs ON cs.id=ls.chuyen_id JOIN loai_chuyen lc ON lc.id=cs.loai_chuyen_id WHERE lsd.dot_vai_ve_id=${dv} AND lc.ma_loai='GIA_CONG')`;

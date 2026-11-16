@@ -187,11 +187,12 @@ async function nhatKyIn(tuNgay, denNgay) {
   const { nhomCuaLoai, NHOM } = require('../../utils/baoCaoSanXuat');
   const { notCancelledQc } = require('../quality/quality.repository');
   const { soVai, ERP_VAI_LATERAL } = await repo.vaiTemSql();
-  const [coTo, coMaLo] = await Promise.all([repo.phieuCoCotToIn(), repo.temCoCot('ma_lo')]);
+  const [coTo, coMaLo, coBsTem] = await Promise.all([repo.phieuCoCotToIn(), repo.temCoCot('ma_lo'), repo.temCoCotBoSung()]);
   const sql = `
     SELECT t.id, t.ma_tem, t.so_luong, t.created_date, t.ma_ngay_ca, to_char(t.ngay_ca, 'YYYY-MM-DD') AS ngay_ca,
            to_char(t.gio_sx_bd, 'HH24:MI') AS gio_sx_bd, to_char(t.gio_sx_kt, 'HH24:MI') AS gio_sx_kt,
            t.btp_truoc, t.btp_cuoi, ${coMaLo ? 't.ma_lo' : 'NULL::text AS ma_lo'},
+           ${coBsTem ? 't.sl_bo_sung_cty, t.sl_bo_sung_khach' : 'info.dv_bs_cty AS sl_bo_sung_cty, info.dv_bs_khach AS sl_bo_sung_khach'},
            ${soVai('HUY', 'Soluongloi')} AS vai_hu, ${soVai('THIEU', 'SOLUONGTHIEU')} AS vai_thieu,
            erpv.id_mes, erpv.erp_ok, erpv.gui->>'Ngayct' AS ngay_ct_erp,
            ls.id AS lenh_id, ls.ma_lenh_san_xuat, cs.ma_chuyen, cs.ten_chuyen, lc.ma_loai AS ma_loai_chuyen,
@@ -216,7 +217,7 @@ async function nhatKyIn(tuNgay, denNgay) {
         SELECT kh.ten_khach_hang, dh.ma_don_hang, dh.so_po, dh.ddh_id, mh.ma_hang,
                pin.id AS phan_in_id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.mau_in, pin.do_in,
                pin.tinh_chat_in, pin.ddh_sub_id, pin.barcode AS barcode_phan_in,
-               dv.han_giao_hang, dv.nha_gia_cong, dv.sl_bo_sung_cty, dv.sl_bo_sung_khach, ldv.ten_loai AS loai_dot_vai
+               dv.han_giao_hang, dv.nha_gia_cong, dv.sl_bo_sung_cty AS dv_bs_cty, dv.sl_bo_sung_khach AS dv_bs_khach, ldv.ten_loai AS loai_dot_vai
           FROM lenh_sx_dot_vai lsd
           JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
           JOIN phan_in pin ON pin.id = dv.phan_in_id

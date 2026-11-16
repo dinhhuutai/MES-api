@@ -117,6 +117,11 @@ async function main() {
   console.log(`\nXong: gửi được ${ok}/${ds.length}${loi.length ? ` · lỗi ${loi.length} (hàng đợi tự gửi lại sẽ thử tiếp; hoặc gửi tay ở Cài đặt API › Lịch sử)` : ''}`);
 }
 
-main()
-  .catch((e) => { console.error(`[su6] ✗ ${e.message}`); process.exitCode = 1; })
-  .finally(() => pool.end().catch(() => {}));
+if (require.main === module) {
+  main()
+    .catch((e) => { console.error(`[su6] ✗ ${e.message}`); process.exitCode = 1; })
+    .finally(() => pool.end().catch(() => {}));
+}
+
+// Câu chọn phiếu dùng lại ở bộ sinh script SQL Server (`taoSqlServerGuiLai.js`).
+module.exports = { SQL_PHIEU_PLL: SQL };

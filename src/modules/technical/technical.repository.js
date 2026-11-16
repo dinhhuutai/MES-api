@@ -8,11 +8,15 @@ const { dkTrang } = require('../../utils/phuongAnIn');
 //   `listConfirmHistory` / `doneByDate`. Luật loại-khỏi-số-liệu vẫn còn hiệu lực ở sĩ số + báo cáo.
 // ⚠ `conDotChoQcSql` KHÔNG import ở đây nữa (23/09/2026): màn QC dùng chung vị từ với màn Kỹ thuật —
 //   xem ghi chú ở `OUTER_WHERE`. Helper đó nay chỉ còn phục vụ dải "Theo dõi" (`utils/siSoTram.js`).
-const { techDoneSql, KHUON_OPT_SQL_LIST, nguoiXacNhanSql, conDotChuaReadySql, qcDotSql, qcMoLaiSql, hanGiaoReadySql, hanGiaoReadyTaiMocSql, gioLenMesTaiMocSql, qcXacNhanPhanInSql, ktTraVeSql } = require('../../utils/tech');
+const { techDoneSql, ktYcSql, ktEpSql, ktHsktSql, hsktDatPinSql, KHUON_OPT_SQL_LIST, nguoiXacNhanSql, conDotChuaReadySql, qcDotSql, qcMoLaiSql, hanGiaoReadySql, hanGiaoReadyTaiMocSql, gioLenMesTaiMocSql, qcXacNhanPhanInSql, ktTraVeSql } = require('../../utils/tech');
 const { slaReadySql, slaQcReadySql, slaReadyHanSql, canhBaoReadyHanSql, giaHanTraVeKtSql } = require('../../utils/slaTheoGio');
 // Phần in đang được trả về GIAO NHẬN sửa thông tin ⇒ rời màn READY cho tới khi GN xác nhận lại.
 const { CHO_GN_SQL } = require('../../utils/traVeGn');
 const { mauTim } = require('../../utils/timKiem');
+// READY theo công đoạn (14/11/2026): `gd` ở module này = BỘ checklist đang xem ('IN' bộ gốc · 'EP_UI' bộ Ép/Logo).
+// `dotOBoSql` / `lenhDotGdDk` (16/11/2026): đợt của phần in kiếng ủi thuộc 1 công đoạn theo loaikd ⇒ chỉ nằm ở dòng READY của
+//   công đoạn đó, "đã release" = lệnh của chính công đoạn đó (luật `utils/readyCongDoan.js`).
+const { GD_IN, GD_EP, chuanGd, lenhGdDk, coDongReadySql, dotOBoSql, lenhDotGdDk } = require('../../utils/readyCongDoan');
 const LS = require('../../utils/lichSuTim');
 const { sqlKhopMa } = require('../../utils/maPhanIn');
 
@@ -44,10 +48,11 @@ async function loadReadyConfig() {
 async function listCandidates({
   search = '', inputIds = [], qcId, khuonId, filmId, mucId,
   onlyQcReady = false, offset = 0, limit = 20, readySla = null, readyCanhBao = null,
-  qcSla = null, qcCanhBao = null, techTotal = 3,
+  qcSla = null, qcCanhBao = null, techTotal = 3, qcMa = 'QC_XAC_NHAN', gd: gdVao = GD_IN,
 }) {
+  const gd = chuanGd(gdVao);
   // Cùng 1 hàm phục vụ 2 màn: READY (Chuẩn bị kỹ thuật) và QC READY (Chất lượng) ⇒ 2 khóa cấu hình khác nhau.
-  const dkPain = await dkTrang(onlyQcReady ? 'CL_QC_READY' : 'KT_READY', 'pin', 'pin.id');
+  const dkPain = await dkTrang(onlyQcReady ? 'CL_QC_READY' : 'KT_READY', 'pin', 'pin.id', gd === GD_EP ? { gd: `'${GD_EP}'` } : {});
   const SEARCH = `($1 = '' OR pin.ma_phan ~* $1 OR kh.ten_khach_hang ~* $1
                   OR dh.ma_don_hang ~* $1 OR mh.ma_hang ~* $1
                   OR pin.mau_vai ~* $1 OR pin.kich_vai ~* $1
@@ -66,7 +71,7 @@ async function listCandidates({
            -- (tương đương code phần) · barcode = mã ĐỢT VẢI (IDDotReady), dùng chung nhiều phần in.
            pin.barcode AS barcode_phan_in,
            (SELECT string_agg(DISTINCT dvb.barcode, ',') FROM dot_vai_ve dvb WHERE dvb.phan_in_id = pin.id AND dvb.barcode IS NOT NULL) AS barcode,
-           pin.mau_vai, pin.mau_in, pin.kich_vai, pin.kich_phim,
+           pin.mau_vai, pin.mau_in, pin.kich_vai, pin.kich_phim, pin.luong_sx, pin.ep_truoc,
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
            (SELECT string_agg(DISTINCT gs.ma_set, ', ')
               FROM dot_vai_ve dv JOIN gom_set_dot_vai gsd ON gsd.dot_vai_ve_id = dv.id
@@ -74,9 +79,9 @@ async function listCandidates({
               WHERE dv.phan_in_id = pin.id) AS gom_set_list,
            (SELECT string_agg(DISTINCT ldv.ten_loai, ', ')
               FROM dot_vai_ve dv3 JOIN loai_dot_vai ldv ON ldv.id = dv3.loai_dot_vai_id
-              WHERE dv3.phan_in_id = pin.id AND dv3.trang_thai NOT IN ('DA_GOP','DA_HUY')) AS loai_dot_vai,
+              WHERE dv3.phan_in_id = pin.id AND dv3.trang_thai NOT IN ('DA_GOP','DA_HUY') AND ${dotOBoSql('dv3', gd, 'pin')}) AS loai_dot_vai,
            (SELECT COALESCE(SUM(dv4.so_luong_vai_ve), 0)::int FROM dot_vai_ve dv4
-              WHERE dv4.phan_in_id = pin.id AND dv4.trang_thai NOT IN ('DA_GOP','DA_HUY')) AS sl_vai_song,
+              WHERE dv4.phan_in_id = pin.id AND dv4.trang_thai NOT IN ('DA_GOP','DA_HUY') AND ${dotOBoSql('dv4', gd, 'pin')}) AS sl_vai_song,
            -- Hạn giao = của đợt ĐANG CHỜ (chưa release), lùi về mọi đợt còn hiệu lực — 25/09/2026: đợt bổ sung
            -- từng hiện hạn của đợt số lượng đã release từ lâu (min mọi đợt) nên SLA theo hạn tính sai.
            -- Luật ở utils/tech.js hanGiaoReadySql (dùng chung với bảng theo dõi Dashboard — 01/10/2026).
@@ -89,25 +94,28 @@ async function listCandidates({
            COALESCE(
              (SELECT max(dv5.tg_chuyen_ready) FROM dot_vai_ve dv5
                WHERE dv5.phan_in_id = pin.id AND dv5.trang_thai NOT IN ('DA_GOP','DA_HUY')
-                 AND dv5.tg_chuyen_ready IS NOT NULL
+                 AND dv5.tg_chuyen_ready IS NOT NULL AND ${dotOBoSql('dv5', gd, 'pin')}
                  AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsr JOIN lenh_san_xuat lr ON lr.id = lsr.lenh_san_xuat_id
-                                 WHERE lsr.dot_vai_ve_id = dv5.id AND lr.trang_thai <> 'HUY')),
+                                 WHERE lsr.dot_vai_ve_id = dv5.id AND lr.trang_thai <> 'HUY' AND ${lenhDotGdDk('lr', 'dv5', gd, 'pin')})),
              (SELECT max(dv6.tg_chuyen_ready) FROM dot_vai_ve dv6
                WHERE dv6.phan_in_id = pin.id AND dv6.trang_thai NOT IN ('DA_GOP','DA_HUY')
-                 AND dv6.tg_chuyen_ready IS NOT NULL)
+                 AND dv6.tg_chuyen_ready IS NOT NULL AND ${dotOBoSql('dv6', gd, 'pin')})
            ) AS tg_qua_ready,
            (SELECT count(*) FROM ket_qua_checkpoint k
               WHERE k.phan_in_id = pin.id AND k.checkpoint_id = ANY($2::uuid[]) AND k.trang_thai = 'DAT')::int AS n_tech_done,
            ${doneExpr('$3')} AS qc_done,
-           ${conDotChuaReadySql('pin.id')} AS con_dot_chua_ready,
+           ${conDotChuaReadySql('pin.id', qcMa, lenhDotGdDk('zls', 'zd', gd, 'pin'), dotOBoSql('zd', gd, 'pin'))} AS con_dot_chua_ready,
            EXISTS (SELECT 1 FROM dot_vai_ve dvr WHERE dvr.phan_in_id = pin.id AND dvr.trang_thai NOT IN ('DA_GOP','DA_HUY')
-                     AND dvr.tg_chuyen_ready IS NOT NULL
+                     AND dvr.tg_chuyen_ready IS NOT NULL AND ${dotOBoSql('dvr', gd, 'pin')}
                      AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsr2 JOIN lenh_san_xuat lr2 ON lr2.id = lsr2.lenh_san_xuat_id
-                                     WHERE lsr2.dot_vai_ve_id = dvr.id AND lr2.trang_thai <> 'HUY')) AS co_dot_chua_release${withItems ? `,
+                                     WHERE lsr2.dot_vai_ve_id = dvr.id AND lr2.trang_thai <> 'HUY' AND ${lenhDotGdDk('lr2', 'dvr', gd, 'pin')})) AS co_dot_chua_release${withItems ? `,
            ${doneExpr('$6')} AS khuon_done,
            ${doneExpr('$7')} AS film_done,
            ${doneExpr('$8')} AS muc_done,
-           ${techDoneSql('kh.ten_khach_hang', doneExpr('$6'), doneExpr('$7'), doneExpr('$8'))} AS tech_done` : ''},
+           ${hsktDatPinSql('pin.id', gd === 'EP_UI')} AS hskt_done,
+           ${techDoneSql('kh.ten_khach_hang', doneExpr('$6'), doneExpr('$7'), doneExpr('$8'), 'pin.id', gd === 'EP_UI')} AS tech_done` : ''},
+           ${ktYcSql('pin.id', gd === 'EP_UI')} AS kt_yc, ${ktEpSql('pin.id', gd === 'EP_UI')} AS kt_ep,
+           ${ktHsktSql('pin.id', gd === 'EP_UI')} AS kt_hskt,
            hs.phuong_an_in, hs.barcode_hskt, hs.hskt_id, hs.hskt_inset,
            sla.ready_tg_vao, sla.kt_done_tg, sla.qc_mo_lai_tg, sla.xn_sort_tg, sla.kt_tra_ve_tg
     FROM phan_in pin
@@ -134,7 +142,7 @@ async function listCandidates({
              ) AS ready_tg_vao,
              (SELECT max(COALESCE(k.tg_xac_nhan, k.created_date)) FROM ket_qua_checkpoint k
                 WHERE k.phan_in_id = pin.id AND k.checkpoint_id = ANY($2::uuid[]) AND k.trang_thai = 'DAT') AS kt_done_tg,
-             ${qcMoLaiSql('pin.id')} AS qc_mo_lai_tg,
+             ${qcMoLaiSql('pin.id', qcMa)} AS qc_mo_lai_tg,
              ${ktTraVeSql('pin.id')} AS kt_tra_ve_tg,
              -- xn_sort_tg = mốc "vừa được xác nhận" dùng ĐỂ SẮP XẾP màn Kỹ thuật — CHỈ tính KHUON ($6)
              -- và MUC ($8), CỐ Ý BỎ FILM ($7): xác nhận Film không được đẩy phần in lên đầu danh sách.
@@ -161,13 +169,16 @@ async function listCandidates({
     -- hoặc chưa có đợt nào) KHÔNG còn ở READY — đã bỏ nhánh cũ "chưa có đợt vải nào". Đợt DA_HUY cũng
     -- không còn giữ phần in ở lại READY. Gương y hệt: countReadyItems · siSoTram.LAT_ROI_READY · datasets.READY_MEMBER.
     WHERE (EXISTS (SELECT 1 FROM dot_vai_ve dvu WHERE dvu.phan_in_id = pin.id AND dvu.trang_thai NOT IN ('DA_GOP','DA_HUY') AND dvu.tg_chuyen_ready IS NOT NULL
+                     AND ${dotOBoSql('dvu', gd, 'pin')}
                      AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsu JOIN lenh_san_xuat lu ON lu.id = lsu.lenh_san_xuat_id
-                                     WHERE lsu.dot_vai_ve_id = dvu.id AND lu.trang_thai <> 'HUY'))
+                                     WHERE lsu.dot_vai_ve_id = dvu.id AND lu.trang_thai <> 'HUY' AND ${lenhDotGdDk('lu', 'dvu', gd, 'pin')}))
              OR EXISTS (SELECT 1 FROM dot_vai_ve dvt JOIN lenh_sx_dot_vai lst ON lst.dot_vai_ve_id = dvt.id
-                          JOIN lenh_san_xuat lt ON lt.id = lst.lenh_san_xuat_id AND lt.trang_thai = 'RELEASE_1'
+                          JOIN lenh_san_xuat lt ON lt.id = lst.lenh_san_xuat_id AND lt.trang_thai = 'RELEASE_1' AND ${lenhDotGdDk('lt', 'dvt', gd, 'pin')}
                          WHERE dvt.phan_in_id = pin.id AND dvt.trang_thai NOT IN ('DA_GOP','DA_HUY') AND dvt.tg_chuyen_ready IS NOT NULL
+                           AND ${dotOBoSql('dvt', gd, 'pin')}
                            AND NOT EXISTS (SELECT 1 FROM phieu_san_xuat pst WHERE pst.lenh_san_xuat_id = lt.id)))
       AND pin.dang_hoat_dong
+      AND ${coDongReadySql('pin', gd)}
       AND NOT ${CHO_GN_SQL('pin.id')}
       AND ${dkPain}
       AND ${SEARCH}`;
@@ -239,12 +250,12 @@ async function countReadyItems({ khuonId, filmId, mucId, qcId }) {
   const doneExpr = (param) =>
     `EXISTS (SELECT 1 FROM ket_qua_checkpoint k WHERE k.phan_in_id = pin.id AND k.checkpoint_id = ${param} AND k.trang_thai = 'DAT')`;
   const sql = `
-    SELECT count(*) FILTER (WHERE NOT khuon_done AND khach NOT IN (${KHUON_OPT_SQL_LIST}))::int AS khuon,
-           count(*) FILTER (WHERE NOT film_done AND khach NOT IN (${KHUON_OPT_SQL_LIST}))::int AS film,
-           count(*) FILTER (WHERE NOT muc_done)::int AS muc
+    SELECT count(*) FILTER (WHERE NOT khuon_done AND khach NOT IN (${KHUON_OPT_SQL_LIST}) AND yc NOT IN ('MUC','KHONG'))::int AS khuon,
+           count(*) FILTER (WHERE NOT film_done AND khach NOT IN (${KHUON_OPT_SQL_LIST}) AND NOT la_ep)::int AS film,
+           count(*) FILTER (WHERE NOT muc_done AND yc NOT IN ('KHUON','KHONG'))::int AS muc
     FROM (
       SELECT ${doneExpr('$1')} AS khuon_done, ${doneExpr('$2')} AS film_done, ${doneExpr('$3')} AS muc_done,
-             kh.ten_khach_hang AS khach
+             kh.ten_khach_hang AS khach, ${ktYcSql('pin.id')} AS yc, (pin.luong_sx = 'LOGO') AS la_ep
       FROM phan_in pin
       JOIN ma_hang mh ON mh.id = pin.ma_hang_id
       JOIN don_hang dh ON dh.id = mh.don_hang_id
@@ -433,7 +444,7 @@ async function doneByDate(date, scope = 'tech') {
                          ORDER BY tg_xac_nhan DESC NULLS LAST LIMIT 1) last ON true
       LEFT JOIN nguoi_dung nx ON nx.id = last.nguoi_xac_nhan_id
       WHERE (a.tg_done AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
-        AND ${techDoneSql('kh.ten_khach_hang', 'a.hk', 'a.hf', 'a.hm')}
+        AND ${techDoneSql('kh.ten_khach_hang', 'a.hk', 'a.hf', 'a.hm', 'a.phan_in_id')}
       ORDER BY a.tg_done DESC`;
   }
   const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [date]);
@@ -449,17 +460,17 @@ async function doneByDate(date, scope = 'tech') {
 // ⚠ "Chưa release" = đợt KHÔNG có lệnh non-HUY NÀO. Đợt release TỪNG PHẦN (còn `con_release` nhưng
 // đã có lệnh) KHÔNG tính là chưa release — phần đã release có thể đang chạy máy.
 // ⚠ Phần in CHƯA có đợt vải nào (kỹ thuật làm trước khi vải về) ⇒ `da_release=false` ⇒ vẫn hủy được.
-async function readyCancelState(phanInId) {
+async function readyCancelState(phanInId, gd = GD_IN) {
   const { rows } = await query(
     `SELECT
        EXISTS (SELECT 1 FROM dot_vai_ve dv JOIN lenh_sx_dot_vai lsd ON lsd.dot_vai_ve_id = dv.id
                JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
-               WHERE dv.phan_in_id = $1 AND ls.trang_thai <> 'HUY') AS da_release,
+               WHERE dv.phan_in_id = $1 AND ls.trang_thai <> 'HUY' AND ${dotOBoSql('dv', gd)} AND ${lenhDotGdDk('ls', 'dv', gd)}) AS da_release,
        EXISTS (SELECT 1 FROM dot_vai_ve dv
-               WHERE dv.phan_in_id = $1 AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY')
+               WHERE dv.phan_in_id = $1 AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY') AND ${dotOBoSql('dv', gd)}
                  AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsd2
                                  JOIN lenh_san_xuat ls2 ON ls2.id = lsd2.lenh_san_xuat_id
-                                 WHERE lsd2.dot_vai_ve_id = dv.id AND ls2.trang_thai <> 'HUY')) AS con_cho`
+                                 WHERE lsd2.dot_vai_ve_id = dv.id AND ls2.trang_thai <> 'HUY' AND ${lenhDotGdDk('ls2', 'dv', gd)})) AS con_cho`
       .replace(/\s+/g, ' '),
     [phanInId]
   );
@@ -506,11 +517,11 @@ async function traCuuMaQuet(code) {
   return rows[0] || null;
 }
 
-async function isPhanInReleased(phanInId) {
+async function isPhanInReleased(phanInId, gd = GD_IN) {
   const { rows } = await query(
     `SELECT EXISTS (SELECT 1 FROM dot_vai_ve dv JOIN lenh_sx_dot_vai lsd ON lsd.dot_vai_ve_id = dv.id
                     JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
-                    WHERE dv.phan_in_id = $1 AND ls.trang_thai <> 'HUY') AS released`,
+                    WHERE dv.phan_in_id = $1 AND ls.trang_thai <> 'HUY' AND ${dotOBoSql('dv', gd)} AND ${lenhDotGdDk('ls', 'dv', gd)}) AS released`,
     [phanInId]
   );
   return rows[0]?.released === true;
@@ -522,12 +533,12 @@ async function isPhanInReleased(phanInId) {
 // ⚠ Loại lệnh ĐÃ TEST ĐẠT (`TEST_QA` DAT — đang chờ duyệt Release 2): Test Run trả về luôn hủy kết quả
 //   test, nên lệnh còn TEST_QA DAT là lệnh của ĐỢT CŨ đi bình thường — QC xác nhận đợt MỚI không được
 //   kéo nó ngược về Test Run (30/09/2026).
-async function lenhChoKyThuatByPhanIn(phanInId) {
+async function lenhChoKyThuatByPhanIn(phanInId, gd = GD_IN) {
   const { rows } = await query(
     `SELECT ls.id AS lenh_id, array_agg(DISTINCT lsd.dot_vai_ve_id::text) AS dot_vai_ids
        FROM lenh_san_xuat ls JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
        JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
-      WHERE ls.trang_thai = 'RELEASE_1' AND dv.phan_in_id = $1
+      WHERE ls.trang_thai = 'RELEASE_1' AND dv.phan_in_id = $1 AND ${dotOBoSql('dv', gd)} AND ${lenhDotGdDk('ls', 'dv', gd)}
         AND NOT EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = ls.id)
         AND NOT EXISTS (SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id = k.checkpoint_id
                          WHERE k.lenh_san_xuat_id = ls.id AND c.ma_checkpoint = 'TEST_QA' AND k.trang_thai = 'DAT')
@@ -540,7 +551,9 @@ async function lenhChoKyThuatByPhanIn(phanInId) {
 async function getPhanInBasic(phanInId) {
   const { rows } = await query(
     `SELECT pin.id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim,
-            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang
+            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
+            ${ktYcSql('pin.id')} AS kt_yc_in, ${ktYcSql('pin.id', true)} AS kt_yc_ep,
+            ${ktHsktSql('pin.id')} AS kt_hskt_in, ${ktHsktSql('pin.id', true)} AS kt_hskt_ep
      FROM phan_in pin
      JOIN ma_hang mh ON mh.id = pin.ma_hang_id
      JOIN don_hang dh ON dh.id = mh.don_hang_id
@@ -566,7 +579,9 @@ async function getResults(tramId, phanInId) {
             kq.updated_date AS kq_updated_date,
             (SELECT kh.ten_khach_hang FROM phan_in p JOIN ma_hang mh ON mh.id=p.ma_hang_id
                JOIN don_hang dh ON dh.id=mh.don_hang_id JOIN khach_hang kh ON kh.id=dh.khach_hang_id
-               WHERE p.id=$2) AS ten_khach_hang
+               WHERE p.id=$2) AS ten_khach_hang,
+            ${ktYcSql('$2::uuid')} AS kt_yc_in, ${ktYcSql('$2::uuid', true)} AS kt_yc_ep, ${ktEpSql('$2::uuid')} AS kt_ep_in,
+            ${ktHsktSql('$2::uuid')} AS kt_hskt_in, ${ktHsktSql('$2::uuid', true)} AS kt_hskt_ep
      FROM checkpoint cp
      LEFT JOIN loai_checkpoint lc ON lc.id = cp.loai_checkpoint_id
      LEFT JOIN ket_qua_checkpoint kq ON kq.checkpoint_id = cp.id AND kq.phan_in_id = $2
@@ -667,12 +682,12 @@ async function logCancel(phanInId, maList, actorId, them = {}) {
 // Trạng thái xác nhận mục `checkpointId` của 1 ĐỢT VẢI (cho hủy theo đợt — `technical.service.cancelItem`):
 //   `x_dat` dòng theo đợt đang DAT · `phu_boi_tong` dòng TỔNG đang DAT phủ đợt (nhánh (a) của `tech.dotMucDatSql`)
 //   · `hieu_luc` dòng theo đợt chưa bị lần hủy dòng tổng sau nó vô hiệu · `da_release` đợt nằm trong lệnh ≠ HUY.
-async function trangThaiXacNhanDot(dotVaiId, checkpointId) {
+async function trangThaiXacNhanDot(dotVaiId, checkpointId, gd = GD_IN) {
   const { rows } = await query(
     `SELECT dv.id, dv.phan_in_id, dv.ma_dot_vai, COALESCE(dv.barcode, dv.ma_dot_vai) AS dot_label,
             dv.trang_thai NOT IN ('DA_GOP','DA_HUY') AS song,
             EXISTS (SELECT 1 FROM lenh_sx_dot_vai l JOIN lenh_san_xuat ls ON ls.id = l.lenh_san_xuat_id
-                     WHERE l.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY') AS da_release,
+                     WHERE l.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY' AND ${lenhDotGdDk('ls', 'dv', gd)}) AS da_release,
             (x.trang_thai = 'DAT') AS x_dat,
             EXISTS (SELECT 1 FROM ket_qua_checkpoint k WHERE k.phan_in_id = dv.phan_in_id AND k.checkpoint_id = $2
                      AND k.trang_thai = 'DAT'
@@ -784,7 +799,7 @@ async function reopenReadyFull(phanInId, actorId, extraLog = {}) {
 
 // Người + giờ xác nhận từng mục KT (KHUON/FILM/MUC) của các phần in — query NHẸ theo PK (IPS-safe),
 // tách khỏi listCandidates (đã nặng) để gắn thêm cho bảng/Excel màn READY.
-async function confirmInfoByPins(phanInIds = []) {
+async function confirmInfoByPins(phanInIds = [], maList = ['KHUON', 'FILM', 'MUC']) {
   if (!phanInIds.length) return [];
   const { rows } = await query(
     `SELECT k.phan_in_id, cp.ma_checkpoint, ${nguoiXacNhanSql('nd', 'k')} AS nguoi, k.ghi_chu,
@@ -793,8 +808,8 @@ async function confirmInfoByPins(phanInIds = []) {
      JOIN checkpoint cp ON cp.id = k.checkpoint_id
      LEFT JOIN nguoi_dung nd ON nd.id = k.nguoi_xac_nhan_id
      WHERE k.phan_in_id = ANY($1::uuid[]) AND k.trang_thai = 'DAT'
-       AND cp.ma_checkpoint IN ('KHUON','FILM','MUC')`.replace(/\s+/g, ' '),
-    [phanInIds]
+       AND cp.ma_checkpoint = ANY($2::text[])`.replace(/\s+/g, ' '),
+    [phanInIds, maList]
   );
   return rows;
 }
@@ -825,7 +840,7 @@ async function coBangXacNhanDot() {
 
 // Đợt vải ĐANG Ở READY của các phần in = chưa release (không nằm trong lệnh ≠ HUY) — gương nhánh OR
 // thứ 1 của `listCandidates`.
-async function dsDotChoReady(phanInIds = []) {
+async function dsDotChoReady(phanInIds = [], gd = GD_IN) {
   if (!phanInIds.length) return [];
   const { rows } = await query(
     `SELECT dv.phan_in_id, dv.id AS dot_vai_ve_id, dv.ma_dot_vai, dv.loai_dot_vai_id, ldv.ten_loai,
@@ -833,10 +848,10 @@ async function dsDotChoReady(phanInIds = []) {
        FROM dot_vai_ve dv
        LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id
       WHERE dv.phan_in_id = ANY($1::uuid[]) AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY')
-        AND dv.tg_chuyen_ready IS NOT NULL
+        AND dv.tg_chuyen_ready IS NOT NULL AND ${dotOBoSql('dv', gd)}
         AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai l JOIN lenh_san_xuat ls ON ls.id = l.lenh_san_xuat_id
-                         WHERE l.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY')
-        AND NOT ${qcDotSql('dv', 'dv.phan_in_id')}
+                         WHERE l.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY' AND ${lenhDotGdDk('ls', 'dv', gd)})
+        AND NOT ${qcDotSql('dv', 'dv.phan_in_id', chuanGd(gd) === GD_EP ? 'QC_XAC_NHAN_EP' : 'QC_XAC_NHAN')}
       ORDER BY dv.tg_chuyen_ready`.replace(/\s+/g, ' '),
     [phanInIds]);
   return rows;
@@ -844,8 +859,9 @@ async function dsDotChoReady(phanInIds = []) {
 
 // Phần in CÒN đợt vải đang chờ ở READY mà CHƯA được QC phủ? (nguồn luật `utils/tech.js`).
 // Dùng ở các guard KHÓA của service: dòng TỔNG đang DAT KHÔNG còn đồng nghĩa "READY đã xong hết".
-async function conDotChuaReady(phanInId) {
-  const { rows } = await query(`SELECT ${conDotChuaReadySql('$1::uuid')} AS e`.replace(/\s+/g, ' '), [phanInId]);
+async function conDotChuaReady(phanInId, gd = GD_IN) {
+  const g = chuanGd(gd);
+  const { rows } = await query(`SELECT ${conDotChuaReadySql('$1::uuid', g === GD_EP ? 'QC_XAC_NHAN_EP' : 'QC_XAC_NHAN', lenhDotGdDk('zls', 'zd', g), dotOBoSql('zd', g))} AS e`.replace(/\s+/g, ' '), [phanInId]);
   return !!rows[0].e;
 }
 

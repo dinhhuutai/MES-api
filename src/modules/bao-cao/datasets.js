@@ -16,7 +16,7 @@
 const { query } = require('../../config/db');
 const { slaStatus } = require('../../utils/sla');
 const { flowRowsCached } = require('./flowCache');
-const { KHUON_OPT_SQL_LIST, KHUON_OPTIONAL_KH, nguoiXacNhanSql, khongReadyTuDongSql, conDotChuaReadySql, dotMucDatSql } = require('../../utils/tech');
+const { KHUON_OPT_SQL_LIST, KHUON_OPTIONAL_KH, nguoiXacNhanSql, khongReadyTuDongSql, conDotChuaReadySql, dotMucDatSql, ktYcSql } = require('../../utils/tech');
 const { mauTim } = require('../../utils/timKiem');
 const { CP_PHAN_IN } = require('../../utils/siSoTram');
 const { dkChoTestSql } = require('./testRunHomNay');
@@ -703,6 +703,10 @@ async function ganChoMuc(rows, mucCho) {
   return rows;
 }
 
+// Miễn Khuôn / miễn Mực của phần in `pin` (khách II/AD + yêu cầu KT của công đoạn Ép/Logo theo tính chất in — 16/11/2026,
+//   `tech.ktYcSql`). Cần alias `pin`, `kh`.
+const MIEN_KHUON = `(kh.ten_khach_hang IN (${KHUON_OPT_SQL_LIST}) OR ${ktYcSql('pin.id')} IN ('MUC','KHONG'))`;
+const MIEN_MUC = `(${ktYcSql('pin.id')} IN ('KHUON','KHONG'))`;
 // Khối cột thông tin phần in dùng CHUNG cho 2 nhánh của DS_READY_DANG_O (đang ở READY / đã QA theo ngày).
 // Yêu cầu alias sẵn: pin, mh, dh, kh.
 const READY_INFO_SELECT = `
@@ -712,13 +716,13 @@ const READY_INFO_SELECT = `
   ${loaiDotTheoPin('pin.id')},
   (SELECT COALESCE(sum(dv5.so_luong_vai_ve),0) FROM dot_vai_ve dv5 WHERE dv5.phan_in_id = pin.id AND dv5.trang_thai NOT IN ('DA_GOP','DA_HUY'))::int AS so_luong_vai_ve,
   to_char((SELECT min(dv4.han_giao_hang) FROM dot_vai_ve dv4 WHERE dv4.phan_in_id = pin.id AND dv4.trang_thai NOT IN ('DA_GOP','DA_HUY')), 'DD/MM/YYYY') AS han_giao_hang,
-  (CASE WHEN kh.ten_khach_hang IN (${KHUON_OPT_SQL_LIST}) THEN '—' ELSE ${readyMark('KHUON')} END) AS ready_khuon,
-  (CASE WHEN kh.ten_khach_hang IN (${KHUON_OPT_SQL_LIST}) THEN '—' ELSE ${readyMark('FILM')} END) AS ready_film,
-  ${readyMark('MUC')} AS ready_muc,
+  (CASE WHEN ${MIEN_KHUON} THEN '—' ELSE ${readyMark('KHUON')} END) AS ready_khuon,
+  (CASE WHEN ${MIEN_KHUON} OR pin.luong_sx = 'LOGO' THEN '—' ELSE ${readyMark('FILM')} END) AS ready_film,
+  (CASE WHEN ${MIEN_MUC} THEN '—' ELSE ${readyMark('MUC')} END) AS ready_muc,
   ((SELECT count(*) FROM ket_qua_checkpoint k JOIN checkpoint cp ON cp.id = k.checkpoint_id
      WHERE k.phan_in_id = pin.id AND k.trang_thai = 'DAT'
-       AND (cp.ma_checkpoint = 'MUC' OR (cp.ma_checkpoint = 'KHUON' AND kh.ten_khach_hang NOT IN (${KHUON_OPT_SQL_LIST}))))::text
-    || '/' || (CASE WHEN kh.ten_khach_hang IN (${KHUON_OPT_SQL_LIST}) THEN '1' ELSE '2' END)) AS so_muc_kt`;
+       AND ((cp.ma_checkpoint = 'MUC' AND NOT ${MIEN_MUC}) OR (cp.ma_checkpoint = 'KHUON' AND NOT ${MIEN_KHUON})))::text
+    || '/' || ((CASE WHEN ${MIEN_KHUON} THEN 0 ELSE 1 END) + (CASE WHEN ${MIEN_MUC} THEN 0 ELSE 1 END))::text) AS so_muc_kt`;
 
 const COT_READY_DANG_O = [
   { key: 'stt', ten: 'STT', kieu: 'so' },
@@ -808,8 +812,10 @@ async function runReadyDangO({ loc = {}, gioi_han, mucCho = null }) {
     `(NOT ${QC_DONE_EXISTS} OR ${conDotChuaReadySql('pin.id')})`, khongReadyTuDongSql('pin.id')];
   if (mucCho) {
     conds.push(conDotChuaMucSql('pin.id', mucCho));
-    // Khách gia công miễn Khuôn + Film ⇒ không phải "đang chờ" 2 mục đó.
-    if (mucCho !== 'MUC') conds.push(`kh.ten_khach_hang NOT IN (${KHUON_OPT_SQL_LIST})`);
+    // Khách gia công miễn Khuôn + Film ⇒ không phải "đang chờ" 2 mục đó; mục không bắt buộc theo tính chất in cũng vậy.
+    if (mucCho !== 'MUC') conds.push(`NOT ${MIEN_KHUON}`);
+    if (mucCho === 'FILM') conds.push("pin.luong_sx IS DISTINCT FROM 'LOGO'");
+    if (mucCho === 'MUC') conds.push(`NOT ${MIEN_MUC}`);
   }
   const nb = dkNhomBoSung(loc, FROM_DOT_PIN('pin.id'));
   if (nb) conds.push(nb);

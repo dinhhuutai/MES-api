@@ -20,7 +20,7 @@ async function ganLuongSx(pinId, tinhChatIn) {
   if (co[0].luong_sx) return co[0].luong_sx;
   const luong = await luongTheoTinhChat(tinhChatIn);
   const { rows } = await query(
-    `UPDATE phan_in SET luong_sx = COALESCE(luong_sx, $2), la_in_kieng = (COALESCE(luong_sx, $2) = 'IN_KIENG'),
+    `UPDATE phan_in SET luong_sx = COALESCE(luong_sx, $2), la_in_kieng = (COALESCE(luong_sx, $2) IN ('IN_KIENG','KIENG_KHONG_EP')),
             luong_sx_tg = CURRENT_TIMESTAMP
       WHERE id = $1 RETURNING luong_sx`.replace(/\s+/g, ' '),
     [pinId, luong]
@@ -242,6 +242,39 @@ async function coCotMauInKhoa(client) {
   return _coCotMauInKhoa;
 }
 
+// ─── VẾT THAY ĐỔI DO ĐỒNG BỘ ERP (16/11/2026 — trang Lịch sử phần in: "kể cả tự động thay đổi cũng hiện") ──────
+// Đồng bộ ghi đè thông tin phần in / đợt vải đã có mỗi 5 phút ⇒ mỗi lần GIÁ TRỊ THẬT SỰ ĐỔI ghi 1 dòng `audit_log`
+//   `ERP_DONG_BO_DOI` (người NULL = hệ thống), `gia_tri_cu`/`gia_tri_moi` chỉ các trường đã đổi. So bằng `to_jsonb` 2 phía
+//   (ngày = 'YYYY-MM-DD', số = số) ⇒ ERP gửi lại y nguyên thì không ghi gì. Bọc SAVEPOINT: ghi vết lỗi KHÔNG được làm hỏng
+//   lượt đồng bộ (hàm chạy trong transaction của dòng ERP).
+const COT_VET_PHAN_IN = ['mau_vai', 'kich_vai', 'kich_phim', 'so_luong_don_hang', 'tinh_chat_in', 'mau_in', 'barcode', 'ddh_sub_id'];
+const COT_VET_DOT_VAI = ['loai_dot_vai_id', 'ngay_vai_ve', 'han_giao_hang', 'barcode', 'inset', 'nha_gia_cong', 'du_an'];
+const giaTriVet = (v) => (v === undefined || v === null || v === '' ? null : typeof v === 'string' ? v.trim() : v);
+function khacNhauVet(cu, moi, cot) {
+  const a = {}; const b = {};
+  for (const k of cot) {
+    if (!cu || !moi || !(k in moi)) continue;
+    const x = giaTriVet(cu[k]); const y = giaTriVet(moi[k]);
+    if (JSON.stringify(x) !== JSON.stringify(y)) { a[k] = x; b[k] = y; }
+  }
+  return Object.keys(b).length ? { cu: a, moi: b } : null;
+}
+async function ghiVetDoiErp(client, tenBang, id, cu, moi, cot, them = {}) {
+  const d = khacNhauVet(cu, moi, cot);
+  if (!d || !id) return;
+  try {
+    await client.query('SAVEPOINT vet_doi_erp');
+    await client.query(
+      `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_cu, gia_tri_moi, thoi_gian)
+       VALUES ($1, $2, 'ERP_DONG_BO_DOI', $3::jsonb, $4::jsonb, CURRENT_TIMESTAMP)`,
+      [tenBang, String(id), JSON.stringify(d.cu), JSON.stringify({ ...d.moi, ...them })]);
+    await client.query('RELEASE SAVEPOINT vet_doi_erp');
+  } catch (e) {
+    await client.query('ROLLBACK TO SAVEPOINT vet_doi_erp').catch(() => {});
+    console.warn(`[erp] ⚠ Không ghi được vết thay đổi ${tenBang} ${id}: ${e.message}`);
+  }
+}
+
 // CHỌN PHẦN IN CHO 1 DÒNG ERP THEO MÀU MỰC (mig 121) — trả màu mực dùng để upsert ⇒ `ON CONFLICT (ma_phan, mau_in_khoa)` trúng
 // đúng dòng (hoặc tạo dòng mới). Luật (⚠ đợt đã có KHÔNG bao giờ bị chuyển sang phần in khác):
 //   1. Đợt đã có trong MES ⇒ ở lại phần in của nó. ERP đổi màu (sửa dòng đơn) ⇒ đổi màu phần in đó, trừ khi màu mới đã thuộc
@@ -255,8 +288,11 @@ async function chotMauMuc(client, { maPhan, mauIn, maDotVai }) {
     `SELECT p.id, p.mau_in, COALESCE((to_jsonb(p)->>'khoa_erp')::boolean, false) AS khoa
        FROM phan_in p WHERE p.ma_phan = $1 ORDER BY p.created_date, p.id FOR UPDATE`, [maPhan]);
   const khoa = chuanMauMuc(mauIn);
-  const doiMau = (id) => client.query(
-    'UPDATE phan_in SET mau_in = $2, updated_date = CURRENT_TIMESTAMP WHERE id = $1', [id, mauIn]);
+  const doiMau = async (id) => {
+    await client.query('UPDATE phan_in SET mau_in = $2, updated_date = CURRENT_TIMESTAMP WHERE id = $1', [id, mauIn]);
+    const cu = ds.find((x) => x.id === id);
+    await ghiVetDoiErp(client, 'phan_in', id, { mau_in: cu ? cu.mau_in : null }, { mau_in: mauIn }, ['mau_in'], { ma_dot_vai: maDotVai || null });
+  };
   const { rows: dot } = maDotVai
     ? await client.query('SELECT phan_in_id FROM dot_vai_ve WHERE ma_dot_vai = $1', [maDotVai]) : { rows: [] };
   const cuaDot = dot[0] && ds.find((x) => x.id === dot[0].phan_in_id);
@@ -289,6 +325,17 @@ async function upsertPhanIn(client, { maHangId, maPhan, mauVai, kichVai, kichPhi
       : 'SELECT id FROM phan_in WHERE ma_phan = $1',
     coKhoaMau ? [maPhan, mauIn || null] : [maPhan]
   )).rows[0].id;
+  // Ảnh chụp TRƯỚC khi ghi đè (vết `ERP_DONG_BO_DOI`) — đúng dòng mà ON CONFLICT sẽ trúng.
+  const { rows: [truoc] } = await client.query(
+    coKhoaMau
+      ? `SELECT p.id, to_jsonb(p) AS j FROM phan_in p WHERE p.ma_phan = $1 AND p.mau_in_khoa = ${MAU_IN_KHOA_SQL('$2::text')}`
+      : 'SELECT p.id, to_jsonb(p) AS j FROM phan_in p WHERE p.ma_phan = $1',
+    coKhoaMau ? [maPhan, mauIn || null] : [maPhan]);
+  const vet = async (r) => {
+    if (truoc && r && r.moi && String(truoc.id) === String(r.id)) {
+      await ghiVetDoiErp(client, 'phan_in', r.id, truoc.j, r.moi, COT_VET_PHAN_IN, { ma_dot_vai: maDotVai || null });
+    }
+  };
   if (await hasBarcodeCol(client)) {
     // `ddh_sub_id` (mig 088) — thêm vào cùng nhánh có `barcode` vì 2 trường đi liền nhau: subID chính
     // là 3 số cuối của `BarcodePTHDH`. Thiếu migration ⇒ bỏ hẳn cột khỏi câu SQL, sync chạy như cũ.
@@ -319,10 +366,11 @@ async function upsertPhanIn(client, { maHangId, maPhan, mauVai, kichVai, kichPhi
          ${coSub ? 'ddh_sub_id = COALESCE(EXCLUDED.ddh_sub_id, phan_in.ddh_sub_id),' : ''}
          updated_date = CURRENT_TIMESTAMP
        ${chanKhoa}
-       RETURNING id, barcode`,
+       RETURNING id, barcode, to_jsonb(phan_in.*) AS moi`,
       ds
     );
     if (!rows[0]) return idTheoMa(); // phần in đang khóa ERP — giữ nguyên mọi trường
+    await vet(rows[0]);
     // Mã ERP vừa gửi mà KHÔNG nằm trong giá trị đã lưu ⇒ đã bị cắt vì chạm trần cột. Nói rõ ra: mã bị
     // bỏ thì phiếu in mã đó quét không ra, mà đó là kiểu hỏng âm thầm rất khó lần.
     const daLuu = tachDsMa(rows[0].barcode);
@@ -343,9 +391,10 @@ async function upsertPhanIn(client, { maHangId, maPhan, mauVai, kichVai, kichPhi
        mau_in = COALESCE(EXCLUDED.mau_in, phan_in.mau_in),
        updated_date = CURRENT_TIMESTAMP
      ${chanKhoa}
-     RETURNING id`,
+     RETURNING id, to_jsonb(phan_in.*) AS moi`,
     base
   );
+  if (rows[0]) await vet(rows[0]);
   return rows[0] ? rows[0].id : idTheoMa();
 }
 
@@ -406,19 +455,21 @@ async function upsertDotVai(client, { maDotVai, phanInId, loaiDotVaiId, ngayVaiV
   // hàm chạy trong transaction, lỗi 42703 làm ABORT cả transaction (cùng bẫy đã ghi ở `createTem`).
   const coNGC = await hasNgcCol(client);
   const co74 = await co074(client);
-  const existing = await client.query('SELECT id, phan_in_id FROM dot_vai_ve WHERE ma_dot_vai = $1', [maDotVai]);
+  const existing = await client.query('SELECT d.id, d.phan_in_id, to_jsonb(d) AS j FROM dot_vai_ve d WHERE d.ma_dot_vai = $1', [maDotVai]);
   if (existing.rows.length) {
     // Phần in đang khóa ERP (mig 116) ⇒ KHÔNG cập nhật đợt đã có (đợt MỚI vẫn tạo ở nhánh dưới).
     if (await dangKhoa(existing.rows[0].phan_in_id, client)) return { id: existing.rows[0].id, inserted: false };
-    await client.query(
+    const { rows: [sau] } = await client.query(
       `UPDATE dot_vai_ve SET loai_dot_vai_id = COALESCE($2, loai_dot_vai_id),
          ngay_vai_ve = $3, han_giao_hang = $4, barcode = COALESCE($5, barcode),
          inset = COALESCE($6, inset)${coNGC ? ', nha_gia_cong = COALESCE($7, nha_gia_cong)' : ''}${co74 ? `, du_an = COALESCE($${coNGC ? 8 : 7}, du_an)` : ''},
          updated_date = CURRENT_TIMESTAMP
-       WHERE ma_dot_vai = $1`,
+       WHERE ma_dot_vai = $1
+       RETURNING to_jsonb(dot_vai_ve.*) AS moi`,
       [maDotVai, loaiDotVaiId || null, ngayVaiVe || null, hanGiao || null, barcode || null, inset ?? null,
         ...(coNGC ? [nhaGiaCong || null] : []), ...(co74 ? [duAn || null] : [])]
     );
+    if (sau) await ghiVetDoiErp(client, 'dot_vai_ve', existing.rows[0].id, existing.rows[0].j, sau.moi, COT_VET_DOT_VAI);
     return { id: existing.rows[0].id, inserted: false };
   }
   // LẤY NGUYÊN số ERP gửi (xem ghi chú ở đầu hàm). Chỉ chặn số âm do dữ liệu ERP lỗi.
@@ -533,7 +584,9 @@ async function promotePhanInToReady(pinId, { barcode, tinhChatIn }) {
 async function readyCheckpointIds() {
   const { rows } = await query(
     `SELECT cp.ma_checkpoint, cp.id FROM workflow_version wv JOIN tram t ON t.workflow_version_id=wv.id AND t.ma_tram='READY' JOIN checkpoint cp ON cp.tram_id=t.id AND cp.dang_hoat_dong=true WHERE wv.la_hien_hanh=true AND cp.ma_checkpoint = ANY($1)`,
-    [['KHUON', 'FILM', 'MUC', 'QC_XAC_NHAN']]
+    // 14/11/2026: kèm bộ checklist công đoạn Ép/Logo (mig 131) — ERP KTCankiemtra=0 ⇒ mọi công đoạn tự Ready.
+    // 16/11/2026: + mục HSKT (mig 134 — công đoạn Ép/Logo theo tính chất in) để KTCankiemtra=0 không kẹt ở mục HSKT.
+    [['KHUON', 'FILM', 'MUC', 'QC_XAC_NHAN', 'KHUON_EP', 'FILM_EP', 'MUC_EP', 'QC_XAC_NHAN_EP', 'HSKT', 'HSKT_EP']]
   );
   const m = {};
   rows.forEach((r) => { m[r.ma_checkpoint] = r.id; });
@@ -586,7 +639,7 @@ async function coDotKhac(pinId, boQua = []) {
 
 async function simulateReadyDone(pinId, dotVaiIds = []) {
   const cp = await readyCheckpointIds();
-  const ids = ['KHUON', 'FILM', 'MUC', 'QC_XAC_NHAN'].map((m) => cp[m]).filter(Boolean);
+  const ids = ['KHUON', 'FILM', 'MUC', 'QC_XAC_NHAN', 'KHUON_EP', 'FILM_EP', 'MUC_EP', 'QC_XAC_NHAN_EP', 'HSKT', 'HSKT_EP'].map((m) => cp[m]).filter(Boolean);
   if (!ids.length) return;
 
   // Mã đợt vải cho ghi chú — best-effort, thiếu cũng không sao (ghi chú vẫn nêu đủ lý do).
@@ -751,10 +804,13 @@ async function flagLamLaiReady(pinId) {
 //
 // ⚠ GIỮ `reopenReadyForPhanIn` bên dưới cho đường CỐ Ý xóa sạch công đã làm:
 //   *Quản trị phần in → đặt lại giai đoạn READY_KT* (ở đó đã có sẵn đích READY_QA = chỉ hủy QC).
-async function chiHuyQcReady(pinId) {
+// `gd` (14/11/2026 — READY theo công đoạn): công đoạn bị trả về ⇒ chỉ hủy QC của BỘ mà công đoạn đó đọc
+//   (`readyCongDoan.maQcGdSql`). Mặc định 'IN' = như cũ.
+async function chiHuyQcReady(pinId, gd = 'IN') {
+  const { maQcGdSql, chuanGd } = require('../../utils/readyCongDoan');
   await withTransaction(async (client) => {
     await client.query(
-      `UPDATE ket_qua_checkpoint SET trang_thai='HUY', nguoi_xac_nhan_id=NULL, tg_xac_nhan=NULL, updated_date=now() WHERE phan_in_id=$1 AND trang_thai='DAT' AND checkpoint_id IN (SELECT cp.id FROM checkpoint cp JOIN tram t ON t.id=cp.tram_id JOIN workflow_version wv ON wv.id=t.workflow_version_id AND wv.la_hien_hanh WHERE t.ma_tram='READY' AND cp.ma_checkpoint='QC_XAC_NHAN')`,
+      `UPDATE ket_qua_checkpoint SET trang_thai='HUY', nguoi_xac_nhan_id=NULL, tg_xac_nhan=NULL, updated_date=now() WHERE phan_in_id=$1 AND trang_thai='DAT' AND checkpoint_id IN (SELECT cp.id FROM checkpoint cp JOIN tram t ON t.id=cp.tram_id JOIN workflow_version wv ON wv.id=t.workflow_version_id AND wv.la_hien_hanh WHERE t.ma_tram='READY' AND cp.ma_checkpoint=(SELECT ${maQcGdSql('zp', `'${chuanGd(gd)}'`)} FROM phan_in zp WHERE zp.id=$1))`.replace(/\s+/g, ' '),
       [pinId]
     );
     await client.query(

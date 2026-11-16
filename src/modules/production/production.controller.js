@@ -1,6 +1,7 @@
 'use strict';
 
 const service = require('./production.service');
+const repo = require('./production.repository');
 const planningService = require('../planning/planning.service'); // dùng chung candidate Test Run
 const asyncHandler = require('../../utils/asyncHandler');
 const { ok } = require('../../utils/response');
@@ -120,6 +121,8 @@ const tachLenhNgc = asyncHandler(async (req, res) =>
   ok(res, await service.tachLenhTheoNgc(req.params.lenhId, req.user.id, { lyDo: (req.body || {}).lyDo || '' }), 'Đã tách lệnh theo nhà gia công'));
 const suaTem = asyncHandler(async (req, res) =>
   ok(res, await service.suaTem(req.params.temId, req.body || {}, req.user.id), 'Đã sửa tem'));
+// Đợt vải BỔ SUNG của lệnh chứa tem + SL bổ sung do Công ty / Khách (hộp Sửa tem, 16/11/2026).
+const temBoSung = asyncHandler(async (req, res) => ok(res, await repo.dotBoSungCuaTem(req.params.temId)));
 
 // Phân công sản xuất: body { caTruongId, chuyenTruong, items: [{ dotVaiId, thoIn, soLuongHuy, soLuongThieu }] }
 const savePhanCong = asyncHandler(async (req, res) =>
@@ -358,7 +361,7 @@ module.exports = {
   candidates, getRun, start, startBatch, chayDacBietCandidates, chayDacBiet, printTem, printTemBatch, reprintTem, temLabel, temLogs, finish, monitor,
   theoDoiTo,
   xePhoi, temChoPhoi, themTem, adjustPhoi, drying, confirmDry, kiemTruocKho, redry,
-  stopLine, resumeLine, ngungChoHuy, huyNgungChuyen, addVaiHuy, xemVaiTem, suaVaiTheoTem, suaTem, gopLenh, tachLenhNgc, savePhanCong, vuotSanXuat,
+  stopLine, resumeLine, ngungChoHuy, huyNgungChuyen, addVaiHuy, xemVaiTem, suaVaiTheoTem, suaTem, temBoSung, gopLenh, tachLenhNgc, savePhanCong, vuotSanXuat,
   lyDoNgungList, lyDoNgungCreate, lyDoNgungUpdate, lyDoNgungToggle,
   toInList, toInCreate, toInUpdate, toInToggle, baoCaoSanXuat, baoCaoDungChuyen, baoCaoKiemHang, baoCaoSuaHang,
   baoCaoPhanLoaiLoi,

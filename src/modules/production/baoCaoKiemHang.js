@@ -20,6 +20,9 @@ const W0 = `(($1::date + time '06:00') ${VN})`;
 const W1 = `(($2::date + 1 + time '06:00') ${VN})`;
 const CHUA_HUY = `NOT EXISTS (SELECT 1 FROM audit_log a WHERE a.ten_bang = 'kcs' AND a.hanh_dong = 'HUY_XAC_NHAN'
   AND a.id_ban_ghi = k.id::text)`;
+// Bỏ lượt KCS do SCRIPT "hệ thống tự chạy đến giao" ghi (`ghi_chu` mở đầu `[HỆ THỐNG`, vd 14/11/2026 2.027 lượt ·
+// 527.343 pcs trong 1 giây) — không phải kiểm thật; cùng luật Báo cáo sản xuất (`PHIEU_THAT`).
+const LUOT_THAT = "COALESCE(k.ghi_chu, '') NOT LIKE '[HỆ THỐNG%'";
 
 // Bảng Phân loại lỗi (mig 075) có thể chưa có ở môi trường cũ (vd THLA_TEST) ⇒ dò trước, thiếu thì coi như
 // chưa phân loại (hư = sửa). Cache khi ĐÃ có bảng (chạy migration xong nhận ngay, khỏi restart).
@@ -39,7 +42,7 @@ async function docLuot(tuNgay, denNgay) {
     ? `LEFT JOIN LATERAL (SELECT sum(c.so_luong_sua)::int AS pll_sua, sum(c.so_luong_huy)::int AS pll_huy
       FROM phan_loai_loi p JOIN phan_loai_loi_ct c ON c.phan_loai_loi_id = p.id WHERE p.tem_id = k.tem_id) pll ON true`
     : 'LEFT JOIN LATERAL (SELECT NULL::int AS pll_sua, NULL::int AS pll_huy) pll ON true';
-  const sql = `WITH tk AS (SELECT DISTINCT k.tem_id FROM kcs k WHERE k.created_date >= ${W0} AND k.created_date < ${W1})
+  const sql = `WITH tk AS (SELECT DISTINCT k.tem_id FROM kcs k WHERE k.created_date >= ${W0} AND k.created_date < ${W1} AND ${LUOT_THAT})
     SELECT k.id, k.tem_id, k.created_date AS tg_kiem, k.so_luong_dat, k.so_luong_loi, k.so_luong_huy,
       (k.created_date >= ${W0} AND k.created_date < ${W1}) AS trong_ky,
       to_char(((k.created_date ${VN}) - interval '6 hours')::date, 'YYYY-MM-DD') AS ngay_sx,
@@ -63,7 +66,7 @@ async function docLuot(tuNgay, denNgay) {
       LEFT JOIN ma_hang mh ON mh.id = pin.ma_hang_id LEFT JOIN don_hang dh ON dh.id = mh.don_hang_id
       LEFT JOIN khach_hang kh ON kh.id = dh.khach_hang_id
       WHERE lsd.lenh_san_xuat_id = COALESCE(ls.lenh_lien_ket_id, ls.id)) pi ON true
-    WHERE ${CHUA_HUY}
+    WHERE ${CHUA_HUY} AND ${LUOT_THAT}
     ORDER BY k.tem_id, k.created_date`;
   const { rows } = await query(sql.replace(/\s+/g, ' '), [tuNgay, denNgay]);
   return rows;

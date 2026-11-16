@@ -86,6 +86,7 @@ app.use('/api/catalog', catalogRoutes);
 app.use('/api/modules', appmoduleRoutes);
 app.use('/api/phan-in', ordersRoutes);
 app.use('/api/quan-tri-phan-in', phanInAdminRoutes);
+app.use('/api/lich-su-phan-in', require('./modules/lichsuphanin/lichsuphanin.routes')); // 16/11/2026 — lịch sử thao tác 1 phần in
 app.use('/api/ready', technicalRoutes);
 app.use('/api/hskt', hsktRoutes);
 app.use('/api/gom-set', gomsetRoutes);

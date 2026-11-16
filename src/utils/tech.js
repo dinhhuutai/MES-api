@@ -47,13 +47,76 @@ function hienFilm(tenKhach) {
   return !isKhuonOptional(tenKhach);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// YÊU CẦU KỸ THUẬT CỦA CÔNG ĐOẠN ÉP/LOGO THEO TÍNH CHẤT IN (mig 133, 16/11/2026 — người dùng chốt).
+//   `tinh_chat_in.kt_yeu_cau` = KHUON_MUC (mặc định = luật chung) · KHUON (chỉ Khuôn) · MUC (chỉ Mực) · KHONG (không qua KT:
+//   KT coi như xong ngay, đi thẳng hàng đợi QC — QA vẫn xác nhận). Ép/Logo KHÔNG có Film (giao diện ẩn mục Film).
+//   Áp cho CÔNG ĐOẠN ÉP/LOGO: phần in luồng LOGO (READY bộ gốc) + bộ checklist `_EP` của phần in 2 công đoạn (`ep`).
+//   Công đoạn in / phần in thường giữ luật chung. Khách gia công II/AD vẫn miễn Khuôn ở mọi cấu hình.
+//   Chưa chạy mig 133 / tính chất chưa có dòng ⇒ KHUON_MUC (đọc qua `to_jsonb`).
+// ─────────────────────────────────────────────────────────────────────────────
+const KT_YC = ['KHUON_MUC', 'KHUON', 'MUC', 'KHONG'];
+const KT_YC_MAC_DINH = 'KHUON_MUC';
+const chuanKtYc = (v) => (KT_YC.includes(v) ? v : KT_YC_MAC_DINH);
+// Mục KT phải bấm (JS) theo khách + yêu cầu của công đoạn. `hskt` = công đoạn này phải "Xác nhận HSKT" (`ktHsktSql`).
+function ktCan(tenKhach, ktYc = KT_YC_MAC_DINH, hskt = false) {
+  const y = chuanKtYc(ktYc);
+  return {
+    khuon: !isKhuonOptional(tenKhach) && (y === 'KHUON_MUC' || y === 'KHUON'),
+    muc: y === 'KHUON_MUC' || y === 'MUC',
+    hskt: !!hskt,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// XÁC NHẬN HSKT CỦA CÔNG ĐOẠN ÉP/LOGO (mig 134, 16/11/2026 — người dùng chốt "tính chất in có ép thì thêm xác nhận HSKT,
+//   có cài đặt bật tắt"). Mục KT thứ 3 (ngoài Khuôn / Mực) — checklist `HSKT` (bộ gốc, phần in luồng LOGO) / `HSKT_EP`
+//   (bộ Ép/Logo của phần in 2 công đoạn), quyền `READY_HSKT`. Cần khi CẢ HAI bật:
+//     · công tắc tổng `READY_EP_XAC_NHAN_HSKT` ở *Hệ thống › Cài đặt tính năng* (thiếu dòng ⇒ BẬT, `utils/caiDatTinhNang.js`);
+//     · cột `tinh_chat_in.kt_hskt` của tính chất (trang Tính chất in, mặc định BẬT). Chưa chạy mig 134 ⇒ không cần.
+//   Độc lập với `kt_yeu_cau`: "Không qua KT" + HSKT bật ⇒ KT chỉ còn mục HSKT.
+// ─────────────────────────────────────────────────────────────────────────────
+const MA_TN_HSKT_EP = 'READY_EP_XAC_NHAN_HSKT';
+const MA_HSKT = 'HSKT';
+const hsktBatSql = `NOT EXISTS (SELECT 1 FROM cai_dat_tinh_nang zcn WHERE zcn.ma_tinh_nang = '${MA_TN_HSKT_EP}' AND zcn.bat = false)`;
+// SQL boolean: công đoạn (bộ `ep` / phần in LOGO) của phần in `pinIdExpr` phải xác nhận HSKT.
+const ktHsktSql = (pinIdExpr, ep = false) => `(${hsktBatSql} AND COALESCE((SELECT (to_jsonb(zht)->>'kt_hskt')::boolean FROM phan_in zhp
+  JOIN tinh_chat_in zht ON zht.dang_hoat_dong AND zht.ma_chuan = upper(regexp_replace(zhp.tinh_chat_in, '\\s+', '', 'g'))
+  WHERE zhp.id = ${pinIdExpr}${ep ? '' : " AND zhp.luong_sx = 'LOGO'"} LIMIT 1), false))`;
+// SQL boolean: dòng TỔNG HSKT của bộ đã DAT (mức phần in — dùng khi call-site không có đợt vải).
+const hsktDatPinSql = (pinIdExpr, ep = false) => `EXISTS (SELECT 1 FROM ket_qua_checkpoint zhk
+  JOIN checkpoint zhc ON zhc.id = zhk.checkpoint_id AND zhc.ma_checkpoint = '${ep ? `${MA_HSKT}_EP` : MA_HSKT}'
+  WHERE zhk.phan_in_id = ${pinIdExpr} AND zhk.trang_thai = 'DAT')`;
+// SQL timestamptz: mốc dòng tổng HSKT bộ gốc DAT (NULL = chưa).
+const hsktMocPinSql = (pinIdExpr) => `(SELECT max(COALESCE(zhm.tg_xac_nhan, zhm.updated_date)) FROM ket_qua_checkpoint zhm
+  JOIN checkpoint zhmc ON zhmc.id = zhm.checkpoint_id AND zhmc.ma_checkpoint = '${MA_HSKT}'
+  WHERE zhm.phan_in_id = ${pinIdExpr} AND zhm.trang_thai = 'DAT')`;
+// SQL: yêu cầu KT của phần in (`pinIdExpr` = biểu thức phan_in.id). `ep` = đang xét bộ công đoạn Ép/Logo của phần in 2 công
+//   đoạn ⇒ luôn đọc tính chất; không thì chỉ phần in luồng LOGO đọc (còn lại KHUON_MUC).
+const ktYcSql = (pinIdExpr, ep = false) => `COALESCE((SELECT to_jsonb(zyt)->>'kt_yeu_cau' FROM phan_in zyp
+  JOIN tinh_chat_in zyt ON zyt.dang_hoat_dong AND zyt.ma_chuan = upper(regexp_replace(zyp.tinh_chat_in, '\\s+', '', 'g'))
+  WHERE zyp.id = ${pinIdExpr}${ep ? '' : " AND zyp.luong_sx = 'LOGO'"} LIMIT 1), '${KT_YC_MAC_DINH}')`;
+// SQL: dòng READY này là công đoạn Ép/Logo (ẩn Film, cấu hình theo tính chất).
+const ktEpSql = (pinIdExpr, ep = false) => (ep ? 'true'
+  : `EXISTS (SELECT 1 FROM phan_in zep WHERE zep.id = ${pinIdExpr} AND zep.luong_sx = 'LOGO')`);
+
+// Boolean "đủ KT" từ 2 biểu thức đã xác nhận Khuôn / Mực. Có `pinIdExpr` ⇒ theo yêu cầu của công đoạn (1 lần đọc tính chất)
+//   + mục HSKT khi công đoạn cần (`hsktExpr` = đã xác nhận HSKT; bỏ trống ⇒ dòng tổng mức phần in `hsktDatPinSql`);
+//   không ⇒ luật chung (Mực + Khuôn; II/AD chỉ Mực).
+const duKtSql = (khachExpr, khuonExpr, mucExpr, pinIdExpr = null, ep = false, hsktExpr = null) => (pinIdExpr
+  ? `((SELECT (zyc.v IN ('KHUON','KHONG') OR ${mucExpr}) AND ((${khachExpr}) IN (${KHUON_OPT_SQL_LIST}) OR zyc.v IN ('MUC','KHONG') OR ${khuonExpr})
+      FROM (SELECT ${ktYcSql(pinIdExpr, ep)} AS v) zyc)
+     AND (NOT ${ktHsktSql(pinIdExpr, ep)} OR ${hsktExpr || hsktDatPinSql(pinIdExpr, ep)}))`
+  : `(${mucExpr} AND ((${khachExpr}) IN (${KHUON_OPT_SQL_LIST}) OR ${khuonExpr}))`);
+
 // Boolean "đủ mục KT" khi ĐÃ có sẵn trong scope: cột tên khách + 3 biểu thức EXISTS DAT từng mục.
 //   · khách gia công  → chỉ cần Mực
 //   · khách thường    → Mực AND Khuôn
+//   · `pinIdExpr` (16/11/2026) ⇒ công đoạn Ép/Logo theo tính chất in (`ktYcSql`); `ep` = bộ `_EP`.
 // ⚠ `existsFilm` GIỮ trong chữ ký (mọi call-site đang truyền đủ 3) nhưng CỐ Ý KHÔNG dùng — xem
 //   ghi chú "KHÔNG XÉT FILM" ở đầu file. Đừng nối lại vào biểu thức.
-function techDoneSql(khachExpr, existsKhuon, existsFilm, existsMuc) {
-  return `(${existsMuc} AND ((${khachExpr}) IN (${KHUON_OPT_SQL_LIST}) OR ${existsKhuon}))`;
+function techDoneSql(khachExpr, existsKhuon, existsFilm, existsMuc, pinIdExpr = null, ep = false) {
+  return duKtSql(khachExpr, existsKhuon, existsMuc, pinIdExpr, ep);
 }
 
 // Boolean "đủ mục KT" chỉ từ 1 biểu thức phần in (tự dựng EXISTS + subquery khách).
@@ -61,7 +124,7 @@ function techDoneSql(khachExpr, existsKhuon, existsFilm, existsMuc) {
 function techDoneSqlByPin(pinExpr) {
   const dat = (ma) => `EXISTS(SELECT 1 FROM ket_qua_checkpoint k JOIN checkpoint c ON c.id=k.checkpoint_id WHERE k.phan_in_id=${pinExpr} AND c.ma_checkpoint='${ma}' AND k.trang_thai='DAT')`;
   const khach = `(SELECT kh.ten_khach_hang FROM phan_in p2 JOIN ma_hang mh2 ON mh2.id=p2.ma_hang_id JOIN don_hang dh2 ON dh2.id=mh2.don_hang_id JOIN khach_hang kh ON kh.id=dh2.khach_hang_id WHERE p2.id=${pinExpr})`;
-  return techDoneSql(khach, dat('KHUON'), dat('FILM'), dat('MUC'));
+  return techDoneSql(khach, dat('KHUON'), dat('FILM'), dat('MUC'), pinExpr);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -161,7 +224,9 @@ const dotMucDatSql = (dvAlias, pinCol, ma, maLaBieuThuc = false) => `(EXISTS (SE
                     AND zk.checkpoint_id = zx.checkpoint_id AND zk.trang_thai = 'HUY'
                     AND zk.updated_date > zx.updated_date)))`;
 
-const qcDotSql = (dvAlias, pinCol) => dotMucDatSql(dvAlias, pinCol, 'QC_XAC_NHAN');
+// `qcMa` (14/11/2026 — READY theo công đoạn, `utils/readyCongDoan.js`): mã QC của bộ công đoạn — literal ('QC_XAC_NHAN_EP')
+//   hoặc biểu thức SQL (`maLaBieuThuc`). Mặc định bộ gốc ⇒ mọi call-site cũ không đổi.
+const qcDotSql = (dvAlias, pinCol, qcMa = 'QC_XAC_NHAN', maLaBieuThuc = false) => dotMucDatSql(dvAlias, pinCol, qcMa, maLaBieuThuc);
 
 // MỐC (timestamptz) đợt d xác nhận mục `ma` — cùng 2 nhánh với `dotMucDatSql`, trả NULL nếu chưa.
 // Lấy mốc SỚM NHẤT của 2 nhánh (LEAST bỏ qua NULL). Dùng để ĐO THỜI GIAN theo từng đợt vải
@@ -183,8 +248,22 @@ const mocDotMucSql = (dvAlias, pinCol, ma) => `LEAST(
 // MỐC đợt xong KỸ THUẬT từ 2 mốc đã tính sẵn (`mocDotMucSql` KHUON / MUC): khách II/AD chỉ cần Mực, còn lại
 // cần đủ Khuôn + Mực (mốc = cái muộn hơn). NULL = chưa xong. Dùng chung nguồn READY theo đợt của bảng theo
 // dõi (`siso.repository READY_DOT`) và cột SL 2 dòng READY (`utils/bangTheoDoi.js`).
-const mocKtXongDotSql = (khachExpr, khuonExpr, mucExpr) => `(CASE WHEN (${khachExpr}) IN (${KHUON_OPT_SQL_LIST}) THEN ${mucExpr}
+// `pinIdExpr` + `vaoExpr` (16/11/2026): yêu cầu KT theo tính chất in (công đoạn Ép/Logo — `ktYcSql`); KT không cần mục nào ⇒
+//   mốc xong = lúc đợt vào READY (`vaoExpr`).
+// `hsktExpr` (mig 134): mốc đợt xác nhận HSKT khi công đoạn cần (`ktHsktSql`); bỏ trống ⇒ mốc dòng tổng mức phần in.
+const mocKtXongDotSql = (khachExpr, khuonExpr, mucExpr, pinIdExpr = null, vaoExpr = 'NULL', hsktExpr = null) => {
+  const chung = `(CASE WHEN (${khachExpr}) IN (${KHUON_OPT_SQL_LIST}) THEN ${mucExpr}
   WHEN ${khuonExpr} IS NOT NULL AND ${mucExpr} IS NOT NULL THEN GREATEST(${khuonExpr}, ${mucExpr}) END)`;
+  if (!pinIdExpr) return chung;
+  const theoYc = `(SELECT CASE zyc.v WHEN 'KHONG' THEN ${vaoExpr}
+      WHEN 'KHUON' THEN (CASE WHEN (${khachExpr}) IN (${KHUON_OPT_SQL_LIST}) THEN ${vaoExpr} ELSE ${khuonExpr} END)
+      WHEN 'MUC' THEN ${mucExpr}
+      ELSE ${chung} END
+    FROM (SELECT ${ktYcSql(pinIdExpr)} AS v) zyc)`;
+  return `(SELECT CASE WHEN NOT ${ktHsktSql(pinIdExpr)} THEN zkb.m WHEN zkb.m IS NULL OR zkb.h IS NULL THEN NULL
+      ELSE GREATEST(zkb.m, zkb.h) END
+    FROM (SELECT ${theoYc} AS m, ${hsktExpr || hsktMocPinSql(pinIdExpr)} AS h) zkb)`;
+};
 
 // MỐC đợt RỜI READY vì đã release = lệnh sống ĐẦU TIÊN của đợt. ⚠ KHÔNG tính lệnh RELEASE_1 chưa có phiếu:
 // đó là ca "Test Run không đạt → trả về KT" (lệnh được GIỮ, QC bị hủy) — đợt vẫn đang ở READY làm lại
@@ -196,17 +275,23 @@ const relRoiReadyDotSql = (dvAlias) => `(SELECT min(zrl.created_date) FROM lenh_
 
 // Đợt đã xong KỸ THUẬT (Mực + Khuôn; khách gia công II/AD chỉ cần Mực) — gương `techDoneNhom` ở service.
 // `khachExpr` = biểu thức tên khách của phần in (vd `kh.ten_khach_hang`).
-const ktDotXongSql = (dvAlias, pinCol, khachExpr) => `(${dotMucDatSql(dvAlias, pinCol, 'MUC')}
-  AND ((${khachExpr}) IN (${KHUON_OPT_SQL_LIST}) OR ${dotMucDatSql(dvAlias, pinCol, 'KHUON')}))`;
+// 16/11/2026: theo yêu cầu KT của công đoạn Ép/Logo (tính chất in — `duKtSql` có phần in).
+// mig 134: + mục HSKT theo đợt khi công đoạn cần.
+const ktDotXongSql = (dvAlias, pinCol, khachExpr) => duKtSql(khachExpr,
+  dotMucDatSql(dvAlias, pinCol, 'KHUON'), dotMucDatSql(dvAlias, pinCol, 'MUC'), pinCol, false,
+  dotMucDatSql(dvAlias, pinCol, MA_HSKT));
 
 // Phần in CÒN đợt vải đang chờ ở READY (đã lên READY, CHƯA release) mà CHƯA được QC phủ?
 // Đây là điều kiện "còn việc ở READY" thay cho `qc_done = false` mức phần in.
 // ⚠ Gương y hệt `dsDotChoReady` (technical.repository) — 2 chỗ lệch nhau là bảng và danh sách quét đá nhau.
-const conDotChuaReadySql = (pinCol) => `EXISTS (SELECT 1 FROM dot_vai_ve zd
-  WHERE zd.phan_in_id = ${pinCol} AND zd.trang_thai NOT IN ('DA_GOP','DA_HUY') AND zd.tg_chuyen_ready IS NOT NULL
+// `qcMa` + `lenhDk` (14/11/2026): READY của 1 CÔNG ĐOẠN — mã QC của bộ + điều kiện lệnh của công đoạn (vd
+//   `readyCongDoan.lenhGdDk('zls', 'EP_UI')`); bỏ trống = như cũ (mọi lệnh).
+// `dotDk` (16/11/2026, đợt theo công đoạn): điều kiện thêm trên đợt `zd` (vd `readyCongDoan.dotOBoSql('zd', gd)`).
+const conDotChuaReadySql = (pinCol, qcMa = 'QC_XAC_NHAN', lenhDk = null, dotDk = null) => `EXISTS (SELECT 1 FROM dot_vai_ve zd
+  WHERE zd.phan_in_id = ${pinCol} AND zd.trang_thai NOT IN ('DA_GOP','DA_HUY') AND zd.tg_chuyen_ready IS NOT NULL${dotDk ? ` AND ${dotDk}` : ''}
     AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai zl JOIN lenh_san_xuat zls ON zls.id = zl.lenh_san_xuat_id
-                     WHERE zl.dot_vai_ve_id = zd.id AND zls.trang_thai <> 'HUY')
-    AND NOT ${qcDotSql('zd', pinCol)})`;
+                     WHERE zl.dot_vai_ve_id = zd.id AND zls.trang_thai <> 'HUY'${lenhDk ? ` AND ${lenhDk}` : ''})
+    AND NOT ${qcDotSql('zd', pinCol, qcMa)})`;
 
 // ⚠⚠ HÀNG ĐỢI CỦA QC = đợt vải đang chờ (chưa release) mà KỸ THUẬT ĐÃ XONG nhưng QC CHƯA xác nhận.
 // ⚠⚠⚠ CHỈ DÙNG CHO DẢI "THEO DÕI" (`utils/siSoTram.js` `DV.READY_QC`) — **KHÔNG dùng lọc BẢNG của màn
@@ -273,10 +358,10 @@ const conDotChuaKtSql = (pinCol, khachExpr) => `EXISTS (SELECT 1 FROM dot_vai_ve
 //     · lúc Giao nhận "Xác nhận lại" (`qc_tra_ve` TRA_VE_GN đã xử lý) — phần in rời READY trong lúc chờ GN.
 //   NULL ⇒ chưa từng bị trả về (GREATEST bỏ qua NULL ⇒ giữ đúng mốc KT xong như cũ).
 // ⚠ Dùng CHUNG: `technical.repository.listCandidates` (màn QC) + `siSoTram DV.READY_QC` (dải Theo dõi).
-const qcMoLaiSql = (pinCol) => `GREATEST(
-  (SELECT max(zm.updated_date) FROM ket_qua_checkpoint zm JOIN checkpoint zmc ON zmc.id = zm.checkpoint_id AND zmc.ma_checkpoint = 'QC_XAC_NHAN'
+const qcMoLaiSql = (pinCol, qcMa = 'QC_XAC_NHAN') => `GREATEST(
+  (SELECT max(zm.updated_date) FROM ket_qua_checkpoint zm JOIN checkpoint zmc ON zmc.id = zm.checkpoint_id AND zmc.ma_checkpoint = '${qcMa}'
     WHERE zm.phan_in_id = ${pinCol} AND zm.trang_thai <> 'DAT'),
-  (SELECT max(zn.updated_date) FROM ready_xac_nhan_dot zn JOIN checkpoint znc ON znc.id = zn.checkpoint_id AND znc.ma_checkpoint = 'QC_XAC_NHAN'
+  (SELECT max(zn.updated_date) FROM ready_xac_nhan_dot zn JOIN checkpoint znc ON znc.id = zn.checkpoint_id AND znc.ma_checkpoint = '${qcMa}'
     WHERE zn.phan_in_id = ${pinCol} AND zn.trang_thai <> 'DAT'),
   (SELECT max(zg.updated_date) FROM qc_tra_ve zg WHERE zg.phan_in_id = ${pinCol} AND zg.loai = 'TRA_VE_GN' AND zg.da_xu_ly))`;
 
@@ -305,6 +390,8 @@ module.exports = {
   qcMoLaiSql, qcXacNhanPhanInSql, LOAI_TRA_VE_KT, ktTraVeSql,
   KHUON_OPTIONAL_KH, KHUON_OPT_SQL_LIST, isKhuonOptional, laHangGiaCong,
   requiredTechItems, hienFilm, techDoneSql, techDoneSqlByPin,
+  KT_YC, KT_YC_MAC_DINH, chuanKtYc, ktCan, ktYcSql, ktEpSql, duKtSql,
+  MA_TN_HSKT_EP, MA_HSKT, ktHsktSql, hsktDatPinSql, hsktMocPinSql,
   NHAN_HE_THONG, nguoiXacNhanSql,
   readyTuDongSql, khongReadyTuDongSql,
   dotMucDatSql, mocDotMucSql, mocKtXongDotSql, relRoiReadyDotSql,
