@@ -116,6 +116,7 @@ async function listCandidates({
            ${techDoneSql('kh.ten_khach_hang', doneExpr('$6'), doneExpr('$7'), doneExpr('$8'), 'pin.id', gd === 'EP_UI')} AS tech_done` : ''},
            ${ktYcSql('pin.id', gd === 'EP_UI')} AS kt_yc, ${ktEpSql('pin.id', gd === 'EP_UI')} AS kt_ep,
            ${ktHsktSql('pin.id', gd === 'EP_UI')} AS kt_hskt,
+           ${ktYcSql('pin.id', true)} AS kt_yc_ep, ${ktHsktSql('pin.id', true)} AS kt_hskt_ep,
            hs.phuong_an_in, hs.barcode_hskt, hs.hskt_id, hs.hskt_inset,
            sla.ready_tg_vao, sla.kt_done_tg, sla.qc_mo_lai_tg, sla.xn_sort_tg, sla.kt_tra_ve_tg
     FROM phan_in pin
@@ -550,7 +551,7 @@ async function lenhChoKyThuatByPhanIn(phanInId, gd = GD_IN) {
 
 async function getPhanInBasic(phanInId) {
   const { rows } = await query(
-    `SELECT pin.id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim,
+    `SELECT pin.id, pin.ma_phan, pin.mau_vai, pin.kich_vai, pin.kich_phim, pin.luong_sx,
             mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
             ${ktYcSql('pin.id')} AS kt_yc_in, ${ktYcSql('pin.id', true)} AS kt_yc_ep,
             ${ktHsktSql('pin.id')} AS kt_hskt_in, ${ktHsktSql('pin.id', true)} AS kt_hskt_ep
@@ -843,7 +844,7 @@ async function coBangXacNhanDot() {
 async function dsDotChoReady(phanInIds = [], gd = GD_IN) {
   if (!phanInIds.length) return [];
   const { rows } = await query(
-    `SELECT dv.phan_in_id, dv.id AS dot_vai_ve_id, dv.ma_dot_vai, dv.loai_dot_vai_id, ldv.ten_loai,
+    `SELECT dv.phan_in_id, dv.id AS dot_vai_ve_id, dv.ma_dot_vai, dv.loai_dot_vai_id, ldv.ten_loai, ldv.ma_loai,
             dv.han_giao_hang, dv.tg_chuyen_ready, dv.barcode, dv.so_luong_vai_ve, dv.ngay_vai_ve
        FROM dot_vai_ve dv
        LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id

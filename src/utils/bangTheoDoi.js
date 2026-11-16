@@ -37,7 +37,7 @@
 // ⚠ `ma_tem` có UNIQUE index nên subquery này là tra khóa, không phải quét bảng.
 // ⚠ TEM CON (tem 17 — sửa đạt, mig 091) nằm sẵn trong danh sách và mang `so_luong = 0`, `sl_kcs_dat`
 //   = SL sửa đạt ⇒ 4 biểu thức dưới đây cộng nó vào ĐÚNG như sổ cái đang tính, không đếm đôi.
-const { mocDotMucSql, mocKtXongDotSql, relRoiReadyDotSql } = require('./tech');
+const { mocDotMucSql, mocKtXongDotSql, relRoiReadyDotSql, dotEpSql } = require('./tech');
 
 const slTem = (bieuThuc) => `COALESCE((SELECT sum(${bieuThuc})::int FROM tem xt
   WHERE q.ma_tem IS NOT NULL AND xt.ma_tem = ANY(string_to_array(q.ma_tem, ', '))), 0)`;
@@ -66,7 +66,7 @@ const SL_LENH = `COALESCE((SELECT sum(xlsd.so_luong)::int
 // ⚠ Chỉ chạy trong `siso.repository` (đọc `q.id`, `q.tg_vao`, `q.ten_khach_hang` của dòng phần in).
 const slDotReady = (laQa) => {
   // Yêu cầu KT theo tính chất in (công đoạn Ép/Logo — 16/11/2026); KT không cần mục nào ⇒ xong lúc đợt vào READY.
-  const kt = mocKtXongDotSql('q.ten_khach_hang', 'zm.khuon', 'zm.muc', 'zd.phan_in_id', 'COALESCE(zd.tg_chuyen_ready, zd.created_date)');
+  const kt = mocKtXongDotSql('q.ten_khach_hang', 'zm.khuon', 'zm.muc', 'zd.phan_in_id', 'COALESCE(zd.tg_chuyen_ready, zd.created_date)', null, dotEpSql('zd'));
   const conO = laQa
     ? `${kt} IS NOT NULL AND COALESCE(LEAST(zm.qc, zm.rel), 'infinity'::timestamptz) >= q.tg_vao`
     : `COALESCE(LEAST(${kt}, zm.qc, zm.rel), 'infinity'::timestamptz) >= q.tg_vao`;

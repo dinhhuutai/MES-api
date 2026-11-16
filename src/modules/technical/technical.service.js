@@ -20,8 +20,21 @@ const { ganThongTinPhanIn } = require('../../utils/thongTinLichSu');
 //   (KHUON/FILM/MUC/QC_XAC_NHAN): `loadConfigGd` trả `byMa` khóa mã gốc trỏ checkpoint thật của bộ, `getResultsGd` lọc +
 //   đổi tên kết quả về mã gốc ⇒ toàn bộ luật cũ (theo đợt, Khuôn kéo Film, khóa QC…) chạy y nguyên cho từng công đoạn.
 const {
-  GD_IN, GD_EP, MA_GOC, chuanGd, maCd, maGocCua, laMaEp, coBoEp,
+  GD_IN, GD_EP, MA_GOC, maCd, maGocCua, laMaEp, coBoEp,
 } = require('../../utils/readyCongDoan');
+const { dotGd } = require('../../utils/luongSanXuat');
+// ⚠⚠⚠ 17/11/2026 (người dùng chốt "chỗ này dùng chung như bình thường"): BỎ bộ checklist riêng của Ép/Logo — module này
+//   LUÔN đọc bộ gốc (`giaiDoan` FE gửi lên bị bỏ qua). Mỗi đợt vải chỉ 1 công đoạn nên xác nhận theo đợt không đụng nhau.
+//   Luật KT của công đoạn Ép/Logo (không Film · Khuôn/Mực theo tính chất in · HSKT) nay xét theo NHÓM ĐỢT: `laEpNhom`.
+const chuanGd = () => GD_IN;
+// Nhóm đợt (từ `taiNhomLoai`) là công đoạn Ép/Logo: phần in luồng LOGO, hoặc đợt Ép của phần in kiếng ủi (`dotGd`).
+//   `p` = dòng phần in có `luong_sx`, `kt_yc_in/kt_yc_ep`, `kt_hskt_in/kt_hskt_ep` (listCandidates / getPhanInBasic).
+const laEpNhom = (g, p) => !!p && (p.luong_sx === 'LOGO'
+  || ((g && g.dots) || []).some((d) => dotGd(p.luong_sx, d.ma_loai) === GD_EP));
+const ycNhom = (g, p) => {
+  const ep = laEpNhom(g, p);
+  return { ep, yc: p ? (ep ? p.kt_yc_ep : p.kt_yc_in) : undefined, hskt: !!(p && (ep ? p.kt_hskt_ep : p.kt_hskt_in)) };
+};
 
 // Đổi phương án in của HSKT active của phần in (khi xác nhận Khuôn có nhập phương án in).
 async function applyPhuongAnIn(phanInId, phuongAnIn, actorId) {
@@ -119,15 +132,31 @@ async function loadConfigGd(gd) {
 }
 
 // Kết quả checklist của phần in cho BỘ `gd` — lọc đúng bộ, mã đổi về mã gốc (giữ `ma_that`).
-async function getResultsGd(tramId, phanInId, gd) {
+// `epCtx` (17/11/2026): các đợt đang xét là công đoạn Ép/Logo (đợt Ép của kiếng ủi — `epCuaDot`) ⇒ yêu cầu KT theo tính chất.
+async function getResultsGd(tramId, phanInId, gd, epCtx = false) {
   const ep = chuanGd(gd) === GD_EP;
   const rows = await repo.getResults(tramId, phanInId);
-  // Yêu cầu KT của BỘ đang xem (16/11/2026 — tính chất in): bộ Ép/Logo luôn theo tính chất; bộ gốc chỉ phần in Logo.
-  const yc = (r) => ({ kt_yc: ep ? r.kt_yc_ep : r.kt_yc_in, kt_ep: ep || !!r.kt_ep_in, kt_hskt: !!(ep ? r.kt_hskt_ep : r.kt_hskt_in) });
+  // Yêu cầu KT của công đoạn đang xem (16/11/2026 — tính chất in): Ép/Logo theo tính chất; còn lại luật chung (phần in Logo
+  //   tự đọc tính chất qua `kt_yc_in`).
+  const laEp = ep || !!epCtx;
+  const yc = (r) => ({ kt_yc: laEp ? r.kt_yc_ep : r.kt_yc_in, kt_ep: laEp || !!r.kt_ep_in, kt_hskt: !!(laEp ? r.kt_hskt_ep : r.kt_hskt_in) });
   // Mục HSKT chỉ có mặt khi công đoạn cần (mig 134) — không thì panel / guard coi như không có mục này.
   return rows.filter((r) => laMaEp(r.ma_checkpoint) === ep)
     .filter((r) => maGocCua(r.ma_checkpoint) !== HSKT_CP || yc(r).kt_hskt)
     .map((r) => (ep ? { ...r, ...yc(r), ma_checkpoint: maGocCua(r.ma_checkpoint), ma_that: r.ma_checkpoint } : { ...r, ...yc(r) }));
+}
+
+// Các đợt `dotVaiIds` (đang chờ ở READY) đều là công đoạn Ép của phần in kiếng ủi ⇒ panel / guard xét theo luật Ép/Logo.
+//   Phần in luồng LOGO không cần (`getResults` đã tự theo tính chất). Lỗi đọc ⇒ false (luật chung).
+async function epCuaDot(phanInId, dotVaiIds) {
+  if (!dotVaiIds || !dotVaiIds.length) return false;
+  try {
+    const [pb, dots] = await Promise.all([repo.getPhanInBasic(phanInId), repo.dsDotChoReady([phanInId])]);
+    if (!pb || pb.luong_sx === 'LOGO') return false;
+    const s = new Set(dotVaiIds.map(String));
+    const ds = dots.filter((d) => s.has(String(d.dot_vai_ve_id)));
+    return ds.length > 0 && ds.every((d) => dotGd(pb.luong_sx, d.ma_loai) === GD_EP);
+  } catch (e) { return false; }
 }
 
 function buildState(results) {
@@ -323,9 +352,14 @@ const techDoneNhom = (g, tenKhach, ktYc, hskt = false) => {
   const can = ktCan(tenKhach, ktYc, hskt);
   return !!((!can.muc || g.items.MUC?.done) && (!can.khuon || g.items.KHUON?.done) && (!can.hskt || g.items.HSKT?.done));
 };
-// Yêu cầu KT của phần in cho bộ `gd` (dòng từ `repo.getPhanInBasic` / `getResults`).
-const ktYcCua = (p, gd) => (p ? (chuanGd(gd) === GD_EP ? p.kt_yc_ep : p.kt_yc_in) : undefined);
-const ktHsktCua = (p, gd) => !!(p && (chuanGd(gd) === GD_EP ? p.kt_hskt_ep : p.kt_hskt_in));
+// Trường KT của DÒNG nhóm đợt (FE: ẩn Film, cột HSKT, nhãn yêu cầu) + công đoạn hiển thị của dòng.
+const ktDongNhom = (g, r) => {
+  const y = ycNhom(g, r);
+  const laDotEp = ((g && g.dots) || []).some((d) => dotGd(r.luong_sx, d.ma_loai) === GD_EP);
+  return { kt_yc: chuanKtYc(y.yc), kt_ep: y.ep || !!r.kt_ep, kt_hskt: y.hskt, ...(laDotEp ? { giai_doan: GD_EP } : {}) };
+};
+// Nhóm đợt `g` đã đủ KT theo yêu cầu của CHÍNH công đoạn của nhóm (17/11/2026 — `ycNhom`).
+const techDoneNhomP = (g, p) => { const y = ycNhom(g, p); return techDoneNhom(g, p && p.ten_khach_hang, y.yc, y.hskt); };
 
 // ⚠⚠⚠ "READY ĐÃ KHÓA" ≠ "dòng TỔNG đang DAT" (đổi 16/09/2026 — READY đi theo ĐỢT VẢI).
 //   Phần in đã QC xong cho đợt trước, nay có ĐỢT VẢI MỚI về thì READY của đợt mới CHƯA ai làm ⇒ nếu
@@ -370,9 +404,10 @@ const nhanNhom = (chon) => chon.map((g) => {
 
 // onlyQcReady=true: chỉ phần in đã đủ 3 mục kỹ thuật & chưa QC (cho màn QC bên Chất lượng).
 async function listCandidates({ search, page, limit, offset, onlyQcReady = false, gd: gdVao = GD_IN }) {
+  // 17/11/2026: không còn danh sách riêng của bộ Ép/Logo (dùng chung 1 bộ) ⇒ FE cũ hỏi `giaiDoan=EP_UI` nhận RỖNG, không
+  //   thì nhận lại đúng danh sách bộ gốc ⇒ mỗi dòng hiện 2 lần.
+  if (gdVao === GD_EP && !(await coBoEp())) return { items: [], meta: buildMeta(page, limit, 0) };
   const gd = chuanGd(gdVao);
-  // Bộ Ép/Logo chưa có (chưa chạy mig 131) ⇒ không có dòng công đoạn ép.
-  if (gd === GD_EP && !(await coBoEp())) return { items: [], meta: buildMeta(page, limit, 0) };
   const { tram, byMa } = await loadConfigGd(gd);
   const inputIds = INPUT_CPS.map((ma) => byMa[ma]?.id).filter(Boolean);
   // SLA hàng READY theo GIAI ĐOẠN (task 3):
@@ -416,6 +451,7 @@ async function listCandidates({ search, page, limit, offset, onlyQcReady = false
     const c = ciMap[r.id] || {};
     return {
       ...r,
+      kt_yc_in: r.kt_yc, kt_hskt_in: r.kt_hskt, // ycNhom: chọn yêu cầu KT theo công đoạn của nhóm đợt (17/11/2026)
       _key: r.id,
       // ⚠ Cột "Loại đợt vải" = loại của các đợt ĐANG CHỜ ở READY (15/09/2026). Bản cũ `string_agg` MỌI
       //   đợt kể cả đợt đã release từ lâu ⇒ phần in có đợt "Số lượng" cũ + đợt "Bổ sung" mới hiện
@@ -440,9 +476,9 @@ async function listCandidates({ search, page, limit, offset, onlyQcReady = false
   base.forEach((r) => {
     const nhom = nl.nhomCuaPin.get(r.id);
     if (!nhom) { items.push(r); return; }
-    const tatCaXong = nhom.every((g) => techDoneNhom(g, r.ten_khach_hang, r.kt_yc, r.kt_hskt));
+    const tatCaXong = nhom.every((g) => techDoneNhomP(g, r));
     // ⚠ Khử trùng tên loại: tách theo TỪNG ĐỢT nên 2 đợt cùng loại sẽ cho ra "Số lượng, Số lượng".
-    const chuaXong = [...new Set(nhom.filter((g) => !techDoneNhom(g, r.ten_khach_hang, r.kt_yc, r.kt_hskt)).map((g) => g.ten))];
+    const chuaXong = [...new Set(nhom.filter((g) => !techDoneNhomP(g, r)).map((g) => g.ten))];
     const nhieu = nhom.length > 1;
 
     if (onlyQcReady) {
@@ -468,7 +504,7 @@ async function listCandidates({ search, page, limit, offset, onlyQcReady = false
         const it = g.items;
         const vao = g.dots.map((d) => tMs(d.tg_chuyen_ready)).filter(Boolean);
         const han = g.dots.map((d) => d.han_giao_hang).filter(Boolean).sort();
-        const xongDot = techDoneNhom(g, r.ten_khach_hang, r.kt_yc, r.kt_hskt);
+        const xongDot = techDoneNhomP(g, r);
         const nDone = ['KHUON', 'FILM', 'MUC'].filter((ma) => it[ma]?.done).length;
         // Mốc KT xong CỦA ĐỢT = lần xác nhận muộn nhất (Khuôn/Mực) — bắt đầu đếm SLA của QC.
         // ⚠ Cộng thêm `qc_mo_lai_tg` (30/09/2026): phần in bị TRẢ VỀ READY giữ xác nhận KT cũ ⇒ QC được
@@ -491,6 +527,7 @@ async function listCandidates({ search, page, limit, offset, onlyQcReady = false
           han_giao_hang: han[0] || r.han_giao_hang,
           tg_qua_ready: vao.length ? new Date(Math.max(...vao)).toISOString() : r.tg_qua_ready,
           khuon_done: !!it.KHUON?.done, film_done: !!it.FILM?.done, muc_done: !!it.MUC?.done, hskt_done: !!it.HSKT?.done,
+          ...ktDongNhom(g, r),
           tech_done_dot: xongDot,
           tech_done: xongDot,
           n_tech_done: nDone,
@@ -511,7 +548,7 @@ async function listCandidates({ search, page, limit, offset, onlyQcReady = false
     //   nguyên giá trị mức phần in khi 1 đợt để việc QUÉT mã vạch đợt vải cũ ở READY không hụt.
     nhom.forEach((g) => {
       const it = g.items;
-      const techDone = techDoneNhom(g, r.ten_khach_hang, r.kt_yc, r.kt_hskt);
+      const techDone = techDoneNhomP(g, r);
       const nDone = ['KHUON', 'FILM', 'MUC'].filter((ma) => it[ma]?.done).length;
       const vao = g.dots.map((d) => tMs(d.tg_chuyen_ready)).filter(Boolean);
       const han = g.dots.map((d) => d.han_giao_hang).filter(Boolean).sort();
@@ -533,6 +570,7 @@ async function listCandidates({ search, page, limit, offset, onlyQcReady = false
         han_giao_hang: han[0] || r.han_giao_hang,
         tg_qua_ready: vao.length ? new Date(Math.max(...vao)).toISOString() : r.tg_qua_ready,
         khuon_done: !!it.KHUON?.done, film_done: !!it.FILM?.done, muc_done: !!it.MUC?.done, hskt_done: !!it.HSKT?.done,
+        ...ktDongNhom(g, r),
         tech_done: techDone,
         n_tech_done: nDone,
         trang_thai_ready: techDone ? 'CHO_QC' : nDone > 0 ? 'DANG' : 'CHUA',
@@ -558,9 +596,11 @@ async function listCandidates({ search, page, limit, offset, onlyQcReady = false
   // Nhận file BH (11/11/2026) — chỉ màn READY Kỹ thuật; trạng thái theo đợt của dòng (`nhanFileBh.ganVaoDong`, lỗi ⇒ bỏ qua).
   if (!onlyQcReady) await require('./nhanFileBh').ganVaoDong(items);
   // Dòng công đoạn Ép/Logo: khóa dòng riêng + PA hiển thị = Ép (5) (PA hồ sơ giữ ở `phuong_an_in_hskt`, như Release 1).
+  // 17/11/2026 (dùng chung 1 bộ): dòng đợt Ép của kiếng ủi mang `giai_doan` 'EP_UI' (do `ktDongNhom` gắn) CHỈ để vẽ badge
+  //   công đoạn + PA hiển thị Ép (5); FE gửi lại `giaiDoan` thì module này bỏ qua (`chuanGd`).
   items.forEach((it) => {
-    it.giai_doan = gd;
-    if (gd === GD_EP) { it._key = `${it._key}|EP`; it.phuong_an_in_hskt = it.phuong_an_in; it.phuong_an_in = 5; }
+    if (!it.giai_doan) it.giai_doan = gd;
+    if (it.giai_doan === GD_EP && it.phuong_an_in !== 5) { it.phuong_an_in_hskt = it.phuong_an_in; it.phuong_an_in = 5; }
   });
   return { items, meta: buildMeta(page, limit, total) };
 }
@@ -612,7 +652,7 @@ async function getDetail(phanInId, dotVaiIds = [], gdVao = GD_IN) {
   const { tram, byMa } = await loadConfigGd(gd);
   const phanIn = await repo.getPhanInBasic(phanInId);
   if (!phanIn) throw new AppError('Phần in không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
-  const results = await getResultsGd(tram.id, phanInId, gd);
+  const results = await getResultsGd(tram.id, phanInId, gd, await epCuaDot(phanInId, dotVaiIds));
   // Thời điểm vào trạm READY (để FE tính SLA checklist). Best-effort — thiếu 029/ton_tram thì null.
   let readyTgVao = null;
   try { readyTgVao = await repo.getReadyEntryTime(phanInId); } catch { readyTgVao = null; }
@@ -757,7 +797,7 @@ async function confirmItemsBatch(phanInId, items, actorId, phuongAnIn = null, do
     throw new AppError('Chưa chọn mục nào để xác nhận', { status: 400, errorCode: 'EMPTY' });
   }
   const { tram, byMa } = await loadConfigGd(gd);
-  const results = await getResultsGd(tram.id, phanInId, gd);
+  const results = await getResultsGd(tram.id, phanInId, gd, await epCuaDot(phanInId, dotVaiIds));
   const state = buildState(results);
   if (await daKhoaReady(phanInId, state, gd)) throw new AppError('Đã QC xác nhận — dữ liệu đã khóa', { status: 409, errorCode: 'LOCKED' });
   // Mục HSKT chỉ khi công đoạn cần (mig 134) — quét / "xác nhận tất cả" gửi thừa thì bỏ qua.
@@ -1003,7 +1043,7 @@ async function confirmQcTheoDot(phanInId, actorId, dotVaiIds, byMa, gd = GD_IN) 
   const chon = chonNhom(nhom, dotVaiIds);
   if (!chon || !chon.length) return null;
   const pb = await repo.getPhanInBasic(phanInId);
-  const chua = chon.filter((g) => !techDoneNhom(g, pb?.ten_khach_hang, ktYcCua(pb, gd), ktHsktCua(pb, gd)));
+  const chua = chon.filter((g) => !techDoneNhomP(g, pb));
   if (chua.length) {
     throw new AppError(`Kỹ thuật chưa xác nhận đủ mục cho đợt vải: ${nhanNhom(chua)}`,
       { status: 409, errorCode: 'TECH_NOT_DONE' });
@@ -1052,7 +1092,7 @@ async function confirmQC(phanInId, actorId, dotVaiIds = [], gdVao = GD_IN) {
     const nhom = nhomCuaPin.get(phanInId);
     if (nhom) {
       const pb = await repo.getPhanInBasic(phanInId);
-      const chua = nhom.filter((g) => !techDoneNhom(g, pb?.ten_khach_hang, ktYcCua(pb, gd), ktHsktCua(pb, gd)));
+      const chua = nhom.filter((g) => !techDoneNhomP(g, pb));
       if (chua.length) {
         const mo = chua.map((g) => {
           const d = g.dots[0] || {};

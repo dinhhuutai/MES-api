@@ -5,7 +5,7 @@ const AppError = require('../../utils/AppError');
 const repo = require('./tinhchatin.repository');
 const {
   LUONG, MA_LUONG, BO_QUA_MAC_DINH, BO_QUA_MAC_DINH_RAW, normTcin, luongTuCongDoan, congDoanCuaLuong, luongSxTheoPhanLoai,
-  coCongDoanEp,
+  coCongDoanEp, khongInRoiEp,
 } = require('../../utils/tinhChatIn');
 const { xoaNho: xoaNhoLuong } = require('../../utils/luongSanXuat');
 // Chế độ READY của tính chất nhiều công đoạn (mig 131 — `utils/readyCongDoan.js`).
@@ -41,6 +41,11 @@ function chuanDong(x) {
   const luong = x.cong_doan && typeof x.cong_doan === 'object' ? luongTuCongDoan(x.cong_doan) : x.luong;
   if (!MA_LUONG.has(luong)) {
     throw new AppError(`Luồng không hợp lệ ở tính chất "${ten}"`, { status: 422, errorCode: 'LUONG_SAI' });
+  }
+  // 17/11/2026: không có công đoạn In rồi Ép/Logo (`utils/tinhChatIn.js khongInRoiEp`).
+  if (khongInRoiEp(congDoanCuaLuong(luong))) {
+    throw new AppError(`Tính chất "${ten}": không có công đoạn In rồi Ép/Logo — bật In HOẶC Logo/Ép (kiếng ủi = In kiếng + Ép)`,
+      { status: 422, errorCode: 'KHONG_IN_ROI_EP' });
   }
   if (typeof x.bo_qua !== 'boolean') {
     throw new AppError(`Thiếu trạng thái bỏ qua ở tính chất "${ten}"`, { status: 422, errorCode: 'BO_QUA_SAI' });

@@ -10,7 +10,7 @@ const { DO_SL } = require('../../utils/bangTheoDoi');
 const { slaReadySql, slaQcReadySql, slaTestRunSql, mocDoReadySql, hanBat, gioSxKhSql, TRA_VE_KT_GIA_HAN_PHUT, giaHanTestRunLaiSql } = require('../../utils/slaTheoGio');
 const { MOC_XAC_NHAN_LAI_KH_SQL } = require('../../utils/traVeKeHoach');
 const {
-  hanGiaoReadySql, mocDotMucSql, mocKtXongDotSql, relRoiReadyDotSql, qcMoLaiSql, khongReadyTuDongSql, ktTraVeSql,
+  hanGiaoReadySql, mocDotMucSql, mocKtXongDotSql, relRoiReadyDotSql, dotEpSql, qcMoLaiSql, khongReadyTuDongSql, ktTraVeSql,
 } = require('../../utils/tech');
 const { CHO_GN_SQL } = require('../../utils/traVeGn');
 const { chuanMaChuyen, chuanMaChuyenSql } = require('../../utils/maChuyen');
@@ -276,7 +276,7 @@ const phut = (bieuThuc) => `((${bieuThuc}) * interval '1 minute')`;
 // ⚠ Mốc KT xong / rời vì release của đợt dùng CHUNG với cột SL 2 dòng READY (`utils/bangTheoDoi.js`) qua
 //   `tech.mocKtXongDotSql` / `tech.relRoiReadyDotSql` — sửa luật ở đó, đừng chép ra đây.
 const READY_DOT = `SELECT d.phan_in_id, d.tg_chuyen_ready AS vao_ready, d.han_giao_hang AS han_dot,
-    ${mocKtXongDotSql('kh.ten_khach_hang', 'm.khuon', 'm.muc', 'd.phan_in_id', 'd.tg_chuyen_ready')} AS kt_xong,
+    ${mocKtXongDotSql('kh.ten_khach_hang', 'm.khuon', 'm.muc', 'd.phan_in_id', 'd.tg_chuyen_ready', null, dotEpSql('d'))} AS kt_xong,
     m.qc AS qc_xong, ${relRoiReadyDotSql('d')} AS moc_rel, ${CHO_GN_SQL('pin.id')} AS chan
   FROM dot_vai_ve d
   JOIN phan_in pin ON pin.id = d.phan_in_id AND pin.dang_hoat_dong

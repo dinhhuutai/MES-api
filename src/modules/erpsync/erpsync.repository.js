@@ -584,9 +584,9 @@ async function promotePhanInToReady(pinId, { barcode, tinhChatIn }) {
 async function readyCheckpointIds() {
   const { rows } = await query(
     `SELECT cp.ma_checkpoint, cp.id FROM workflow_version wv JOIN tram t ON t.workflow_version_id=wv.id AND t.ma_tram='READY' JOIN checkpoint cp ON cp.tram_id=t.id AND cp.dang_hoat_dong=true WHERE wv.la_hien_hanh=true AND cp.ma_checkpoint = ANY($1)`,
-    // 14/11/2026: kèm bộ checklist công đoạn Ép/Logo (mig 131) — ERP KTCankiemtra=0 ⇒ mọi công đoạn tự Ready.
     // 16/11/2026: + mục HSKT (mig 134 — công đoạn Ép/Logo theo tính chất in) để KTCankiemtra=0 không kẹt ở mục HSKT.
-    [['KHUON', 'FILM', 'MUC', 'QC_XAC_NHAN', 'KHUON_EP', 'FILM_EP', 'MUC_EP', 'QC_XAC_NHAN_EP', 'HSKT', 'HSKT_EP']]
+    // 17/11/2026: READY dùng chung 1 bộ (`utils/readyCongDoan.js`) — bỏ bộ `_EP`.
+    [['KHUON', 'FILM', 'MUC', 'QC_XAC_NHAN', 'HSKT']]
   );
   const m = {};
   rows.forEach((r) => { m[r.ma_checkpoint] = r.id; });
@@ -639,7 +639,7 @@ async function coDotKhac(pinId, boQua = []) {
 
 async function simulateReadyDone(pinId, dotVaiIds = []) {
   const cp = await readyCheckpointIds();
-  const ids = ['KHUON', 'FILM', 'MUC', 'QC_XAC_NHAN', 'KHUON_EP', 'FILM_EP', 'MUC_EP', 'QC_XAC_NHAN_EP', 'HSKT', 'HSKT_EP'].map((m) => cp[m]).filter(Boolean);
+  const ids = ['KHUON', 'FILM', 'MUC', 'QC_XAC_NHAN', 'HSKT'].map((m) => cp[m]).filter(Boolean);
   if (!ids.length) return;
 
   // Mã đợt vải cho ghi chú — best-effort, thiếu cũng không sao (ghi chú vẫn nêu đủ lý do).

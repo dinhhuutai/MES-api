@@ -13,7 +13,7 @@ const { gioSxKhSql } = require('../../utils/slaTheoGio');
 const { MOC_XAC_NHAN_LAI_KH_SQL } = require('../../utils/traVeKeHoach');
 const { mauTim } = require('../../utils/timKiem');
 const { DV, VN } = require('../../utils/siSoTram');
-const { mocDotMucSql, khongReadyTuDongSql, mocKtXongDotSql } = require('../../utils/tech');
+const { mocDotMucSql, khongReadyTuDongSql, mocKtXongDotSql, dotEpSql } = require('../../utils/tech');
 
 // ─── 2 NGUỒN READY RIÊNG CỦA TRANG NÀY — ĐO THEO TỪNG ĐỢT VẢI (22/09/2026) ─────
 // ⚠⚠ Nguồn `DV.READY_KT/READY_QC` của sĩ số ở MỨC PHẦN IN: vào = đợt vải MỚI NHẤT lên READY, ra = mốc
@@ -38,7 +38,7 @@ const NGUON_READY_DOT = (loai) => `SELECT dv.phan_in_id, dv.ma_dot_vai, dv.han_g
   JOIN don_hang zdh ON zdh.id = zmh.don_hang_id
   JOIN khach_hang zkh ON zkh.id = zdh.khach_hang_id
   LEFT JOIN LATERAL (SELECT
-      ${mocKtXongDotSql('zkh.ten_khach_hang', 'z.khuon', 'z.muc', 'dv.phan_in_id', 'dv.tg_chuyen_ready')} AS kt,
+      ${mocKtXongDotSql('zkh.ten_khach_hang', 'z.khuon', 'z.muc', 'dv.phan_in_id', 'dv.tg_chuyen_ready', null, dotEpSql('dv'))} AS kt,
       z.qc
     FROM (SELECT ${mocDotMucSql('dv', 'dv.phan_in_id', 'MUC')} AS muc,
                  ${mocDotMucSql('dv', 'dv.phan_in_id', 'KHUON')} AS khuon,

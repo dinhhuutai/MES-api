@@ -40,6 +40,10 @@ const LUONG_DAT_TEN = [
   { ma: 'BA_CONG_DOAN', ten: 'In + In kiếng + Ép', cd: { in: true, kieng: true, ep: true }, sx: 'IN_KIENG', tam: true },
 ];
 const khoaCd = (cd) => CD_KHOA.map((k) => (cd && cd[k] ? 1 : 0)).join('');
+// ⚠⚠ KHÔNG CÓ CÔNG ĐOẠN "IN RỒI ÉP" (17/11/2026, người dùng chốt: "sẽ không có công đoạn in rồi ép, nên không có 3I là ép với
+//   in"): tổ hợp bật CẢ In VÀ (Logo hoặc Ép) không dùng — trang Tính chất in chặn lưu (422 `KHONG_IN_ROI_EP`), dòng cũ hiện cảnh
+//   báo để người dùng tự chọn lại công tắc. Kiếng ủi = In kiếng + Ép (không bật In). Luồng `IN_EP` còn trong code cho dữ liệu cũ.
+const khongInRoiEp = (cd) => !!(cd && cd.in && (cd.logo || cd.ep));
 // Luồng sản xuất tạm cho tổ hợp chưa đặt tên (≥ 3 công đoạn…): có kiếng ⇒ kiếng (+ ép nếu có loại ép); có In + loại ép ⇒ IN_EP…
 function sxTam(cd) {
   const ep = cd.logo || cd.ep;
@@ -49,11 +53,12 @@ function sxTam(cd) {
 }
 const LUONG = (() => {
   const daCo = new Map(LUONG_DAT_TEN.map((l) => [khoaCd(l.cd), l]));
-  const out = LUONG_DAT_TEN.map((l) => ({ ...l, cd: cdDu(l.cd), da_lam: true, tam: !!l.tam }));
+  const out = LUONG_DAT_TEN.map((l) => ({ ...l, cd: cdDu(l.cd), da_lam: true, tam: !!l.tam, khong_dung: khongInRoiEp(l.cd) }));
   for (let n = 1; n < 16; n += 1) { // tổ hợp còn lại (tên ghép, mã `CD_<4 bit>`) — để công tắc nào bật cũng lưu được
     const cd = Object.fromEntries(CD_KHOA.map((k, i) => [k, !!(n & (8 >> i))]));
     if (daCo.has(khoaCd(cd))) continue;
-    out.push({ ma: `CD_${khoaCd(cd)}`, ten: CD_KHOA.filter((k) => cd[k]).map((k) => CD_TEN[k]).join(' + '), cd, sx: sxTam(cd), da_lam: true, tam: true });
+    out.push({ ma: `CD_${khoaCd(cd)}`, ten: CD_KHOA.filter((k) => cd[k]).map((k) => CD_TEN[k]).join(' + '), cd, sx: sxTam(cd), da_lam: true, tam: true,
+      khong_dung: khongInRoiEp(cd) });
   }
   out.push({ ma: 'CHUA_PHAN_LOAI', ten: 'Chưa phân loại', cd: cdDu({}), sx: 'THUONG', da_lam: false, tam: false });
   return out;
@@ -108,5 +113,5 @@ async function tapBoQua() {
 
 module.exports = {
   LUONG, MA_LUONG, BO_QUA_MAC_DINH_RAW, BO_QUA_MAC_DINH, normTcin, MA_TCIN_SQL, tapBoQua,
-  luongTuCongDoan, congDoanCuaLuong, luongSxTheoPhanLoai, coCongDoanEp, CD_KHOA, CD_TEN,
+  luongTuCongDoan, congDoanCuaLuong, luongSxTheoPhanLoai, coCongDoanEp, CD_KHOA, CD_TEN, khongInRoiEp,
 };

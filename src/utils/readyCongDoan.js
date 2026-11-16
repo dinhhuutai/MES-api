@@ -1,6 +1,8 @@
 'use strict';
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ⚠⚠⚠ 17/11/2026: BỘ CHECKLIST RIÊNG CỦA ÉP/LOGO ĐÃ BỎ — READY dùng chung 1 bộ, `coBoEp()` luôn false (xem cuối file).
+//   Phần mô tả bên dưới là thiết kế cũ, giữ để hiểu các hàm còn được gọi.
 // READY THEO CÔNG ĐOẠN (14/11/2026, người dùng chốt) — NGUỒN LUẬT DUY NHẤT.
 //   Phần in 2 công đoạn (IN_KIENG · IN_EP — `utils/luongSanXuat.js`) ra 2 DÒNG từ READY: dòng công đoạn in (giai_doan 'IN')
 //   và dòng công đoạn Ép/Logo ('EP_UI'). Mỗi dòng qua Kỹ thuật (Khuôn + Mực, Film theo Khuôn; II/AD chỉ Mực) rồi QA, và
@@ -17,7 +19,6 @@
 //     SAU_THEO_DAU      — "công đoạn sau không Ready": công đoạn sau theo READY của công đoạn đầu (`phan_in.ep_truoc`).
 //   ⇒ `gdReady(pin, gd)` = bộ checklist mà công đoạn `gd` đọc ('IN' | 'EP_UI').
 // ─────────────────────────────────────────────────────────────────────────────
-const { query } = require('../config/db');
 const { dotGdSql, gdSql } = require('./luongSanXuat');
 
 const GD_IN = 'IN';
@@ -42,7 +43,7 @@ const chuanCheDo = (v) => (CHE_DO.includes(v) ? v : 'RIENG');
 const HAI_CD = ['IN_KIENG', 'IN_EP'];
 // ⚠ Chưa có bộ checklist ép (chưa chạy mig 131) ⇒ mọi công đoạn đọc bộ gốc (như trước bản 14/11) — `gdReady`/`gdReadySql`
 //   đọc cờ này ĐỒNG BỘ; cờ nạp lúc khởi động (cuối file) và mỗi lần `coBoEp()`.
-let _coBoEp = false;
+const _coBoEp = false; // 17/11/2026: bỏ bộ ép — xem `coBoEp` cuối file
 // Bộ checklist mà công đoạn `gd` của phần in đọc (JS). `pin` = { luong_sx, ep_truoc, ready_che_do }.
 function gdReady(pin, gd) {
   if (!_coBoEp || !pin || !HAI_CD.includes(pin.luong_sx)) return GD_IN;
@@ -88,20 +89,17 @@ function lenhDotGdDk(ls, dv, gd, pin = null) {
   return `(CASE WHEN ${g} IS NULL THEN ${lenhGdDk(ls, gd)} ELSE ${gdSql(ls)} = ${g} END)`;
 }
 
-// Đã có bộ checklist ép trong workflow hiện hành chưa (mig 131). Cache khi CÓ (chạy mig xong nhận ngay, khỏi restart).
+// ⚠⚠ BỘ CHECKLIST RIÊNG CỦA CÔNG ĐOẠN ÉP/LOGO ĐÃ BỎ (17/11/2026, người dùng chốt "chỗ này dùng chung như bình thường"):
+//   mỗi đợt vải chỉ thuộc 1 công đoạn (kiếng ủi: 4I In kiếng / đợt khác Ép — `luongSanXuat.dotGd`; không có In rồi Ép) ⇒ đợt
+//   Ép/Logo xác nhận ở CHÍNH các mục Khuôn / Film / Mực / HSKT / QC chung, theo đợt (`ready_xac_nhan_dot`). Luật KT riêng của
+//   Ép/Logo (không Film, Khuôn/Mực theo tính chất, HSKT) nay theo ĐỢT — `utils/tech.js dotEpSql`, `technical.service laEpNhom`.
+//   Checkpoint KHUON_EP · FILM_EP · MUC_EP · QC_XAC_NHAN_EP · HSKT_EP (mig 131/134) còn trong DB nhưng KHÔNG ai đọc — tắt bằng
+//   `database/scripts/bo_bo_checklist_ep_1711.sql`. ⇒ `coBoEp()` LUÔN false: mọi hàm ở file này trả nhánh "bộ gốc"
+//   (`gdReady` = IN, `dotOBoSql` = TRUE, `maQcGdSql` = QC_XAC_NHAN, không có dòng READY công đoạn Ép).
+//   Giữ các hàm (nhiều nơi gọi) để mở lại được nếu người dùng đổi ý — đừng nối lại tự dò DB.
 async function coBoEp() {
-  if (_coBoEp) return true;
-  try {
-    const { rows } = await query(
-      `SELECT 1 FROM checkpoint cp JOIN tram t ON t.id = cp.tram_id AND t.ma_tram = 'READY'
-         JOIN workflow_version wv ON wv.id = t.workflow_version_id AND wv.la_hien_hanh
-        WHERE cp.ma_checkpoint = 'QC_XAC_NHAN${HAU_TO}' AND cp.dang_hoat_dong LIMIT 1`.replace(/\s+/g, ' '));
-    _coBoEp = rows.length > 0;
-  } catch (e) { _coBoEp = false; }
-  return _coBoEp;
+  return false;
 }
-// Nạp cờ ngay lúc khởi động (không chặn) — câu SQL dựng đồng bộ đọc `_coBoEp`.
-if (process.env.NODE_ENV !== 'test') setTimeout(() => { coBoEp().catch(() => {}); }, 0);
 
 module.exports = {
   GD_IN, GD_EP, HAU_TO, MA_GOC, CHE_DO, chuanGd, chuanCheDo, maCd, maGocCua, laMaEp, gdCuaMa, gdReady,

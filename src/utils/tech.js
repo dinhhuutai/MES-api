@@ -51,7 +51,7 @@ function hienFilm(tenKhach) {
 // YÊU CẦU KỸ THUẬT CỦA CÔNG ĐOẠN ÉP/LOGO THEO TÍNH CHẤT IN (mig 133, 16/11/2026 — người dùng chốt).
 //   `tinh_chat_in.kt_yeu_cau` = KHUON_MUC (mặc định = luật chung) · KHUON (chỉ Khuôn) · MUC (chỉ Mực) · KHONG (không qua KT:
 //   KT coi như xong ngay, đi thẳng hàng đợi QC — QA vẫn xác nhận). Ép/Logo KHÔNG có Film (giao diện ẩn mục Film).
-//   Áp cho CÔNG ĐOẠN ÉP/LOGO: phần in luồng LOGO (READY bộ gốc) + bộ checklist `_EP` của phần in 2 công đoạn (`ep`).
+//   Áp cho CÔNG ĐOẠN ÉP/LOGO: phần in luồng LOGO + đợt Ép của phần in kiếng ủi (`ep` / `dotEpSql`) — cùng bộ checklist chung.
 //   Công đoạn in / phần in thường giữ luật chung. Khách gia công II/AD vẫn miễn Khuôn ở mọi cấu hình.
 //   Chưa chạy mig 133 / tính chất chưa có dòng ⇒ KHUON_MUC (đọc qua `to_jsonb`).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -70,8 +70,8 @@ function ktCan(tenKhach, ktYc = KT_YC_MAC_DINH, hskt = false) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // XÁC NHẬN HSKT CỦA CÔNG ĐOẠN ÉP/LOGO (mig 134, 16/11/2026 — người dùng chốt "tính chất in có ép thì thêm xác nhận HSKT,
-//   có cài đặt bật tắt"). Mục KT thứ 3 (ngoài Khuôn / Mực) — checklist `HSKT` (bộ gốc, phần in luồng LOGO) / `HSKT_EP`
-//   (bộ Ép/Logo của phần in 2 công đoạn), quyền `READY_HSKT`. Cần khi CẢ HAI bật:
+//   có cài đặt bật tắt"). Mục KT thứ 3 (ngoài Khuôn / Mực) — checklist CHUNG `HSKT` (17/11/2026: bỏ `HSKT_EP`), quyền
+//   `READY_HSKT`. Cần khi CẢ HAI bật:
 //     · công tắc tổng `READY_EP_XAC_NHAN_HSKT` ở *Hệ thống › Cài đặt tính năng* (thiếu dòng ⇒ BẬT, `utils/caiDatTinhNang.js`);
 //     · cột `tinh_chat_in.kt_hskt` của tính chất (trang Tính chất in, mặc định BẬT). Chưa chạy mig 134 ⇒ không cần.
 //   Độc lập với `kt_yeu_cau`: "Không qua KT" + HSKT bật ⇒ KT chỉ còn mục HSKT.
@@ -79,26 +79,36 @@ function ktCan(tenKhach, ktYc = KT_YC_MAC_DINH, hskt = false) {
 const MA_TN_HSKT_EP = 'READY_EP_XAC_NHAN_HSKT';
 const MA_HSKT = 'HSKT';
 const hsktBatSql = `NOT EXISTS (SELECT 1 FROM cai_dat_tinh_nang zcn WHERE zcn.ma_tinh_nang = '${MA_TN_HSKT_EP}' AND zcn.bat = false)`;
-// SQL boolean: công đoạn (bộ `ep` / phần in LOGO) của phần in `pinIdExpr` phải xác nhận HSKT.
+// ⚠⚠ READY DÙNG CHUNG 1 BỘ CHECKLIST (17/11/2026, người dùng chốt "chỗ này dùng chung như bình thường"): công đoạn Ép/Logo
+//   KHÔNG còn bộ checklist riêng `_EP` — mọi đợt xác nhận ở Khuôn / Film / Mực / HSKT / QC chung (mỗi đợt vải chỉ 1 công
+//   đoạn nên không đụng nhau). "Công đoạn Ép/Logo" nay xét theo ĐỢT: phần in luồng LOGO, HOẶC đợt Ép của phần in kiếng ủi
+//   (`luongSanXuat.dotGd` — đợt không phải 4I). Tham số `ep` của các hàm dưới: `true` = chắc chắn là Ép/Logo · `false` =
+//   chỉ phần in LOGO · CHUỖI = biểu thức SQL boolean (vd `dotEpSql('dv')`) ⇒ Ép/Logo khi biểu thức đúng HOẶC phần in LOGO.
+const dkEpSql = (alias, ep) => (ep === true ? '' : typeof ep === 'string' && ep
+  ? ` AND ((${ep}) OR ${alias}.luong_sx = 'LOGO')` : ` AND ${alias}.luong_sx = 'LOGO'`);
+// SQL boolean: đợt `dv` là CÔNG ĐOẠN ÉP của phần in kiếng ủi (đợt chỉ 1 công đoạn — `dotGdSql`).
+const dotEpSql = (dv) => `(${require('./luongSanXuat').dotGdSql(dv)} = 'EP_UI')`;
+// SQL boolean: công đoạn Ép/Logo (xem `ep` ở trên) của phần in `pinIdExpr` phải xác nhận HSKT.
 const ktHsktSql = (pinIdExpr, ep = false) => `(${hsktBatSql} AND COALESCE((SELECT (to_jsonb(zht)->>'kt_hskt')::boolean FROM phan_in zhp
   JOIN tinh_chat_in zht ON zht.dang_hoat_dong AND zht.ma_chuan = upper(regexp_replace(zhp.tinh_chat_in, '\\s+', '', 'g'))
-  WHERE zhp.id = ${pinIdExpr}${ep ? '' : " AND zhp.luong_sx = 'LOGO'"} LIMIT 1), false))`;
-// SQL boolean: dòng TỔNG HSKT của bộ đã DAT (mức phần in — dùng khi call-site không có đợt vải).
+  WHERE zhp.id = ${pinIdExpr}${dkEpSql('zhp', ep)} LIMIT 1), false))`;
+// SQL boolean: dòng TỔNG HSKT đã DAT (mức phần in — dùng khi call-site không có đợt vải). Checklist chung `HSKT`.
+// eslint-disable-next-line no-unused-vars
 const hsktDatPinSql = (pinIdExpr, ep = false) => `EXISTS (SELECT 1 FROM ket_qua_checkpoint zhk
-  JOIN checkpoint zhc ON zhc.id = zhk.checkpoint_id AND zhc.ma_checkpoint = '${ep ? `${MA_HSKT}_EP` : MA_HSKT}'
+  JOIN checkpoint zhc ON zhc.id = zhk.checkpoint_id AND zhc.ma_checkpoint = '${MA_HSKT}'
   WHERE zhk.phan_in_id = ${pinIdExpr} AND zhk.trang_thai = 'DAT')`;
 // SQL timestamptz: mốc dòng tổng HSKT bộ gốc DAT (NULL = chưa).
 const hsktMocPinSql = (pinIdExpr) => `(SELECT max(COALESCE(zhm.tg_xac_nhan, zhm.updated_date)) FROM ket_qua_checkpoint zhm
   JOIN checkpoint zhmc ON zhmc.id = zhm.checkpoint_id AND zhmc.ma_checkpoint = '${MA_HSKT}'
   WHERE zhm.phan_in_id = ${pinIdExpr} AND zhm.trang_thai = 'DAT')`;
-// SQL: yêu cầu KT của phần in (`pinIdExpr` = biểu thức phan_in.id). `ep` = đang xét bộ công đoạn Ép/Logo của phần in 2 công
-//   đoạn ⇒ luôn đọc tính chất; không thì chỉ phần in luồng LOGO đọc (còn lại KHUON_MUC).
+// SQL: yêu cầu KT của phần in (`pinIdExpr` = biểu thức phan_in.id) cho công đoạn Ép/Logo (`ep` — xem trên) ⇒ đọc tính chất;
+//   không phải Ép/Logo ⇒ KHUON_MUC (luật chung).
 const ktYcSql = (pinIdExpr, ep = false) => `COALESCE((SELECT to_jsonb(zyt)->>'kt_yeu_cau' FROM phan_in zyp
   JOIN tinh_chat_in zyt ON zyt.dang_hoat_dong AND zyt.ma_chuan = upper(regexp_replace(zyp.tinh_chat_in, '\\s+', '', 'g'))
-  WHERE zyp.id = ${pinIdExpr}${ep ? '' : " AND zyp.luong_sx = 'LOGO'"} LIMIT 1), '${KT_YC_MAC_DINH}')`;
+  WHERE zyp.id = ${pinIdExpr}${dkEpSql('zyp', ep)} LIMIT 1), '${KT_YC_MAC_DINH}')`;
 // SQL: dòng READY này là công đoạn Ép/Logo (ẩn Film, cấu hình theo tính chất).
-const ktEpSql = (pinIdExpr, ep = false) => (ep ? 'true'
-  : `EXISTS (SELECT 1 FROM phan_in zep WHERE zep.id = ${pinIdExpr} AND zep.luong_sx = 'LOGO')`);
+const ktEpSql = (pinIdExpr, ep = false) => (ep === true ? 'true'
+  : `EXISTS (SELECT 1 FROM phan_in zep WHERE zep.id = ${pinIdExpr}${dkEpSql('zep', ep)})`);
 
 // Boolean "đủ KT" từ 2 biểu thức đã xác nhận Khuôn / Mực. Có `pinIdExpr` ⇒ theo yêu cầu của công đoạn (1 lần đọc tính chất)
 //   + mục HSKT khi công đoạn cần (`hsktExpr` = đã xác nhận HSKT; bỏ trống ⇒ dòng tổng mức phần in `hsktDatPinSql`);
@@ -251,7 +261,8 @@ const mocDotMucSql = (dvAlias, pinCol, ma) => `LEAST(
 // `pinIdExpr` + `vaoExpr` (16/11/2026): yêu cầu KT theo tính chất in (công đoạn Ép/Logo — `ktYcSql`); KT không cần mục nào ⇒
 //   mốc xong = lúc đợt vào READY (`vaoExpr`).
 // `hsktExpr` (mig 134): mốc đợt xác nhận HSKT khi công đoạn cần (`ktHsktSql`); bỏ trống ⇒ mốc dòng tổng mức phần in.
-const mocKtXongDotSql = (khachExpr, khuonExpr, mucExpr, pinIdExpr = null, vaoExpr = 'NULL', hsktExpr = null) => {
+// `epExpr` (17/11/2026): SQL boolean "đợt này là công đoạn Ép" (vd `dotEpSql('d')`) — bỏ trống ⇒ chỉ phần in LOGO.
+const mocKtXongDotSql = (khachExpr, khuonExpr, mucExpr, pinIdExpr = null, vaoExpr = 'NULL', hsktExpr = null, epExpr = false) => {
   const chung = `(CASE WHEN (${khachExpr}) IN (${KHUON_OPT_SQL_LIST}) THEN ${mucExpr}
   WHEN ${khuonExpr} IS NOT NULL AND ${mucExpr} IS NOT NULL THEN GREATEST(${khuonExpr}, ${mucExpr}) END)`;
   if (!pinIdExpr) return chung;
@@ -259,8 +270,8 @@ const mocKtXongDotSql = (khachExpr, khuonExpr, mucExpr, pinIdExpr = null, vaoExp
       WHEN 'KHUON' THEN (CASE WHEN (${khachExpr}) IN (${KHUON_OPT_SQL_LIST}) THEN ${vaoExpr} ELSE ${khuonExpr} END)
       WHEN 'MUC' THEN ${mucExpr}
       ELSE ${chung} END
-    FROM (SELECT ${ktYcSql(pinIdExpr)} AS v) zyc)`;
-  return `(SELECT CASE WHEN NOT ${ktHsktSql(pinIdExpr)} THEN zkb.m WHEN zkb.m IS NULL OR zkb.h IS NULL THEN NULL
+    FROM (SELECT ${ktYcSql(pinIdExpr, epExpr)} AS v) zyc)`;
+  return `(SELECT CASE WHEN NOT ${ktHsktSql(pinIdExpr, epExpr)} THEN zkb.m WHEN zkb.m IS NULL OR zkb.h IS NULL THEN NULL
       ELSE GREATEST(zkb.m, zkb.h) END
     FROM (SELECT ${theoYc} AS m, ${hsktExpr || hsktMocPinSql(pinIdExpr)} AS h) zkb)`;
 };
@@ -277,8 +288,9 @@ const relRoiReadyDotSql = (dvAlias) => `(SELECT min(zrl.created_date) FROM lenh_
 // `khachExpr` = biểu thức tên khách của phần in (vd `kh.ten_khach_hang`).
 // 16/11/2026: theo yêu cầu KT của công đoạn Ép/Logo (tính chất in — `duKtSql` có phần in).
 // mig 134: + mục HSKT theo đợt khi công đoạn cần.
+// 17/11/2026: đợt Ép của phần in kiếng ủi cũng theo luật Ép/Logo (`dotEpSql`, dùng chung bộ checklist).
 const ktDotXongSql = (dvAlias, pinCol, khachExpr) => duKtSql(khachExpr,
-  dotMucDatSql(dvAlias, pinCol, 'KHUON'), dotMucDatSql(dvAlias, pinCol, 'MUC'), pinCol, false,
+  dotMucDatSql(dvAlias, pinCol, 'KHUON'), dotMucDatSql(dvAlias, pinCol, 'MUC'), pinCol, dotEpSql(dvAlias),
   dotMucDatSql(dvAlias, pinCol, MA_HSKT));
 
 // Phần in CÒN đợt vải đang chờ ở READY (đã lên READY, CHƯA release) mà CHƯA được QC phủ?
@@ -391,7 +403,7 @@ module.exports = {
   KHUON_OPTIONAL_KH, KHUON_OPT_SQL_LIST, isKhuonOptional, laHangGiaCong,
   requiredTechItems, hienFilm, techDoneSql, techDoneSqlByPin,
   KT_YC, KT_YC_MAC_DINH, chuanKtYc, ktCan, ktYcSql, ktEpSql, duKtSql,
-  MA_TN_HSKT_EP, MA_HSKT, ktHsktSql, hsktDatPinSql, hsktMocPinSql,
+  MA_TN_HSKT_EP, MA_HSKT, ktHsktSql, hsktDatPinSql, hsktMocPinSql, dotEpSql,
   NHAN_HE_THONG, nguoiXacNhanSql,
   readyTuDongSql, khongReadyTuDongSql,
   dotMucDatSql, mocDotMucSql, mocKtXongDotSql, relRoiReadyDotSql,
