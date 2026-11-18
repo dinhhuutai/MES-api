@@ -115,12 +115,38 @@ const oqcDone = asyncHandler(async (req, res) => ok(res, await service.oqcDone(r
 // script hệ thống tự chạy đến giao. Luật: `utils/danhSachFinish.js`.
 const { khoangNgayTuQuery } = require('../../utils/khoangNgay');
 const { danhSachFinish } = require('./danhSachFinish');
+const finishPhanIn = require('./finishPhanIn');
 const oqcFinishList = asyncHandler(async (req, res) => {
   const { tu, den } = khoangNgayTuQuery(req.query, 62);
   const heThong = ['1', 'true'].includes(String(req.query.heThong || '').trim());
-  // `nguon=SX` (29/10/2026, Xác nhận chạy): finish = đã in + vải hư/thiếu ≥ SLNV — xem `danhSachFinish.js D_SAN_XUAT`.
+  // `nguon=SX` (Xác nhận chạy): 18/11/2026 finish theo 7 điều kiện (`utils/dieuKienFinish.js`); `cheDo=CHUA` = phần in chưa
+  //   finish (khoảng ngày = ngày chạy hoàn tất). Chế độ OQC cũ giữ `danhSachFinish.js`.
   const nguon = String(req.query.nguon || '').toUpperCase() === 'SX' ? 'SX' : 'OQC';
+  if (nguon === 'SX') {
+    const cheDo = String(req.query.cheDo || '').toUpperCase() === 'CHUA' ? 'CHUA' : 'FINISH';
+    return ok(res, await finishPhanIn.danhSachFinishPhanIn(tu, den, heThong, cheDo));
+  }
   return ok(res, await danhSachFinish(tu, den, heThong, nguon));
+});
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const idPhanIn = (req) => {
+  const id = String(req.params.phanInId || '');
+  if (!UUID_RE.test(id)) throw new AppError('Mã phần in không hợp lệ', { status: 400, errorCode: 'INVALID_ID' });
+  return id;
+};
+// Chuyển finish (người dùng) · Hủy chuyển finish / Mở – đóng điều kiện (admin) — luật `utils/dieuKienFinish.js`.
+const finishChuyen = asyncHandler(async (req, res) =>
+  ok(res, await finishPhanIn.chuyenFinish(idPhanIn(req), req.body?.lyDo, req.user.id), 'Đã chuyển finish'));
+const finishHuyChuyen = asyncHandler(async (req, res) =>
+  ok(res, await finishPhanIn.huyChuyenFinish(idPhanIn(req), req.body?.lyDo, req.user.id), 'Đã hủy chuyển finish'));
+const finishMoDieuKien = asyncHandler(async (req, res) => {
+  const mo = req.body?.mo !== false && req.body?.mo !== 'false';
+  return ok(res, await finishPhanIn.datMoDieuKien(idPhanIn(req), mo, req.body?.lyDo, req.user.id),
+    mo ? 'Đã mở điều kiện finish' : 'Đã đóng điều kiện finish');
+});
+const finishDsMoDieuKien = asyncHandler(async (req, res) => {
+  const { tu, den } = khoangNgayTuQuery(req.query, 62);
+  return ok(res, await finishPhanIn.danhSachMoDieuKien({ tuNgay: tu, denNgay: den, q: req.query.q }));
 });
 const inlineDone = asyncHandler(async (req, res) => ok(res, await service.inlineDone(req.query.date || today())));
 
@@ -178,7 +204,7 @@ module.exports = {
   kcsCandidates, kcsTonChuaKiem, recordKcs, gopTem, suaCandidates, recordSua, oqcCandidates, recordOqc,
   choNhanSua, lichSuNhanSua, nhanSua, huyNhanSua,
   kcsHistory, suaHistory, oqcHistory,
-  kcsDone, suaDone, oqcDone, oqcFinishList, inlineDone, luuNguoiSua, luuNguoiKiemKcs, guiLaiErpSua,
+  kcsDone, suaDone, oqcDone, oqcFinishList, finishChuyen, finishHuyChuyen, finishMoDieuKien, finishDsMoDieuKien, inlineDone, luuNguoiSua, luuNguoiKiemKcs, guiLaiErpSua,
   inlineCandidates, inlineLoaiLoi, inlineHistory, recordInline,
   loaiLoiList, loaiLoiCreate, loaiLoiUpdate, loaiLoiToggle,
   giaoDacBietActive, giaoDacBietList, giaoDacBietCreate, giaoDacBietUpdate, giaoDacBietToggle,

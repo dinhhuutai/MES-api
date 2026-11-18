@@ -22,7 +22,7 @@ const { ganThongTinPhanIn } = require('../../utils/thongTinLichSu');
 const {
   GD_IN, GD_EP, MA_GOC, maCd, maGocCua, laMaEp, coBoEp,
 } = require('../../utils/readyCongDoan');
-const { dotGd, paCongDoanEp } = require('../../utils/luongSanXuat');
+const { dotGd, paCongDoanEp, laHaiCongDoan, theoDot } = require('../../utils/luongSanXuat');
 // ⚠⚠⚠ 17/11/2026 (người dùng chốt "chỗ này dùng chung như bình thường"): BỎ bộ checklist riêng của Ép/Logo — module này
 //   LUÔN đọc bộ gốc (`giaiDoan` FE gửi lên bị bỏ qua). Mỗi đợt vải chỉ 1 công đoạn nên xác nhận theo đợt không đụng nhau.
 //   Luật KT của công đoạn Ép/Logo (không Film · Khuôn/Mực theo tính chất in · HSKT) nay xét theo NHÓM ĐỢT: `laEpNhom`.
@@ -599,12 +599,17 @@ async function listCandidates({ search, page, limit, offset, onlyQcReady = false
   //   `phuong_an_in_hskt`, như Release 1 — `luongSanXuat.paCongDoanEp`, gương `paCongDoanSql`; 18/11/2026 4 Ép · 5 Logo).
   // 17/11/2026 (dùng chung 1 bộ): dòng đợt Ép của kiếng ủi mang `giai_doan` 'EP_UI' (do `ktDongNhom` gắn) CHỈ để vẽ badge
   //   công đoạn + PA hiển thị; FE gửi lại `giaiDoan` thì module này bỏ qua (`chuanGd`).
+  // 18/11/2026: đợt của phần in In + Logo (DSP Logo — ERP gửi 1 lần, `dotGd` = null) mang CẢ 2 công đoạn ⇒ dòng trả thêm
+  //   `pa_cd_ep` = PA của công đoạn Logo/Ép (như dòng ép ở Release 1) để FE vẽ badge "In + Logo" (`CodePhanCongDoan caCongDoan`).
   for (const it of items) {
     if (!it.giai_doan) it.giai_doan = gd;
     if (it.giai_doan === GD_EP) {
       // eslint-disable-next-line no-await-in-loop
       const pa = await paCongDoanEp(it.tinh_chat_in); // bảng tính chất nhớ 60 s ⇒ không truy vấn mỗi dòng
       if (it.phuong_an_in !== pa) { it.phuong_an_in_hskt = it.phuong_an_in; it.phuong_an_in = pa; }
+    } else if (laHaiCongDoan(it.luong_sx) && !theoDot(it.luong_sx)) {
+      // eslint-disable-next-line no-await-in-loop
+      it.pa_cd_ep = await paCongDoanEp(it.tinh_chat_in);
     }
   }
   return { items, meta: buildMeta(page, limit, total) };

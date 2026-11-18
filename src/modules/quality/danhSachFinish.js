@@ -44,6 +44,9 @@ async function coPhanLoaiLoi() {
   return _coPll;
 }
 
+// ⚠⚠ 18/11/2026: màn Xác nhận chạy (`nguon=SX`) KHÔNG còn dùng khối dưới — finish theo 7 điều kiện ở `finishPhanIn.js`
+//   (`utils/dieuKienFinish.js`). Giữ lại cho chế độ OQC cũ. (`ta` thiếu `cong_doan_dau` ⇒ lỗi "column t.cong_doan_dau does
+//   not exist" từ mig 126 — đã thêm.)
 // ─── CHẾ ĐỘ SẢN XUẤT (29/10/2026 — nút "Danh sách finish" ở Xác nhận chạy › Danh sách & theo dõi; người dùng chốt:
 //   "điều kiện finish là SL đã in + SL vải hư, vải thiếu ≥ SLNV") ─────────────────────────────────────────────────────
 // Tập dòng = phần in mà Σ (tem GỐC chưa hủy + sổ `vai_huy` hủy + thiếu) ≥ SLNV (vải nhận mọi đợt sống), và THỜI ĐIỂM
@@ -105,7 +108,7 @@ async function docDong(tuNgay, denNgay, gomHeThong, nguon = 'OQC') {
   const sql = `WITH ${(sanXuat ? D_SAN_XUAT : dOqc).split('COALESCE(ps.chuyen_id, ls.chuyen_id)').join(chuyenTem)},
     ta AS MATERIALIZED (
       SELECT z.* FROM (SELECT t.id, t.so_luong, t.sl_chenh_lech, t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy, t.sl_sua_dat,
-            t.sl_sua_huy, t.sl_oqc_dat, t.sl_sua_tach, t.tem_goc_id, ${PIN_CUA_TEM} AS phan_in_id
+            t.sl_sua_huy, t.sl_oqc_dat, t.sl_sua_tach, t.tem_goc_id, t.cong_doan_dau, ${PIN_CUA_TEM} AS phan_in_id
           FROM tem t JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
          WHERE t.trang_thai <> 'HUY' AND ${LENH_DOT} IN (SELECT yl.lenh_san_xuat_id FROM lenh_sx_dot_vai yl
            JOIN dot_vai_ve yv ON yv.id = yl.dot_vai_ve_id WHERE yv.phan_in_id IN (SELECT phan_in_id FROM d))
@@ -174,4 +177,5 @@ function danhSachFinish(tuNgay, denNgay, gomHeThong = false, nguon = 'OQC') {
     CACHE_MS);
 }
 
-module.exports = { danhSachFinish };
+// Mảnh SQL + mục tiêu dùng chung với danh sách finish theo điều kiện mới (`finishPhanIn.js`, 18/11/2026).
+module.exports = { danhSachFinish, docMucTieu, PIN_CUA_TEM, LENH_DOT, PIN_INFO, JOIN_PIN, SLNV, coPhanLoaiLoi };

@@ -72,6 +72,8 @@ async function listCandidates({
            pin.barcode AS barcode_phan_in,
            (SELECT string_agg(DISTINCT dvb.barcode, ',') FROM dot_vai_ve dvb WHERE dvb.phan_in_id = pin.id AND dvb.barcode IS NOT NULL) AS barcode,
            pin.mau_vai, pin.mau_in, pin.kich_vai, pin.kich_phim, pin.luong_sx, pin.ep_truoc,
+           -- tinh_chat_in: service tính PA công đoạn Logo/Ép của dòng (luongSanXuat.paCongDoanEp) — thiếu thì luôn ra Ép.
+           pin.tinh_chat_in,
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
            (SELECT string_agg(DISTINCT gs.ma_set, ', ')
               FROM dot_vai_ve dv JOIN gom_set_dot_vai gsd ON gsd.dot_vai_ve_id = dv.id

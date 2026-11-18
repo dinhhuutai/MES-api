@@ -6,6 +6,17 @@ const { buildMeta } = require('../../utils/pagination');
 const { withTransaction } = require('../../config/db');
 const sockets = require('../../sockets');
 const { dungHanhTrinhGiaCong } = require('../../utils/hanhTrinhGiaCong');
+const { laHaiCongDoan, paCongDoanEp } = require('../../utils/luongSanXuat');
+
+// Badge công đoạn của phần in (18/11/2026 — "DSP Logo tự tách thêm công đoạn Logo, hiện ở Danh sách phần in vải về"): phần in 2
+//   công đoạn mang thêm `pa_cd_ep` = PA công đoạn Logo/Ép theo tính chất in (cùng nguồn với dòng ép ở Release 1) ⇒ FE ghi "Logo"
+//   hay "Ép". Bảng tính chất nhớ 60 s ⇒ không truy vấn mỗi dòng; lỗi ⇒ bỏ qua (FE mặc định "Logo").
+async function ganPaCongDoanEp(rows) {
+  for (const r of rows) {
+    if (!r || !laHaiCongDoan(r.luong_sx)) continue;
+    try { r.pa_cd_ep = await paCongDoanEp(r.tinh_chat_in); } catch (e) { /* fail-open */ } // eslint-disable-line no-await-in-loop
+  }
+}
 
 async function listPhanIn({ search, missingProfit, page, limit, offset }) {
   const { rows, total } = await repo.list({ search, missingProfit, offset, limit });
@@ -21,6 +32,7 @@ async function listVaiVe({ search, filters, stage, page, limit, offset, sortKey,
     const byPin = await repo.dotSanXuatLedger(rows.map((r) => r.phan_in_id));
     rows.forEach((r) => { r.dot_san_xuat = byPin[r.phan_in_id] || []; });
   }
+  await ganPaCongDoanEp(rows);
   return { items: rows, meta: buildMeta(page, limit, total) };
 }
 
@@ -39,6 +51,7 @@ async function getPhanIn(id) {
   ]);
   if (timeline) timeline.tra_ve_gn = traVeGn;
   if (timeline && giaCong) ganHanhTrinhGiaCong(id, timeline, giaCong);
+  await ganPaCongDoanEp([phanIn]);
   return { ...phanIn, dot_vai: dotVai, timeline, tem_summary: temSummary, kcs_by_dot: kcsByDot, stage_pcs: stagePcs, thoi_gian_cho_kho_phut: dryMin };
 }
 

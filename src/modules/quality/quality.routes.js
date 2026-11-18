@@ -42,6 +42,12 @@ router.get('/oqc/history', rbac('OQC'), c.oqcHistory);
 router.get('/oqc/done', rbac('OQC'), c.oqcDone);
 // Danh sách finish: 29/10/2026 chuyển nút từ màn OQC sang Xác nhận chạy › "Danh sách & theo dõi" ⇒ mở cho Sản xuất.
 router.get('/oqc/finish-list', rbac('OQC', 'PROD_RUN', 'PROD_MONITOR'), c.oqcFinishList);
+// FINISH THEO 7 ĐIỀU KIỆN (18/11/2026, `utils/dieuKienFinish.js`): "Chuyển finish" ở modal (người thao tác Xác nhận chạy / OQC);
+//   trang admin "Mở điều kiện finish" — `FINISH_MO_DIEU_KIEN` là mã quyền CHỈ admin ('*') có (không nằm trong bảng permission).
+router.get('/finish/mo-dieu-kien', rbac('FINISH_MO_DIEU_KIEN'), c.finishDsMoDieuKien);
+router.post('/finish/:phanInId/chuyen', rbac('PROD_RUN', 'OQC'), c.finishChuyen);
+router.post('/finish/:phanInId/huy-chuyen', rbac('FINISH_MO_DIEU_KIEN'), c.finishHuyChuyen);
+router.post('/finish/:phanInId/mo-dieu-kien', rbac('FINISH_MO_DIEU_KIEN'), c.finishMoDieuKien);
 router.post('/oqc/:temId/tra-ve', rbac('OQC'), c.oqcReturn);
 router.post('/oqc/:temId', rbac('OQC'), c.recordOqc);
 
