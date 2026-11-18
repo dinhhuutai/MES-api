@@ -57,6 +57,16 @@ const DANH_MUC_TINH_NANG = [
     canh_bao: 'Tắt thì dòng Ép/Logo đang chờ HSKT sang QC ngay, không ai kiểm hồ sơ kỹ thuật.',
     macDinh: true,
   },
+  {
+    // 17/11/2026 — `utils/khoaTem.js` (đổi mã ở đây phải đổi cả `MA_TN_KHOA_TEM`).
+    ma: 'KHOA_TEM_SAU_2_NGAY',
+    ten: 'Khóa tem sau 2 ngày',
+    mo_ta: 'Tem in quá 48 giờ thì chỉ admin mới Sửa tem, sửa vải hủy / thiếu, Hủy tem hoặc Mở lại tem đã hủy. '
+      + 'Luồng phơi · KCS · Sửa · OQC · giao và In lại tờ tem vẫn chạy bình thường.',
+    khi_tat: 'Ai có quyền sản xuất cũng sửa / hủy được tem cũ như trước.',
+    canh_bao: 'Tắt thì tem đã in lâu (đã gửi ERP, đã chốt số) lại sửa / hủy được bởi mọi người có quyền sản xuất.',
+    macDinh: true,
+  },
 ];
 
 const MA_HOP_LE = new Set(DANH_MUC_TINH_NANG.map((x) => x.ma));

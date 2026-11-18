@@ -476,6 +476,14 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
         if (r && r.doi) soDoiPain += 1;
       } catch (e) { console.error(`[erp-sync] ✗ Áp phương án in theo sản lượng lỗi (${hid}): ${e.message}`); }
     }
+    // GHI NHẬN FILE XUỐNG KT (mig 136): lượt quét đang chờ (phần in chưa lên MES lúc quét) ⇒ tự ghép phần in vừa về.
+    //   Chạy cả khi chỉ "cập nhật" (HSKT có thể vừa gắn thêm code phần). Best-effort; chưa migration ⇒ tự bỏ qua.
+    let fileKt = null;
+    if (soMoi + soCapNhat > 0) {
+      try { fileKt = await require('../filekt/filekt.repository').ghepTuDong(actorId); }
+      catch (e) { console.error(`[erp-sync] ✗ Tự ghép lượt quét file KT lỗi: ${e.message}`); }
+      if (fileKt && fileKt.so_cap_moi) sockets.emit('filekt:updated', { action: 'ghep' });
+    }
     // Phần in GN mà ERP vừa gửi lại ⇒ áp thông tin đã sửa + đóng lượt trả về ⇒ hiện lại đúng màn cũ.
     let gnTraLai = [];
     if (gn) {
@@ -490,6 +498,7 @@ async function runSync({ baseUrl, nguon, fromDate, actorId = null, tuDong = fals
     if (soBoTcin) notes.push(`bỏ qua ${soBoTcin} dòng tính chất in ngoài phạm vi`);
     if (soPhuKien) notes.push(`bỏ qua ${soPhuKien} dòng phụ kiện (PK)`);
     if (soDoiPain) notes.push(`đổi phương án in theo sản lượng: ${soDoiPain} HSKT`);
+    if (fileKt && fileKt.so_luot_moi_ghep) notes.push(`ghép ${fileKt.so_luot_moi_ghep} lượt quét file KT đang chờ`);
     if (daGhiDe.length) notes.push(`gán lại đơn/mã hàng: ${daGhiDe.filter((x) => x && x.doi).length}/${daGhiDe.length} phần in`);
     if (errors.length) notes.push(`lỗi ${errors.length}/${rows.length}: ${errors.slice(0, 3).join(' | ')}`);
     await repo.finishSyncLog(logId, {

@@ -28,6 +28,8 @@ const { coCotThoInKh, chuanHoaThoIn } = require('../../utils/thoInKeHoach');
 const { canNhapKieng, nhanCongDoan } = require('../../utils/luongSanXuat');
 const loaiKieng = require('../loaikieng/loaikieng.service');
 const loaiKiengRepo = require('../loaikieng/loaikieng.repository');
+// Tem in quá 48 giờ ⇒ chỉ admin sửa / hủy / mở lại (17/11/2026, `utils/khoaTem.js`). Bên gọi truyền `{ boQuaKhoa }`.
+const { chanTemKhoa, apCoKhoa } = require('../../utils/khoaTem');
 
 // 3 ô kiếng của sidebar in tem (mig 126/127): `can` = lệnh công đoạn IN của phần in kiếng ⇒ bắt buộc nhập; `ds` = danh mục
 //   kiếng đang dùng. KHÔNG trả gợi ý / giá trị lần in trước — người in tự nhập cả 3 ô (10/11/2026, người dùng chốt).
@@ -63,7 +65,7 @@ async function getRun(lenhId) {
   const lenh = await repo.getLenhBasic(lenhId);
   if (!lenh) throw new AppError('Lệnh sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   const phieu = await repo.getActivePhieu(lenhId);
-  const tems = phieu ? await repo.getTemsByPhieu(phieu.id) : [];
+  const tems = phieu ? await apCoKhoa(await repo.getTemsByPhieu(phieu.id)) : [];
   const printed = tems.reduce((s, t) => s + (t.trang_thai === 'HUY' ? 0 : (Number(t.so_luong) || 0)), 0);
   // Phần đã in là tem BTP trước — trần riêng (29/10/2026, `kiemTranIn`); FE tính "còn in được" theo ô BTP trước.
   const printedBtp = tems.reduce((s, t) => s + (t.trang_thai === 'HUY' || !t.btp_truoc ? 0 : (Number(t.so_luong) || 0)), 0);
@@ -404,8 +406,8 @@ async function xemVaiTem(temId) {
 
 // Khối "Vải hủy / thiếu" ở panel tem (Danh sách tem in) = `kiemVaiTem` (đọc + kiểm, KHÔNG ghi) → `ghiVaiTem` (ghi sổ +
 //   audit) → gửi lại ERP phiếu in tem cùng IDMES.
-async function suaVaiTheoTem(temId, body, actorId) {
-  const k = await kiemVaiTem(temId, body);
+async function suaVaiTheoTem(temId, body, actorId, { boQuaKhoa = false } = {}) {
+  const k = await kiemVaiTem(temId, body, { boQuaKhoa });
   if (!k.doi) return { ...(await xemVaiTem(temId)), doi: false, gui_erp: false };
   await ghiVaiTem(k, actorId);
   // Gửi lại ERP phiếu in tem của tem này (cùng IDMES) — NGẦM; tem chưa từng gửi (API tắt / mã MES) ⇒ bỏ qua.
@@ -418,7 +420,7 @@ async function suaVaiTheoTem(temId, body, actorId) {
   return { ...(await xemVaiTem(temId)), doi: true, gui_erp: !!dong };
 }
 
-async function kiemVaiTem(temId, { huy, thieu, dotVaiId, lyDo }) {
+async function kiemVaiTem(temId, { huy, thieu, dotVaiId, lyDo }, { boQuaKhoa = false } = {}) {
   const so = (v, ten) => {
     const n = Number(v);
     if (v === '' || v == null || !Number.isInteger(n) || n < 0) {
@@ -438,6 +440,7 @@ async function kiemVaiTem(temId, { huy, thieu, dotVaiId, lyDo }) {
   const dHuy = moiHuy - cu.huy;
   const dThieu = moiThieu - cu.thieu;
   if (!dHuy && !dThieu) return { doi: false, tem };
+  await chanTemKhoa(tem, { boQuaKhoa, viec: 'sửa vải hủy / thiếu' });
   const ly = String(lyDo || '').trim();
   if ((cu.huy > 0 || cu.thieu > 0) && !ly) {
     throw new AppError('Tem đã có số vải hủy / thiếu — nhập lý do sửa', { status: 422, errorCode: 'THIEU_LY_DO' });
@@ -483,7 +486,7 @@ async function ghiVaiTem({ tem, temId, cu, dot, ly, moiHuy, moiThieu, dHuy, dThi
 // in của phiếu không vượt 110% SL release (cùng luật In tem). Giờ / ca sửa được cả khi đã kiểm (không đụng sổ cái).
 // Lưu xong gửi lại phiếu in tem sang ERP (SF0) CÙNG IDMES — proc ghi đè theo IDMES ⇒ ERP nhận số mới, không thêm phiếu.
 const GIO_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
-async function suaTem(temId, body = {}, actorId) {
+async function suaTem(temId, body = {}, actorId, { boQuaKhoa = false } = {}) {
   const ly = String(body.lyDo || '').trim();
   if (!ly) throw new AppError('Nhập lý do sửa tem', { status: 422, errorCode: 'NO_LY_DO' });
   const moi = {};
@@ -582,6 +585,7 @@ async function suaTem(temId, body = {}, actorId) {
     if (t.tem_goc_id || /^13/.test(String(t.ma_tem || ''))) {
       throw new AppError('Chỉ sửa được tem sản xuất (tem in chuyền 15)', { status: 409, errorCode: 'KHONG_PHAI_TEM_SX' });
     }
+    await chanTemKhoa(t, { boQuaKhoa, viec: 'sửa' });
     // Bỏ trường không đổi ⇒ không ghi gì nếu người dùng bấm Lưu mà không sửa.
     const doi = {};
     if ('soLuong' in moi && moi.soLuong !== Number(t.so_luong)) doi.soLuong = moi.soLuong;
@@ -1875,12 +1879,12 @@ async function listCancelableTem({ search, page, limit, offset }) {
 // để client tự chọn thì người chỉ có quyền Kế hoạch sẽ xem được cả tem sản xuất.
 async function listTemDaIn(q, laGiaCong = false) {
   const { rows, total, tong } = await repo.listTemDaIn({ ...q, laGiaCong, offset: q.offset, limit: q.limit });
-  return { items: rows, meta: { ...buildMeta(q.page, q.limit, total), tong } };
+  return { items: await apCoKhoa(rows), meta: { ...buildMeta(q.page, q.limit, total), tong } };
 }
 
 // Hủy 1 lệnh in tem: đánh dấu tem HỦY (loại khỏi tổng đã in ⇒ trả SL release về) + gỡ xe phơi.
 // Chỉ khi tem CHƯA kiểm (IN/phơi/khô, sổ cái KCS/OQC/giao = 0) để không hỏng sổ cái.
-async function cancelPrintTem(temId, lyDo, actorId) {
+async function cancelPrintTem(temId, lyDo, actorId, { boQuaKhoa = false } = {}) {
   const tem = await repo.getTemForCancel(temId);
   if (!tem) throw new AppError('Tem không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   if (tem.trang_thai === 'HUY') throw new AppError('Tem đã hủy', { status: 409, errorCode: 'ALREADY' });
@@ -1891,6 +1895,7 @@ async function cancelPrintTem(temId, lyDo, actorId) {
   if (daKiem > 0) {
     throw new AppError('Tem đã được kiểm/giao một phần — không thể hủy lệnh in tem', { status: 409, errorCode: 'HAS_LEDGER' });
   }
+  await chanTemKhoa(tem, { boQuaKhoa, viec: 'hủy' });
   const go = await withTransaction((client) => repo.cancelTem(client, temId, actorId)); // HỦY tem + gỡ khỏi xe phơi
   // Ảnh chụp để "Mở lại tem" trả đúng trạng thái + đúng phiên phơi (14/10/2026).
   await repo.logTemCancel(temId, tem.ma_tem, (lyDo || '').trim() || null, actorId,
@@ -1915,7 +1920,7 @@ async function listReopenableTem({ search, page, limit, offset }) {
   return { items: rows, meta: buildMeta(page, limit, total) };
 }
 
-async function reopenPrintTem(temId, lyDo, actorId) {
+async function reopenPrintTem(temId, lyDo, actorId, { boQuaKhoa = false } = {}) {
   const ly = String(lyDo || '').trim();
   if (!ly) throw new AppError('Phải nhập lý do mở lại tem', { status: 422, errorCode: 'NO_LY_DO' });
   const tem = await repo.getTemForReopen(temId);
@@ -1938,6 +1943,7 @@ async function reopenPrintTem(temId, lyDo, actorId) {
   if (Number(tem.so_da_kiem) > 0) {
     throw new AppError('Tem đã có số kiểm/giao — không mở lại được', { status: 409, errorCode: 'HAS_LEDGER' });
   }
+  await chanTemKhoa(tem, { boQuaKhoa, viec: 'mở lại' });
   // Trần 110% SL release — cùng luật In tem (`printTem`): mở lại = cộng SL tem này vào "đã in" của phiếu.
   const lenh = await repo.getLenhBasic(tem.lenh_san_xuat_id);
   const target = Number(lenh?.so_luong_release) || 0;

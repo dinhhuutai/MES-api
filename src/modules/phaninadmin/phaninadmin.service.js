@@ -621,7 +621,8 @@ async function chayBuoc(bu, lyDo, actorId, phanInId) {
     case 'PLL': return require('../quality/phanloailoi.service').huy(bu.id, ly, actorId);
     case 'KCS': return quality.cancelKcs(bu.id, ly, actorId);
     case 'MO_LAI_PHIEU': return production.reopenProduction(bu.id, actorId, { boQuaHan: true });
-    case 'TEM': return production.cancelPrintTem(bu.id, ly, actorId);
+    // Màn quản trị bỏ qua khóa tem 48 giờ (17/11/2026, `utils/khoaTem.js`) — như `boQuaHan` mở lại phiếu.
+    case 'TEM': return production.cancelPrintTem(bu.id, ly, actorId, { boQuaKhoa: true });
     case 'TEM_GIA_CONG': return planningService.cancelGiaCongTem(bu.id, { lyDo: ly }, actorId);
     case 'HUY_CHAY': return production.undoStartProduction(bu.id, actorId);
     case 'LENH': return planningService.rollbackLenh(bu.id, { target: bu.target, lyDo: ly, force: true }, actorId);
@@ -685,7 +686,7 @@ async function huyLe(phanInId, { loai, id, lyDo } = {}, actorId) {
   if (!kiem(tc, id)) throw new AppError('Bản ghi không thuộc phần in này hoặc không còn ở trạng thái làm được thao tác này', { status: 404, errorCode: 'NOT_FOUND' });
   const production = require('../production/production.service');
   let kq;
-  if (loai === 'MO_LAI_TEM') kq = await production.reopenPrintTem(id, LY(ly), actorId);
+  if (loai === 'MO_LAI_TEM') kq = await production.reopenPrintTem(id, LY(ly), actorId, { boQuaKhoa: true });
   else if (loai === 'CHAY_HOAN_TAT') kq = await production.closeProduction(id, LY(ly), actorId);
   else if (loai === 'TEST_RUN') kq = await planningService.huyLanTest(id, { lyDo: LY(ly) }, actorId);
   else kq = await chayBuoc({ loai, id }, ly, actorId, phanInId);

@@ -9,6 +9,10 @@ const AppError = require('../../utils/AppError');
 const { getPaging, TRAN_TAI_HET } = require('../../utils/pagination');
 const { nhoDoc } = require('../../utils/cacheDoc');
 const { HAU_TO_CA } = require('../../utils/ca');
+const { laAdmin } = require('../../utils/khoaTem');
+
+// Tem in quá 48 giờ đã KHÓA (17/11/2026): chỉ admin bỏ qua — truyền cho Sửa tem · Vải hủy/thiếu · Hủy · Mở lại tem.
+const khoaTem = (req) => ({ boQuaKhoa: laAdmin(req.user) });
 
 // Chờ chạy / Đang chạy dùng chung kết quả giữa mọi người xem (`utils/cacheDoc.js` — ghi là hết hiệu lực ngay).
 const candidates = asyncHandler(async (req, res) => {
@@ -114,13 +118,13 @@ const addVaiHuy = asyncHandler(async (req, res) =>
 // Vải hủy / thiếu NHẬP Ở TEM (21/10/2026) — body { huy, thieu, dotVaiId?, lyDo? }. Xem `service.suaVaiTheoTem`.
 const xemVaiTem = asyncHandler(async (req, res) => ok(res, await service.xemVaiTem(req.params.temId)));
 const suaVaiTheoTem = asyncHandler(async (req, res) =>
-  ok(res, await service.suaVaiTheoTem(req.params.temId, req.body || {}, req.user.id), 'Đã lưu vải hủy / thiếu của tem'));
+  ok(res, await service.suaVaiTheoTem(req.params.temId, req.body || {}, req.user.id, khoaTem(req)), 'Đã lưu vải hủy / thiếu của tem'));
 const gopLenh = asyncHandler(async (req, res) =>
   ok(res, await service.gopLenhCungPhan((req.body || {}).lenhIds, req.user.id, { lyDo: (req.body || {}).lyDo || '' }), 'Đã gộp lệnh'));
 const tachLenhNgc = asyncHandler(async (req, res) =>
   ok(res, await service.tachLenhTheoNgc(req.params.lenhId, req.user.id, { lyDo: (req.body || {}).lyDo || '' }), 'Đã tách lệnh theo nhà gia công'));
 const suaTem = asyncHandler(async (req, res) =>
-  ok(res, await service.suaTem(req.params.temId, req.body || {}, req.user.id), 'Đã sửa tem'));
+  ok(res, await service.suaTem(req.params.temId, req.body || {}, req.user.id, khoaTem(req)), 'Đã sửa tem'));
 // Đợt vải BỔ SUNG của lệnh chứa tem + SL bổ sung do Công ty / Khách (hộp Sửa tem, 16/11/2026).
 const temBoSung = asyncHandler(async (req, res) => ok(res, await repo.dotBoSungCuaTem(req.params.temId)));
 
@@ -214,12 +218,12 @@ const cancelableTem = asyncHandler(async (req, res) => {
 });
 
 const cancelPrintTem = asyncHandler(async (req, res) =>
-  ok(res, await service.cancelPrintTem(req.params.temId, req.body.lyDo, req.user.id), 'Đã hủy lệnh in tem'));
+  ok(res, await service.cancelPrintTem(req.params.temId, req.body.lyDo, req.user.id, khoaTem(req)), 'Đã hủy lệnh in tem'));
 // Nút "Hủy" ở danh sách Tem đã in (14/10/2026) — lý do bắt buộc.
 const cancelPrintTemLichSu = asyncHandler(async (req, res) => {
   const lyDo = String((req.body && req.body.lyDo) || '').trim();
   if (!lyDo) throw new AppError('Phải nhập lý do hủy tem', { status: 422, errorCode: 'NO_LY_DO' });
-  return ok(res, await service.cancelPrintTem(req.params.temId, lyDo, req.user.id), 'Đã hủy tem');
+  return ok(res, await service.cancelPrintTem(req.params.temId, lyDo, req.user.id, khoaTem(req)), 'Đã hủy tem');
 });
 
 // MỞ LẠI TEM IN ĐÃ HỦY (14/10/2026) — lý do BẮT BUỘC ở cả 2 lối (trang Hủy lệnh xác nhận · "Tem đã in").
@@ -228,7 +232,7 @@ const reopenableTem = asyncHandler(async (req, res) => {
   return ok(res, await service.listReopenableTem({ search: req.query.search || '', page, limit, offset }));
 });
 const reopenPrintTem = asyncHandler(async (req, res) =>
-  ok(res, await service.reopenPrintTem(req.params.temId, (req.body && req.body.lyDo) || '', req.user.id), 'Đã mở lại tem'));
+  ok(res, await service.reopenPrintTem(req.params.temId, (req.body && req.body.lyDo) || '', req.user.id, khoaTem(req)), 'Đã mở lại tem'));
 
 // DANH SÁCH TEM ĐÃ IN (xem thông tin tem, không cần in). `laGiaCong` do ROUTE quyết, không nhận từ
 // query — xem ghi chú ở `service.listTemDaIn`.

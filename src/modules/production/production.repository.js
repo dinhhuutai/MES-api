@@ -29,6 +29,8 @@ const { chuanMaChuyen, chuanMaChuyenSql } = require('../../utils/maChuyen');
 const { loaiChuyenTinhCaSql } = require('../../utils/ca');
 const { laTemSuaSql } = require('../../utils/temCon');
 const { docLocSoLuong, dkSoLuongSql } = require('../../utils/locSoLuong');
+// Tem in quá 48 giờ ⇒ khóa sửa / hủy / mở lại, trừ admin (17/11/2026) — luật ở `utils/khoaTem.js`.
+const { temDaKhoaSql, khoaLucSql } = require('../../utils/khoaTem');
 
 const PHAN_AGG = `(SELECT string_agg(DISTINCT pin.ma_phan, ', ')
     FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
@@ -662,7 +664,7 @@ async function getTemsByPhieu(phieuId) {
             (SELECT COALESCE(MAX(lt.so_lan_in),1) FROM log_tem lt WHERE lt.tem_id = t.id)::int AS so_lan_in,
             (COALESCE(t.sl_kcs_dat,0) + COALESCE(t.sl_kcs_sua,0) + COALESCE(t.sl_kcs_huy,0)
               + COALESCE(t.sl_oqc_dat,0) + COALESCE(t.sl_da_giao,0)) > 0 AS da_kiem,
-            COALESCE(${MO_LAI_DUOC_SQL}, false) AS mo_lai_duoc
+            COALESCE(${MO_LAI_DUOC_SQL}, false) AS mo_lai_duoc, ${temDaKhoaSql('t')} AS da_khoa
      FROM tem t
      JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
      JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
@@ -749,7 +751,7 @@ async function listReopenableTem({ search = '', offset = 0, limit = 50 }) {
 async function getTemForReopen(temId) {
   const { rows } = await query(
     `SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.tem_goc_id, t.phieu_san_xuat_id, t.updated_date,
-            COALESCE(t.btp_truoc, false) AS btp_truoc,
+            COALESCE(t.btp_truoc, false) AS btp_truoc, ${temDaKhoaSql('t')} AS da_khoa,
             ps.lenh_san_xuat_id, ps.trang_thai AS phieu_trang_thai, ls.ma_lenh_san_xuat, ls.trang_thai AS lenh_trang_thai,
             COALESCE(t.sl_kcs_dat,0) + COALESCE(t.sl_kcs_sua,0) + COALESCE(t.sl_kcs_huy,0)
               + COALESCE(t.sl_oqc_dat,0) + COALESCE(t.sl_da_giao,0) AS so_da_kiem,
@@ -976,6 +978,7 @@ async function listTemDaIn({
            (COALESCE(t.sl_kcs_dat,0) + COALESCE(t.sl_kcs_sua,0) + COALESCE(t.sl_kcs_huy,0)
              + COALESCE(t.sl_oqc_dat,0) + COALESCE(t.sl_da_giao,0)) > 0 AS da_kiem,
            COALESCE(${MO_LAI_DUOC_SQL}, false) AS mo_lai_duoc,
+           ${temDaKhoaSql('t')} AS da_khoa, ${khoaLucSql('t')} AS khoa_luc,
            to_char(t.gio_sx_bd, 'HH24:MI') AS gio_sx_bd, to_char(t.gio_sx_kt, 'HH24:MI') AS gio_sx_kt,
            t.btp_truoc, t.btp_cuoi, t.gc_mau_vai, ${cotBsTem},
            t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy, t.sl_sua_dat, t.sl_sua_huy,
@@ -1193,7 +1196,7 @@ async function docTemSuaTx(client, temId) {
   const cotBs = (await temCoCotBoSung()) ? 't.sl_bo_sung_cty, t.sl_bo_sung_khach' : 'NULL::int AS sl_bo_sung_cty, NULL::int AS sl_bo_sung_khach';
   const { rows } = await client.query(
     `SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.phieu_san_xuat_id, t.tem_goc_id, t.ma_ngay_ca, ${cotLo}, ${cotGc}, ${cotBs},
-            COALESCE(t.btp_truoc, false) AS btp_truoc,
+            COALESCE(t.btp_truoc, false) AS btp_truoc, ${temDaKhoaSql('t')} AS da_khoa,
             to_char(t.ngay_ca, 'YYYY-MM-DD') AS ngay_ca,
             to_char(t.gio_sx_bd, 'HH24:MI') AS gio_sx_bd, to_char(t.gio_sx_kt, 'HH24:MI') AS gio_sx_kt,
             ps.lenh_san_xuat_id, ls.ma_lenh_san_xuat, ls.trang_thai AS lenh_trang_thai,
@@ -1275,7 +1278,7 @@ async function logSuaTemTx(client, temId, cu, moi, actorId) {
 
 async function getTemForCancel(temId) {
   const { rows } = await query(
-    `SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.phieu_san_xuat_id,
+    `SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.phieu_san_xuat_id, ${temDaKhoaSql('t')} AS da_khoa,
             ps.lenh_san_xuat_id, ls.ma_lenh_san_xuat,
             COALESCE(t.sl_kcs_dat,0) AS sl_kcs_dat, COALESCE(t.sl_kcs_sua,0) AS sl_kcs_sua,
             COALESCE(t.sl_kcs_huy,0) AS sl_kcs_huy, COALESCE(t.sl_oqc_dat,0) AS sl_oqc_dat,

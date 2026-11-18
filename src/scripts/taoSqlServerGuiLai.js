@@ -235,6 +235,11 @@ async function main() {
   console.log(`[sql-server] ✓ ${kq.so} EXEC · bỏ qua ${kq.boQua} ⇒ ${f}`);
 }
 
-main()
-  .catch((e) => { console.error(`[sql-server] ✗ ${e.message}`); process.exitCode = 1; })
-  .finally(() => pool.end().catch(() => {}));
+// Bộ dựng T-SQL dùng lại ở script sửa 1 lần (vd `taoBoSungTemTuDot1711.js`) — require KHÔNG chạy main.
+module.exports = { tChuoi, tSo, tNgay, thamSoSf0, khoiExec, cuoiFile };
+
+if (require.main === module) {
+  main()
+    .catch((e) => { console.error(`[sql-server] ✗ ${e.message}`); process.exitCode = 1; })
+    .finally(() => pool.end().catch(() => {}));
+}
