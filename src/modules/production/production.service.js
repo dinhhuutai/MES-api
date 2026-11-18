@@ -183,6 +183,14 @@ async function kiemNgayCaChungTu(phieu, body) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(ngayCt) || Number.isNaN(new Date(`${ngayCt}T00:00:00Z`).getTime())) {
     throw new AppError('Ngày chứng từ không hợp lệ', { status: 422, errorCode: 'NGAY_CT_SAI' });
   }
+  // 18/11/2026 (người dùng chốt): Từ giờ = Đến giờ (0 phút, vd 20:00 → 20:00) ⇒ không in, chọn lại giờ. Đến giờ < Từ giờ
+  //   vẫn hợp lệ (qua đêm). Gương FE `RunPanel gioSxKhongPhut`.
+  const gioBd = String((body && body.gioBd) || '').trim().slice(0, 5);
+  const gioKt = String((body && body.gioKt) || '').trim().slice(0, 5);
+  if (gioBd && gioKt && gioBd === gioKt) {
+    throw new AppError(`Từ giờ và Đến giờ đang trùng nhau (${gioBd} → ${gioKt}, 0 phút) — chọn lại giờ rồi mới in tem`,
+      { status: 422, errorCode: 'GIO_0_PHUT' });
+  }
   const ca = await caInTemHienTai(phieu.lenh_san_xuat_id, phieu.id).catch(() => null);
   const khoaFe = String((body && body.khoaCa) || '').trim();
   if (ca && khoaFe && khoaFe !== ca.khoa) {
