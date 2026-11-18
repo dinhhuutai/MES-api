@@ -367,6 +367,8 @@ async function recordKcs(temId, body, actorId) {
   //   `DA_KHO`), phần đạt lên OQC ngay. Có nhập thiếu/dư = lượt CHỐT ⇒ vẫn cân đối tuyệt đối như trên. Vượt cần kiểm mà
   //   không nhập dư ⇒ vẫn chặn. (Chốt 04/09 "nhập thiếu là chặn" nay chỉ còn ở lượt có thiếu/dư — người dùng chấp nhận.)
   const motPhan = !thieu && !du && tong < conKcs;
+  // Tem gốc đang có phần GIAO TRƯỚC (tem 17 tách từ lượt KCS một phần) còn hiệu lực — xem ⚠⚠ "LƯỢT CHỐT SAU GIAO TRƯỚC".
+  const daGiaoTruoc = (Number(tem.sl_kcs_tach) || 0) > 0;
   if (!motPhan && tong !== conSauChenh) {
     const lech = tong - conSauChenh;
     throw new AppError(
@@ -381,15 +383,24 @@ async function recordKcs(temId, body, actorId) {
     soLuongKiem: kiem, soLuongMau: mau, soLuongDat: dat, soLuongLoi: hu,
     soLuongHuy: huyTaiKcs, soLuongChenhLech: chenh,
     ketQua: (hu > 0 || huyTrucTiep > 0) ? 'CO_LOI' : 'DAT',
-    ghiChu: motPhan ? [`[Kiểm một phần ${tong}/${conKcs}]`, body.ghiChu].filter(Boolean).join(' ') : body.ghiChu,
+    ghiChu: motPhan ? [`[Kiểm một phần ${tong}/${conKcs}]`, body.ghiChu].filter(Boolean).join(' ')
+      : (dat > 0 && daGiaoTruoc ? ['[Chốt sau giao trước]', body.ghiChu].filter(Boolean).join(' ') : body.ghiChu),
   };
 
   // ⚠⚠ KCS MỘT PHẦN ⇒ PHẦN ĐẠT THÀNH TEM 17 RIÊNG (mig 122, người dùng chốt 03/11/2026: "KCS kiểm trước khoảng 1 nửa số
-  //   lượng để giao gấp trước thì tem đó qua OQC thành tem 17"). Lượt chốt phần còn lại vẫn đi bằng tem 15.
+  //   lượng để giao gấp trước thì tem đó qua OQC thành tem 17").
+  // ⚠⚠ LƯỢT CHỐT SAU GIAO TRƯỚC CŨNG RA TEM 17 RIÊNG (18/11/2026, người dùng: "lượt chốt cũng là tem 17 riêng luôn"):
+  //   tem gốc đang có phần đã tách tem 17 còn hiệu lực (`sl_kcs_tach` > 0 — hủy xác nhận / OQC trả về tem 17 đều trừ lại)
+  //   ⇒ mọi lượt KCS sau đó (kể cả lượt kiểm hết phần còn lại) tách phần đạt sang 1 tem 17 MỚI. Trước đây lượt chốt đi bằng
+  //   tem 15 ⇒ xưởng cầm 2 nhãn giao của cùng lô, 1 nhãn 17 + 1 nhãn 15. Tem chưa từng giao trước ⇒ vẫn tem 15 như cũ.
+  //   ERP y hệt lượt một phần: Sh6 gửi bằng TEM 15 lúc xác nhận, SK6 gửi khi in tem 17 lần đầu (`guiSk6KhiInTem17`).
   //   Xin mã TRƯỚC transaction (luật `layBarcodeTem*`, như `recordSua`). `null` = API xin mã 17 đang TẮT hoặc chưa chạy
   //   mig ⇒ giữ hành vi cũ: phần đạt đi bằng tem 15. ERP lỗi ⇒ `layBarcodeTem17` ném lỗi, KHÔNG lưu lượt kiểm — người dùng
   //   bấm lại (nếu lưu xong đi bằng tem 15 thì nhãn giấy sai mà không ai biết).
-  const maTem17 = motPhan && dat > 0 && await repo.coKcsTach() ? await layBarcodeTem17(actorId) : null;
+  //   `daGiaoTruoc` (khai ở trên, cạnh `motPhan`) đọc ngoài transaction nhưng an toàn: mọi thao tác làm `sl_kcs_tach` đổi
+  //   đều đổi luôn `con_kcs` ⇒ bị chặn `DA_DOI` ở bước đọc lại có khóa bên dưới.
+  const tachTem17 = dat > 0 && (motPhan || daGiaoTruoc);
+  const maTem17 = tachTem17 && await repo.coKcsTach() ? await layBarcodeTem17(actorId) : null;
 
   let kcsId = null;
   let temConId = null;
@@ -418,7 +429,7 @@ async function recordKcs(temId, body, actorId) {
   sockets.emit('quality:updated', { temId, stage: 'KCS' });
   sockets.emit('dashboard:refresh', {});
   // Đẩy kết quả kiểm sang ERP (/gui-erp-kiem-pham) — NGẦM, không bao giờ chặn việc xác nhận KCS.
-  // Lượt kiểm một phần đã tách tem 17 vẫn gửi bằng TEM 15 ở đây (08/11/2026); tem 17 gửi SK6 lúc in lần đầu
+  // Lượt đã tách tem 17 (kiểm một phần / chốt sau giao trước) vẫn gửi bằng TEM 15 ở đây (08/11/2026); tem 17 gửi SK6 lúc in lần đầu
   //   (`luuNguoiKiemKcs` → `guiSk6KhiInTem17`).
   if (kcsId) kiemPhamErp.guiNgam(kcsId, temId, { dat, hu, thieu }, actorId);
   const conLai = conSauChenh - tong; // = 0 khi cân đối; > 0 ở lượt "kiểm một phần" (27/10/2026)
@@ -815,7 +826,7 @@ async function kcsHistory(date) {
       hanh_dong: `KCS${r.ket_qua ? ' · ' + r.ket_qua : ''}`,
       doi_tuong: r.ma_tem || '', ma_phan: r.ma_phan || '',
       chi_tiet: `Đạt ${q0(r.so_luong_dat)} · Hư ${q0(r.so_luong_loi)} · Hủy ${q0(r.so_luong_huy)}${chenh}`
-        + (r.ma_tem_17 ? ` · Kiểm một phần → tem 17 ${r.ma_tem_17}` : ''),
+        + (r.ma_tem_17 ? ` · Đạt tách tem 17 ${r.ma_tem_17}` : ''),
     };
   }));
 }

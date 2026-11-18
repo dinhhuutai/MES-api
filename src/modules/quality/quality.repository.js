@@ -67,7 +67,7 @@ const temCtx = (maTrang, chuyenTem) => {
 const TEM_CTX = `
   SELECT t.id AS tem_id, t.ma_tem, t.so_luong, t.trang_thai, t.da_qua_phoi, t.sl_chenh_lech, t.created_date AS ngay_in_tem,
          t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy, t.sl_sua_dat, t.sl_sua_huy, t.sl_oqc_dat, t.sl_da_giao,
-         ${laTemSuaSql('t')} AS la_tem_sua,
+         ${laTemSuaSql('t')} AS la_tem_sua, ${slKcsTachSql('t')} AS sl_kcs_tach,
          ${CON_KCS} AS con_kcs, ${CON_SUA} AS con_sua, ${CON_OQC} AS con_oqc, ${CON_GIAO} AS con_giao,
          ${CON_OQC_KCS} AS con_oqc_kcs, ${CON_OQC_SUA} AS con_oqc_sua,
          ls.ma_lenh_san_xuat, cs.ma_chuyen, cs.ten_chuyen,
@@ -309,7 +309,7 @@ async function getTemLedger(temId, { client = null, khoa = false } = {}) {
   const { rows } = await (client || { query }).query(
     `SELECT id, ma_tem, so_luong, trang_thai, da_qua_phoi, phieu_san_xuat_id, sl_chenh_lech,
             sl_kcs_dat, sl_kcs_sua, sl_kcs_huy, sl_sua_dat, sl_sua_huy, sl_oqc_dat, sl_da_giao,
-            sl_oqc_dat_sua, tem_goc_id, sl_sua_tach, ${kcsTachIdSql('t')} AS kcs_tach_id,
+            sl_oqc_dat_sua, tem_goc_id, sl_sua_tach, ${kcsTachIdSql('t')} AS kcs_tach_id, ${slKcsTachSql('t')} AS sl_kcs_tach,
             ${conKcsSql('')} AS con_kcs,
             (sl_kcs_sua - (sl_sua_dat+sl_sua_huy)) AS con_sua,
             ((sl_kcs_dat+sl_sua_dat) - sl_oqc_dat - sl_sua_tach) AS con_oqc,
@@ -583,6 +583,8 @@ async function reduceSuaDat(client, temId, qty, actorId) {
 const recomputeTemStage = (client, temId, actorId) => recomputeTemStageMany(client, [temId], actorId);
 
 // Bản nhiều tem — 1 câu lệnh cho cả lô.
+// ⚠ 'DA_TACH' (18/11/2026): tem GỐC không còn phần nào ở chính nó vì hàng đã TÁCH HẾT sang tem 17 (lượt KCS giao trước +
+//   lượt chốt sau giao trước, hoặc sửa đạt) ⇒ KHÔNG phải "Loại/hủy" — hàng đang đi tiếp trên các tem 17. Trước đây rơi 'LOAI'.
 async function recomputeTemStageMany(client, temIds, actorId) {
   if (!temIds || temIds.length === 0) return;
   await client.query(
@@ -596,6 +598,7 @@ async function recomputeTemStageMany(client, temIds, actorId) {
         WHEN ((sl_kcs_dat+sl_sua_dat)-sl_oqc_dat-sl_sua_tach) > 0 THEN 'CHO_OQC'
         WHEN (sl_oqc_dat-sl_da_giao) > 0 THEN 'OQC_DAT'
         WHEN sl_da_giao > 0 THEN 'DA_GIAO'
+        WHEN tem_goc_id IS NULL AND sl_sua_tach > 0 THEN 'DA_TACH'
         ELSE 'LOAI' END,
        updated_by=$2, updated_date=CURRENT_TIMESTAMP
      WHERE id = ANY($1::uuid[])`,

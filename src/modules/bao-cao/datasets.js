@@ -453,6 +453,7 @@ const COT_TEM = [
 const TEM_TT = {
   IN: 'Đã in', DANG_PHOI: 'Đang phơi', DA_KHO: 'Đã khô (chờ kiểm)', CHO_SUA: 'Chờ sửa',
   CHO_OQC: 'Chờ OQC', OQC_DAT: 'OQC đạt (chờ giao)', DA_GIAO: 'Đã giao', LOAI: 'Loại/hủy', HUY: 'Hủy',
+  DA_TACH: 'Đã tách hết sang tem 17', // tem gốc — hàng đi tiếp trên các tem 17 (recomputeTemStageMany, 18/11/2026)
 };
 
 async function runTem({ loc = {}, gioi_han }) {
