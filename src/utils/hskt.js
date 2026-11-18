@@ -2,11 +2,12 @@
 
 // Quy tắc HSKT dùng chung cho `hskt` + `erpsync`.
 //
-// PHƯƠNG ÁN IN (ERP `Pain`, cột `ho_so_ky_thuat.phuong_an_in`): 1 Bàn · 2 Máy · 3 Robot · 4 Logo · 5 Ép
-//   (4 + 5 thêm 10/11/2026, người dùng chốt bộ số).
+// PHƯƠNG ÁN IN (ERP `Pain`, cột `ho_so_ky_thuat.phuong_an_in`): 1 Bàn · 2 Máy · 3 Robot · **4 Ép · 5 Logo**
+//   (4 + 5 thêm 10/11/2026; 18/11/2026 người dùng chốt ĐẢO "4 ép, 5 logo" — ERP gửi 5 cho hàng Logo; dữ liệu cũ đổi nhãn bằng
+//   `database/scripts/doi_pa_4_ep_5_logo_1811.sql`).
 // ⚠ ERP CÓ gửi `Pain = 0` = CHƯA XÁC ĐỊNH phương án in (chưa gán) — không phải dữ liệu lỗi.
 // Khớp hằng FE `frontend/src/components/common/PhuongAnInBadge.js` — đổi thì phải đổi cả 2 nơi.
-const PHUONG_AN_IN = { 0: 'Chưa xác định', 1: 'Bàn', 2: 'Máy', 3: 'Robot', 4: 'Logo', 5: 'Ép' };
+const PHUONG_AN_IN = { 0: 'Chưa xác định', 1: 'Bàn', 2: 'Máy', 3: 'Robot', 4: 'Ép', 5: 'Logo' };
 const PAIN_HOP_LE = [1, 2, 3, 4, 5];
 
 // LOGO / ÉP THEO ERP: đây là LOẠI hàng, không phải lựa chọn Bàn ↔ Máy theo sản lượng ⇒ luật sản lượng + luật "đợt bổ sung
@@ -15,13 +16,14 @@ const PAIN_HOP_LE = [1, 2, 3, 4, 5];
 //   Sửa tay (`pa_in_sua_tay`) vẫn thắng tất cả.
 const PAIN_THEO_ERP = [4, 5];
 const laPainTheoErp = (pain) => PAIN_THEO_ERP.includes(Number(pain));
-// PHẦN IN LUỒNG LOGO (`phan_in.luong_sx = 'LOGO'`, theo *Tính chất in*) ⇒ PA tự động = Logo (4) dù ERP gửi Bàn / Máy / Robot /
-//   chưa xác định (ERP gửi Ép 5 thì giữ Ép). Sửa tay vẫn thắng. Nguồn luật: `erpsync.repository painTuDongLogo`.
-const PAIN_LOGO = 4;
+// PHẦN IN LUỒNG LOGO (`phan_in.luong_sx = 'LOGO'`, theo *Tính chất in*) ⇒ PA tự động = Logo (5) dù ERP gửi Bàn / Máy / Robot /
+//   chưa xác định (ERP gửi Ép 4 thì giữ Ép). Sửa tay vẫn thắng. Nguồn luật: `erpsync.repository painTuDongLogo`.
+const PAIN_EP = 4;
+const PAIN_LOGO = 5;
 
 // SỐ CUỐI của `barcode_hskt` = phương án in (đối chiếu dữ liệu thật ERP: 278/278 dòng đúng, TRONG ĐÓ
 // 14 dòng `Pain=0` ↔ barcode kết thúc `0`; barcode luôn 12 chữ số, 11 số đầu duy nhất 1:1 ⇒ 11 số
-// đầu là ĐỊNH DANH, số cuối là thuộc tính đổi được). Logo / Ép ⇒ số cuối 4 / 5.
+// đầu là ĐỊNH DANH, số cuối là thuộc tính đổi được). Ép / Logo ⇒ số cuối 4 / 5.
 const BARCODE_RE = /^\d{11}[0-5]$/;
 
 // Giá trị ĐÍCH hợp lệ khi người dùng đổi phương án in bằng tay — CỐ Ý không có `0`: không ai được
@@ -43,5 +45,5 @@ function applyPainToBarcode(barcode, pain) {
 const canApplyPain = (barcode) => BARCODE_RE.test(String(barcode ?? '').trim());
 
 module.exports = {
-  PHUONG_AN_IN, PAIN_HOP_LE, PAIN_THEO_ERP, PAIN_LOGO, MO_TA_PAIN, BARCODE_RE, isValidPain, laPainTheoErp, applyPainToBarcode, canApplyPain,
+  PHUONG_AN_IN, PAIN_HOP_LE, PAIN_THEO_ERP, PAIN_EP, PAIN_LOGO, MO_TA_PAIN, BARCODE_RE, isValidPain, laPainTheoErp, applyPainToBarcode, canApplyPain,
 };

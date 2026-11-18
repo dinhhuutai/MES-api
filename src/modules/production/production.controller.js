@@ -11,7 +11,8 @@ const { nhoDoc } = require('../../utils/cacheDoc');
 const { HAU_TO_CA } = require('../../utils/ca');
 const { laAdmin } = require('../../utils/khoaTem');
 
-// Tem in quá 48 giờ đã KHÓA (17/11/2026): chỉ admin bỏ qua — truyền cho Sửa tem · Vải hủy/thiếu · Hủy · Mở lại tem.
+// Tem ĐÃ KHÓA (tự động sau 48 giờ / admin khóa tay, `utils/khoaTem.js`): chỉ admin bỏ qua — truyền cho Sửa tem ·
+//   Vải hủy/thiếu · Hủy · Mở lại tem.
 const khoaTem = (req) => ({ boQuaKhoa: laAdmin(req.user) });
 
 // Chờ chạy / Đang chạy dùng chung kết quả giữa mọi người xem (`utils/cacheDoc.js` — ghi là hết hiệu lực ngay).
@@ -234,6 +235,13 @@ const reopenableTem = asyncHandler(async (req, res) => {
 const reopenPrintTem = asyncHandler(async (req, res) =>
   ok(res, await service.reopenPrintTem(req.params.temId, (req.body && req.body.lyDo) || '', req.user.id, khoaTem(req)), 'Đã mở lại tem'));
 
+// KHÓA / MỞ KHÓA TAY THEO TỪNG TEM (18/11/2026) — body { temIds: [...], khoa: true|false, lyDo? }. CHỈ ADMIN ('*').
+const datKhoaTem = asyncHandler(async (req, res) => {
+  if (!laAdmin(req.user)) throw new AppError('Chỉ admin mới khóa / mở khóa tem', { status: 403, errorCode: 'CHI_ADMIN' });
+  const kq = await service.datKhoaTem(req.body || {}, req.user.id);
+  return ok(res, kq, `${kq.khoa ? 'Đã khóa' : 'Đã mở khóa'} ${kq.so_tem} tem`);
+});
+
 // DANH SÁCH TEM ĐÃ IN (xem thông tin tem, không cần in). `laGiaCong` do ROUTE quyết, không nhận từ
 // query — xem ghi chú ở `service.listTemDaIn`.
 const dsTemDaIn = (laGiaCong) => asyncHandler(async (req, res) => {
@@ -370,7 +378,7 @@ module.exports = {
   toInList, toInCreate, toInUpdate, toInToggle, baoCaoSanXuat, baoCaoDungChuyen, baoCaoKiemHang, baoCaoSuaHang,
   baoCaoPhanLoaiLoi,
   lyDoBoSungList, lyDoBoSungCreate, lyDoBoSungUpdate, lyDoBoSungToggle, luuLyDoBoSungDotVai,
-  cancelableTem, cancelPrintTem, cancelPrintTemLichSu, reopenableTem, reopenPrintTem,
+  cancelableTem, cancelPrintTem, cancelPrintTemLichSu, reopenableTem, reopenPrintTem, datKhoaTem,
   temDaInSX: dsTemDaIn(false), temDaInGiaCong: dsTemDaIn(true),
   closeCandidates, closeProduction,
   reopenCandidates, reopenProduction, pauseLenhChay, doiChuyen, lichSuHoanTat, moLaiTuLichSu,

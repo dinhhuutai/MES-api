@@ -2,7 +2,7 @@
 
 // ─── HIỂN THỊ THEO PHƯƠNG ÁN IN — CẤU HÌNH ĐỘNG (mig 067) ────────────────────
 // Mỗi TRANG có dòng chảy phần in/tem bật/tắt độc lập 4 nhóm: Máy (2) · Bàn (1) · Robot (3) ·
-// Khác (0/NULL/không có HSKT active · Logo 4 · Ép 5). Cấu hình ở **Hệ thống > Hiển thị theo phương án in**.
+// Khác (0/NULL/không có HSKT active · Ép 4 · Logo 5). Cấu hình ở **Hệ thống > Hiển thị theo phương án in**.
 //
 // ⚠ MẶC ĐỊNH BẬT HẾT ⇒ điều kiện SQL trả `TRUE` (không sinh EXISTS) — hệ thống chạy y như khi chưa
 //   có tính năng này, không tốn thêm chi phí truy vấn. Chỉ khi người dùng TẮT bớt nhóm mới lọc thật.
@@ -156,10 +156,10 @@ function dieuKienPain(cf, pinExpr, gdExpr = null) {
   const paHskt = `(SELECT h_m.phuong_an_in FROM hskt_phan_in hp_m
                  JOIN ho_so_ky_thuat h_m ON h_m.id = hp_m.hskt_id AND h_m.dang_hoat_dong
                 WHERE hp_m.phan_in_id = ${pinExpr} AND hp_m.dang_hoat_dong LIMIT 1)`;
-  const pa = gdExpr ? paCongDoanSql(paHskt, gdExpr) : paHskt;
+  const pa = gdExpr ? paCongDoanSql(paHskt, gdExpr, pinExpr) : paHskt; // công đoạn Logo ⇒ 5, Ép ⇒ 4
   const ve = [];
   if (vals.length) ve.push(`${pa} = ANY(ARRAY[${vals.join(',')}])`);
-  // "Khác" = chưa xác định (0) · phần in không có HSKT active (NULL) · Logo (4) / Ép (5) — mọi PA ngoài Máy/Bàn/Robot
+  // "Khác" = chưa xác định (0) · phần in không có HSKT active (NULL) · Ép (4) / Logo (5) — mọi PA ngoài Máy/Bàn/Robot
   //   (10/11/2026 thêm PA 4/5: không gộp vào "Khác" là trang tắt bớt nhóm sẽ ẩn âm thầm hàng Logo / Ép).
   if (khac) ve.push(`COALESCE(${pa}, 0) NOT IN (${PAIN_MAY}, ${PAIN_BAN}, ${PAIN_ROBOT})`);
   return `(${ve.join(' OR ')})`.replace(/\s+/g, ' ');

@@ -24,7 +24,7 @@
 //   (`daRelSql`) — không thì phần ép ăn vào sức chứa của phần in.
 // ─────────────────────────────────────────────────────────────────────────────
 const { query } = require('../config/db');
-const { normTcin, luongSxTheoPhanLoai } = require('./tinhChatIn');
+const { normTcin, luongSxTheoPhanLoai, LUONG_CO_LOGO, MA_TCIN_SQL } = require('./tinhChatIn');
 
 // Luồng = tổ hợp công đoạn: THUONG = In · KIENG_KHONG_EP = In kiếng · LOGO = Logo hoặc Ép (1 công đoạn loại ép) · IN_EP = In +
 //   Ép/Logo · IN_KIENG = In kiếng + Ép (kiếng ủi). Tính chất in phân loại theo 4 công tắc In · In kiếng · Logo · Ép
@@ -32,8 +32,8 @@ const { normTcin, luongSxTheoPhanLoai } = require('./tinhChatIn');
 const LUONG_SX = [
   { ma: 'THUONG', ten: 'In thường' },
   { ma: 'IN_KIENG', ten: 'In kiếng + Ép (kiếng ủi)' },
-  { ma: 'IN_EP', ten: 'In + Ép/Logo' },
-  { ma: 'LOGO', ten: 'Ép/Logo' },
+  { ma: 'IN_EP', ten: 'In + Logo' },
+  { ma: 'LOGO', ten: 'Logo' },
   { ma: 'KIENG_KHONG_EP', ten: 'In kiếng' },
 ];
 const MA_LUONG_SX = new Set(LUONG_SX.map((l) => l.ma));
@@ -75,9 +75,10 @@ function luongSauKhiBo(luong, bo) {
 }
 
 // Nhãn công đoạn hiện ở màn hình — null với phần in 1 công đoạn (không vẽ badge). Kiếng ủi ⇒ "In kiếng" / "Ép" (16/11/2026).
-function nhanCongDoan(luong, gd) {
+//   18/11/2026: công đoạn ép của In + Logo ⇒ "Logo" (từ 17/11 không còn In + Ép); `pa` = 4 (Ép) ⇒ "Ép" (gương FE `tenCdEp`).
+function nhanCongDoan(luong, gd, pa) {
   if (!laHaiCongDoan(luong)) return null;
-  if (chuanGd(gd) === GD_EP) return luong === 'IN_KIENG' ? 'Ép' : 'Ép/Logo';
+  if (chuanGd(gd) === GD_EP) return luong === 'IN_KIENG' || Number(pa) === 4 ? 'Ép' : 'Logo';
   return luong === 'IN_KIENG' ? 'In kiếng' : 'In';
 }
 
@@ -124,12 +125,18 @@ const gdChinhDotSql = (dv, luongExpr = null) => `COALESCE(${dotGdSql(dv, luongEx
 // SQL: lệnh `ls` là lệnh CHÍNH của đợt `dv`.
 const lenhChinhCuaDotSql = (ls, dv, luongExpr = null) => `(${gdSql(ls)} = ${gdChinhDotSql(dv, luongExpr)})`;
 
-// PHƯƠNG ÁN IN CỦA CÔNG ĐOẠN: dòng / lệnh công đoạn ÉP ỦI luôn mang PA **Ép** (5 — `utils/hskt.js PHUONG_AN_IN`), không
+// PHƯƠNG ÁN IN CỦA CÔNG ĐOẠN: dòng / lệnh công đoạn ÉP ỦI luôn mang PA **Ép** (4 — `utils/hskt.js PHUONG_AN_IN`), không
 //   mang PA của HSKT (là PA của phần IN). Áp ở Release 1 (chip lọc, badge, Excel), Kế hoạch tạm, màn mức lệnh (Test Run ·
 //   Release 2 · Lập lại KH) và bộ lọc *Hiển thị theo PA in* (`utils/phuongAnIn.js` — Ép thuộc nhóm "Khác"). PA của HSKT giữ
 //   ở cột `phuong_an_in_hskt` (ô ↻ đổi PA chỉ ở dòng in). FE đọc thẳng `phuong_an_in` BE trả (không có gương).
-const PAIN_EP = 5;
-const paCongDoanSql = (paExpr, gdExpr) => `(CASE WHEN ${gdExpr} = '${GD_EP}' THEN ${PAIN_EP} ELSE ${paExpr} END)`;
+// ⚠ 18/11/2026 (DSP logo, mig 137): tính chất in của phần in có công tắc LOGO (vd In + Logo `IN_LOGO`) ⇒ công đoạn thứ 2 là
+//   **Logo** ⇒ PA **Logo (5)** (chip Logo ở Release 1); còn lại Ép (4). Cần `pinIdExpr` (id phần in của dòng / lệnh) — không
+//   truyền ⇒ luôn Ép như cũ.
+// ⚠ 18/11/2026 người dùng đảo số: 4 = Ép · 5 = Logo (`utils/hskt.js`).
+const { PAIN_EP, PAIN_LOGO: PAIN_LOGO_CD } = require('./hskt');
+const coLogoTinhChatSql = (pinIdExpr) => `EXISTS (SELECT 1 FROM phan_in zpl JOIN tinh_chat_in ztl ON ztl.ma_chuan = ${MA_TCIN_SQL('zpl.tinh_chat_in')} AND ztl.dang_hoat_dong WHERE zpl.id = ${pinIdExpr} AND ztl.luong IN (${LUONG_CO_LOGO.map((m) => `'${m}'`).join(',')}))`;
+const paCongDoanSql = (paExpr, gdExpr, pinIdExpr = null) => `(CASE WHEN ${gdExpr} = '${GD_EP}' THEN ${pinIdExpr
+  ? `(CASE WHEN ${coLogoTinhChatSql(pinIdExpr)} THEN ${PAIN_LOGO_CD} ELSE ${PAIN_EP} END)` : PAIN_EP} ELSE ${paExpr} END)`;
 
 // KẾ HOẠCH TẠM THEO CÔNG ĐOẠN (mig 128): `ke_hoach_tam.giai_doan` 'IN' | 'EP_UI' — mỗi đợt tối đa 1 dòng / công đoạn
 //   (phần ép của đợt chưa Ready cũng lưu kế hoạch tạm được, lập phần nào trước cũng được). Đọc qua `to_jsonb` ⇒ câu chạy
@@ -161,6 +168,12 @@ async function bangLuongTinhChat() {
   return map;
 }
 const xoaNho = () => { nho = { luc: 0, map: null }; };
+// PA hiển thị của dòng công đoạn ép theo tính chất in (gương JS của `paCongDoanSql`): tính chất có công tắc Logo ⇒ Logo (5),
+//   còn lại Ép (4). Dùng ở chỗ dựng dòng bằng JS (READY — `technical.service`).
+async function paCongDoanEp(tinhChatIn) {
+  const ma = (await bangLuongTinhChat()).get(normTcin(tinhChatIn));
+  return LUONG_CO_LOGO.includes(ma) ? PAIN_LOGO_CD : PAIN_EP;
+}
 // Luồng phần in suy từ phân loại tính chất in (chưa phân loại / không có ⇒ THUONG — luật ở `tinhChatIn.luongSxTheoPhanLoai`).
 async function luongTheoTinhChat(tinhChatIn) {
   return luongSxTheoPhanLoai((await bangLuongTinhChat()).get(normTcin(tinhChatIn)));
@@ -171,6 +184,6 @@ module.exports = {
   chuanLuong, laHaiCongDoan, laLogo, laKieng, laKiengSql, luongSauKhiBo, boQuaTestRun, boQuaTestRunLenhSql, giaCongDuoc,
   chuanGd, congDoanDau, laCongDoanDau, canNhapKieng, nhanCongDoan,
   gdSql, daRelSql, laPhanInSql, haiCongDoanSql, khtGdSql, khtLaGdSql, khtCoCotGd, PAIN_EP, paCongDoanSql,
-  bangLuongTinhChat, luongTheoTinhChat, xoaNho,
+  bangLuongTinhChat, luongTheoTinhChat, xoaNho, paCongDoanEp, PAIN_LOGO_CD,
   LUONG_THEO_DOT, LOAI_DOT_KIENG, theoDot, dotGd, dotThuocGd, dotGdSql, dotThuocGdSql, gdChinhDotSql, lenhChinhCuaDotSql,
 };

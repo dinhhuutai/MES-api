@@ -145,7 +145,7 @@ async function datLuongSx(phanInId, { luong, epTruoc, lyDo } = {}, actorId) {
 //      đổi `giai_doan` → 'IN' (thành "phần chính" của đợt ở mọi câu release / giai đoạn / ERP) + kế hoạch tạm phần ép thành
 //      kế hoạch tạm thường + lệnh còn chờ Test Run (không vướng chờ KT / GN / Kế hoạch) vào thẳng Chờ chạy như lệnh Logo
 //      (audit `RELEASE_2` cờ `bo_test_run_logo`); đặt luồng mới; audit `phan_in` · `BO_CONG_DOAN`.
-//   4. Bỏ In ⇒ phương án in HSKT thành Ép (5) — `hskt.service changePhuongAnIn` (tùy chọn `doiPa`, mặc định có).
+//   4. Bỏ In ⇒ phương án in HSKT thành Ép (4 — `L.PAIN_EP`) — `hskt.service changePhuongAnIn` (tùy chọn `doiPa`, mặc định có).
 //   5. Bỏ In ⇒ gửi ERP Release 1 cho các lệnh ép vừa đổi (trước đây lệnh ép không gửi — `release1Erp` lọc EP_UI).
 async function dungKeHoachBoCongDoan(phanInId, bo) {
   const L = require('../../utils/luongSanXuat');

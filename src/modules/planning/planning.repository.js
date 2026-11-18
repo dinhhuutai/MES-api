@@ -55,7 +55,7 @@ const HSKT_SUB = (pinCol, col) =>
 // `gdExpr` (biểu thức công đoạn của dòng / lệnh): có ⇒ dòng công đoạn ÉP ỦI mang PA Ép (`luongSanXuat.paCongDoanSql`),
 //   PA của HSKT để ở `phuong_an_in_hskt`.
 const hsktCols = (pinCol, gdExpr = null) => `
-  ${gdExpr ? paCongDoanSql(HSKT_SUB(pinCol, 'h.phuong_an_in'), gdExpr) : HSKT_SUB(pinCol, 'h.phuong_an_in')} AS phuong_an_in,
+  ${gdExpr ? paCongDoanSql(HSKT_SUB(pinCol, 'h.phuong_an_in'), gdExpr, pinCol) : HSKT_SUB(pinCol, 'h.phuong_an_in')} AS phuong_an_in,
   ${HSKT_SUB(pinCol, 'h.phuong_an_in')} AS phuong_an_in_hskt,
   ${HSKT_SUB(pinCol, 'h.barcode_hskt')} AS barcode_hskt,
   ${HSKT_SUB(pinCol, 'h.inset')} AS hskt_inset,

@@ -851,7 +851,7 @@ async function setDotVaiKtCanKiemTra(dotVaiIds, val) {
 // Khi ERP gửi barcode thật về sau, bản không-barcode bị vô hiệu hóa để không tồn tại 2 HSKT active.
 // ─── PHẦN IN LUỒNG LOGO ⇒ PHƯƠNG ÁN IN = LOGO (4) ─────────────────────────────
 // Hàng nhóm Logo (*Tính chất in* luồng LOGO ⇒ `phan_in.luong_sx = 'LOGO'`) ERP hay gửi Pain Bàn ⇒ ở Release 1 rơi vào chip Bàn.
-//   PA tự động của hồ sơ có phần in luồng Logo = Logo, trừ khi ERP gửi Ép (5) ⇒ giữ Ép. `pa_in_sua_tay` vẫn thắng (caller xét).
+//   PA tự động của hồ sơ có phần in luồng Logo = Logo, trừ khi ERP gửi Ép (4) ⇒ giữ Ép (18/11/2026: 4 Ép · 5 Logo — ERP gửi 5 = Logo). `pa_in_sua_tay` vẫn thắng (caller xét).
 //   Áp ở: tạo / cập nhật HSKT từ ERP (`upsertHsktForPin`, `upsertHsktNoBarcode`) + post-pass `applyPainTheoSanLuong`
 //   + quét tự lành `hsktLogoSaiPain` mỗi lượt đồng bộ (phần in đổi luồng sang Logo ở Quản trị phần in / Tính chất in).
 const HSKT_CO_LOGO_SQL = (hsktExpr) => `EXISTS (SELECT 1 FROM hskt_phan_in hpl JOIN phan_in pl ON pl.id = hpl.phan_in_id AND pl.dang_hoat_dong WHERE hpl.hskt_id = ${hsktExpr} AND hpl.dang_hoat_dong AND pl.luong_sx = 'LOGO')`;

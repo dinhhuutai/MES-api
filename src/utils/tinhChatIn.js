@@ -43,7 +43,12 @@ const khoaCd = (cd) => CD_KHOA.map((k) => (cd && cd[k] ? 1 : 0)).join('');
 // ⚠⚠ KHÔNG CÓ CÔNG ĐOẠN "IN RỒI ÉP" (17/11/2026, người dùng chốt: "sẽ không có công đoạn in rồi ép, nên không có 3I là ép với
 //   in"): tổ hợp bật CẢ In VÀ (Logo hoặc Ép) không dùng — trang Tính chất in chặn lưu (422 `KHONG_IN_ROI_EP`), dòng cũ hiện cảnh
 //   báo để người dùng tự chọn lại công tắc. Kiếng ủi = In kiếng + Ép (không bật In). Luồng `IN_EP` còn trong code cho dữ liệu cũ.
-const khongInRoiEp = (cd) => !!(cd && cd.in && (cd.logo || cd.ep));
+// ⚠⚠ NGOẠI LỆ — DÒNG SẢN PHẨM LOGO (`tinh_chat_in.dsp_logo`, mig 137, 18/11/2026 người dùng chốt): tính chất DSP logo có
+//   CoEp ⇒ công đoạn đó là **Logo** (`epThanhLogo`, không còn Ép); có CoIn + CoEp ⇒ **In + Logo** = 1 phần in 2 công đoạn
+//   (luồng `IN_EP`: mỗi đợt ra 2 dòng In + Logo ở Release 1, 2 lệnh độc lập, lập / chạy cái nào trước cũng được) ⇒ tổ hợp
+//   In + Logo ĐƯỢC lưu khi `dspLogo`. In + Ép vẫn chặn.
+const khongInRoiEp = (cd, dspLogo = false) => !!(cd && cd.in && (cd.ep || (cd.logo && !dspLogo)));
+const epThanhLogo = (cd) => ({ ...cdDu(cd), logo: !!(cd && (cd.logo || cd.ep)), ep: false });
 // Luồng sản xuất tạm cho tổ hợp chưa đặt tên (≥ 3 công đoạn…): có kiếng ⇒ kiếng (+ ép nếu có loại ép); có In + loại ép ⇒ IN_EP…
 function sxTam(cd) {
   const ep = cd.logo || cd.ep;
@@ -68,6 +73,8 @@ const THEO_MA = new Map(LUONG.map((l) => [l.ma, l]));
 const THEO_CD = new Map(LUONG.map((l) => [khoaCd(l.cd), l.ma]));
 // Mã luồng phân loại của 1 tổ hợp công đoạn `{ in, kieng, logo, ep }`.
 const luongTuCongDoan = (cd) => THEO_CD.get(khoaCd(cdDu(cd)));
+// Mã luồng phân loại có công tắc LOGO bật — công đoạn ép ủi của phần in mang tính chất này là Logo (PA 5, không phải Ép 4 — 18/11/2026 đảo số).
+const LUONG_CO_LOGO = LUONG.filter((l) => l.cd.logo).map((l) => l.ma);
 // Tổ hợp có công đoạn loại ép (Logo hoặc Ép) — cột "Kỹ thuật Ép/Logo" / "Xác nhận HSKT" chỉ có nghĩa với tổ hợp này.
 const coCongDoanEp = (cd) => !!(cd && (cd.ep || cd.logo));
 // Tổ hợp công đoạn của 1 mã luồng phân loại (mã lạ / KHAC ⇒ không công đoạn nào).
@@ -113,5 +120,5 @@ async function tapBoQua() {
 
 module.exports = {
   LUONG, MA_LUONG, BO_QUA_MAC_DINH_RAW, BO_QUA_MAC_DINH, normTcin, MA_TCIN_SQL, tapBoQua,
-  luongTuCongDoan, congDoanCuaLuong, luongSxTheoPhanLoai, coCongDoanEp, CD_KHOA, CD_TEN, khongInRoiEp,
+  luongTuCongDoan, congDoanCuaLuong, luongSxTheoPhanLoai, coCongDoanEp, CD_KHOA, CD_TEN, khongInRoiEp, epThanhLogo, LUONG_CO_LOGO,
 };

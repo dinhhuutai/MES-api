@@ -43,8 +43,17 @@ async function coCotKtHskt() {
   _coKtHskt = rows.length > 0;
   return _coKtHskt;
 }
-// Thiếu cột (chưa mig 134) ⇒ false (không cần HSKT) — khớp `utils/tech.js ktHsktSql`.
-const COT_KT_YC = "COALESCE(to_jsonb(t)->>'kt_yeu_cau', 'KHUON_MUC') AS kt_yeu_cau, COALESCE((to_jsonb(t)->>'kt_hskt')::boolean, false) AS kt_hskt";
+// Cột `dsp_logo` (mig 137 — dòng sản phẩm logo: Ép ⇒ Logo, In + Logo được phép). Cache khi CÓ.
+let _coDsp = false;
+async function coCotDspLogo() {
+  if (_coDsp) return true;
+  const { rows } = await query("SELECT 1 FROM information_schema.columns WHERE table_name = 'tinh_chat_in' AND column_name = 'dsp_logo' LIMIT 1");
+  _coDsp = rows.length > 0;
+  return _coDsp;
+}
+// Thiếu cột (chưa mig 134) ⇒ false (không cần HSKT) — khớp `utils/tech.js ktHsktSql`. Thiếu `dsp_logo` (mig 137) ⇒ false.
+const COT_KT_YC = "COALESCE(to_jsonb(t)->>'kt_yeu_cau', 'KHUON_MUC') AS kt_yeu_cau, COALESCE((to_jsonb(t)->>'kt_hskt')::boolean, false) AS kt_hskt, "
+  + "COALESCE((to_jsonb(t)->>'dsp_logo')::boolean, false) AS dsp_logo";
 
 async function coBang() {
   const { rows } = await query("SELECT to_regclass('public.tinh_chat_in') AS bang");
@@ -114,6 +123,7 @@ async function cotTuyChon(d) {
   if (await coCotCheDo()) cot.push(['ready_che_do', d.ready_che_do || 'RIENG']);
   if (await coCotKtYc()) cot.push(['kt_yeu_cau', d.kt_yeu_cau || 'KHUON_MUC']);
   if (await coCotKtHskt()) cot.push(['kt_hskt', d.kt_hskt !== false]);
+  if (await coCotDspLogo()) cot.push(['dsp_logo', d.dsp_logo === true]);
   return cot;
 }
 
@@ -152,4 +162,4 @@ async function logTx(client, id, hanhDong, cu, moi, actorId) {
   );
 }
 
-module.exports = { coCotCheDo, coCotKtYc, coCotKtHskt, coBang, danhMuc, demPhanIn, demDotErp, demPhanInCua, docTheoMaTx, docTheoIdTx, themTx, suaTx, anTx, logTx, apLuongChoPhanInTx };
+module.exports = { coCotCheDo, coCotKtYc, coCotKtHskt, coCotDspLogo, coBang, danhMuc, demPhanIn, demDotErp, demPhanInCua, docTheoMaTx, docTheoIdTx, themTx, suaTx, anTx, logTx, apLuongChoPhanInTx };

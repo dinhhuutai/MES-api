@@ -28,8 +28,9 @@ const { coCotThoInKh, chuanHoaThoIn } = require('../../utils/thoInKeHoach');
 const { canNhapKieng, nhanCongDoan } = require('../../utils/luongSanXuat');
 const loaiKieng = require('../loaikieng/loaikieng.service');
 const loaiKiengRepo = require('../loaikieng/loaikieng.repository');
-// Tem in quá 48 giờ ⇒ chỉ admin sửa / hủy / mở lại (17/11/2026, `utils/khoaTem.js`). Bên gọi truyền `{ boQuaKhoa }`.
-const { chanTemKhoa, apCoKhoa } = require('../../utils/khoaTem');
+// Tem ĐÃ KHÓA (tự động sau 48 giờ, hoặc admin khóa tay từng tem) ⇒ chỉ admin sửa / hủy / mở lại (`utils/khoaTem.js`).
+//   Bên gọi truyền `{ boQuaKhoa }`.
+const { chanTemKhoa, BANG_KHOA, HD_KHOA, HD_MO } = require('../../utils/khoaTem');
 
 // 3 ô kiếng của sidebar in tem (mig 126/127): `can` = lệnh công đoạn IN của phần in kiếng ⇒ bắt buộc nhập; `ds` = danh mục
 //   kiếng đang dùng. KHÔNG trả gợi ý / giá trị lần in trước — người in tự nhập cả 3 ô (10/11/2026, người dùng chốt).
@@ -65,7 +66,7 @@ async function getRun(lenhId) {
   const lenh = await repo.getLenhBasic(lenhId);
   if (!lenh) throw new AppError('Lệnh sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   const phieu = await repo.getActivePhieu(lenhId);
-  const tems = phieu ? await apCoKhoa(await repo.getTemsByPhieu(phieu.id)) : [];
+  const tems = phieu ? await repo.getTemsByPhieu(phieu.id) : [];
   const printed = tems.reduce((s, t) => s + (t.trang_thai === 'HUY' ? 0 : (Number(t.so_luong) || 0)), 0);
   // Phần đã in là tem BTP trước — trần riêng (29/10/2026, `kiemTranIn`); FE tính "còn in được" theo ô BTP trước.
   const printedBtp = tems.reduce((s, t) => s + (t.trang_thai === 'HUY' || !t.btp_truoc ? 0 : (Number(t.so_luong) || 0)), 0);
@@ -1879,7 +1880,34 @@ async function listCancelableTem({ search, page, limit, offset }) {
 // để client tự chọn thì người chỉ có quyền Kế hoạch sẽ xem được cả tem sản xuất.
 async function listTemDaIn(q, laGiaCong = false) {
   const { rows, total, tong } = await repo.listTemDaIn({ ...q, laGiaCong, offset: q.offset, limit: q.limit });
-  return { items: await apCoKhoa(rows), meta: { ...buildMeta(q.page, q.limit, total), tong } };
+  return { items: rows, meta: { ...buildMeta(q.page, q.limit, total), tong } };
+}
+
+// KHÓA / MỞ KHÓA TAY THEO TỪNG TEM (18/11/2026, người dùng: "khóa theo từng tem, và mở khóa lại theo từng tem") — CHỈ ADMIN
+//   (controller kiểm `laAdmin`). Mỗi tem đổi trạng thái = 1 dòng `audit_log` `tem_khoa` · `KHOA_TEM` | `MO_KHOA_TEM`
+//   (dòng mới nhất là giá trị — `utils/khoaTem.js temDaKhoaSql`). Mở khóa giữ tới khi admin khóa lại. Tem gia công (13)
+//   không thuộc luật khóa ⇒ 409. Tem đang đúng trạng thái muốn đặt ⇒ bỏ qua (không ghi dòng thừa).
+const KHOA_TOI_DA = 200;
+async function datKhoaTem({ temIds, khoa, lyDo } = {}, actorId) {
+  const ids = [...new Set((Array.isArray(temIds) ? temIds : [temIds]).filter(Boolean).map(String))];
+  if (!ids.length) throw new AppError('Chọn tem để khóa / mở khóa', { status: 422, errorCode: 'EMPTY' });
+  if (ids.length > KHOA_TOI_DA) throw new AppError(`Mỗi lần tối đa ${KHOA_TOI_DA} tem`, { status: 422, errorCode: 'QUA_NHIEU' });
+  if (typeof khoa !== 'boolean') throw new AppError('Thiếu "khoa" (true = khóa, false = mở khóa)', { status: 422, errorCode: 'BAD_INPUT' });
+  const ly = String(lyDo || '').trim() || null;
+  if (ly && ly.length > 300) throw new AppError('Lý do dài quá 300 ký tự', { status: 422, errorCode: 'LY_DO_QUA_DAI' });
+  const hd = khoa ? HD_KHOA : HD_MO;
+
+  const tems = await repo.getTemKhoaMany(ids);
+  if (tems.length !== ids.length) throw new AppError('Có tem không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  const gc = tems.find((t) => String(t.ma_tem).startsWith('13'));
+  if (gc) throw new AppError(`Tem gia công ${gc.ma_tem} không thuộc luật khóa tem`, { status: 409, errorCode: 'TEM_GIA_CONG' });
+
+  const can = tems.filter((t) => t.da_khoa !== khoa || t.khoa_tay_hd !== hd);
+  if (can.length) {
+    await repo.ghiKhoaTem(can, { bang: BANG_KHOA, hd, khoa, ly, actorId });
+    sockets.emit('production:updated', { action: khoa ? 'khoa-tem' : 'mo-khoa-tem' });
+  }
+  return { khoa, so_tem: can.length, bo_qua: tems.length - can.length, ma_tem: can.map((t) => t.ma_tem) };
 }
 
 // Hủy 1 lệnh in tem: đánh dấu tem HỦY (loại khỏi tổng đã in ⇒ trả SL release về) + gỡ xe phơi.
@@ -2254,7 +2282,7 @@ module.exports = {
   dsLyDoNgung, taoLyDoNgung, suaLyDoNgung, doiTrangThaiLyDoNgung,
   dsToIn, taoToIn, suaToIn, doiTrangThaiToIn,
   dsLyDoBoSung, taoLyDoBoSung, suaLyDoBoSung, doiTrangThaiLyDoBoSung, luuLyDoBoSungDotVai,
-  listCancelableTem, listTemDaIn, cancelPrintTem, listReopenableTem, reopenPrintTem,
+  listCancelableTem, listTemDaIn, datKhoaTem, cancelPrintTem, listReopenableTem, reopenPrintTem,
   listCloseCandidates, closeProduction,
   listReopenCandidates, reopenProduction, pauseLenhChay, doiChuyen, listLichSuHoanTat,
   listUndoStartCandidates, undoStartProduction,

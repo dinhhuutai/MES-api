@@ -61,9 +61,10 @@ const DANH_MUC_TINH_NANG = [
     // 17/11/2026 — `utils/khoaTem.js` (đổi mã ở đây phải đổi cả `MA_TN_KHOA_TEM`).
     ma: 'KHOA_TEM_SAU_2_NGAY',
     ten: 'Khóa tem sau 2 ngày',
-    mo_ta: 'Tem in quá 48 giờ thì chỉ admin mới Sửa tem, sửa vải hủy / thiếu, Hủy tem hoặc Mở lại tem đã hủy. '
+    mo_ta: 'Tem in quá 48 giờ tự khóa: chỉ admin mới Sửa tem, sửa vải hủy / thiếu, Hủy tem hoặc Mở lại tem đã hủy. '
+      + 'Admin vẫn khóa / mở khóa tay từng tem ở Danh sách tem in (mở khóa tay thắng khóa tự động). '
       + 'Luồng phơi · KCS · Sửa · OQC · giao và In lại tờ tem vẫn chạy bình thường.',
-    khi_tat: 'Ai có quyền sản xuất cũng sửa / hủy được tem cũ như trước.',
+    khi_tat: 'Tem cũ không tự khóa nữa — ai có quyền sản xuất cũng sửa / hủy được. Tem admin đã khóa tay vẫn khóa.',
     canh_bao: 'Tắt thì tem đã in lâu (đã gửi ERP, đã chốt số) lại sửa / hủy được bởi mọi người có quyền sản xuất.',
     macDinh: true,
   },

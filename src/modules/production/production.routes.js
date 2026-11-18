@@ -83,6 +83,8 @@ router.post('/huy-tem/:temId/lich-su', rbac('PROD_RUN'), c.cancelPrintTemLichSu)
 router.get('/mo-lai-tem/candidates', rbac('PROD_RUN'), c.reopenableTem);
 router.post('/mo-lai-tem/:temId', rbac('PROD_RUN'), rbac.huyXacNhan(), c.reopenPrintTem);
 router.post('/mo-lai-tem/:temId/lich-su', rbac('PROD_RUN'), c.reopenPrintTem);
+// KHÓA / MỞ KHÓA TAY THEO TỪNG TEM (18/11/2026) — chỉ admin ('*', controller kiểm). Route tĩnh 1 đoạn, không va `/tem/:temId/*`.
+router.post('/khoa-tem', rbac('PROD_RUN'), c.datKhoaTem);
 
 // Đóng lệnh sản xuất (= Chạy hoàn tất, khi lệch SL không bấm được ở màn SX) — trang Hủy lệnh xác nhận
 router.get('/dong-lenh/candidates', rbac('PROD_RUN'), c.closeCandidates);

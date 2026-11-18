@@ -29,8 +29,8 @@ const { chuanMaChuyen, chuanMaChuyenSql } = require('../../utils/maChuyen');
 const { loaiChuyenTinhCaSql } = require('../../utils/ca');
 const { laTemSuaSql } = require('../../utils/temCon');
 const { docLocSoLuong, dkSoLuongSql } = require('../../utils/locSoLuong');
-// Tem in quá 48 giờ ⇒ khóa sửa / hủy / mở lại, trừ admin (17/11/2026) — luật ở `utils/khoaTem.js`.
-const { temDaKhoaSql, khoaLucSql } = require('../../utils/khoaTem');
+// Tem ĐÃ KHÓA (tự động sau 48 giờ / admin khóa tay từng tem) ⇒ khóa sửa / hủy / mở lại, trừ admin — luật ở `utils/khoaTem.js`.
+const { temDaKhoaSql, khoaLucSql, khoaTaySql, khoaTayHdSql } = require('../../utils/khoaTem');
 
 const PHAN_AGG = `(SELECT string_agg(DISTINCT pin.ma_phan, ', ')
     FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
@@ -978,7 +978,7 @@ async function listTemDaIn({
            (COALESCE(t.sl_kcs_dat,0) + COALESCE(t.sl_kcs_sua,0) + COALESCE(t.sl_kcs_huy,0)
              + COALESCE(t.sl_oqc_dat,0) + COALESCE(t.sl_da_giao,0)) > 0 AS da_kiem,
            COALESCE(${MO_LAI_DUOC_SQL}, false) AS mo_lai_duoc,
-           ${temDaKhoaSql('t')} AS da_khoa, ${khoaLucSql('t')} AS khoa_luc,
+           ${temDaKhoaSql('t')} AS da_khoa, ${khoaLucSql('t')} AS khoa_luc, ${khoaTaySql('t')} AS khoa_tay,
            to_char(t.gio_sx_bd, 'HH24:MI') AS gio_sx_bd, to_char(t.gio_sx_kt, 'HH24:MI') AS gio_sx_kt,
            t.btp_truoc, t.btp_cuoi, t.gc_mau_vai, ${cotBsTem},
            t.sl_kcs_dat, t.sl_kcs_sua, t.sl_kcs_huy, t.sl_sua_dat, t.sl_sua_huy,
@@ -1290,6 +1290,25 @@ async function getTemForCancel(temId) {
     [temId]
   );
   return rows[0] || null;
+}
+
+// KHÓA / MỞ KHÓA TAY THEO TỪNG TEM (18/11/2026, `utils/khoaTem.js`): trạng thái hiện tại của các tem + ghi lượt đổi.
+async function getTemKhoaMany(temIds) {
+  const { rows } = await query(
+    `SELECT t.id, t.ma_tem, ${temDaKhoaSql('t')} AS da_khoa, ${khoaTayHdSql('t')} AS khoa_tay_hd
+       FROM tem t WHERE t.id::text = ANY($1::text[])`.replace(/\s+/g, ' '),
+    [temIds]
+  );
+  return rows;
+}
+async function ghiKhoaTem(tems, { bang, hd, khoa, ly, actorId }) {
+  await query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_cu, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian)
+     SELECT $1, x.id, $2, jsonb_build_object('da_khoa', x.cu),
+            jsonb_build_object('ma_tem', x.ma, 'da_khoa', $3::boolean, 'ly_do', $4::text), $5, CURRENT_TIMESTAMP
+       FROM unnest($6::text[], $7::text[], $8::boolean[]) AS x(id, ma, cu)`.replace(/\s+/g, ' '),
+    [bang, hd, khoa, ly, actorId, tems.map((t) => String(t.id)), tems.map((t) => t.ma_tem), tems.map((t) => !!t.da_khoa)]
+  );
 }
 
 // Ghi audit_log hủy lệnh in tem (forward-only).
@@ -2937,7 +2956,7 @@ module.exports = {
   getLenhDotVaiList, phanInRowsByLenh, insertVaiHuy, listVaiHuyByLenh,
   getActivePhieu, getPhieuById, getTemsByPhieu, getTemContext, cancelTem, getTemLabelData, logNgayCtTem, caPartsForTem, docDauCa, ghiDauCa,
   docPhanCongDauCa, ghiPhanCongDauCa, phieuDangChayCuaChuyen,
-  listCancelableTem, listTemDaIn, getTemForCancel, logTemCancel, logCloseProduction,
+  listCancelableTem, listTemDaIn, getTemForCancel, getTemKhoaMany, ghiKhoaTem, logTemCancel, logCloseProduction,
   docTemSuaTx, capNhatTemSuaTx, logSuaTemTx, docLenhGopTx, gopLenhTx, logGopLenhTx, doiMaLoTheoNgayCaTx, ghiPhanCongTemTx,
   listReopenableTem, getTemForReopen, reopenTem, logTemReopen, dongGhiInTemCuoi, luotErpSauInCuaTem,
   listReopenCandidates, getPhieuFull, reopenPhieuTx, logReopenProduction, logPauseLenhChay,
