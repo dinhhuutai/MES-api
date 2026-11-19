@@ -24,6 +24,7 @@ const { ghiInTem, taoPayload, laMaTemErp, ghiChuaCoMaErp } = require('../../util
 const { ghiLog } = require('../../utils/erpApiLog');
 const { thuCua } = require('../../utils/erpThuLai');
 const { capIdMes } = require('../../utils/idMes');
+const { apPhanCongSf0 } = require('../../utils/phanCongSf0');
 const prodRepo = require('../production/production.repository');
 const repo = require('./quality.repository');
 const { maNgayCa, loaiCaChiTiet, caDangChay, khoaTuanIso } = require('../../utils/ca');
@@ -130,6 +131,11 @@ async function guiSk6({ idBanGhi, temConId, moc, dat, huy = 0, actorId, opts = {
   if (idMes == null) return { ok: false, error: 'Không cấp được IDMES' };
 
   const payload = taoPayload(r, { idMes, soLuong: dat, soLuongHuy: Number(huy) || 0 });
+  // 19/11/2026 (người dùng chốt): ca trưởng / chuyền trưởng / thợ in = của phiếu in tem SF0 (tem GỐC của tem 17) — phân
+  //   công hiện tại của phiếu sản xuất có thể đã là người ca khác. Không có SF0 ⇒ giữ như cũ.
+  try { await apPhanCongSf0(payload, temConId); } catch (e) {
+    console.error(`[gui-sua-dat] ⚠ Không đọc được phân công SF0 (tem ${temConId}): ${e.message}`);
+  }
   if (!payload.Ngayca) payload.Ngayca = await maNgayCaTaiMoc(moc, r.loai_chuyen);
   // NHÃN 16 của tem gốc (proc SK6 mới, 14/10/2026: `@pBarcodeSua16`) — chỉ suy được từ mã ERP 12 số; tem gốc mang
   //   mã MES cũ (`TEM…`) ⇒ để trống (ERP không biết mã đó). `utils/erpGhiInTem` KENH.ERP_GUI_SUA_DAT đưa vào body.

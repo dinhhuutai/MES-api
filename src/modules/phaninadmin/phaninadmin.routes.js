@@ -28,6 +28,7 @@ router.post('/:phanInId/huy-muc-ready', c.huyMucReady);
 router.post('/:phanInId/khoa-erp', c.datKhoaErp);
 router.post('/:phanInId/luong-sx', c.datLuongSx); // mig 126 — luồng sản xuất + ép trước
 router.post('/:phanInId/bo-cong-doan', c.boCongDoan); // 11/11/2026 — bỏ công đoạn In / Ép ủi (body.xemTruoc = chỉ dựng kế hoạch)
+router.post('/:phanInId/them-cong-doan', c.themCongDoan); // 19/11/2026 — thêm 1 công đoạn + đặt vào màn đích (body.xemTruoc)
 router.post('/:phanInId/lenh/:lenhId/lui-ve', c.luiVe);
 router.post('/:phanInId/huy-le', c.huyLe);
 router.post('/:phanInId/phieu/:phieuId/phan-cong', c.luuPhanCong);

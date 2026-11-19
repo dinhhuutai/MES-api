@@ -1180,6 +1180,72 @@ async function tachLenhNgcTx(client, g, dotIds, { maLenh, maPhieu, coThoIn, coTo
   return { id, phieuId };
 }
 
+// ─── TÁCH 1 LỆNH RA KHỎI LỆNH GỘP (19/11/2026) ───────────────────────────────────────────────────────────────
+// Lệnh ĐÍCH (khóa khi có `client`): SL = Σ dòng đợt · đã in = Σ tem sống (mọi phiếu, cùng luật `manualentry.updateReleaseTx`).
+async function docDichTachGop(lenhId, client = null) {
+  const sql = `SELECT ls.id::text AS id, ls.ma_lenh_san_xuat, ls.trang_thai, ls.ngay_ke_hoach, ls.giai_doan,
+            COALESCE((SELECT SUM(COALESCE(x.so_luong,0)) FROM lenh_sx_dot_vai x WHERE x.lenh_san_xuat_id = ls.id),0)::int AS sl,
+            COALESCE((SELECT SUM(t.so_luong) FROM phieu_san_xuat p JOIN tem t ON t.phieu_san_xuat_id = p.id
+              WHERE p.lenh_san_xuat_id = ls.id AND t.trang_thai <> 'HUY'),0)::int AS da_in
+       FROM lenh_san_xuat ls WHERE ls.id = $1${client ? ' FOR UPDATE OF ls' : ''}`.replace(/\s+/g, ' ');
+  const { rows } = await (client || { query }).query(sql, [lenhId]);
+  return rows[0] || null;
+}
+
+// Lệnh nguồn CÒN ĐANG GỘP trong đích `dichId`: id nằm trong `GOP_LENH_SX.tu_lenh_ids` của đích, đang HUY, lần gộp MỚI
+//   NHẤT (`GOP_VAO_LENH`) trỏ về đích, chưa có `TACH_LENH_GOP` sau lần gộp đó. `cu_gop` = ảnh chụp nguồn lúc gộp
+//   (`phieu_id` có ⇒ nguồn đang chạy, tem đã chuyển sang phiếu đích). `nguonId` lọc 1 lệnh; có `client` ⇒ khóa nguồn.
+async function nguonDangGop(dichId, { client = null, nguonId = null } = {}) {
+  const sql = `SELECT s.id::text AS id, s.ma_lenh_san_xuat, s.trang_thai, s.ngay_ke_hoach, s.tg_bd_kh, s.tg_kt_kh,
+            g.thoi_gian AS tg_gop, g.gia_tri_cu AS cu_gop,
+            COALESCE((SELECT SUM(COALESCE(x.so_luong,0)) FROM lenh_sx_dot_vai x WHERE x.lenh_san_xuat_id = s.id),0)::int AS sl
+       FROM lenh_san_xuat s
+       JOIN LATERAL (SELECT a.thoi_gian, a.gia_tri_cu, a.gia_tri_moi FROM audit_log a
+                      WHERE a.ten_bang = 'lenh_san_xuat' AND a.id_ban_ghi = s.id::text AND a.hanh_dong = 'GOP_VAO_LENH'
+                      ORDER BY a.thoi_gian DESC LIMIT 1) g ON true
+      WHERE s.id IN (SELECT (jsonb_array_elements_text(a2.gia_tri_moi->'tu_lenh_ids'))::uuid FROM audit_log a2
+                      WHERE a2.ten_bang = 'lenh_san_xuat' AND a2.id_ban_ghi = $1::text AND a2.hanh_dong = 'GOP_LENH_SX')
+        AND s.trang_thai = 'HUY' AND g.gia_tri_moi->>'vao_lenh_id' = $1::text
+        AND NOT EXISTS (SELECT 1 FROM audit_log t WHERE t.ten_bang = 'lenh_san_xuat' AND t.id_ban_ghi = s.id::text
+                         AND t.hanh_dong = 'TACH_LENH_GOP' AND t.thoi_gian > g.thoi_gian)
+        AND ($2::uuid IS NULL OR s.id = $2::uuid)
+      ORDER BY s.ngay_ke_hoach NULLS LAST, s.tg_bd_kh NULLS LAST, s.ma_lenh_san_xuat${client ? ' FOR UPDATE OF s' : ''}`.replace(/\s+/g, ' ');
+  const { rows } = await (client || { query }).query(sql, [String(dichId), nguonId]);
+  return rows;
+}
+
+// Dòng đợt (SL > 0) của các lệnh `ids`: [{ lenh_id, dot_vai_ve_id, so_luong }].
+async function dongDotCacLenh(ids, client = null) {
+  if (!ids || !ids.length) return [];
+  const { rows } = await (client || { query }).query(
+    `SELECT lenh_san_xuat_id::text AS lenh_id, dot_vai_ve_id::text AS dot_vai_ve_id, COALESCE(so_luong,0)::int AS so_luong
+       FROM lenh_sx_dot_vai WHERE lenh_san_xuat_id = ANY($1::uuid[]) AND COALESCE(so_luong,0) > 0`.replace(/\s+/g, ' '), [ids]);
+  return rows;
+}
+
+// Đảo 1 lần gộp (cả hai lệnh đã khóa, service đã kiểm đủ SL): mỗi dòng đợt của nguồn TRỪ khỏi dòng cùng đợt của đích
+//   (dòng về 0 ở lại — không có quyền DELETE, như `updateReleaseTx`); nguồn sống lại `trangThai`; SL release 2 lệnh = Σ dòng.
+async function tachLenhGopTx(client, dich, s, dongNguon, trangThai, actorId) {
+  for (const d of dongNguon) {
+    // eslint-disable-next-line no-await-in-loop
+    const up = await client.query(
+      `UPDATE lenh_sx_dot_vai SET so_luong = COALESCE(so_luong,0) - $3, updated_date = CURRENT_TIMESTAMP, updated_by = $4
+        WHERE lenh_san_xuat_id = $1 AND dot_vai_ve_id = $2 AND COALESCE(so_luong,0) >= $3`.replace(/\s+/g, ' '),
+      [dich.id, d.dot_vai_ve_id, d.so_luong, actorId]);
+    if (!up.rowCount) return { thieuDot: d.dot_vai_ve_id };
+  }
+  await client.query(
+    `UPDATE lenh_san_xuat SET trang_thai = $2, updated_date = CURRENT_TIMESTAMP, updated_by = $3 WHERE id = $1`,
+    [s.id, trangThai, actorId]);
+  for (const lid of [dich.id, s.id]) {
+    // eslint-disable-next-line no-await-in-loop
+    await client.query(
+      `UPDATE lenh_san_xuat SET so_luong_release = (SELECT COALESCE(SUM(so_luong),0) FROM lenh_sx_dot_vai WHERE lenh_san_xuat_id = $1),
+              updated_date = CURRENT_TIMESTAMP, updated_by = $2 WHERE id = $1`.replace(/\s+/g, ' '), [lid, actorId]);
+  }
+  return { thieuDot: null };
+}
+
 async function logGopLenhTx(client, lenhId, hanhDong, cu, moi, actorId) {
   await client.query(
     `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_cu, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
@@ -2958,6 +3024,7 @@ module.exports = {
   docPhanCongDauCa, ghiPhanCongDauCa, phieuDangChayCuaChuyen,
   listCancelableTem, listTemDaIn, getTemForCancel, getTemKhoaMany, ghiKhoaTem, logTemCancel, logCloseProduction,
   docTemSuaTx, capNhatTemSuaTx, logSuaTemTx, docLenhGopTx, gopLenhTx, logGopLenhTx, doiMaLoTheoNgayCaTx, ghiPhanCongTemTx,
+  docDichTachGop, nguonDangGop, dongDotCacLenh, tachLenhGopTx,
   listReopenableTem, getTemForReopen, reopenTem, logTemReopen, dongGhiInTemCuoi, luotErpSauInCuaTem,
   listReopenCandidates, getPhieuFull, reopenPhieuTx, logReopenProduction, logPauseLenhChay,
   listLichSuHoanTat, docMoLaiPhieuTx, logChayHoanTat,

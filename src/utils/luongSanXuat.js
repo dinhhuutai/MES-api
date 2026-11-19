@@ -74,6 +74,16 @@ function luongSauKhiBo(luong, bo) {
   return luong === 'IN_KIENG' ? 'KIENG_KHONG_EP' : 'THUONG';
 }
 
+// THÊM 1 CÔNG ĐOẠN cho phần in 1 công đoạn (Quản trị phần in › Thêm công đoạn, 19/11/2026): luồng mới + công đoạn mới
+//   (`them`). In thường + Ép/Logo ⇒ In + Logo · In kiếng + Ép ⇒ kiếng ủi · Logo + In ⇒ In + Logo (lệnh Logo đang có thành
+//   công đoạn ÉP). null = đã 2 công đoạn. Gương FE `luongSauKhiThem`.
+const THEM_CONG_DOAN = {
+  THUONG: { luong: 'IN_EP', them: GD_EP },
+  KIENG_KHONG_EP: { luong: 'IN_KIENG', them: GD_EP },
+  LOGO: { luong: 'IN_EP', them: GD_IN },
+};
+const luongSauKhiThem = (luong) => THEM_CONG_DOAN[chuanLuong(luong)] || null;
+
 // Nhãn công đoạn hiện ở màn hình — null với phần in 1 công đoạn (không vẽ badge). Kiếng ủi ⇒ "In kiếng" / "Ép" (16/11/2026).
 //   18/11/2026: công đoạn ép của In + Logo ⇒ "Logo" (từ 17/11 không còn In + Ép); `pa` = 4 (Ép) ⇒ "Ép" (gương FE `tenCdEp`).
 function nhanCongDoan(luong, gd, pa) {
@@ -181,7 +191,7 @@ async function luongTheoTinhChat(tinhChatIn) {
 
 module.exports = {
   LUONG_SX, MA_LUONG_SX, HAI_CONG_DOAN, GD_IN, GD_EP,
-  chuanLuong, laHaiCongDoan, laLogo, laKieng, laKiengSql, luongSauKhiBo, boQuaTestRun, boQuaTestRunLenhSql, giaCongDuoc,
+  chuanLuong, laHaiCongDoan, laLogo, laKieng, laKiengSql, luongSauKhiBo, luongSauKhiThem, boQuaTestRun, boQuaTestRunLenhSql, giaCongDuoc,
   chuanGd, congDoanDau, laCongDoanDau, canNhapKieng, nhanCongDoan,
   gdSql, daRelSql, laPhanInSql, haiCongDoanSql, khtGdSql, khtLaGdSql, khtCoCotGd, PAIN_EP, paCongDoanSql,
   bangLuongTinhChat, luongTheoTinhChat, xoaNho, paCongDoanEp, PAIN_LOGO_CD,

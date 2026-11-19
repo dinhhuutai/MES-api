@@ -1172,6 +1172,103 @@ async function tachLenhTheoNgc(lenhId, actorId, { lyDo = '' } = {}) {
   };
 }
 
+// ─── TÁCH 1 LỆNH RA KHỎI LỆNH GỘP (19/11/2026, người dùng: "lệnh gộp 3 lệnh, muốn xóa 1 lệnh — hủy là hủy luôn cả 3") ─
+// Đảo ĐÚNG 1 lần gộp của `gopLenhCungPhan` cho 1 lệnh nguồn. Gộp để nguyên dòng `lenh_sx_dot_vai` + cột kế hoạch + kết
+//   quả test trên lệnh nguồn (chỉ đổi HUY) ⇒ tách = TRỪ dòng đợt của nguồn khỏi dòng cùng đợt của đích + nguồn sống lại
+//   ở trạng thái trước khi gộp (`RELEASE_2` — Chờ chạy, đúng ngày / giờ / SL kế hoạch của nó). `huyLuon` ⇒ hủy tiếp
+//   lệnh vừa tách bằng CHÍNH `planning.rollbackLenh` đích Release 1 (đợt có lại "còn release", báo ERP hủy); hủy lỗi
+//   KHÔNG hoàn tác việc tách (trả `huy_loi` — lệnh nằm ở Chờ chạy, hủy tiếp ở tab Hủy lệnh sản xuất).
+// Chặn: đích HUY / HOAN_TAT · nguồn lúc gộp ĐANG CHẠY (tem của nó đã chuyển sang phiếu đích, không chia lại được) ·
+//   đích không còn đủ SL ở đợt (kế hoạch đã giảm sau khi gộp) · SL đích sau tách < đã in.
+// ERP: gửi lại kế hoạch đích (REPLAN = hủy lượt cũ rồi gửi) + kế hoạch nguồn (khi không hủy luôn).
+// Danh sách release: `planning/keHoachGoc.js` bỏ cặp (đích, nguồn) có `TACH_LENH_GOP` sau lần gộp.
+const TT_SAU_TACH_GOP = 'RELEASE_2';
+
+function lyDoKhongTachGop(dich, s, dongDich, dongNguon) {
+  if (dich.trang_thai === 'HUY') return `Lệnh ${dich.ma_lenh_san_xuat} đã hủy`;
+  if (dich.trang_thai === 'HOAN_TAT') return `Lệnh ${dich.ma_lenh_san_xuat} đã chạy hoàn tất — mở lại phiếu trước rồi mới tách`;
+  if (s.cu_gop && s.cu_gop.phieu_id) return `Lúc gộp, lệnh ${s.ma_lenh_san_xuat} đang chạy (tem đã chuyển sang ${dich.ma_lenh_san_xuat}) — không tách được`;
+  const coDich = new Map(dongDich.map((d) => [d.dot_vai_ve_id, d.so_luong]));
+  if (dongNguon.some((d) => (coDich.get(d.dot_vai_ve_id) || 0) < d.so_luong)) {
+    return `SL của ${dich.ma_lenh_san_xuat} đã bị sửa giảm sau khi gộp — không còn đủ phần của ${s.ma_lenh_san_xuat} để tách`;
+  }
+  const con = dich.sl - s.sl;
+  if (con < dich.da_in) return `${dich.ma_lenh_san_xuat} đã in ${dich.da_in} — tách xong chỉ còn ${con}, nhỏ hơn số đã in`;
+  return null;
+}
+
+// Các kế hoạch đang chạy chung trong lệnh `lenhId` (modal Hủy lệnh sản xuất). Lệnh không gộp ⇒ `nguon` rỗng.
+async function dsGopCuaLenh(lenhId) {
+  if (!RE_UUID.test(String(lenhId || ''))) throw new AppError('Mã lệnh không hợp lệ', { status: 422, errorCode: 'VALIDATION' });
+  const dich = await repo.docDichTachGop(lenhId);
+  if (!dich) throw new AppError('Lệnh sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  const nguon = await repo.nguonDangGop(lenhId);
+  const dong = await repo.dongDotCacLenh([lenhId, ...nguon.map((s) => s.id)]);
+  const dongCua = (id) => dong.filter((d) => d.lenh_id === id);
+  const tongNguon = nguon.reduce((a, s) => a + s.sl, 0);
+  return {
+    lenh: { id: dich.id, ma_lenh: dich.ma_lenh_san_xuat, trang_thai: dich.trang_thai, ngay_ke_hoach: dich.ngay_ke_hoach, sl: dich.sl, da_in: dich.da_in },
+    sl_rieng: Math.max(0, dich.sl - tongNguon),
+    nguon: nguon.map((s) => {
+      const lyDo = lyDoKhongTachGop(dich, s, dongCua(dich.id), dongCua(s.id));
+      return {
+        lenh_id: s.id, ma_lenh: s.ma_lenh_san_xuat, ngay_ke_hoach: s.ngay_ke_hoach, tg_bd_kh: s.tg_bd_kh, tg_kt_kh: s.tg_kt_kh,
+        sl: s.sl, tg_gop: s.tg_gop, tach_duoc: !lyDo, ly_do_khong: lyDo,
+      };
+    }),
+  };
+}
+
+async function tachLenhGop(dichId, nguonId, actorId, { lyDo = '', huyLuon = false } = {}) {
+  if (!RE_UUID.test(String(dichId || '')) || !RE_UUID.test(String(nguonId || ''))) {
+    throw new AppError('Mã lệnh không hợp lệ', { status: 422, errorCode: 'VALIDATION' });
+  }
+  const ly = String(lyDo || '').trim();
+  if (!ly) throw new AppError('Nhập lý do tách lệnh', { status: 422, errorCode: 'NO_LY_DO' });
+  const kq = await withTransaction(async (client) => {
+    const dich = await repo.docDichTachGop(dichId, client); // khóa đích trước, nguồn sau (cùng thứ tự với lúc gộp: đích + nguồn trong 1 lượt)
+    if (!dich) throw new AppError('Lệnh sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+    const [s] = await repo.nguonDangGop(dichId, { client, nguonId });
+    if (!s) {
+      throw new AppError(`Lệnh này không còn nằm trong lệnh ${dich.ma_lenh_san_xuat} (chưa từng gộp vào, hoặc đã tách ra rồi)`,
+        { status: 409, errorCode: 'KHONG_DANG_GOP' });
+    }
+    const dong = await repo.dongDotCacLenh([dich.id, s.id], client);
+    const dongNguon = dong.filter((d) => d.lenh_id === s.id);
+    const lyDoKhong = lyDoKhongTachGop(dich, s, dong.filter((d) => d.lenh_id === dich.id), dongNguon);
+    if (lyDoKhong) throw new AppError(lyDoKhong, { status: 409, errorCode: 'KHONG_TACH_DUOC' });
+    const r = await repo.tachLenhGopTx(client, dich, s, dongNguon, TT_SAU_TACH_GOP, actorId);
+    if (r.thieuDot) throw new AppError(`SL của ${dich.ma_lenh_san_xuat} vừa đổi — tải lại rồi thử lại`, { status: 409, errorCode: 'DA_DOI' });
+    const slDich = dich.sl - s.sl;
+    await repo.logGopLenhTx(client, dich.id, 'TACH_LENH_GOP',
+      { so_luong_release: dich.sl },
+      { so_luong_release: slDich, tach_lenh_id: s.id, tach_lenh: s.ma_lenh_san_xuat, so_luong_tach: s.sl, huy_luon: !!huyLuon, ly_do: ly }, actorId);
+    await repo.logGopLenhTx(client, s.id, 'TACH_LENH_GOP',
+      { trang_thai: 'HUY', so_luong_release: s.sl },
+      { trang_thai: TT_SAU_TACH_GOP, so_luong_release: s.sl, tu_lenh_id: dich.id, tu_lenh: dich.ma_lenh_san_xuat, tg_gop: s.tg_gop, huy_luon: !!huyLuon, ly_do: ly }, actorId);
+    return { dich, s, slDich };
+  });
+  const { dich, s, slDich } = kq;
+  let huy = null; let huyLoi = null;
+  if (huyLuon) {
+    try {
+      huy = await planningService.rollbackLenh(s.id, { target: 'RELEASE_1', lyDo: `[Tách khỏi ${dich.ma_lenh_san_xuat}] ${ly}` }, actorId);
+    } catch (e) {
+      huyLoi = e.message || 'Hủy lệnh vừa tách thất bại';
+    }
+  }
+  // Nguồn bị hủy luôn ⇒ KHÔNG xếp gửi kế hoạch nguồn (hàng chờ gửi chậm sẽ gửi SAU lượt báo hủy ⇒ ERP còn kế hoạch ma).
+  release1Erp.xepHang(huy ? [dich.id] : [dich.id, s.id], actorId, 'REPLAN');
+  sockets.emit('production:updated', { lenhIds: [dich.id, s.id], action: 'tach-lenh-gop' });
+  sockets.emit('workflow:updated', { lenhId: s.id, stage: huy ? 'HUY' : TT_SAU_TACH_GOP });
+  sockets.emit('dashboard:refresh', {});
+  return {
+    lenh_id: dich.id, ma_lenh: dich.ma_lenh_san_xuat, so_luong_release: slDich,
+    tach: { lenh_id: s.id, ma_lenh: s.ma_lenh_san_xuat, so_luong_release: s.sl, trang_thai: huy ? 'HUY' : TT_SAU_TACH_GOP },
+    da_huy: !!huy, huy_loi: huyLoi,
+  };
+}
+
 // XÁC NHẬN CHẠY NHIỀU LỆNH 1 LƯỢT (08/10/2026, modal Chờ chạy: quét/tích nhiều dòng rồi bấm 1 lần).
 // `items` = [{ lenhId, chuyenId? }] (chuyenId trống = chuyền kế hoạch). Mỗi lệnh đi ĐÚNG lõi `batDauChay`
 // (transaction RIÊNG, chạy TUẦN TỰ — `nextMaPhieu` cấp mã tuần tự) ⇒ lệnh lỗi không kéo lệnh khác; trả
@@ -2286,7 +2383,7 @@ async function vuotSanXuat(phieuId, soLuong, actorId) {
 module.exports = {
   listCandidates, getRun, startProduction, startProductionBatch, startProductionSpecial, printTem, printTemBatch, reprintTem, temLabel, temLogs, finishRun, monitor, vuotSanXuat,
   getXePhoi, listTemChoPhoi, addToXe, adjustPhoi, listDrying, confirmDry, listKiemTruocKho, redry,
-  stopLine, resumeLine, listNgungChoHuy, huyNgungChuyen, addVaiHuy, xemVaiTem, suaVaiTheoTem, suaTem, gopLenhCungPhan, tachLenhTheoNgc, savePhanCong, suaPhanCongPhieuXong,
+  stopLine, resumeLine, listNgungChoHuy, huyNgungChuyen, addVaiHuy, xemVaiTem, suaVaiTheoTem, suaTem, gopLenhCungPhan, tachLenhTheoNgc, dsGopCuaLenh, tachLenhGop, savePhanCong, suaPhanCongPhieuXong,
   dsLyDoNgung, taoLyDoNgung, suaLyDoNgung, doiTrangThaiLyDoNgung,
   dsToIn, taoToIn, suaToIn, doiTrangThaiToIn,
   dsLyDoBoSung, taoLyDoBoSung, suaLyDoBoSung, doiTrangThaiLyDoBoSung, luuLyDoBoSungDotVai,

@@ -36,6 +36,9 @@ router.get('/tem/:temId/bo-sung', rbac('PROD_RUN', 'PROD_MONITOR'), c.temBoSung)
 router.post('/gop-lenh', rbac('PROD_RUN'), c.gopLenh);
 // Tách lệnh gom đợt khác nhà gia công thành mỗi NGC 1 lệnh (27/10/2026) — nút ở sidebar sản xuất.
 router.post('/lenh/:lenhId/tach-ngc', rbac('PROD_RUN'), c.tachLenhNgc);
+// Tách 1 lệnh ra khỏi lệnh gộp (19/11/2026) — modal tab *Hủy lệnh sản xuất* ⇒ cùng quyền tab đó (ghi đòi thêm `HUY_XAC_NHAN`).
+router.get('/lenh/:lenhId/gop', rbac('RELEASE1', 'RELEASE2', 'LENH_CANCEL_ANY'), c.dsGopCuaLenh);
+router.post('/lenh/:lenhId/tach-gop', rbac('RELEASE1', 'RELEASE2', 'LENH_CANCEL_ANY'), rbac.huyXacNhan('LENH_CANCEL_ANY'), c.tachLenhGop);
 router.get('/phieu/:phieuId/tem-logs', rbac('PROD_RUN', 'PROD_MONITOR'), c.temLogs);
 router.post('/phieu/:phieuId/vai-huy', rbac('PROD_RUN'), c.addVaiHuy); // body.loai: HUY (vải hư) | THIEU
 // Phân công sản xuất (thợ in theo phần in + ca trưởng/chuyền trưởng + SL vải hủy/thiếu) — sidebar Sản xuất

@@ -130,6 +130,8 @@ app.use('/api/tai-chinh', financeRoutes);
 app.use('/api/chuyen', chuyenRoutes);
 app.use('/api/bao-cao', baoCaoRoutes);
 app.use('/api/nhap-tay', manualEntryRoutes);
+// Agent MES THLA — trợ lý AI chỉ đọc (19/11/2026, mig 138). SDK Gemini/MCP nạp lười trong module.
+app.use('/api/ai', require('./modules/ai/ai.routes'));
 
 // 404 + error
 app.use(notFound);

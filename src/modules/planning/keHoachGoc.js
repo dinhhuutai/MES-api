@@ -14,10 +14,12 @@
 //   lập kế hoạch đã nhìn thấy số gộp và đặt lại) ⇒ các lần gộp TRƯỚC đó coi như đã được kế hoạch chấp nhận, không tách
 //   nữa. Sửa giờ / ngày / chuyền mà giữ SL thì vẫn tách. Giảm SL (Trả về Kế hoạch khi đang chạy, Cập nhật SL) trừ vào
 //   phần của chính lệnh trước, thiếu mới trừ phần gộp vào sau cùng.
+// Tách 1 lệnh ra khỏi lệnh gộp (`production.tachLenhGop`, audit `TACH_LENH_GOP` trên cả đích `tach_lenh_id` lẫn nguồn
+//   `tu_lenh_id`) SAU lần gộp ⇒ cặp (đích, nguồn) đó không còn là phần chạy chung (gộp lại lần nữa sau đó thì tính lại).
 // ─────────────────────────────────────────────────────────────────────────────
 const repo = require('./planning.repository');
 
-const HD_GOP = ['GOP_LENH_SX', 'GOP_VAO_LENH'];
+const HD_GOP = ['GOP_LENH_SX', 'GOP_VAO_LENH', 'TACH_LENH_GOP'];
 const HD_DAT_LAI = ['REPLAN', 'QUAN_TRI_SUA_KE_HOACH'];
 const TOI_DA_VONG = 6;
 
@@ -35,8 +37,22 @@ function mocDatLai(auditDatLai) {
   return moc;
 }
 
-// Nguồn còn hiệu lực của từng lệnh: Map lenhId → [{ id, tg }] (gộp sau mốc đặt lại kế hoạch, theo thời gian).
+// Mốc tách mới nhất của từng cặp `<đích>|<nguồn>` (đọc từ dòng của đích lẫn dòng của nguồn).
+function mocTach(auditGop) {
+  const m = new Map();
+  auditGop.filter((a) => a.hanh_dong === 'TACH_LENH_GOP').forEach((a) => {
+    const v = a.gia_tri_moi || {};
+    let cap = null;
+    if (v.tach_lenh_id) cap = `${a.lenh_id}|${v.tach_lenh_id}`;
+    else if (v.tu_lenh_id) cap = `${v.tu_lenh_id}|${a.lenh_id}`;
+    if (cap) m.set(cap, Math.max(m.get(cap) || 0, tg(a.thoi_gian)));
+  });
+  return m;
+}
+
+// Nguồn còn hiệu lực của từng lệnh: Map lenhId → [{ id, tg }] (gộp sau mốc đặt lại kế hoạch, chưa tách sau lần gộp, theo thời gian).
 function nguonHieuLuc(auditGop, auditDatLai, vaoLenh) {
+  const tach = mocTach(auditGop);
   const datLaiTheoLenh = new Map();
   auditDatLai.forEach((a) => {
     if (!datLaiTheoLenh.has(a.lenh_id)) datLaiTheoLenh.set(a.lenh_id, []);
@@ -49,6 +65,8 @@ function nguonHieuLuc(auditGop, auditDatLai, vaoLenh) {
     const ids = (a.gia_tri_moi && a.gia_tri_moi.tu_lenh_ids) || [];
     ids.map(String).forEach((s) => {
       if (vaoLenh.get(s) !== a.lenh_id) return; // nguồn phải trỏ đúng về đích này
+      // Đã tách ra sau lần gộp này (`>=`: tách chỉ có thể xảy ra SAU gộp, JS chỉ tới mili-giây).
+      if ((tach.get(`${a.lenh_id}|${s}`) || 0) >= tg(a.thoi_gian)) return;
       if (!out.has(a.lenh_id)) out.set(a.lenh_id, []);
       out.get(a.lenh_id).push({ id: s, tg: tg(a.thoi_gian) });
     });

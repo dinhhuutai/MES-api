@@ -124,6 +124,15 @@ const gopLenh = asyncHandler(async (req, res) =>
   ok(res, await service.gopLenhCungPhan((req.body || {}).lenhIds, req.user.id, { lyDo: (req.body || {}).lyDo || '' }), 'Đã gộp lệnh'));
 const tachLenhNgc = asyncHandler(async (req, res) =>
   ok(res, await service.tachLenhTheoNgc(req.params.lenhId, req.user.id, { lyDo: (req.body || {}).lyDo || '' }), 'Đã tách lệnh theo nhà gia công'));
+// Tách 1 lệnh ra khỏi lệnh gộp (19/11/2026) — body { nguonId, lyDo, huyLuon }.
+const dsGopCuaLenh = asyncHandler(async (req, res) => ok(res, await service.dsGopCuaLenh(req.params.lenhId)));
+const tachLenhGop = asyncHandler(async (req, res) => {
+  const b = req.body || {};
+  const r = await service.tachLenhGop(req.params.lenhId, b.nguonId, req.user.id, { lyDo: b.lyDo || '', huyLuon: !!b.huyLuon });
+  return ok(res, r, r.da_huy
+    ? `Đã tách ${r.tach.ma_lenh} khỏi ${r.ma_lenh} và hủy — đợt vải về chờ release`
+    : `Đã tách ${r.tach.ma_lenh} khỏi ${r.ma_lenh}${r.huy_loi ? ` (chưa hủy được: ${r.huy_loi})` : ' — lệnh về Chờ chạy'}`);
+});
 const suaTem = asyncHandler(async (req, res) =>
   ok(res, await service.suaTem(req.params.temId, req.body || {}, req.user.id, khoaTem(req)), 'Đã sửa tem'));
 // Đợt vải BỔ SUNG của lệnh chứa tem + SL bổ sung do Công ty / Khách (hộp Sửa tem, 16/11/2026).
@@ -373,7 +382,7 @@ module.exports = {
   candidates, getRun, start, startBatch, chayDacBietCandidates, chayDacBiet, printTem, printTemBatch, reprintTem, temLabel, temLogs, finish, monitor,
   theoDoiTo,
   xePhoi, temChoPhoi, themTem, adjustPhoi, drying, confirmDry, kiemTruocKho, redry,
-  stopLine, resumeLine, ngungChoHuy, huyNgungChuyen, addVaiHuy, xemVaiTem, suaVaiTheoTem, suaTem, temBoSung, gopLenh, tachLenhNgc, savePhanCong, vuotSanXuat,
+  stopLine, resumeLine, ngungChoHuy, huyNgungChuyen, addVaiHuy, xemVaiTem, suaVaiTheoTem, suaTem, temBoSung, gopLenh, tachLenhNgc, dsGopCuaLenh, tachLenhGop, savePhanCong, vuotSanXuat,
   lyDoNgungList, lyDoNgungCreate, lyDoNgungUpdate, lyDoNgungToggle,
   toInList, toInCreate, toInUpdate, toInToggle, baoCaoSanXuat, baoCaoDungChuyen, baoCaoKiemHang, baoCaoSuaHang,
   baoCaoPhanLoaiLoi,

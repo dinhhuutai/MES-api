@@ -52,7 +52,32 @@ const datGiaoHangTai = asyncHandler(async (req, res) => ok(res,
   await service.datGiaoHangTai(req.params.id, req.body && req.body.giaoHangTai, req.user.id),
   'Đã cập nhật nơi giao hàng'));
 
+// ─── DONE DELIVERY theo phần in (19/11/2026) — `doneDelivery.js` ─────────────────────────────────────────────────────
+const doneDelivery = require('./doneDelivery');
+const AppError = require('../../utils/AppError');
+
+const NGAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const kiemPhanIn = (id) => {
+  if (!UUID_RE.test(String(id || ''))) throw new AppError('Phần in không hợp lệ', { status: 422, errorCode: 'PHAN_IN_SAI' });
+  return id;
+};
+const dsDoneDelivery = asyncHandler(async (req, res) => {
+  const { tuNgay, denNgay, cheDo, heThong } = req.query;
+  if (!NGAY_RE.test(String(tuNgay || '')) || !NGAY_RE.test(String(denNgay || ''))) {
+    throw new AppError('Chọn khoảng ngày', { status: 422, errorCode: 'NO_NGAY' });
+  }
+  return ok(res, await doneDelivery.danhSachDone(tuNgay, denNgay, cheDo, ['1', 'true'].includes(String(heThong))));
+});
+const xacNhanDone = asyncHandler(async (req, res) => ok(res,
+  await doneDelivery.xacNhanDone(kiemPhanIn(req.params.phanInId), req.body && req.body.ghiChu, req.user.id),
+  'Đã xác nhận DONE'));
+const huyXacNhanDone = asyncHandler(async (req, res) => ok(res,
+  await doneDelivery.huyXacNhanDone(kiemPhanIn(req.params.phanInId), req.body && req.body.lyDo, req.user.id),
+  'Đã hủy xác nhận DONE'));
+
 module.exports = {
   temSanSang, tonKcs, list, detail, create, confirm, temChoTich, tich, boTich, traCuuTich,
   history, done, cancelable, huy, guiLaiErp, datGiaoHangTai, datKlg,
+  dsDoneDelivery, xacNhanDone, huyXacNhanDone,
 };

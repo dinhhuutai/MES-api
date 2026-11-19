@@ -1250,7 +1250,10 @@ async function cancelGiaCongTemTx(client, { temId, phieuId, lenhId, lenhTrangTha
     `UPDATE tem SET trang_thai='HUY', sl_kcs_dat=0, updated_by=$2, updated_date=CURRENT_TIMESTAMP WHERE id=$1`,
     [temId, actorId]
   );
-  await client.query('DELETE FROM tem_xe_phoi WHERE tem_id = $1', [temId]);
+  // Hủy mềm phiên đang phơi — không có quyền DELETE `tem_xe_phoi` (19/11/2026, xem `cancelPhieuTemByLenhTx`).
+  await client.query(
+    `UPDATE tem_xe_phoi SET trang_thai = 'HUY', updated_by = $2, updated_date = CURRENT_TIMESTAMP
+      WHERE tem_id = $1 AND trang_thai = 'DANG_PHOI'`.replace(/\s+/g, ' '), [temId, actorId]);
   // Mỗi lần nhận hàng = 1 phiếu + 1 tem ⇒ phiếu không còn tem sống thì hủy luôn cho khỏi phiếu rỗng.
   await client.query(
     `UPDATE phieu_san_xuat SET trang_thai='HUY', updated_by=$2, updated_date=CURRENT_TIMESTAMP
@@ -1589,13 +1592,20 @@ const LENH_TEM_DA_XU_LY = `EXISTS (SELECT 1 FROM phieu_san_xuat ps2 JOIN tem t2 
     AND (t2.sl_kcs_dat + t2.sl_kcs_sua + t2.sl_kcs_huy + t2.sl_sua_dat + t2.sl_sua_huy
          + t2.sl_oqc_dat + t2.sl_da_giao) > 0)`;
 
+// "Lệnh đã vào sản xuất" ở tab Hủy lệnh = còn phiếu CHƯA HỦY hoặc còn tem sống (19/11/2026). Phiếu HUY (Hủy xác nhận
+//   chạy — chỉ khi chưa in tem · gộp lệnh — tem đã chuyển đi · hủy tùy chọn — tem hủy kèm) không giữ tem sống ⇒ lệnh
+//   về Chờ chạy hủy như lệnh chưa chạy. Trước đây đếm cả phiếu HUY ⇒ lệnh đã hủy chạy chỉ còn đường Hủy tùy chọn.
+const LENH_DA_CHAY_SQL = `(EXISTS (SELECT 1 FROM phieu_san_xuat psx WHERE psx.lenh_san_xuat_id = ls.id AND psx.trang_thai <> 'HUY')
+  OR EXISTS (SELECT 1 FROM phieu_san_xuat psy JOIN tem ty ON ty.phieu_san_xuat_id = psy.id
+              WHERE psy.lenh_san_xuat_id = ls.id AND ty.trang_thai <> 'HUY'))`;
+
 // `moRong` = chế độ HỦY TÙY CHỌN (quyền `LENH_CANCEL_ANY`): bỏ giới hạn trạng thái + bỏ điều kiện
 // "chưa có phiếu SX" ⇒ liệt kê MỌI lệnh chưa hủy, kể cả đang sản xuất / đã hoàn tất.
+// `co_gop` = lệnh từng nhận lệnh khác gộp vào (audit `GOP_LENH_SX`) ⇒ modal tải các kế hoạch đang chạy chung để tách riêng.
 async function listCancelableLenh({ search = '', offset = 0, limit = 50, moRong = false }) {
   const dieuKien = moRong
     ? `ls.trang_thai <> 'HUY'`
-    : `ls.trang_thai IN ('RELEASE_1','RELEASE_2','GIA_CONG')
-       AND NOT EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = ls.id)`;
+    : `ls.trang_thai IN ('RELEASE_1','RELEASE_2','GIA_CONG') AND NOT ${LENH_DA_CHAY_SQL}`;
   const FROM = `
     FROM lenh_san_xuat ls
     LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
@@ -1620,7 +1630,9 @@ async function listCancelableLenh({ search = '', offset = 0, limit = 50, moRong 
     FROM (
     SELECT ls.id, ls.ma_lenh_san_xuat, ls.trang_thai, ls.so_luong_release, ls.ngay_ke_hoach, ls.created_date,
            cs.ma_chuyen, cs.ten_chuyen,
-           EXISTS (SELECT 1 FROM phieu_san_xuat ps3 WHERE ps3.lenh_san_xuat_id = ls.id) AS co_phieu,
+           ${LENH_DA_CHAY_SQL} AS co_phieu,
+           EXISTS (SELECT 1 FROM audit_log ag WHERE ag.ten_bang = 'lenh_san_xuat' AND ag.id_ban_ghi = ls.id::text
+                    AND ag.hanh_dong = 'GOP_LENH_SX') AS co_gop,
            (SELECT count(*) FROM phieu_san_xuat ps4 JOIN tem t4 ON t4.phieu_san_xuat_id = ps4.id
              WHERE ps4.lenh_san_xuat_id = ls.id AND t4.trang_thai <> 'HUY')::int AS so_tem,
            ${LENH_TEM_DA_XU_LY} AS tem_da_xu_ly,
@@ -1657,7 +1669,7 @@ async function listCancelableLenh({ search = '', offset = 0, limit = 50, moRong 
 async function getLenhForCancel(lenhId) {
   const { rows } = await query(
     `SELECT ls.id, ls.ma_lenh_san_xuat, ls.trang_thai, ls.giai_doan,
-            EXISTS (SELECT 1 FROM phieu_san_xuat ps WHERE ps.lenh_san_xuat_id = ls.id) AS co_phieu,
+            ${LENH_DA_CHAY_SQL} AS co_phieu,
             EXISTS (SELECT 1 FROM gom_set gs WHERE gs.lenh_san_xuat_id = ls.id) AS tu_set,
             (SELECT count(*) FROM phieu_san_xuat ps4 JOIN tem t4 ON t4.phieu_san_xuat_id = ps4.id
               WHERE ps4.lenh_san_xuat_id = ls.id AND t4.trang_thai <> 'HUY')::int AS so_tem,
@@ -1671,11 +1683,15 @@ async function getLenhForCancel(lenhId) {
 // HỦY TÙY CHỌN (quyền `LENH_CANCEL_ANY`): lệnh đã có phiếu/tem thì phải dọn tem + phiếu trước khi
 // hủy lệnh. CHỈ gọi sau khi đã kiểm `tem_da_xu_ly = false` (tem chưa đi tiếp ⇒ sổ cái toàn 0,
 // không cần đảo gì). Gỡ tem khỏi xe phơi để xe không còn giữ tem ma.
+// ⚠ 19/11/2026: gỡ xe phơi = HỦY MỀM phiên đang phơi (như Hủy tem, `production.repository`), KHÔNG `DELETE` —
+//   `claude_agent_mes` không có quyền DELETE `tem_xe_phoi` ⇒ bản cũ lỗi "permission denied" ở mọi lượt hủy tùy chọn /
+//   Lùi về trạm lệnh đã in tem. Phiên `XONG` giữ làm vết.
 async function cancelPhieuTemByLenhTx(client, lenhId, actorId) {
   await client.query(
-    `DELETE FROM tem_xe_phoi WHERE tem_id IN (
+    `UPDATE tem_xe_phoi SET trang_thai = 'HUY', updated_by = $2, updated_date = CURRENT_TIMESTAMP
+      WHERE trang_thai = 'DANG_PHOI' AND tem_id IN (
        SELECT t.id FROM tem t JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
-       WHERE ps.lenh_san_xuat_id = $1)`.replace(/\s+/g, ' '), [lenhId]);
+       WHERE ps.lenh_san_xuat_id = $1)`.replace(/\s+/g, ' '), [lenhId, actorId]);
   await client.query(
     `UPDATE tem SET trang_thai='HUY', updated_by=$2, updated_date=CURRENT_TIMESTAMP
       WHERE trang_thai <> 'HUY' AND phieu_san_xuat_id IN
@@ -2338,14 +2354,14 @@ const SO_PHAN_IN_SQL = `(SELECT count(DISTINCT dvx.phan_in_id) FROM lenh_sx_dot_
 async function release1DoneByDate(date) {
   const sql = `
     SELECT ls.created_date AS tg, nd.ho_ten AS nguoi,
-           ls.ma_lenh_san_xuat || COALESCE(' → gộp vào ' || gv.vao_lenh, '') AS ma,
+           ls.ma_lenh_san_xuat || CASE WHEN ls.trang_thai = 'HUY' THEN COALESCE(' → gộp vào ' || gv.vao_lenh, '') ELSE '' END AS ma,
            ls.id AS lenh_id, ${SO_PHAN_IN_SQL},
            ls.so_luong_release AS so_luong, cs.ten_chuyen, ${DONE_INFO}
     FROM lenh_san_xuat ls
     LEFT JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
     LEFT JOIN nguoi_dung nd ON nd.id = ls.created_by
-    LEFT JOIN LATERAL (SELECT a.gia_tri_moi->>'vao_lenh' AS vao_lenh FROM audit_log a
-                        WHERE a.ten_bang = 'lenh_san_xuat' AND a.id_ban_ghi = ls.id::text AND a.hanh_dong = 'GOP_VAO_LENH'
+    LEFT JOIN LATERAL (SELECT CASE WHEN a.hanh_dong = 'GOP_VAO_LENH' THEN a.gia_tri_moi->>'vao_lenh' END AS vao_lenh FROM audit_log a
+                        WHERE a.ten_bang = 'lenh_san_xuat' AND a.id_ban_ghi = ls.id::text AND a.hanh_dong IN ('GOP_VAO_LENH', 'TACH_LENH_GOP')
                         ORDER BY a.thoi_gian DESC LIMIT 1) gv ON true
     ${PHAN_INFO_LATERAL}
     WHERE (ls.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date

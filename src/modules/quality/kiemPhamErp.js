@@ -20,6 +20,7 @@ const { ghiLog } = require('../../utils/erpApiLog');
 const { ngayCtDaGui } = require('../../utils/erpNgayGio');
 const { thuCua } = require('../../utils/erpThuLai');
 const { capIdMes } = require('../../utils/idMes');
+const { apPhanCongSf0 } = require('../../utils/phanCongSf0');
 const prodRepo = require('../production/production.repository');
 const { maNgayCaHomNay } = require('./suaDatErp');
 // Lazy: quality.repository ← quality.service ← file này (tránh vòng require lúc nạp).
@@ -86,11 +87,20 @@ async function guiKiemPham(kcsId, temId, { dat = 0, hu = 0, thieu = 0 } = {}, ac
   //   xác nhận KCS / modal In tem (`NGUOI_KIEM_KCS` của lượt) thay cho danh sách thợ in của phiếu sản xuất. Chọn tài khoản
   //   ⇒ gửi thẳng mã số nhân viên; tên gõ tay ⇒ `chuanHoa` tra họ tên → mã như thợ in (không ra ⇒ tên gọi).
   //   Chuyền trưởng / ca trưởng vẫn của phiếu sản xuất. Lượt cũ chưa có người kiểm ⇒ giữ thợ in như trước.
-  try {
-    const nk = await qaRepo().nguoiKiemCuaLuot(kcsId);
-    if (nk) payload.dsthoin = nk.ma_nv || nk.nguoi_kiem;
-  } catch (e) {
-    console.error(`[gui-kiem-pham] ⚠ Không đọc được người kiểm (lượt ${kcsId}) — gửi thợ in của phiếu: ${e.message}`);
+  // ⚠⚠ 19/11/2026 (người dùng chốt: "Sh6 phải lấy lại ca trưởng, chuyền trưởng, thợ in của tem in SF0") — THAY luật
+  //   người kiểm ở trên: 3 trường người = đúng lần gửi SF0 mới nhất của tem (`utils/phanCongSf0`). Phiếu sản xuất đã sang
+  //   ca khác thì phân công hiện tại của phiếu là người của ca khác. Tem không có SF0 ⇒ giữ luật cũ (người kiểm).
+  let theoSf0 = false;
+  try { theoSf0 = await apPhanCongSf0(payload, temId); } catch (e) {
+    console.error(`[gui-kiem-pham] ⚠ Không đọc được phân công SF0 (tem ${temId}): ${e.message}`);
+  }
+  if (!theoSf0) {
+    try {
+      const nk = await qaRepo().nguoiKiemCuaLuot(kcsId);
+      if (nk) payload.dsthoin = nk.ma_nv || nk.nguoi_kiem;
+    } catch (e) {
+      console.error(`[gui-kiem-pham] ⚠ Không đọc được người kiểm (lượt ${kcsId}) — gửi thợ in của phiếu: ${e.message}`);
+    }
   }
   // Cùng bài học `@pNgayca` của sửa đạt (23/09/2026): tem thiếu mã ngày ca ⇒ gửi lại giữ mã lần trước, lần đầu lấy NGÀY HÔM NAY.
   if (!payload.Ngayca) payload.Ngayca = opts.ngayCa || await maNgayCaHomNay(r.loai_chuyen);

@@ -279,12 +279,39 @@ async function datCongDoanLenhTx(client, lenhIds, { laDau, gd } = {}, actorId) {
   return rowCount;
 }
 
-// Kế hoạch tạm PHẦN ÉP thành kế hoạch tạm của công đoạn duy nhất (bỏ công đoạn In) — chỉ gọi khi đã có cột (mig 128).
-async function doiKeHoachTamSangInTx(client, ids) {
+// Đổi công đoạn kế hoạch tạm `tu` → `den` ('IN' | 'EP_UI') — chỉ gọi khi đã có cột (mig 128). Bỏ công đoạn In: phần ép
+//   thành công đoạn duy nhất ('EP_UI' → 'IN'); Thêm công đoạn In cho phần in Logo: kế hoạch tạm Logo thành phần ép.
+async function doiKeHoachTamGdTx(client, ids, tu, den) {
   if (!ids.length) return 0;
   const { rowCount } = await client.query(
-    "UPDATE ke_hoach_tam SET giai_doan = 'IN' WHERE id = ANY($1::uuid[]) AND giai_doan = 'EP_UI'", [ids]);
+    'UPDATE ke_hoach_tam SET giai_doan = $3 WHERE id = ANY($1::uuid[]) AND giai_doan = $2', [ids, tu, den]);
   return rowCount;
+}
+const doiKeHoachTamSangInTx = (client, ids) => doiKeHoachTamGdTx(client, ids, 'EP_UI', 'IN');
+
+// Chỉ đổi `giai_doan` của lệnh (giữ `la_cong_doan_dau` — bên gọi đánh lại sau bằng `danhLaiCongDoanDauTx`).
+async function doiGdLenhTx(client, lenhIds, gd, actorId) {
+  if (!lenhIds.length) return 0;
+  const { rowCount } = await client.query(
+    `UPDATE lenh_san_xuat SET giai_doan = $2, updated_by = $3, updated_date = CURRENT_TIMESTAMP WHERE id = ANY($1::uuid[])`,
+    [lenhIds, gd, actorId]);
+  return rowCount;
+}
+
+// Đợt sống của phần in cho "Thêm công đoạn": loại đợt, SL, lệnh sống (mã) + kế hoạch tạm đang có. Phần in đang 1 công đoạn
+//   ⇒ mọi lệnh / kế hoạch tạm là của công đoạn hiện có. Ready + số đầu BTP bên gọi đọc qua `planning.getDotVaiForCompose`.
+async function dotChoThemCongDoan(phanInId) {
+  const { rows } = await query(
+    `SELECT dv.id::text AS id, dv.ma_dot_vai, ldv.ma_loai, ldv.ten_loai, COALESCE(dv.so_luong_vai_ve,0)::int AS so_luong,
+            (SELECT string_agg(DISTINCT ls.ma_lenh_san_xuat, ', ') FROM lenh_sx_dot_vai x JOIN lenh_san_xuat ls ON ls.id = x.lenh_san_xuat_id
+              WHERE x.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY' AND COALESCE(x.so_luong,0) > 0) AS ma_lenh,
+            EXISTS (SELECT 1 FROM ke_hoach_tam k WHERE k.dot_vai_ve_id = dv.id) AS co_kht
+       FROM dot_vai_ve dv LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id
+      WHERE dv.phan_in_id = $1 AND dv.trang_thai NOT IN ('DA_HUY','DA_GOP')
+      ORDER BY dv.created_date, dv.ma_dot_vai`.replace(/\s+/g, ' ').trim(),
+    [phanInId]
+  );
+  return rows;
 }
 
 // Lệnh ÉP đã đổi sang công đoạn duy nhất ở lần BỎ CÔNG ĐOẠN IN gần nhất mà còn sống (audit `BO_CONG_DOAN.lenh_doi_gd`) —
@@ -425,5 +452,6 @@ module.exports = {
   updatePhanIn, updateDotVai, slDaInCuaDotVai, ghiAudit, danhMucLoaiDotVai, toanCanh,
   lenhTheoCongDoan, keHoachTamTheoCongDoan, phanInCungHskt, datLuongPhanInTx, datCongDoanLenhTx, nhaTemCongDoanDauTx,
   doiKeHoachTamSangInTx, lenhEpDaDoiConSong,
+  doiKeHoachTamGdTx, doiGdLenhTx, dotChoThemCongDoan,
   COT_PHAN_IN, COT_DOT_VAI,
 };

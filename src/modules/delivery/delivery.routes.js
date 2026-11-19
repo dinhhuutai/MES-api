@@ -26,6 +26,11 @@ router.post('/tich/bo', rbac('TICH_GIAO', 'DELIVERY_MANAGE'), c.boTich);
 // ⚠⚠ 3 route TĨNH này cũng phải đứng TRƯỚC `/:id`, nếu không `/history` bị `/:id` nuốt (404 khó hiểu).
 router.get('/history', rbac('DELIVERY_VIEW', 'DELIVERY_MANAGE'), c.history);
 router.get('/done', rbac('DELIVERY_VIEW', 'DELIVERY_MANAGE'), c.done);
+// DONE DELIVERY theo phần in (19/11/2026, `doneDelivery.js`) — route tĩnh, đặt TRƯỚC `/:id`. Hủy xác nhận = admin
+//   (`DONE_DELIVERY_HUY` là mã giả, chỉ quyền '*' qua được).
+router.get('/done-delivery', rbac('DELIVERY_VIEW', 'DELIVERY_MANAGE'), c.dsDoneDelivery);
+router.post('/done-delivery/:phanInId/xac-nhan', rbac('DELIVERY_MANAGE'), c.xacNhanDone);
+router.post('/done-delivery/:phanInId/huy-xac-nhan', rbac('DONE_DELIVERY_HUY'), c.huyXacNhanDone);
 // Danh sách phiếu hủy được — trang *Hệ thống → Hủy lệnh xác nhận* (tab "Hủy phiếu giao").
 router.get('/huy/cancelable', rbac('DELIVERY_VIEW', 'DELIVERY_MANAGE'), c.cancelable);
 

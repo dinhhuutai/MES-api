@@ -38,6 +38,13 @@ const NGOAI_LE = [
   { method: 'POST', re: /^\/api\/thong-bao\/doc\/?$/ },
   { method: 'POST', re: /^\/api\/thong-bao\/push\/(dang-ky|huy)\/?$/ },
   { method: 'PUT', re: /^\/api\/thong-bao\/cua-toi\/?$/ },
+
+  // Agent MES THLA (mig 138): hỏi AI là thao tác ĐỌC; chỉ ghi nhật ký hỏi đáp + đánh giá + xóa mềm cuộc trò chuyện
+  // của CHÍNH người hỏi. Vẫn phải có vai trò AI tường minh (`modules/ai/quyenAi.js`).
+  { method: 'POST', re: /^\/api\/ai\/hoi\/?$/ },
+  { method: 'POST', re: /^\/api\/ai\/tin-nhan\/[0-9a-f-]{36}\/danh-gia\/?$/i },
+  { method: 'DELETE', re: /^\/api\/ai\/hoi-thoai\/[0-9a-f-]{36}\/?$/i },
+  { method: 'PUT', re: /^\/api\/ai\/mau-robot\/?$/ },
 ];
 
 // ⚠ CỐ Ý KHÔNG cho vào ngoại lệ (người dùng đã chốt 09/09/2026):
