@@ -148,14 +148,37 @@ const LOAI_TB = {
     tuTram: 'Duyệt phương án in',
     denTram: 'Kỹ thuật',
   },
+
+  // ─── Họ thứ 3: THÔNG BÁO HỆ THỐNG (19/11/2026) — nguồn `audit_log` `ten_bang='thong_bao'`, MỖI NGƯỜI NHẬN 1 DÒNG
+  //   (`id_ban_ghi` = id người nhận, `hanh_dong` = mã loại, `gia_tri_moi` = { tieu_de, noi_dung, nhan, trang, … }) — gửi
+  //   ĐÍCH DANH qua `utils/thongBaoHeThong.gui`, không rải theo quyền. Không migration.
+  ERP_GUI_LOI: {
+    ten: 'Gửi dữ liệu sang ERP bị lỗi',
+    mo_ta: 'Lượt gửi ERP (in tem, kiểm phẩm, sửa đạt, OQC, phân loại lỗi, phiếu giao…) vẫn lỗi sau 3 lần thử — danh sách tem cần '
+      + 'xem / gửi lại ở Cài đặt API. Chỉ gửi tài khoản Quản trị (vai trò ADMIN).',
+    nguon: 'HE_THONG',
+    quyenNhan: [], // chỉ tài khoản '*' thấy loại này (gửi đích danh vai trò ADMIN)
+    tuTram: 'Gửi ERP',
+    denTram: 'Quản trị',
+    trang: '/he-thong/cai-dat-api',
+  },
+  HANG_DOI_XONG: {
+    ten: 'Hàng đợi tích tem đã chạy xong',
+    mo_ta: 'Các tem bạn xếp vào hàng đợi (KCS · Phân loại lỗi · Nhận sửa · Sửa) đã được hệ thống chạy xong — kèm số tem lỗi.',
+    nguon: 'HE_THONG',
+    quyenNhan: ['KCS', 'PHAN_LOAI_LOI', 'SUA'],
+    tuTram: 'Hàng đợi tích tem',
+    denTram: 'người xếp',
+    trang: '/he-thong/hang-doi-tich-tem',
+  },
 };
 
 // Câu mô tả luồng, dùng CHUNG cho chuông · trang thông báo · popup hệ điều hành.
 // ⚠ Một nguồn duy nhất — 3 nơi hiện khác chữ nhau là người dùng tưởng 3 việc khác nhau.
 // ⚠ Họ TRẢ VỀ ghi "→ trả về …"; họ DUYỆT chỉ ghi "→ …" (nói "trả về" ở đó là sai nghiệp vụ).
-const nhanLuong = (v) => (v.nguon === 'YEU_CAU_DUYET'
-  ? `${v.tuTram} → ${v.denTram}`
-  : `${v.tuTram} → trả về ${v.denTram}`);
+const nhanLuong = (v) => (v.nguon === 'QC_TRA_VE'
+  ? `${v.tuTram} → trả về ${v.denTram}`
+  : `${v.tuTram} → ${v.denTram}`);
 
 // Bấm thông báo ĐỔI PHƯƠNG ÁN IN → về màn **Danh sách phần in vải về**, chip **"Tất cả"**, tìm sẵn
 // code phần đó (người dùng chốt 18/08/2026).
@@ -178,6 +201,7 @@ const loaiTheoNguon = (nguon) => Object.entries(LOAI_TB)
   .filter(([, v]) => v.nguon === nguon);
 const LOAI_QC = loaiTheoNguon('QC_TRA_VE');
 const LOAI_DUYET_TB = loaiTheoNguon('YEU_CAU_DUYET');
+const LOAI_HE_THONG_TB = loaiTheoNguon('HE_THONG');
 
 // ─── Cờ CHỈ Ở MỨC HỆ THỐNG (không hiện ở trang cá nhân) ──────────────────────
 // ⚠ Lưu CHUNG bảng `cai_dat_thong_bao` với `LOAI_TB` — 2 loại khóa, 1 bảng. Phân biệt bằng chính
@@ -366,7 +390,7 @@ const coQuyenNhanLoai = (perms = [], maLoai) => {
 const coQuyenNhan = () => true;
 
 module.exports = {
-  LOAI_TB, CO_HE_THONG, QUYEN_NHAN, LOAI_QC, LOAI_DUYET_TB, duongDanDoiPa, duongDanTraVe,
+  LOAI_TB, CO_HE_THONG, QUYEN_NHAN, LOAI_QC, LOAI_DUYET_TB, LOAI_HE_THONG_TB, duongDanDoiPa, duongDanTraVe,
   LOAI_TRA_VE_TO_TB, CAC_LOAI_TRA_VE, nhanLuong,
   laLoaiHopLe, layCaiDatHeThong, heThongBat, xoaCache, nguoiNhan,
   coQuyenNhan, coQuyenNhanLoai,

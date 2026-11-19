@@ -322,6 +322,12 @@ async function recordKcs(temId, body, actorId) {
   if (!tem) throw new AppError('Tem không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   if (['IN', 'DANG_PHOI'].includes(tem.trang_thai)) throw new AppError('Tem chưa khô', { status: 409, errorCode: 'WRONG_STAGE' });
   const conKcs = Number(tem.con_kcs) || 0;
+  // HÀNG ĐỢI TÍCH TEM (19/11/2026, `hangdoi/hangDoi.js`): mục mang số còn kiểm LÚC XẾP — tem đã đổi số (người khác vừa KCS / máy chủ
+  //   tắt ngang sau khi ghi lượt) ⇒ KHÔNG ghi lượt thứ 2. Kiểm lại trong transaction có khóa bên dưới (so với `conKcs`).
+  if (body.conKcsMongDoi != null && Number(body.conKcsMongDoi) !== conKcs) {
+    throw new AppError(`Tem ${tem.ma_tem} đã đổi số từ lúc xếp hàng đợi (còn kiểm ${body.conKcsMongDoi} → ${conKcs}) — có thể đã được xác nhận, kiểm lại tem này`,
+      { status: 409, errorCode: 'DA_DOI_HANG_DOI' });
+  }
   if (conKcs <= 0) throw new AppError('Tem không còn phần chờ KCS', { status: 409, errorCode: 'DONE' });
 
   // ⚠⚠ NGƯỜI KIỂM BẮT BUỘC (09/11/2026, người dùng: "thêm cột người kiểm ở các chỗ xác nhận KCS, gửi dữ liệu Sh6 phải là
@@ -525,6 +531,11 @@ async function recordSua(temId, body, actorId) {
       { status: 409, errorCode: 'CHUA_PHAN_LOAI_LOI' });
   }
   const conSua = Number(so0.dang_sua) || 0;
+  // HÀNG ĐỢI TÍCH TEM (19/11/2026, `hangdoi/hangDoi.js`): mục mang số "đang sửa" lúc xếp — lệch ⇒ không ghi lượt thứ 2.
+  if (body.conSuaMongDoi != null && Number(body.conSuaMongDoi) !== conSua) {
+    throw new AppError(`Tem ${tem.ma_tem} đã đổi số từ lúc xếp hàng đợi (đang sửa ${body.conSuaMongDoi} → ${conSua}) — có thể đã được xác nhận, kiểm lại tem này`,
+      { status: 409, errorCode: 'DA_DOI_HANG_DOI' });
+  }
   if (conSua <= 0) {
     throw new AppError(`Tem ${tem.ma_tem} chưa nhận sửa (${so0.cho_nhan} pcs đang chờ nhận) — bấm "Nhận sửa" trước`,
       { status: 409, errorCode: 'CHUA_NHAN_SUA' });

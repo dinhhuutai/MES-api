@@ -33,6 +33,7 @@ const tachNguon = (maLoaiBat) => ({
   loaiBat: maLoaiBat.filter((ma) => tb.LOAI_TB[ma].nguon === 'QC_TRA_VE')
     .map((ma) => tb.LOAI_TB[ma].loaiTraVe),
   loaiBatDuyet: maLoaiBat.filter((ma) => tb.LOAI_TB[ma].nguon === 'YEU_CAU_DUYET'),
+  loaiBatHT: maLoaiBat.filter((ma) => tb.LOAI_TB[ma].nguon === 'HE_THONG'), // họ 3 (19/11/2026)
 });
 
 // Giữ tên cũ cho các chỗ đang gọi (chỉ cần mảng `qc_tra_ve.loai`).
@@ -46,12 +47,13 @@ async function loaiBatCuaNguoi(userId) {
 
 // Tổng số chưa đọc của CẢ 2 NGUỒN.
 async function tongChuaDoc(user, maLoaiBat) {
-  const { loaiBat, loaiBatDuyet } = tachNguon(maLoaiBat);
-  const [a, b] = await Promise.all([
+  const { loaiBat, loaiBatDuyet, loaiBatHT } = tachNguon(maLoaiBat);
+  const [a, b, c] = await Promise.all([
     repo.demChuaDoc(user.id, loaiBat),
     repo.demChuaDocDuyet(user.id, loaiBatDuyet),
+    repo.danhSachHeThong(user.id, { loaiBatHT, chuaDoc: true, limit: 1 }).then((r) => r.total),
   ]);
-  return a + b;
+  return a + b + c;
 }
 
 // Chuông: chỉ con số (gọi rất thường).
@@ -64,7 +66,7 @@ async function demChuaDoc(user) {
 async function danhSach(user, q = {}) {
   if (!tb.coQuyenNhan(user.permissions)) return { items: [], meta: { total: 0 }, so_chua_doc: 0 };
   const maLoaiBat = await maLoaiBatCuaNguoi(user);
-  const { loaiBat, loaiBatDuyet } = tachNguon(maLoaiBat);
+  const { loaiBat, loaiBatDuyet, loaiBatHT } = tachNguon(maLoaiBat);
   const limit = Math.min(100, Math.max(1, Number(q.limit) || 20));
   const page = Math.max(1, Number(q.page) || 1);
   // ⚠ Ngày phải đúng dạng `YYYY-MM-DD` mới nhận — chuỗi rác từ client không được rơi vào SQL.
@@ -80,11 +82,14 @@ async function danhSach(user, q = {}) {
   //   nhanh hơn. Đổi lại phải LẤY DƯ `offset + limit` dòng ở MỖI nguồn rồi mới cắt — lấy đúng
   //   `limit` mỗi bên thì trang 2 sẽ bỏ sót dòng của nguồn có nhiều bản ghi hơn.
   const canLay = (page - 1) * limit + limit;
-  const [qc, duyet] = await Promise.all([
+  // Chip của nguồn khác ⇒ nguồn này không góp dòng (`maLoai` thuộc họ khác).
+  const thuocHT = !maLoai || (tb.LOAI_TB[maLoai] && tb.LOAI_TB[maLoai].nguon === 'HE_THONG');
+  const [qc, duyet, ht] = await Promise.all([
     repo.danhSach(user.id, { ...loc, loaiBat, maLoai, limit: canLay, offset: 0 }),
     repo.danhSachDuyet(user.id, { ...loc, loaiBatDuyet, maLoai, limit: canLay, offset: 0 }),
+    thuocHT ? repo.danhSachHeThong(user.id, { ...loc, loaiBatHT, maLoai, limit: canLay, offset: 0 }) : { items: [], total: 0 },
   ]);
-  const gop = [...qc.items, ...duyet.items]
+  const gop = [...qc.items, ...duyet.items, ...ht.items]
     .sort((a, b) => new Date(b.tg) - new Date(a.tg))
     .slice((page - 1) * limit, (page - 1) * limit + limit);
 
@@ -100,10 +105,16 @@ async function danhSach(user, q = {}) {
     chip[ma] = r.total;
     chip[''] = (chip[''] || 0) + r.total;
   }
+  for (const ma of loaiBatHT) {
+    // eslint-disable-next-line no-await-in-loop
+    const r = await repo.danhSachHeThong(user.id, { ...loc, loaiBatHT, maLoai: ma, limit: 1, offset: 0 });
+    chip[ma] = r.total;
+    chip[''] = (chip[''] || 0) + r.total;
+  }
 
   return {
     items: gop,
-    meta: { total: qc.total + duyet.total, page, limit },
+    meta: { total: qc.total + duyet.total + ht.total, page, limit },
     so_chua_doc: soChuaDoc,
     dem_chip: chip,
   };
@@ -112,15 +123,16 @@ async function danhSach(user, q = {}) {
 async function danhDauDoc(user, ids) {
   if (!tb.coQuyenNhan(user.permissions)) return { so_dong: 0, so_chua_doc: 0 };
   const maLoaiBat = await maLoaiBatCuaNguoi(user);
-  const { loaiBat, loaiBatDuyet } = tachNguon(maLoaiBat);
+  const { loaiBat, loaiBatDuyet, loaiBatHT } = tachNguon(maLoaiBat);
   const ds = Array.isArray(ids) ? ids : [];
-  // ⚠ Đánh dấu ở CẢ 2 NGUỒN: danh sách đã gộp nên `ids` có thể lẫn id của cả hai; "đọc hết" cũng
-  //   phải phủ cả hai, nếu không chuông vẫn đỏ vì còn nguồn kia chưa đọc.
-  const [a, b] = await Promise.all([
+  // ⚠ Đánh dấu ở CẢ 3 NGUỒN: danh sách đã gộp nên `ids` có thể lẫn id của nhiều nguồn; "đọc hết" cũng
+  //   phải phủ hết, nếu không chuông vẫn đỏ vì còn nguồn kia chưa đọc.
+  const [a, b, c] = await Promise.all([
     repo.danhDauDoc(user.id, ds, loaiBat),
     repo.danhDauDocDuyet(user.id, ds, loaiBatDuyet),
+    repo.danhDauDocHeThong(user.id, ds, loaiBatHT),
   ]);
-  return { so_dong: a + b, so_chua_doc: await tongChuaDoc(user, maLoaiBat) };
+  return { so_dong: a + b + c, so_chua_doc: await tongChuaDoc(user, maLoaiBat) };
 }
 
 // ─── CẤU HÌNH HỆ THỐNG (trang Hệ thống) ──────────────────────────────────────

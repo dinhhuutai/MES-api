@@ -63,15 +63,16 @@ async function dsReleaseSx(tuNgay, denNgay) {
   //   giai đoạn CHẬM NHẤT của cả PHẦN IN — phần in còn 1 đợt chưa release thì lệnh đang chạy cũng ghi "Release 1". Ở đây
   //   tính lại bằng CHÍNH `dotStageCase` trên các đợt của ĐÚNG lệnh × phần in (lấy giai đoạn chậm nhất trong các đợt đó).
   const { dotStageCase, ORDER_SQL_ARRAY, STAGE_LABEL } = require('../../utils/stage');
+  const L = require('../../utils/luongSanXuat');
   const coVaiTem = await require('./production.repository').vaiHuyCoCotTem();
-  const [inTruoc, nvPin, inLenh, vai, ghi, ttLenh] = await Promise.all([
-    // Theo cặp (lệnh × phần in): đã in TRƯỚC kỳ (tem gốc) + đã giao của phần in (mọi tem).
+  const [inTruoc, nvPin, inLenh, vai, ghi, ttLenh, pinLuong] = await Promise.all([
+    // Theo cặp (lệnh × phần in): đã in TRƯỚC kỳ (tem gốc) + đã giao của phần in (mọi tem). `gd` = công đoạn của lệnh.
     query(
-      `WITH p AS (SELECT DISTINCT dv.phan_in_id, ls.id AS lenh_id
+      `WITH p AS (SELECT DISTINCT dv.phan_in_id, ls.id AS lenh_id, COALESCE(ls.giai_doan, '${L.GD_IN}') AS gd
                     FROM lenh_san_xuat ls JOIN lenh_sx_dot_vai lsd ON lsd.lenh_san_xuat_id = ls.id
                     JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
                    WHERE ls.trang_thai <> 'HUY' AND dv.phan_in_id = ANY($1::uuid[])),
-            t AS (SELECT p.phan_in_id, p.lenh_id,
+            t AS (SELECT p.phan_in_id, p.lenh_id, p.gd,
                          COALESCE(SUM(tm.so_luong) FILTER (WHERE tm.tem_goc_id IS NULL AND (${NGAY_TM} < $2::date
                                    OR (tm.ma_tem LIKE 'HT-%' AND (tm.created_date ${VN})::date <= $3::date))), 0) AS da_in,
                          COALESCE(SUM(tm.so_luong) FILTER (WHERE tm.tem_goc_id IS NULL AND tm.ma_tem LIKE 'HT-%'
@@ -80,15 +81,17 @@ async function dsReleaseSx(tuNgay, denNgay) {
                          COALESCE(SUM(tm.sl_da_giao) FILTER (WHERE tm.ma_tem LIKE 'HT-%'), 0) AS da_giao_ht
                     FROM p JOIN phieu_san_xuat ps ON ps.lenh_san_xuat_id = p.lenh_id
                     JOIN tem tm ON tm.phieu_san_xuat_id = ps.id AND tm.trang_thai <> 'HUY'
-                   GROUP BY p.phan_in_id, p.lenh_id)
-       SELECT phan_in_id, lenh_id, da_in::int, da_in_ht::int, da_giao::int, da_giao_ht::int FROM t`.replace(/\s+/g, ' '),
+                   GROUP BY p.phan_in_id, p.lenh_id, p.gd)
+       SELECT phan_in_id, lenh_id, gd, da_in::int, da_in_ht::int, da_giao::int, da_giao_ht::int FROM t`.replace(/\s+/g, ' '),
       [pinIds, ngay, den]
     ),
     // SL NHẬN VẢI của CẢ PHẦN IN (mọi đợt sống) — cùng phạm vi với Đã in / Đã giao (26/10/2026, ca 8A8B).
+    //   `gd_dot` = công đoạn của đợt (kiếng ủi: 4I = In kiếng, đợt khác = Ép; luồng khác NULL = mọi công đoạn).
     query(
-      `SELECT dv.phan_in_id, COALESCE(SUM(dv.so_luong_vai_ve), 0)::int AS slnv
-         FROM dot_vai_ve dv WHERE dv.phan_in_id = ANY($1::uuid[]) AND dv.trang_thai NOT IN ('DA_HUY', 'DA_GOP')
-        GROUP BY 1`.replace(/\s+/g, ' '),
+      `SELECT dv.phan_in_id, ${L.dotGdSql('dv', 'pin.luong_sx')} AS gd_dot, COALESCE(SUM(dv.so_luong_vai_ve), 0)::int AS slnv
+         FROM dot_vai_ve dv JOIN phan_in pin ON pin.id = dv.phan_in_id
+        WHERE dv.phan_in_id = ANY($1::uuid[]) AND dv.trang_thai NOT IN ('DA_HUY', 'DA_GOP')
+        GROUP BY 1, 2`.replace(/\s+/g, ' '),
       [pinIds]
     ),
     query(
@@ -129,21 +132,55 @@ async function dsReleaseSx(tuNgay, denNgay) {
         ORDER BY z.lenh_id, z.phan_in_id, array_position(${ORDER_SQL_ARRAY}, z.stage)`.replace(/\s+/g, ' '),
       [lenhIds]
     ),
+    query('SELECT id, luong_sx, tinh_chat_in FROM phan_in WHERE id = ANY($1::uuid[])', [pinIds]),
   ]);
   const ttMap = new Map(ttLenh.rows.map((x) => [`${x.lenh_id}|${x.phan_in_id}`, x.stage]));
-  // Đã in / đã giao của phần in: cộng mọi lệnh; "đã in trước" = trừ lệnh của dòng.
+  // ⚠⚠ THEO CÔNG ĐOẠN (19/11/2026, người dùng: "danh sách release của sản xuất tách dòng theo công đoạn, 2 công đoạn thì
+  //   2 dòng"): mỗi công đoạn vốn là 1 LỆNH riêng ⇒ đã ra dòng riêng, nhưng trước đây không ghi công đoạn và SL ĐÃ IN /
+  //   ĐÃ GIAO / SLNV cộng chung CẢ phần in (tem In kiếng + tem Ép cùng dồn vào 1 số) ⇒ 2 dòng nhìn như trùng. Nay phần in
+  //   2 công đoạn tính các số đó theo ĐÚNG công đoạn của lệnh (`gd`); kiếng ủi SLNV = đợt của công đoạn đó (4I / đợt Ép).
+  //   Phần in 1 công đoạn: mọi lệnh cùng 1 khóa ⇒ như cũ. Dòng mang `luong_sx` + nhãn `cong_doan` (In · In kiếng · Ép · Logo).
+  const luongMap = new Map(pinLuong.rows.map((x) => [x.id, x]));
+  const haiCd = (pinId) => L.laHaiCongDoan(L.chuanLuong((luongMap.get(pinId) || {}).luong_sx));
+  const khoaCd = (pinId, gd) => `${pinId}|${haiCd(pinId) ? L.chuanGd(gd) : '*'}`;
   const theoPin = new Map();
   inTruoc.rows.forEach((x) => {
-    const o = theoPin.get(x.phan_in_id) || { in: 0, giao: 0, inHt: 0, giaoHt: 0, lenh: new Map() };
+    const k = khoaCd(x.phan_in_id, x.gd);
+    const o = theoPin.get(k) || { in: 0, giao: 0, inHt: 0, giaoHt: 0, lenh: new Map() };
     o.in += x.da_in; o.giao += x.da_giao; o.inHt += x.da_in_ht; o.giaoHt += x.da_giao_ht; o.lenh.set(x.lenh_id, x.da_in);
-    theoPin.set(x.phan_in_id, o);
+    theoPin.set(k, o);
   });
-  const nvMap = new Map(nvPin.rows.map((x) => [x.phan_in_id, x.slnv]));
+  // SLNV: kiếng ủi theo công đoạn của đợt; luồng khác (đợt mang mọi công đoạn) = tổng mọi đợt.
+  const nvMap = new Map();
+  nvPin.rows.forEach((x) => {
+    const luong = L.chuanLuong((luongMap.get(x.phan_in_id) || {}).luong_sx);
+    const k = L.theoDot(luong) && x.gd_dot ? `${x.phan_in_id}|${x.gd_dot}` : `${x.phan_in_id}|*`;
+    nvMap.set(k, (nvMap.get(k) || 0) + x.slnv);
+  });
+  const slnvDong = (pinId, gd) => {
+    const luong = L.chuanLuong((luongMap.get(pinId) || {}).luong_sx);
+    // Không có đợt nào của công đoạn này (dữ liệu trước luật đợt-theo-công-đoạn) ⇒ null ⇒ vải đợt trong lệnh (`r.slnv`).
+    if (L.theoDot(luong)) return nvMap.has(`${pinId}|${L.chuanGd(gd)}`) ? nvMap.get(`${pinId}|${L.chuanGd(gd)}`) : null;
+    return nvMap.has(`${pinId}|*`) ? nvMap.get(`${pinId}|*`) : null;
+  };
+  // Nhãn công đoạn của dòng — phần in 2 công đoạn theo `nhanCongDoan` (PA ép theo tính chất in: Ép / Logo).
+  const paEp = new Map();
+  for (const p of pinLuong.rows) {
+    if (L.laHaiCongDoan(L.chuanLuong(p.luong_sx))) paEp.set(p.id, await L.paCongDoanEp(p.tinh_chat_in).catch(() => null)); // eslint-disable-line no-await-in-loop
+  }
+  const nhanCd = (pinId, gd) => {
+    const luong = L.chuanLuong((luongMap.get(pinId) || {}).luong_sx);
+    if (L.laHaiCongDoan(luong)) return L.nhanCongDoan(luong, gd, paEp.get(pinId));
+    if (luong === 'LOGO') return 'Logo';
+    if (luong === 'KIENG_KHONG_EP') return 'In kiếng';
+    return 'In';
+  };
   const slInLenh = new Map(inLenh.rows.map((x) => [x.lenh_id, x]));
   const ghiMap = new Map(ghi.rows.map((x) => [x.id_ban_ghi, x.gia_tri_moi || {}]));
   const daGhiSlLenh = new Set();
   const out = rows.map((r) => {
-    const p = theoPin.get(r.phan_in_id) || { in: 0, giao: 0, inHt: 0, giaoHt: 0, lenh: new Map() };
+    const p = theoPin.get(khoaCd(r.phan_in_id, r.giai_doan)) || { in: 0, giao: 0, inHt: 0, giaoHt: 0, lenh: new Map() };
+    const nv = slnvDong(r.phan_in_id, r.giai_doan);
     // Vải: dòng gắn đúng phần in thì lấy dòng đó; dòng không ghi phần in (sổ cũ) tính cho dòng đầu của lệnh.
     const vaiPin = vai.rows.filter((v) => v.lenh_id === r.lenh_id && v.phan_in_id === r.phan_in_id);
     const vaiChung = daGhiSlLenh.has(r.lenh_id) ? [] : vai.rows.filter((v) => v.lenh_id === r.lenh_id && !v.phan_in_id);
@@ -160,7 +197,10 @@ async function dsReleaseSx(tuNgay, denNgay) {
       sl_da_giao_pin: p.giao,
       sl_da_in_ht: p.inHt,
       sl_da_giao_ht: p.giaoHt,
-      slnv_pin: nvMap.has(r.phan_in_id) ? nvMap.get(r.phan_in_id) : r.slnv,
+      slnv_pin: nv == null ? r.slnv : nv,
+      luong_sx: (luongMap.get(r.phan_in_id) || {}).luong_sx || null,
+      cong_doan: nhanCd(r.phan_in_id, r.giai_doan),
+      hai_cong_doan: haiCd(r.phan_in_id),
       sl_in: dau ? ((slInLenh.get(r.lenh_id) || {}).sl_in || 0) : null,
       sl_in_truoc_lenh: dau ? ((slInLenh.get(r.lenh_id) || {}).sl_in_truoc || 0) : null,
       vai_hu: [...vaiPin, ...vaiChung].reduce((a, v) => a + v.hu, 0),

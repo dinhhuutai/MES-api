@@ -127,6 +127,10 @@ function thuLaiNen(thamSo, maApi, lan = 0) {
 async function ghiLog(maApi, o = {}) {
   let thamSo = null;
   const luc = new Date().toISOString();
+  // Lượt lỗi (đã hết các lần thử của lượt) ⇒ gom báo tài khoản Quản trị (19/11/2026, `utils/erpLoiBaoAdmin.js`).
+  if (!o.thanhCong) {
+    require('./erpLoiBaoAdmin').ghiNhan({ maApi, maTem: o.maTem, idMes: o.idMes, idBanGhi: o.idBanGhi, loi: o.erpError || o.loi || o.erpMessage, soLanThu: o.soLanThu });
+  }
   try {
     thamSo = [
         TEN_BANG[maApi] || 'erp_api',

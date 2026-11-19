@@ -326,6 +326,76 @@ async function danhDauDocDuyet(userId, ids, loaiBatDuyet) {
   } catch (e) { return 0; } // chưa chạy mig 086 ⇒ bỏ qua, không chặn việc đọc nguồn cũ
 }
 
+// ─── NGUỒN 3: THÔNG BÁO HỆ THỐNG (19/11/2026, `utils/thongBaoHeThong.js`) ─────────────────────────────────────────
+// `audit_log` `ten_bang='thong_bao'`, `id_ban_ghi` = CHÍNH người nhận ⇒ không lộ thông báo của người khác.
+// Cùng hình dạng cột với 2 nguồn trên: `ma_phan` = tiêu đề (dòng đậm ở chuông), `ly_do` = nội dung, `nhan_luong` = nhãn
+//   luồng, `trang` = đường dẫn khi bấm, `nguon_tb` = 'HE_THONG' (FE rẽ nhánh hiển thị).
+// ⚠ `$1` = id người (uuid, cho `thong_bao_da_doc`) và `$3` = id người dạng chuỗi (cho `id_ban_ghi`) — KHÔNG dùng chung 1
+//   tham số cho 2 kiểu (Postgres báo "inconsistent types deduced").
+const NGUON_HT = 'HE_THONG';
+const FROM_HT = `FROM audit_log a
+  LEFT JOIN thong_bao_da_doc dd ON dd.user_id = $1 AND dd.nguon = '${NGUON_HT}' AND dd.nguon_id = a.id`;
+const WHERE_HT = "WHERE a.ten_bang = 'thong_bao' AND a.id_ban_ghi = $3 AND a.hanh_dong = ANY($2::text[])";
+const COT_HT = `a.id, NULL::text AS loai_tra_ve, a.hanh_dong AS ma_loai, a.gia_tri_moi->>'tieu_de' AS ten_tram,
+  NULL::text AS tu_tram, NULL::text AS den_tram, a.gia_tri_moi->>'nhan' AS nhan_luong,
+  a.gia_tri_moi->>'noi_dung' AS ly_do, NULL::text AS checklist_list, a.thoi_gian AS tg, false AS da_xu_ly,
+  NULL::uuid AS phan_in_id, a.gia_tri_moi->>'tieu_de' AS ma_phan, a.gia_tri_moi->>'tieu_de' AS tieu_de,
+  a.gia_tri_moi->>'trang' AS trang, '${NGUON_HT}'::text AS nguon_tb,
+  NULL::text AS mau_vai, NULL::text AS kich_vai, NULL::text AS kich_phim, NULL::text AS tinh_chat_in,
+  NULL::int AS so_luong_don_hang, NULL::text AS ma_hang, NULL::text AS ma_don_hang, NULL::text AS ten_khach_hang,
+  NULL::uuid AS nguoi_id, 'Hệ thống MES'::text AS nguoi_ho_ten, NULL::text AS nguoi_username, NULL::text AS nguoi_chuc_vu,
+  NULL::text AS nguoi_email, NULL::text AS nguoi_sdt, NULL::text AS nguoi_avatar, NULL::text AS nguoi_phong_ban,
+  (dd.user_id IS NOT NULL) AS da_doc`;
+
+async function danhSachHeThong(userId, {
+  loaiBatHT = [], chuaDoc = false, timKiem = '', tuNgay = '', denNgay = '', maLoai = '', limit = 20, offset = 0,
+}) {
+  if (!loaiBatHT.length) return { items: [], total: 0 };
+  if (maLoai && !loaiBatHT.includes(maLoai)) return { items: [], total: 0 };
+  const dk = [WHERE_HT];
+  const p = [userId, maLoai ? [maLoai] : loaiBatHT, String(userId)];
+  if (chuaDoc) dk.push('AND dd.user_id IS NULL');
+  if (timKiem) {
+    p.push(mauTim(timKiem));
+    dk.push(`AND (a.gia_tri_moi->>'tieu_de' ~* $${p.length} OR a.gia_tri_moi->>'noi_dung' ~* $${p.length})`);
+  }
+  if (tuNgay) { p.push(tuNgay); dk.push(`AND (a.thoi_gian ${VN})::date >= $${p.length}::date`); }
+  if (denNgay) { p.push(denNgay); dk.push(`AND (a.thoi_gian ${VN})::date <= $${p.length}::date`); }
+  const than = `${FROM_HT} ${dk.join(' ')}`;
+  try {
+    const dem = await query(`SELECT count(*)::int AS n ${than}`.replace(/\s+/g, ' '), p);
+    const ds = await query(
+      `SELECT ${COT_HT} ${than} ORDER BY a.thoi_gian DESC LIMIT ${Number(limit) || 20} OFFSET ${Number(offset) || 0}`
+        .replace(/\s+/g, ' '), p);
+    return { items: ds.rows, total: dem.rows[0] ? dem.rows[0].n : 0 };
+  } catch (e) {
+    console.error('[thong-bao] ✗ đọc thông báo hệ thống lỗi:', e.message);
+    return { items: [], total: 0 };
+  }
+}
+
+async function danhDauDocHeThong(userId, ids, loaiBatHT) {
+  try {
+    if (Array.isArray(ids) && ids.length) {
+      const { rowCount } = await query(
+        `INSERT INTO thong_bao_da_doc (user_id, nguon, nguon_id)
+         SELECT $1, '${NGUON_HT}', x FROM unnest($2::uuid[]) x
+          WHERE EXISTS (SELECT 1 FROM audit_log a WHERE a.id = x AND a.ten_bang = 'thong_bao' AND a.id_ban_ghi = $3)
+         ON CONFLICT (user_id, nguon, nguon_id) DO NOTHING`.replace(/\s+/g, ' '),
+        [userId, ids, String(userId)]);
+      return rowCount;
+    }
+    if (!loaiBatHT || !loaiBatHT.length) return 0;
+    const { rowCount } = await query(
+      `INSERT INTO thong_bao_da_doc (user_id, nguon, nguon_id)
+       SELECT $1, '${NGUON_HT}', a.id FROM audit_log a
+        WHERE a.ten_bang = 'thong_bao' AND a.id_ban_ghi = $3 AND a.hanh_dong = ANY($2::text[])
+       ON CONFLICT (user_id, nguon, nguon_id) DO NOTHING`.replace(/\s+/g, ' '),
+      [userId, loaiBatHT, String(userId)]);
+    return rowCount;
+  } catch (e) { return 0; }
+}
+
 // ─── CẤU HÌNH ────────────────────────────────────────────────────────────────
 async function layCaiDatHeThongRaw() {
   const { rows } = await query(
@@ -398,7 +468,7 @@ async function danhDauPushDaDung(endpoints) {
 
 module.exports = {
   NGUON, NGUON_DUYET, danhSach, danhSachDuyet, demChuaDoc, demChuaDocDuyet, demTheoLoai, motCai,
-  danhDauDoc, danhDauDocDuyet,
+  danhDauDoc, danhDauDocDuyet, danhSachHeThong, danhDauDocHeThong, NGUON_HT,
   layCaiDatHeThongRaw, luuCaiDatHeThong, layCaiDatNguoi, luuCaiDatNguoi,
   luuPush, xoaPush, dsPushTheoUser, danhDauPushDaDung,
 };

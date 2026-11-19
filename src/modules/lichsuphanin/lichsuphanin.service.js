@@ -28,6 +28,7 @@ const HANH_DONG = {
   KHOA_ERP: ['HE_THONG', 'Khóa đồng bộ ERP'], MO_KHOA_ERP: ['HE_THONG', 'Mở khóa đồng bộ ERP'],
   DOI_LUONG_SX: ['HE_THONG', 'Đổi luồng sản xuất'], BO_CONG_DOAN: ['HE_THONG', 'Bỏ 1 công đoạn'],
   THEM_CONG_DOAN: ['HE_THONG', 'Thêm 1 công đoạn'],
+  THEM_DOT_VAI_TAY: ['HE_THONG', 'Thêm đợt vải tay (ERP thiếu đợt)'],
   QUAN_TRI_SUA_PHAN_IN: ['HE_THONG', 'Quản trị: sửa phần in'], QUAN_TRI_HUY_LE: ['HE_THONG', 'Quản trị: hủy lẻ bản ghi', 'h'],
   QUAN_TRI_HUY_MUC_READY: ['HE_THONG', 'Quản trị: hủy mục READY', 'h'],
   MO_LAI_READY: ['READY', 'Mở lại READY'],

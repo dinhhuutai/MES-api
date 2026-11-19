@@ -104,6 +104,8 @@ async function start() {
     startDryingJob();
     // Hàng đợi tự gửi lại lượt gửi ERP bị lỗi (06/11/2026) — chỉ chạy trên máy chủ (xem đầu file job).
     require('./jobs/erpTuGuiLai.job').startErpTuGuiLaiJob();
+    // Hàng đợi tích tem (19/11/2026) — KCS · Phân loại lỗi · Nhận sửa · Sửa; chỉ máy chủ (xem `modules/hangdoi/hangDoi.js`).
+    require('./modules/hangdoi/hangDoi').startHangDoiJob();
     // Luật SLA theo giờ (mig 109) — nạp từ `cai_dat_sla_gio` + nạp lại mỗi 60s; thiếu bảng ⇒ mặc định.
     require('./utils/slaTheoGio').batDauNapDinhKy();
   });
