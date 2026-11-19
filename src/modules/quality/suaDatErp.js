@@ -179,7 +179,7 @@ async function guiSuaDat(suaId, actorId, opts = {}) {
   const s = await repo.getCancelSuaRow(suaId);
   if (!s) {
     const k = await repo.getCancelKcsRow(suaId).catch(() => null);
-    if (k) return guiTem17Kcs(suaId, actorId, opts);
+    if (k) return { ok: false, bo_qua: true, ly_do: 'TEM_17_GUI_BANG_SH6' }; // 19/11/2026 — xem `guiTem17Kcs`
     return { ok: false, bo_qua: true, ly_do: 'NOT_FOUND' };
   }
   if (s.da_huy) return { ok: false, bo_qua: true, ly_do: 'DA_HUY' };
@@ -206,7 +206,11 @@ async function guiSuaDat(suaId, actorId, opts = {}) {
 //   nhãn 16 của tem gốc, `Soluong` = phần ĐẠT đã tách ra tem 17 (`sl_kcs_dat` của tem 17), `Soluongloi` 0 (hư của lượt đi
 //   Sửa, đã nằm ở phiếu Sh6). Ngày CT / ngày ca / giờ = MỐC XÁC NHẬN lượt KCS (không phải lúc in).
 //   `id_ban_ghi` Lịch sử = LƯỢT KCS ⇒ khóa "1 lần / lượt" + hủy xác nhận KCS báo hủy được (`erpHuy` KENH.SUA).
-// Gọi ở lần ĐẦU in (`quality.service guiSk6KhiInTem17`, khóa ở `repo.khoaGuiErpKhiInTem17`); in lại KHÔNG gọi.
+// ⚠⚠ ĐÃ BỎ 19/11/2026 (người dùng chốt: "tem 15 kiểm trước bị tách thì lấy tem 17 gửi với câu Sh6, không gọi SK6 nữa"):
+//   tem 17 của lượt KCS nay báo ERP bằng phiếu Sh6 (`kiemPhamErp` — `BarcodeIn` = tem 17). In tem 17 không gọi hàm này nữa;
+//   "Gửi lại ERP" / hàng đợi tự gửi lại các dòng SK6 cũ của lượt KCS ⇒ bỏ qua `TEM_17_GUI_BANG_SH6` (gửi lại là ERP đếm
+//   đôi với Sh6). Phiếu SK6 cũ đã nằm trên ERP thì hủy bằng script SQL Server (`taoSqlServerSh6Tem17Kcs.js`).
+//   Thân hàm giữ lại (không gọi) để đọc luật cũ.
 async function mocNhapKcs(kcsId) {
   try {
     const { rows } = await query(

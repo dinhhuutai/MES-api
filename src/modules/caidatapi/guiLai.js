@@ -128,6 +128,10 @@ async function guiLai(ma, auditId, actorId, opts = {}) {
   if (ma === 'ERP_GUI_SUA_DAT') {
     const suaDatErp = require('../quality/suaDatErp');
     const kq = await suaDatErp.guiSuaDat(id, actorId, { guiLai: true, idMes: idMesCu(g) });
+    if (kq && kq.bo_qua && kq.ly_do === 'TEM_17_GUI_BANG_SH6') {
+      throw new AppError('Tem 17 của lượt KCS nay báo ERP bằng phiếu Sh6 (mã tem 17) — không gửi SK6 nữa. Gửi lại dòng "Gửi kiểm KCS" của lượt này.',
+        { status: 409, errorCode: 'TEM_17_GUI_BANG_SH6' });
+    }
     loiNeu(kq, 'Gửi sửa đạt');
     return { ok: true };
   }

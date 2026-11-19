@@ -56,8 +56,11 @@ async function mocNhapKcs(kcsId) {
 // `opts.guiLai` (nút "Gửi lại ERP" ở Cài đặt API › Lịch sử, 26/09/2026): bỏ qua chặn "đã gửi thành công"
 //   và DÙNG LẠI `opts.idMes` cũ ⇒ proc `MES_spr_MES2Sh6` xóa phiếu SH6 cùng `Soctcu` rồi tạo lại (không đẻ phiếu trùng).
 // `opts.ngayCt` / `opts.ngayCa`: Ngày CT + mã ngày ca của lần gửi trước. Gửi lại mà dòng cũ không có Ngày CT ⇒ ngày của lượt kiểm.
-// ⚠ Lượt KCS kiểm một phần đã tách TEM 17 (mig 122) vẫn gửi phiếu này bằng TEM 15 lúc xác nhận (người dùng chốt
-//   08/11/2026); tem 17 báo ERP RIÊNG bằng proc sửa đạt SK6 ở lần ĐẦU in tem 17 (`suaDatErp.guiTem17Kcs`).
+// ⚠⚠ LƯỢT KCS ĐÃ TÁCH TEM 17 (kiểm một phần / chốt sau giao trước — mig 122) ⇒ Sh6 gửi bằng MÃ TEM 17 của lượt
+//   (người dùng chốt 19/11/2026: "tem 15 kiểm trước bị tách thì lấy tem 17 gửi với câu Sh6, không gọi SK6 nữa, tem 15 bị
+//   tách rồi nên không cần gửi nữa"). Thân phiếu vẫn dựng từ TEM 15 (ngày ca, giờ SX, chuyền, tổ, đợt, phân công SF0 —
+//   y như trước), CHỈ `BarcodeIn` đổi sang tem 17; SL = đạt / hư / thiếu của lượt. Mỗi lượt tách = 1 tem 17 = 1 phiếu Sh6.
+//   Tem 17 đã hủy (OQC trả về) ⇒ lùi về tem 15. Bản trước (08/11): Sh6 bằng tem 15 + SK6 khi in tem 17 lần đầu — ĐÃ BỎ.
 async function guiKiemPham(kcsId, temId, { dat = 0, hu = 0, thieu = 0 } = {}, actorId = null, opts = {}) {
   if (!kcsId || !temId) return { ok: false, bo_qua: true, ly_do: 'THIEU_DU_LIEU' };
   if (!opts.guiLai && await daGuiThanhCong(kcsId)) return { ok: true, bo_qua: true, ly_do: 'DA_GUI' };
@@ -68,6 +71,8 @@ async function guiKiemPham(kcsId, temId, { dat = 0, hu = 0, thieu = 0 } = {}, ac
   if (!r) return { ok: false, bo_qua: true, ly_do: 'KHONG_DU_LIEU' };
   // Chờ có mã tem ERP cấp mới gửi (30/09/2026 — ca thật 26/09 gửi `TEM00001`).
   if (!laMaTemErp(r.ma_tem)) return ghiChuaCoMaErp(MA_API, { idBanGhi: kcsId, maTem: r.ma_tem, actorId });
+  const t17 = await qaRepo().temConSongCuaLuotKcs(kcsId);
+  if (t17 && !laMaTemErp(t17.ma_tem)) return ghiChuaCoMaErp(MA_API, { idBanGhi: kcsId, maTem: t17.ma_tem, actorId });
 
   // ⚠ Cấp IDMES SAU mọi guard — mỗi lần cấp là tiêu 1 số của dãy dùng chung.
   // ⚠⚠ 11/10/2026 — tem ĐÃ có lượt KCS bị hủy (OQC trả về KCS / Hủy xác nhận KCS) từng gửi ERP ⇒ lượt kiểm LẠI
@@ -83,6 +88,7 @@ async function guiKiemPham(kcsId, temId, { dat = 0, hu = 0, thieu = 0 } = {}, ac
   if (idMes == null) return { ok: false, error: 'Không cấp được IDMES' };
 
   const payload = taoPayload(r, { idMes, soLuong: Number(dat) || 0, soLuongHuy: Number(hu) || 0, soLuongThieu: Number(thieu) || 0 });
+  if (t17) payload.BarcodeIn = t17.ma_tem;
   // ⚠⚠ NGƯỜI KIỂM ⇒ `dsthoin` (09/11/2026, người dùng: "gửi dữ liệu Sh6 phải là của tên người này"): người nhập ở chỗ
   //   xác nhận KCS / modal In tem (`NGUOI_KIEM_KCS` của lượt) thay cho danh sách thợ in của phiếu sản xuất. Chọn tài khoản
   //   ⇒ gửi thẳng mã số nhân viên; tên gõ tay ⇒ `chuanHoa` tra họ tên → mã như thợ in (không ra ⇒ tên gọi).

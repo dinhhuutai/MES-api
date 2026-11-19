@@ -393,7 +393,7 @@ async function recordKcs(temId, body, actorId) {
   //   tem gốc đang có phần đã tách tem 17 còn hiệu lực (`sl_kcs_tach` > 0 — hủy xác nhận / OQC trả về tem 17 đều trừ lại)
   //   ⇒ mọi lượt KCS sau đó (kể cả lượt kiểm hết phần còn lại) tách phần đạt sang 1 tem 17 MỚI. Trước đây lượt chốt đi bằng
   //   tem 15 ⇒ xưởng cầm 2 nhãn giao của cùng lô, 1 nhãn 17 + 1 nhãn 15. Tem chưa từng giao trước ⇒ vẫn tem 15 như cũ.
-  //   ERP y hệt lượt một phần: Sh6 gửi bằng TEM 15 lúc xác nhận, SK6 gửi khi in tem 17 lần đầu (`guiSk6KhiInTem17`).
+  //   ERP y hệt lượt một phần: Sh6 gửi bằng MÃ TEM 17 lúc xác nhận, KHÔNG gửi tem 15, KHÔNG SK6 (19/11/2026, `kiemPhamErp`).
   //   Xin mã TRƯỚC transaction (luật `layBarcodeTem*`, như `recordSua`). `null` = API xin mã 17 đang TẮT hoặc chưa chạy
   //   mig ⇒ giữ hành vi cũ: phần đạt đi bằng tem 15. ERP lỗi ⇒ `layBarcodeTem17` ném lỗi, KHÔNG lưu lượt kiểm — người dùng
   //   bấm lại (nếu lưu xong đi bằng tem 15 thì nhãn giấy sai mà không ai biết).
@@ -429,8 +429,7 @@ async function recordKcs(temId, body, actorId) {
   sockets.emit('quality:updated', { temId, stage: 'KCS' });
   sockets.emit('dashboard:refresh', {});
   // Đẩy kết quả kiểm sang ERP (/gui-erp-kiem-pham) — NGẦM, không bao giờ chặn việc xác nhận KCS.
-  // Lượt đã tách tem 17 (kiểm một phần / chốt sau giao trước) vẫn gửi bằng TEM 15 ở đây (08/11/2026); tem 17 gửi SK6 lúc in lần đầu
-  //   (`luuNguoiKiemKcs` → `guiSk6KhiInTem17`).
+  // Lượt đã tách tem 17 (kiểm một phần / chốt sau giao trước) ⇒ `kiemPhamErp` gửi Sh6 bằng MÃ TEM 17 (19/11/2026), không SK6.
   if (kcsId) kiemPhamErp.guiNgam(kcsId, temId, { dat, hu, thieu }, actorId);
   const conLai = conSauChenh - tong; // = 0 khi cân đối; > 0 ở lượt "kiểm một phần" (27/10/2026)
   return {
@@ -1137,26 +1136,12 @@ async function luuNguoiKiemKcs(items, actorId) {
   const dong = [...theoLuot.values()];
   const kq = await repo.luuNguoiKiemKcs(dong, actorId);
   if (kq.ton_tai !== dong.length) throw new AppError('Có lượt KCS không còn tồn tại — tải lại danh sách', { status: 404, errorCode: 'NOT_FOUND' });
-  const guiErp = await guiSk6KhiInTem17(dong.map((x) => x.kcsId), actorId);
+  // ⚠ 19/11/2026: IN TEM 17 KHÔNG còn gửi SK6 — tem 17 của lượt KCS đã báo ERP bằng chính phiếu Sh6 lúc xác nhận
+  //   (`kiemPhamErp` đổi `BarcodeIn` sang tem 17). Giữ khóa `gui_erp_tem_17` rỗng cho FE cũ.
   // 09/11/2026: Sh6 mang NGƯỜI KIỂM ⇒ đổi tên ở đây sau khi Sh6 đã gửi thì gửi lại phiếu cùng IDMES (ngầm). Chưa từng gửi
   //   thành công ⇒ thôi (lần gửi / gửi lại sau tự đọc tên mới).
   for (const kcsId of kq.doi || []) kiemPhamErp.guiLaiNguoiKiemNgam(kcsId, actorId);
-  return { so_dong: dong.length, da_ghi: kq.da_ghi, gui_erp_tem_17: guiErp, gui_lai_sh6: (kq.doi || []).length };
-}
-
-// IN TEM 17 LẦN ĐẦU ⇒ GỬI SK6 (sửa đạt) SANG ERP (08/11/2026, người dùng chốt: "kiểm 1 phần, xác nhận kiểm phẩm là tem 15
-//   thì gọi Sh6 … khi in tem 17 trong sidebar Đã hoàn thành của trang KCS thì gọi SK6 … khóa lại, in lại chỉ in tem").
-// Mỗi lần In tem ở sidebar đều qua `luuNguoiKiemKcs` ⇒ chặn ở đây: khóa lượt chưa từng gửi (`repo.khoaGuiErpKhiInTem17`)
-//   rồi gửi NGẦM (không chặn việc in; lỗi ⇒ dòng `ERP_GUI_SUA_DAT_LOI` ⇒ hàng đợi tự gửi lại / nút "Gửi lại ERP").
-//   Lượt không tách tem 17 / đã gửi rồi ⇒ không làm gì. Lỗi khóa ⇒ chỉ ghi log, vẫn cho in. Trả mã tem 17 vừa gửi (FE báo).
-async function guiSk6KhiInTem17(kcsIds, actorId) {
-  let ds = [];
-  try { ds = await repo.khoaGuiErpKhiInTem17(kcsIds, actorId); } catch (e) {
-    console.error(`[gui-sua-dat] ✗ Không khóa được lượt gửi ERP khi in tem 17: ${e.message}`);
-    return [];
-  }
-  for (const x of ds) suaDatErp.guiNgamTem17Kcs(x.kcsId, actorId);
-  return ds.map((x) => x.ma_tem_17);
+  return { so_dong: dong.length, da_ghi: kq.da_ghi, gui_erp_tem_17: [], gui_lai_sh6: (kq.doi || []).length };
 }
 
 // ----- QC IN-LINE (kiểm tại chuyền — phiếu đang chạy) -----
