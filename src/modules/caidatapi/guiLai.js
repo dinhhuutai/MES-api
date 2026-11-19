@@ -22,6 +22,7 @@ const { temCode } = require('../../utils/temPrefix');
 const { capIdMes } = require('../../utils/idMes');
 const { ghiInTem, taoPayload, laMaTemErp } = require('../../utils/erpGhiInTem');
 const { ngayCtDaGui } = require('../../utils/erpNgayGio');
+const { apPhanCongSf0 } = require('../../utils/phanCongSf0');
 
 // "Gửi lại" cũng phải chờ có mã tem ERP cấp (30/09/2026) — tem còn mang mã MES thì báo rõ, không gửi.
 const chanChuaCoMa = (maTem) => {
@@ -208,6 +209,10 @@ async function guiLai(ma, auditId, actorId, opts = {}) {
     soLuongHuy: coVaiTem ? vaiTem.huy : (soHoacNull(cu.Soluongloi) || 0),
     soLuongThieu: coVaiTem ? vaiTem.thieu : (soHoacNull(cu.SOLUONGTHIEU) || 0),
   });
+  // ⚠ 19/11/2026: SF0 gửi lại (kể cả từ Sửa tem) GIỮ ca trưởng / chuyền trưởng / thợ in của lần gửi LÚC IN — thân dựng từ
+  //   phân công HIỆN TẠI của phiếu mang người ca sau (ca thật 152608084040: in 012401261, gửi lại thành 012201060). Tem có
+  //   phân công riêng ⇒ giữ thân dựng từ phân công riêng (`utils/phanCongSf0`).
+  if (ma === 'ERP_GHI_IN_TEM') await apPhanCongSf0(payload, id, { giuKhiRieng: true });
   const kq = await ghiInTem(payload, { maApi: ma });
   if (kq.bo_qua) loiNeu({ bo_qua: true, ly_do: 'API_DANG_TAT' }, ten);
   await prodRepo.logGhiInTem(id, kq.ok, kq.body, kq.error, actorId, kq.data, ma, kq);

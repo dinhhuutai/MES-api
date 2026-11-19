@@ -6,6 +6,9 @@
 // Mỗi lượt KCS CÒN HIỆU LỰC đã gửi Sh6 THÀNH CÔNG của tem ⇒ 1 `EXEC dbo.MES_spr_MES2Sh6` với ĐÚNG thân đã gửi lần cuối
 //   (giữ IDMES · Ngày CT · ngày ca · giờ · SL) CHỈ thay 3 trường `@pCatruong` / `@pChuyentruong` / `@pdsthoin` bằng của lần
 //   gửi SF0 mới nhất của tem (`utils/phanCongSf0`). Proc xóa phiếu cùng Soctcu(=IDMES)+SH6 rồi tạo lại ⇒ ghi đè, không trùng.
+// ⚠ 19/11/2026 chiều: "SF0 của tem" = lần gửi LÚC IN (`phanCongSf0` — lần thành công đầu tiên; "Gửi lại" / Sửa tem đã ghi
+//   đè SF0 bên ERP bằng người ca sau). File sinh thêm phần GHI LẠI SF0 (`MES_spr_MES2SF0`) cho tem mà SF0 mới nhất lệch người
+//   lúc in: ĐÚNG thân SF0 thành công mới nhất (giữ IDMES · SL · bổ sung · kiếng · BTP), chỉ thay 3 trường người. Chạy trước Sh6.
 // ⚠ CHỈ ĐỌC DB MES. Ghi thẳng bên ERP ⇒ không có dòng Lịch sử API ở MES.
 //
 // CÁCH CHẠY (thư mục backend):  node src/scripts/taoSqlServerSh6PhanCong.js 608084777 608084786 …
@@ -17,7 +20,7 @@ const fs = require('fs');
 const path = require('path');
 const { query, pool } = require('../config/db');
 const { phanCongSf0 } = require('../utils/phanCongSf0');
-const { tChuoi, tSo, tNgay, khoiExec, cuoiFile } = require('./taoSqlServerGuiLai');
+const { tChuoi, tSo, tNgay, thamSoSf0, khoiExec, cuoiFile } = require('./taoSqlServerGuiLai');
 
 const RA = path.resolve(__dirname, '../../../database/scripts/sqlserver');
 const PROC = 'MES_spr_MES2Sh6';
@@ -71,6 +74,26 @@ async function main() {
   tems.filter((t) => !coLuot.has(t.id)).forEach((t) => boQua.push(`${t.ma_tem} — không có lượt KCS đã gửi Sh6 thành công`));
 
   const pc = await phanCongSf0(tems.map((t) => t.id));
+
+  // SF0: thân thành công MỚI NHẤT; người lệch SF0 lúc in ⇒ ghi lại (SF0 trống người gửi `-`, như router).
+  const { rows: sf0Moi } = await query(`SELECT t.id AS tem_id, x.gui FROM tem t
+      CROSS JOIN LATERAL (SELECT a.gia_tri_moi->'gui' AS gui FROM audit_log a WHERE a.ten_bang = 'tem'
+         AND a.id_ban_ghi = t.id::text AND a.hanh_dong = 'ERP_GHI_IN_TEM' ORDER BY a.thoi_gian DESC LIMIT 1) x
+     WHERE t.id = ANY($1::uuid[])`.replace(/\s+/g, ' '), [tems.map((t) => t.id)]);
+  const khoiSf0 = [];
+  for (const s of sf0Moi) {
+    const t = tems.find((x) => x.id === s.tem_id);
+    const p = pc.get(String(s.tem_id));
+    const cu = s.gui || {};
+    if (!p || cu.IDMES == null) continue;
+    const moi = { Catruong: p.Catruong || '-', Chuyentruong: p.Chuyentruong || '-', dsthoin: p.dsthoin || '-' };
+    const keys = ['Catruong', 'Chuyentruong', 'dsthoin'];
+    if (keys.every((k) => String(cu[k] || '-') === moi[k])) continue; // SF0 bên ERP đã đúng người lúc in
+    const b = { ...cu, ...moi };
+    khoiSf0.push(`-- SF0 ${t.ma_tem} · IDMES ${cu.IDMES} · ${keys.map((k) => `${k} ${cu[k] || '∅'} → ${moi[k]}`).join(' · ')}\n`
+      + khoiExec('MES_spr_MES2SF0', `SF0 ${t.ma_tem} (IDMES ${cu.IDMES})`, thamSoSf0(b)));
+  }
+
   const khoi = [];
   for (const l of luot) {
     const t = tems.find((x) => x.id === l.tem_id);
@@ -86,16 +109,19 @@ async function main() {
   }
 
   const bq = boQua.length ? boQua.map((x) => `--   · ${x}`).join('\n') : '--   (không có)';
+  const tong = khoiSf0.length + khoi.length;
   const noiDung = `-- =============================================================================
--- GHI LẠI SH6 (dbo.${PROC}) — CA TRƯỞNG / CHUYỀN TRƯỞNG / THỢ IN THEO PHIẾU IN TEM SF0
+-- GHI LẠI SF0 + SH6 — CA TRƯỞNG / CHUYỀN TRƯỞNG / THỢ IN THEO PHIẾU IN TEM SF0 LÚC IN
 -- Sinh lúc ${new Date().toISOString()} từ DB MES bằng backend/src/scripts/taoSqlServerSh6PhanCong.js — CHẠY TRÊN DB ERP.
 -- -----------------------------------------------------------------------------
--- ${khoi.length} phiếu Sh6 của ${tems.length} tem. Mỗi dòng = ĐÚNG thân Sh6 đã gửi thành công lần cuối (giữ IDMES, Ngày CT,
---   ngày ca, giờ, SL đạt / hư / thiếu), CHỈ thay @pCatruong · @pChuyentruong · @pdsthoin bằng của SF0 mới nhất của tem.
--- Proc XÓA phiếu cùng Soctcu(=IDMES)+SH6 rồi tạo lại ⇒ ghi đè, không đẻ phiếu mới. Chạy lại lần 2 vô hại.
+-- Phần 1: ${khoiSf0.length} phiếu SF0 (dbo.MES_spr_MES2SF0) mà lần gửi lại đã ghi đè người ca sau — ĐÚNG thân SF0 mới nhất
+--   (giữ IDMES, SL, SL bổ sung, kiếng, BTP), CHỈ thay 3 trường người bằng người LÚC IN.
+-- Phần 2: ${khoi.length} phiếu Sh6 (dbo.${PROC}) của ${tems.length} tem. Mỗi dòng = ĐÚNG thân Sh6 đã gửi thành công lần cuối
+--   (giữ IDMES, Ngày CT, ngày ca, giờ, SL đạt / hư / thiếu), CHỈ thay @pCatruong · @pChuyentruong · @pdsthoin bằng của SF0 lúc in.
+-- Proc XÓA phiếu cùng Soctcu(=IDMES) rồi tạo lại ⇒ ghi đè, không đẻ phiếu mới. Chạy lại lần 2 vô hại.
 --
 -- CÁCH CHẠY (SSMS, đúng DB ERP):
---   1. Để nguyên @chay_that = 0 → F5: chỉ ĐẾM (bảng cuối: se_chay = ${khoi.length}); proc thiếu tham số thì tab Messages báo.
+--   1. Để nguyên @chay_that = 0 → F5: chỉ ĐẾM (bảng cuối: se_chay = ${tong}); proc Sh6 thiếu tham số thì tab Messages báo.
 --   2. Đổi @chay_that = 1 → F5: chạy thật. Bảng cuối: ok · canh_bao · loi. Gửi tab Messages cho MES nếu loi > 0.
 --
 -- BỎ QUA:
@@ -105,12 +131,17 @@ SET NOCOUNT ON;
 DECLARE @chay_that bit = 0;   -- ← ĐỔI THÀNH 1 ĐỂ CHẠY THẬT
 DECLARE @rv int, @ok int = 0, @canh_bao int = 0, @loi int = 0, @dem int = 0;
 ${kiemThamSo()}
+-- ─── PHẦN 1 · SF0 ─────────────────────────────────────────────────────────────
+${khoiSf0.join('\n') || '-- (SF0 bên ERP đã đúng người lúc in — không cần ghi lại)'}
+-- ─── PHẦN 2 · SH6 ─────────────────────────────────────────────────────────────
 ${khoi.join('\n')}
-${cuoiFile(khoi.length)}`;
+${cuoiFile(tong)}`;
   fs.mkdirSync(RA, { recursive: true });
-  const f = path.join(RA, `sh6_phan_cong_sf0_${new Date(Date.now() + 7 * 3600e3).toISOString().slice(5, 10).replace('-', '')}.sql`);
+  // Tên có giờ (giờ VN) — chạy nhiều lượt trong ngày không ghi đè file người dùng có thể đã chạy.
+  const vn = new Date(Date.now() + 7 * 3600e3).toISOString();
+  const f = path.join(RA, `sf0_sh6_phan_cong_${vn.slice(5, 10).replace('-', '')}_${vn.slice(11, 16).replace(':', '')}.sql`);
   fs.writeFileSync(f, `﻿${noiDung}`, 'utf8'); // BOM ⇒ SSMS đọc đúng tiếng Việt
-  console.log(`[sh6] ✓ ${khoi.length} EXEC · bỏ qua ${boQua.length} ⇒ ${f}`);
+  console.log(`[sh6] ✓ SF0 ${khoiSf0.length} + Sh6 ${khoi.length} EXEC · bỏ qua ${boQua.length} ⇒ ${f}`);
   boQua.forEach((x) => console.log(`   bỏ qua: ${x}`));
 }
 

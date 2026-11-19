@@ -45,6 +45,7 @@ const NGOAI_LE = [
   { method: 'POST', re: /^\/api\/ai\/tin-nhan\/[0-9a-f-]{36}\/danh-gia\/?$/i },
   { method: 'DELETE', re: /^\/api\/ai\/hoi-thoai\/[0-9a-f-]{36}\/?$/i },
   { method: 'PUT', re: /^\/api\/ai\/mau-robot\/?$/ },
+  { method: 'PUT', re: /^\/api\/ai\/che-do-hien\/?$/ },
 ];
 
 // ⚠ CỐ Ý KHÔNG cho vào ngoại lệ (người dùng đã chốt 09/09/2026):

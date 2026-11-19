@@ -10,6 +10,7 @@
 //   DELETE /hoi-thoai/:id            xóa mềm
 //   POST /tin-nhan/:id/danh-gia      { danh_gia: 1 | -1 | 0, ghi_chu? }
 //   PUT  /mau-robot                  { mau_robot: VANG_NANG | VANG_KEM } — chọn ở Thông tin cá nhân (cột nguoi_dung.ai_mau_robot)
+//   PUT  /che-do-hien                { hien: MOI_TRANG | TRANG_CHU | AN } — chọn ở Thông tin cá nhân (audit_log 'ai_hien', không cột)
 // ⚠ POST/DELETE ở đây chỉ ghi nhật ký của CHÍNH người hỏi ⇒ đã thêm ngoại lệ ở `utils/chiXem.js`.
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -39,5 +40,6 @@ router.get('/hoi-thoai/:id', kiemId, asyncHandler(async (req, res) => ok(res, aw
 router.delete('/hoi-thoai/:id', kiemId, asyncHandler(async (req, res) => ok(res, await service.xoaHoiThoai(req.params.id, req.user.id), 'Đã xóa cuộc trò chuyện')));
 router.post('/tin-nhan/:id/danh-gia', kiemId, asyncHandler(async (req, res) => ok(res, await service.danhGia(req.params.id, req.user.id, req.body || {}))));
 router.put('/mau-robot', asyncHandler(async (req, res) => ok(res, await service.datMauRobot(req.user.id, req.body || {}), 'Đã đổi hình robot')));
+router.put('/che-do-hien', asyncHandler(async (req, res) => ok(res, await service.datCheDoHien(req.user.id, req.body || {}), 'Đã đổi chỗ hiện robot')));
 
 module.exports = router;

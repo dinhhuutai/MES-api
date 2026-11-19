@@ -106,8 +106,25 @@ async function datMauRobot(userId, mau) {
   await query('UPDATE nguoi_dung SET ai_mau_robot = $2, updated_date = now(), updated_by = $1 WHERE id = $1', [userId, mau]);
 }
 
+// Chỗ hiện robot của từng người (MOI_TRANG · TRANG_CHU · AN) — KHÔNG có cột: lưu ở audit_log
+// `ten_bang='ai_hien'`, `id_ban_ghi` = id người dùng, dòng MỚI NHẤT thắng (index idx_audit_log_bang) ⇒ không cần migration.
+async function layCheDoHien(userId) {
+  const { rows } = await query(
+    `SELECT gia_tri_moi->>'hien' AS hien FROM audit_log
+      WHERE ten_bang = 'ai_hien' AND id_ban_ghi = $1 AND hanh_dong = 'DOI_AI_HIEN'
+      ORDER BY thoi_gian DESC, created_date DESC LIMIT 1`, [String(userId)]);
+  return rows[0] ? rows[0].hien : null;
+}
+
+async function datCheDoHien(userId, hien, cu) {
+  await query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_cu, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('ai_hien', $1, 'DOI_AI_HIEN', $2::jsonb, $3::jsonb, $4, clock_timestamp(), $4)`,
+    [String(userId), cu ? JSON.stringify({ hien: cu }) : null, JSON.stringify({ hien }), userId]);
+}
+
 module.exports = {
-  layMauRobot, datMauRobot,
+  layMauRobot, datMauRobot, layCheDoHien, datCheDoHien,
   coBangAi, demCauHoiHomNay, layHoiThoai, taoHoiThoai, themTinNhan, capNhatTongHoiThoai,
   lichSuGanNhat, dsHoiThoai, dsTinNhan, xoaMemHoiThoai, danhGiaTinNhan,
 };

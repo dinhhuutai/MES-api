@@ -17,6 +17,10 @@ const { moMcp } = require('./mcp/mcpNoiBo');
 // Mẫu robot mỗi người tự chọn ở Thông tin cá nhân (gương FE `features/ai-agent/robot.js MAU_ROBOT`).
 const MAU_ROBOT = ['VANG_NANG', 'VANG_KEM'];
 const MAU_MAC_DINH = 'VANG_NANG';
+// Chỗ hiện robot, mỗi người tự chọn ở Thông tin cá nhân (gương FE `features/ai-agent/robot.js CHE_DO_HIEN`):
+// MOI_TRANG (mặc định) · TRANG_CHU (chỉ trang chủ) · AN (ẩn hẳn — bật lại ở Thông tin cá nhân).
+const CHE_DO_HIEN = ['MOI_TRANG', 'TRANG_CHU', 'AN'];
+const HIEN_MAC_DINH = 'MOI_TRANG';
 
 // Chặn tải: tối đa 1 câu đang chạy / người, 4 câu / toàn máy chủ (máy chủ chỉ chịu ~4 truy vấn nặng song song).
 const DANG_CHAY = new Set();
@@ -33,12 +37,13 @@ async function trangThai(user) {
   const cfg = cauHinhAi();
   const q = await quyenAiCua(user.id);
   const coBang = await repo.coBangAi();
-  const [daHoi, mau] = q.dung && coBang
-    ? await Promise.all([repo.demCauHoiHomNay(user.id), repo.layMauRobot(user.id)])
-    : [0, null];
+  const [daHoi, mau, hien] = q.dung && coBang
+    ? await Promise.all([repo.demCauHoiHomNay(user.id), repo.layMauRobot(user.id), repo.layCheDoHien(user.id)])
+    : [0, null, null];
   return {
     co_quyen: q.dung,
     mau_robot: MAU_ROBOT.includes(mau) ? mau : MAU_MAC_DINH,
+    hien: CHE_DO_HIEN.includes(hien) ? hien : HIEN_MAC_DINH,
     phan_tich: q.phanTich,
     san_sang: q.dung && !lyDoTat(cfg, coBang),
     ly_do_tat: q.dung ? lyDoTat(cfg, coBang) : null,
@@ -95,9 +100,10 @@ async function hoi(req, body = {}) {
     const [lichSu, hoTen] = await Promise.all([repo.lichSuGanNhat(hoiThoai.id, 12), hoTenCua(user.id)]);
     await repo.themTinNhan({ hoiThoaiId: hoiThoai.id, vaiTro: 'NGUOI_DUNG', noiDung: cauHoi, userId: user.id });
 
-    mcp = await moMcp({ userId: user.id, authorization: req.headers.authorization, phanTich: req.quyenAi.phanTich });
     let kq;
     try {
+      // Mở MCP NẰM TRONG try ⇒ thiếu package / lỗi mở công cụ cũng ghi dòng lỗi (trước đây câu hỏi mất trả lời không vết).
+      mcp = await moMcp({ userId: user.id, authorization: req.headers.authorization, phanTich: req.quyenAi.phanTich });
       kq = await gemini.traLoi({
         cfg,
         heThong: heThong({ hoTen, vaiTro: user.roles, phanTich: req.quyenAi.phanTich, trangHienTai: String(body.trang_hien_tai || '').slice(0, 120) }),
@@ -114,7 +120,7 @@ async function hoi(req, body = {}) {
       throw e;
     }
     const tin = await repo.themTinNhan({
-      hoiThoaiId: hoiThoai.id, vaiTro: 'AI', noiDung: kq.text, congCu: kq.buoc, model: cfg.model,
+      hoiThoaiId: hoiThoai.id, vaiTro: 'AI', noiDung: kq.text, congCu: kq.buoc, model: kq.model || cfg.model,
       tokenVao: kq.tokenVao, tokenRa: kq.tokenRa, thoiGianMs: Date.now() - t0, userId: user.id,
     });
     await repo.capNhatTongHoiThoai(hoiThoai.id, { cauHoi: 1, tokenVao: kq.tokenVao, tokenRa: kq.tokenRa }, user.id);
@@ -165,4 +171,14 @@ async function datMauRobot(userId, body = {}) {
   return { mau_robot: mau };
 }
 
-module.exports = { trangThai, hoi, dsHoiThoai, chiTietHoiThoai, xoaHoiThoai, danhGia, datMauRobot, MAU_ROBOT };
+async function datCheDoHien(userId, body = {}) {
+  const hien = String(body.hien || '').trim().toUpperCase();
+  if (!CHE_DO_HIEN.includes(hien)) throw new AppError('Chế độ hiện robot không hợp lệ', { status: 422, errorCode: 'VALIDATION', details: CHE_DO_HIEN });
+  const cu = await repo.layCheDoHien(userId);
+  if ((cu || HIEN_MAC_DINH) !== hien) await repo.datCheDoHien(userId, hien, cu);
+  return { hien };
+}
+
+module.exports = {
+  trangThai, hoi, dsHoiThoai, chiTietHoiThoai, xoaHoiThoai, danhGia, datMauRobot, datCheDoHien, MAU_ROBOT, CHE_DO_HIEN,
+};
