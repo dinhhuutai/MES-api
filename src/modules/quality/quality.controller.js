@@ -102,15 +102,16 @@ const kcsHistory = asyncHandler(async (req, res) => ok(res, await service.kcsHis
 const suaHistory = asyncHandler(async (req, res) => ok(res, await service.suaHistory(thamSoLichSu(req.query))));
 const oqcHistory = asyncHandler(async (req, res) => ok(res, await service.oqcHistory(thamSoLichSu(req.query))));
 
-const kcsDone = asyncHandler(async (req, res) => ok(res, await service.kcsDone(req.query.date || today())));
-const suaDone = asyncHandler(async (req, res) => ok(res, await service.suaDone(req.query.date || today())));
+// Sidebar Đã hoàn thành (20/11/2026): cùng luật Lịch sử — không ngày + `q` ⇒ tìm mọi ngày theo mã tem / code phần.
+const kcsDone = asyncHandler(async (req, res) => ok(res, await service.kcsDone(thamSoLichSu(req.query))));
+const suaDone = asyncHandler(async (req, res) => ok(res, await service.suaDone(thamSoLichSu(req.query))));
 const luuNguoiSua = asyncHandler(async (req, res) =>
   ok(res, await service.luuNguoiSua(req.body?.items, req.user.id), 'Đã lưu người sửa'));
 const luuNguoiKiemKcs = asyncHandler(async (req, res) =>
   ok(res, await service.luuNguoiKiemKcs(req.body?.items, req.user.id), 'Đã lưu người kiểm'));
 const guiLaiErpSua = asyncHandler(async (req, res) =>
   ok(res, await service.guiLaiErpSua(req.params.suaId, req.user.id), 'Đã gửi sửa đạt sang ERP'));
-const oqcDone = asyncHandler(async (req, res) => ok(res, await service.oqcDone(req.query.date || today())));
+const oqcDone = asyncHandler(async (req, res) => ok(res, await service.oqcDone(thamSoLichSu(req.query))));
 // Danh sách finish (03/10/2026) — `?tuNgay=&denNgay=` (ngày OQC, giờ VN, tối đa 62 ngày) `&heThong=1` gồm cả hàng
 // script hệ thống tự chạy đến giao. Luật: `utils/danhSachFinish.js`.
 const { khoangNgayTuQuery } = require('../../utils/khoangNgay');

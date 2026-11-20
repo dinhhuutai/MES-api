@@ -1136,7 +1136,10 @@ async function sqlMa17CuaLuotKcs(a) {
 }
 
 // table ∈ 'kcs'|'sua'|'oqc' (nội bộ, không nhận từ user).
-async function temDoneByDate(table, date) {
+// `lsIn` = ngày (chuỗi) HOẶC { date, tim } (`utils/lichSuTim`, 20/11/2026): không ngày ⇒ tìm MỌI NGÀY theo mã tem (khớp cả
+//   tem gốc ↔ tem 17 con) / code phần, tối đa `TOI_DA_TIM` lượt mới nhất.
+async function temDoneByDate(table, lsIn) {
+  const ls = LS.chuan(lsIn);
   const qtyCol = table === 'sua' ? 'so_luong_sua_dat' : 'so_luong_dat';
   const kiemCol = table === 'sua' ? 'so_luong_sua' : 'so_luong_kiem'; // SL đã kiểm (cho in tem KCS)
   // OQC: thêm nguồn (KCS/Sửa) + SL chuyền qua giao từ nguồn đó (sl_qua_giao). Sửa: thêm SL sửa hủy.
@@ -1186,10 +1189,10 @@ async function temDoneByDate(table, date) {
     ${oqcThem.join}
     ${joinChuyen}
     ${kcsJoin}
-    WHERE (x.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date
+    WHERE ${LS.ngayHoacTim(ls, 'x.created_date', '$1', LS.temKhop('t', '$1'))}
       AND ${notCancelledQc('x', table)}
-    ORDER BY x.created_date DESC`;
-  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [date]);
+    ORDER BY x.created_date DESC${LS.gioiHan(ls)}`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [LS.giaTri(ls)]);
   return rows;
 }
 

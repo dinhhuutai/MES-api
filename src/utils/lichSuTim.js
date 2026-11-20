@@ -12,6 +12,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 const { mauTim } = require('./timKiem');
 const { ngayHomNayVN } = require('./khoangNgay');
+const { timTem } = require('./temPrefix');
 
 const TOI_DA_TIM = 500;
 const TU_KHOA_TOI_THIEU = 3;
@@ -22,7 +23,8 @@ function thamSoLichSu(qs = {}) {
   const date = String(qs.date || '').trim();
   if (date) return { date, tim: null };
   const q = String(qs.q || '').trim();
-  if (q.length >= TU_KHOA_TOI_THIEU) return { date: null, tim: mauTim(q) };
+  // `timTem` (20/11/2026): mã tem ERP 12 số ⇒ bỏ 2 số đầu ⇒ gõ nhãn 16 / tem 15 / tem 17 đều khớp phần đuôi.
+  if (q.length >= TU_KHOA_TOI_THIEU) return { date: null, tim: mauTim(timTem(q)) };
   return { date: ngayHomNayVN(), tim: null };
 }
 
@@ -38,8 +40,11 @@ const phanInKhop = (pinIdCol, p) =>
 const lenhKhop = (lenhCol, p) =>
   `${lenhCol} IN (SELECT lk.lenh_san_xuat_id FROM lenh_sx_dot_vai lk JOIN dot_vai_ve dk ON dk.id = lk.dot_vai_ve_id WHERE ${phanInKhop('dk.phan_in_id', p)})`;
 // Tem khớp: chính mã tem, hoặc phần in của lệnh (qua phiếu), hoặc đợt vải gắn thẳng tem (tem gia công 13).
+// ⚠ 20/11/2026 (người dùng: "tem 15 giao trước + tem 17 của nó tìm khó — nhập tem nào cũng phải ra"): khớp CẢ tem gốc ↔ tem
+//   con — lượt KCS / Sửa ghi trên TEM 15 nhưng sidebar hiện mã TEM 17 đã tách; OQC / giao ghi trên tem 17. Gõ tem 17 ⇒ ra lượt
+//   của tem gốc của nó; gõ tem 15 ⇒ ra cả lượt của các tem 17 con.
 const temKhop = (t, p) =>
-  `(${t}.ma_tem ~* ${p} OR ${t}.phieu_san_xuat_id IN (SELECT pp.id FROM phieu_san_xuat pp WHERE ${lenhKhop('pp.lenh_san_xuat_id', p)}) OR ${t}.dot_vai_ve_id IN (SELECT dt.id FROM dot_vai_ve dt WHERE ${phanInKhop('dt.phan_in_id', p)}))`;
+  `(${t}.ma_tem ~* ${p} OR ${t}.id IN (SELECT tcn.tem_goc_id FROM tem tcn WHERE tcn.tem_goc_id IS NOT NULL AND tcn.ma_tem ~* ${p}) OR ${t}.tem_goc_id IN (SELECT tgc.id FROM tem tgc WHERE tgc.ma_tem ~* ${p}) OR ${t}.phieu_san_xuat_id IN (SELECT pp.id FROM phieu_san_xuat pp WHERE ${lenhKhop('pp.lenh_san_xuat_id', p)}) OR ${t}.dot_vai_ve_id IN (SELECT dt.id FROM dot_vai_ve dt WHERE ${phanInKhop('dt.phan_in_id', p)}))`;
 
 // Điều kiện thay cho "(cột thời gian giờ VN)::date = $p::date".
 const ngayHoacTim = (ls, cotTg, p, khop) => (ls.date ? `(${cotTg} ${VN})::date = ${p}::date` : `(${khop})`);

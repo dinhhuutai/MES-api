@@ -54,7 +54,8 @@ async function listTheoNgay({ ngay = '', search = '', tinhTrang = '', page = 1, 
   const dkPain = await dkTrang('SX_PHAN_LOAI_LOI', 'phieu', 't.phieu_san_xuat_id');
   const params = []; const conds = [dkPain, 'k.tg_kcs IS NOT NULL', 't.tem_goc_id IS NULL',
     `((t.sl_kcs_sua + t.sl_kcs_huy) > 0 OR pl.id IS NOT NULL)`];
-  if (ngay) {
+  // Ô tìm là MÃ TEM (9–12 số — quét / gõ nhãn 15 · 16 · 17, 20/11/2026) ⇒ bỏ lọc ngày: tem nào cũng ra, không phải chọn đúng ngày KCS.
+  if (ngay && !/^\d{9,12}$/.test(String(search || '').trim())) {
     params.push(ngay);
     conds.push(`(k.tg_kcs AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $${params.length}::date`);
   }
@@ -64,7 +65,9 @@ async function listTheoNgay({ ngay = '', search = '', tinhTrang = '', page = 1, 
   if (search) {
     params.push(mauTim(timTem(search)));
     const i = params.length;
-    conds.push(`(t.ma_tem ~* $${i} OR ls.ma_lenh_san_xuat ~* $${i} OR info.ma_phan ~* $${i}
+    // + tem CON khớp (20/11/2026): gõ mã tem 17 (giao trước / sửa đạt) ⇒ ra tem gốc của nó.
+    conds.push(`(t.ma_tem ~* $${i} OR t.id IN (SELECT tcn.tem_goc_id FROM tem tcn WHERE tcn.tem_goc_id IS NOT NULL AND tcn.ma_tem ~* $${i})
+                 OR ls.ma_lenh_san_xuat ~* $${i} OR info.ma_phan ~* $${i}
                  OR info.ten_khach_hang ~* $${i} OR info.ma_don_hang ~* $${i} OR info.ma_hang ~* $${i})`);
   }
   const where = `WHERE ${conds.join(' AND ')}`;
