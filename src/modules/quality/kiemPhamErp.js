@@ -143,31 +143,42 @@ async function guiKiemPham(kcsId, temId, { dat = 0, hu = 0, thieu = 0 } = {}, ac
 // của lần gửi thành công trước đó. Chưa từng gửi thành công ⇒ thôi (nút "Gửi lại ERP" ở Cài đặt API đọc số
 // hiện tại của lượt nên vẫn ra số đúng). Không ném lỗi.
 function guiLaiSauDieuChinhNgam(k, temId, actorId) {
-  (async () => {
-    const cu = await qaRepo().lanGuiKcsGanNhat(k.id);
-    if (!cu) return;
-    await guiKiemPham(k.id, temId,
-      { dat: k.so_luong_dat, hu: k.so_luong_loi, thieu: Math.max(0, -(Number(k.so_luong_chenh_lech) || 0)) },
-      actorId, { guiLai: true, idMes: cu.idMes, ngayCt: ngayCtDaGui(cu.ngayCt), ngayCa: cu.ngayCa });
-  })().catch((e) => {
-    console.error(`[gui-kiem-pham] ✗ Gửi lại sau khi OQC trả về lỗi (lượt kiểm ${k.id}): ${e.message}`);
-  });
+  guiLaiTheoLuotNgam(k.id, actorId, 'OQC trả về');
 }
 
 // Đổi NGƯỜI KIỂM sau khi Sh6 đã gửi thành công (modal In tem ở sidebar Đã hoàn thành, 09/11/2026) ⇒ gửi lại phiếu cùng
 //   IDMES + Ngày CT / ngày ca lần trước với số hiện tại của lượt. Lượt đã hủy xác nhận / chưa từng gửi được ⇒ thôi. Không ném lỗi.
 function guiLaiNguoiKiemNgam(kcsId, actorId) {
-  (async () => {
+  guiLaiTheoLuotNgam(kcsId, actorId, 'đổi người kiểm');
+}
+
+// ĐƯỜNG CHUNG gửi lại Sh6 của 1 lượt KCS khi dữ liệu MES vừa đổi — đọc SỐ HIỆN TẠI của lượt (đã trừ OQC trả về), cùng IDMES +
+//   Ngày CT / ngày ca của lần gửi thành công trước. ⚠ 23/11/2026: chưa có lần thành công nào có thể là lượt gửi ĐẦU còn đang chạy
+//   (ERP chậm / deadlock, thử lại tới ~1,5 phút) và sẽ mang số CŨ ⇒ hẹn dò lại 30 s · 2′ · 5′ (gương `production.henGuiLaiSf0SauIn`).
+//   Chỉ có dòng lỗi ⇒ hàng đợi tự gửi lại lo (`caidatapi/guiLai` đọc số hiện tại của lượt). Thiếu `thieu` trên lượt ⇒ suy từ chênh lệch.
+const CHO_DO_MS = [30000, 120000, 300000];
+async function coDongLoi(kcsId) {
+  const { rows } = await query(
+    "SELECT 1 FROM audit_log WHERE ten_bang = 'kcs' AND id_ban_ghi = $1 AND hanh_dong = $2 LIMIT 1", [String(kcsId), `${MA_API}_LOI`]);
+  return rows.length > 0;
+}
+function guiLaiTheoLuotNgam(kcsId, actorId, viec, lan = -1) {
+  const chay = async () => {
     const cu = await qaRepo().lanGuiKcsGanNhat(kcsId);
-    if (!cu) return;
+    if (!cu) {
+      if (lan + 1 < CHO_DO_MS.length && !(await coDongLoi(kcsId))) guiLaiTheoLuotNgam(kcsId, actorId, viec, lan + 1);
+      return;
+    }
     const k = await qaRepo().getCancelKcsRow(kcsId);
     if (!k || k.da_huy) return;
     await guiKiemPham(k.id, k.tem_id,
       { dat: k.so_luong_dat, hu: k.so_luong_loi, thieu: Math.max(0, -(Number(k.so_luong_chenh_lech) || 0)) },
       actorId, { guiLai: true, idMes: cu.idMes, ngayCt: ngayCtDaGui(cu.ngayCt), ngayCa: cu.ngayCa });
-  })().catch((e) => {
-    console.error(`[gui-kiem-pham] ✗ Gửi lại sau khi đổi người kiểm lỗi (lượt kiểm ${kcsId}): ${e.message}`);
+  };
+  const boc = () => chay().catch((e) => {
+    console.error(`[gui-kiem-pham] ✗ Gửi lại sau khi ${viec} lỗi (lượt kiểm ${kcsId}): ${e.message}`);
   });
+  if (lan < 0) boc(); else setTimeout(boc, CHO_DO_MS[lan]);
 }
 
 function guiNgam(kcsId, temId, sl, actorId) {

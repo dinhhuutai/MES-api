@@ -51,7 +51,7 @@ function napKho() {
   return kho;
 }
 
-/** Tìm `k` đoạn liên quan nhất. `nguon`: HUONG_DAN | LUAT_NGHIEP_VU | DU_LIEU (tùy chọn). */
+/** Tìm `k` đoạn liên quan nhất. `nguon`: SO_TAY | HUONG_DAN | LUAT_NGHIEP_VU | DU_LIEU (tùy chọn). */
 function tim(tuKhoa, { k = 5, nguon = null } = {}) {
   const K = napKho();
   if (!K.N) return { loi: K.loi, ket_qua: [] };
@@ -71,7 +71,8 @@ function tim(tuKhoa, { k = 5, nguon = null } = {}) {
       const idf = Math.log(1 + (K.N - n + 0.5) / (n + 0.5));
       s += idf * ((f * (k1 + 1)) / (f + k1 * (1 - b + (b * len) / K.tb)));
     });
-    if (s > 0) diem.push([s, i]);
+    // Sổ tay trả lời (`docs/AI-SO-TAY-AGENT.md`) viết riêng cho Agent ⇒ ưu tiên hơn đoạn trích tài liệu dài (23/11/2026).
+    if (s > 0) diem.push([d.nguon === 'SO_TAY' ? s * 1.5 : s, i]);
   });
   diem.sort((a, c) => c[0] - a[0]);
   return {

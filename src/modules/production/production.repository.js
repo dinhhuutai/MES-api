@@ -1,7 +1,7 @@
 'use strict';
 
 const { query } = require('../../config/db');
-const { chuyenTemSql } = require('../../utils/temChuyen');
+const { chuyenTemSql, chotChuyenTemTx } = require('../../utils/temChuyen');
 const env = require('../../config/env');
 const { lenhPhanInMatch } = require('../../utils/search');
 // Hiển thị theo PHƯƠNG ÁN IN — cấu hình động từng trang (mig 067), mặc định BẬT HẾT = không lọc.
@@ -291,6 +291,7 @@ async function createTemGiaCongOqc(client, {
        VALUES ($1,$2,$3,'CHO_OQC',$4,$5,$6,$7) RETURNING id`,
       [phieuId, maTem, tong, soLuong, huy, -thieu, actorId]
     );
+  await chotChuyenTemTx(client, rows[0].id); // chuyền lúc nhận hàng gia công (23/11/2026)
   return rows[0].id;
 }
 
@@ -644,17 +645,21 @@ async function getPhanCongByPhieu(phieuId) {
   }
 }
 
+// `chuyen_id` / `ma_chuyen` / `ten_chuyen` (24/11/2026) = chuyền THỰC TẾ của chính phiếu — panel Sản xuất của phiếu đã
+//   Hoàn tất hiện đúng chuyền đã chạy (trước lùi về chuyền kế hoạch của lệnh vì `getLenhBasic` chỉ xét phiếu DANG_CHAY).
 async function getActivePhieu(lenhId) {
   const { rows } = await query(
-    `SELECT id, ma_phieu_san_xuat, trang_thai, so_luong_in, tg_bd, tg_kt
-     FROM phieu_san_xuat WHERE lenh_san_xuat_id = $1 ORDER BY created_date DESC LIMIT 1`,
+    `SELECT p.id, p.ma_phieu_san_xuat, p.trang_thai, p.so_luong_in, p.tg_bd, p.tg_kt,
+            p.chuyen_id, cs.ma_chuyen, cs.ten_chuyen
+       FROM phieu_san_xuat p LEFT JOIN chuyen_san_xuat cs ON cs.id = p.chuyen_id
+      WHERE p.lenh_san_xuat_id = $1 ORDER BY p.created_date DESC LIMIT 1`.replace(/\s+/g, ' '),
     [lenhId]
   );
   return rows[0] || null;
 }
 
 async function getPhieuById(phieuId) {
-  const { rows } = await query('SELECT id, lenh_san_xuat_id, trang_thai FROM phieu_san_xuat WHERE id=$1', [phieuId]);
+  const { rows } = await query('SELECT id, lenh_san_xuat_id, trang_thai, chuyen_id FROM phieu_san_xuat WHERE id=$1', [phieuId]);
   return rows[0] || null;
 }
 
@@ -1854,6 +1859,7 @@ async function createTem(client, { phieuId, maTem, soLuong, ngayCa, maNgayCa, gi
        VALUES ($1,$2,$3,'IN',$4,$5,$6,$7,$8,$9${themTham}) RETURNING id`,
       [...base, ngayCa || null, gioBd || null, gioKt || null, !!btpTruoc, !!btpCuoi, ...val]
     );
+    await chotChuyenTemTx(client, rows[0].id); // chuyền LÚC IN — đổi chuyền phiếu sau này không kéo tem (23/11/2026)
     return rows[0].id;
   }
   const { rows } = await client.query(
@@ -1861,6 +1867,7 @@ async function createTem(client, { phieuId, maTem, soLuong, ngayCa, maNgayCa, gi
      VALUES ($1,$2,$3,'IN',$4) RETURNING id`,
     base
   );
+  await chotChuyenTemTx(client, rows[0].id);
   return rows[0].id;
 }
 

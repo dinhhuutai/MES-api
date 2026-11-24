@@ -28,4 +28,17 @@ async function chuyenTemSql({ t = 't', ps = 'ps', ls = 'ls' } = {}) {
   return ds.length > 1 ? `COALESCE(${ds.join(', ')})` : ds[0];
 }
 
-module.exports = { coCotChuyenTem, chuyenTemSql };
+// ⚠⚠ CHỐT CHUYỀN LÚC IN (23/11/2026, người dùng chốt: "tem đã in gửi ERP, ngoài Sửa tem và Sửa & gửi lại tem in ở admin thì
+//   những cái khác không ảnh hưởng tem in — in tem 1 ở RB2, đổi chuyền RB3 in tem 2 thì tem 1 vẫn RB2"). Trước đây tem chỉ
+//   mang `chuyen_id` khi Sửa tem đổi chuyền, còn lại đọc chuyền HIỆN TẠI của phiếu ⇒ Đổi chuyền phiếu / gộp lệnh kéo mọi tem
+//   cũ sang chuyền mới (ca 152608085637: SF0 gửi RB2, MES hiện RB3; Sh6 / SK6 / QO6 / SF0 gửi lại cũng mang chuyền mới).
+//   Nay mọi tem in ra ghi luôn `tem.chuyen_id` = chuyền phiếu (lùi chuyền lệnh) ngay trong transaction in. Chỉ ghi khi đang NULL.
+async function chotChuyenTemTx(client, temId) {
+  if (!temId || !(await coCotChuyenTem())) return;
+  await client.query(
+    `UPDATE tem t SET chuyen_id = COALESCE(ps.chuyen_id, ls.chuyen_id)
+       FROM phieu_san_xuat ps JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+      WHERE t.id = $1 AND ps.id = t.phieu_san_xuat_id AND t.chuyen_id IS NULL`.replace(/\s+/g, ' '), [temId]);
+}
+
+module.exports = { coCotChuyenTem, chuyenTemSql, chotChuyenTemTx };

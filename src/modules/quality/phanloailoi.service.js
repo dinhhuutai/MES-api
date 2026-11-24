@@ -121,6 +121,19 @@ async function luu(temId, { dong = [], ghiChu = '' } = {}, actorId) {
 // Dựng payload rồi bắn sang ERP. Tách hàm riêng để `luu` không phình và để chỗ này chịu trách nhiệm
 // đọc thêm dữ liệu mô tả (mã tem / mã lỗi / tên biện pháp) mà bảng chi tiết chỉ lưu id.
 // ⚠ Bọc try/catch toàn bộ: kể cả câu đọc dữ liệu mô tả hỏng cũng KHÔNG được kéo theo lỗi cho `luu`.
+// IDMES của lần gửi phân loại lỗi gần nhất của tem (thành công hoặc lỗi) mà CHƯA bị báo hủy sang ERP; không có ⇒ null.
+async function idMesPhanLoaiCu(temId) {
+  const { query } = require('../../config/db');
+  const { rows } = await query(
+    `SELECT a.gia_tri_moi->>'id_mes' AS idm FROM audit_log a
+      WHERE a.ten_bang = 'tem' AND a.id_ban_ghi = $1 AND a.hanh_dong IN ('ERP_GUI_PHAN_LOAI_LOI', 'ERP_GUI_PHAN_LOAI_LOI_LOI')
+        AND a.gia_tri_moi->>'id_mes' ~ '^[0-9]+$'
+        AND NOT EXISTS (SELECT 1 FROM audit_log h WHERE h.ten_bang = 'erp_api' AND h.id_ban_ghi = $1 AND h.hanh_dong IN ('ERP_GUI_HUY_IDMES', 'ERP_GUI_HUY_IDMES_LOI')
+                         AND h.gia_tri_moi->'gui'->>'IDMES' = a.gia_tri_moi->>'id_mes')
+      ORDER BY a.thoi_gian DESC LIMIT 1`.replace(/\s+/g, ' '), [String(temId)]);
+  return rows[0] ? Number(rows[0].idm) : null;
+}
+
 async function guiErpPhanLoaiLoi(temId, { rows }, actorId) {
   try {
     const ct = await repo.chiTietGuiErp(temId, rows);
@@ -135,7 +148,10 @@ async function guiErpPhanLoaiLoi(temId, { rows }, actorId) {
       await ghiChuaCoMaErp('ERP_GUI_PHAN_LOAI_LOI', { idBanGhi: temId, maTem: ct.ma_tem, actorId });
       return;
     }
-    const idMes = await capIdMes('gui-erp-phan-loai-loi');
+    // ⚠ 23/11/2026: lưu lại phiếu (sửa phân loại) ⇒ DÙNG LẠI IDMES của lần gửi trước của tem — proc ERP ghi theo IDMes
+    //   (cùng IDMes ⇒ xóa phiếu cũ rồi tạo lại); xin IDMES mới mỗi lần lưu làm ERP ra 2 phiếu cho 1 tem (đo prod 23/11: 5 tem).
+    //   IDMES đã báo hủy (Hủy phân loại lỗi) ⇒ xin số mới.
+    const idMes = (await idMesPhanLoaiCu(temId)) ?? await capIdMes('gui-erp-phan-loai-loi');
     if (idMes == null) return;
     await guiPhanLoaiLoi({
       IDMes: String(idMes),

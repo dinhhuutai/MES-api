@@ -29,7 +29,8 @@ const DANH_MUC_API = [
   // Phần in / mã quét
   { duong_dan: '/dashboard/tinh-trang/resolve', mo_ta: 'Giải mã 1 mã quét (QR code phần, mã tem, barcode đợt vải, barcode HSKT) ra loại + code phần', truy_van: 'code=<mã>' },
   { duong_dan: '/dashboard/tinh-trang/phan-in', mo_ta: 'Tìm phần in theo code phần / mã hàng / khách', truy_van: 'search=<chuỗi>, limit=<≤100>' },
-  { duong_dan: '/dashboard/tinh-trang/phan-in/:id', mo_ta: 'Tình trạng 1 phần in (id) theo từng đợt vải: đang ở trạm nào, đã ở bao lâu, SLA' },
+  { duong_dan: '/ai/vi-tri-phan-in/:id', mo_ta: 'NGUỒN ĐÚNG cho câu "phần in đang ở đâu": từng đợt vải × từng lệnh / công đoạn đang ở trạm nào, lệnh, chuyền, tem theo trạng thái, trả về chưa xử lý (id = phan_in.id)' },
+  { duong_dan: '/dashboard/tinh-trang/phan-in/:id', mo_ta: 'Đồ thị Tình trạng (màn Dashboard) của 1 phần in — ⚠ trạm ở đây lấy từ đồng hồ SLA, KHÔNG dùng để trả lời "đang ở đâu" (dùng /ai/vi-tri-phan-in/:id)' },
   { duong_dan: '/lich-su-phan-in/tim', mo_ta: 'Tìm phần in để xem lịch sử thao tác', truy_van: 'q=<code phần / barcode>' },
   { duong_dan: '/lich-su-phan-in/:phanInId', mo_ta: 'Lịch sử mọi thao tác + thay đổi tự động của 1 phần in' },
   { duong_dan: '/phan-in', mo_ta: 'Danh sách phần in vải về (Đơn hàng)', truy_van: 'search=<chuỗi>, page, limit' },

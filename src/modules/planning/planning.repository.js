@@ -19,6 +19,8 @@ const LS = require('../../utils/lichSuTim');
 const { qcDotSql } = require('../../utils/tech');
 // READY theo công đoạn (14/11/2026): dòng / lệnh công đoạn Ép/Logo chỉ cần CHÍNH công đoạn đó Ready.
 const { maQcGdSql } = require('../../utils/readyCongDoan');
+// Trả về KT theo công đoạn (23/11/2026): "đợt Ready cho công đoạn g" = QC đợt HOẶC dấu giữ Ready của (đợt, g).
+const { qcDotGdSql, giuReadyGdSql } = require('../../utils/giuReadyCongDoan');
 // Phần in đang ở Giao nhận (trả về GN, chưa "Xác nhận lại") ⇒ tạm rời Release 1 / Test Run / Release 2.
 const { CHO_GN_SQL, LENH_CHO_GN_SQL } = require('../../utils/traVeGn');
 // Giai đoạn HIỆN TẠI của phần in — dùng CHUNG hàm với dashboard/Đơn hàng (`dominantStageScalar`)
@@ -111,7 +113,7 @@ async function listRelease1Candidates({ search = '', offset = 0, limit = 50 }) {
            pin.so_luong_don_hang, ldv.ten_loai AS loai_dot_vai, ldv.ma_loai AS ma_loai_dot_vai,
            mh.ma_hang, dh.ma_don_hang, kh.ten_khach_hang,
            g.gd AS giai_doan, pin.luong_sx, pin.ep_truoc, ${dotGdSql('dv', 'pin.luong_sx')} AS cong_doan_dot,
-           ${qcDotSql('dv', 'pin.id', maQcGdSql('pin', 'g.gd'), true)} AS qc_done,
+           ${qcDotGdSql('dv', 'pin.id', 'g.gd', maQcGdSql('pin', 'g.gd'), true)} AS qc_done,
            ${DA_GD}::int AS da_release,
            ${conReleaseSql('dv', DA_GD)}::int AS con_release,
            ${coBtpSql('dv')} AS btp_khac_kh, ${soDauSql('dv')} AS so_dau_btp,
@@ -207,7 +209,7 @@ async function getDotVaiForCompose(dotVaiIds, gd = GD_IN) {
             COALESCE(dv.so_luong_vai_ve,0)::int AS so_luong,
             ${daRelGd(gd)}::int AS da_dua,
             ${dotThuocGdSql('dv', `'${chuanGd(gd)}'`, 'pin.luong_sx')} AS thuoc, ${dotGdSql('dv', 'pin.luong_sx')} AS cong_doan_dot,
-            ${qcDotSql('dv', 'dv.phan_in_id', maQcGdSql('pin', `'${chuanGd(gd)}'`), true)} AS qc_done
+            ${qcDotGdSql('dv', 'dv.phan_in_id', `'${chuanGd(gd)}'`, maQcGdSql('pin', `'${chuanGd(gd)}'`), true)} AS qc_done
      FROM dot_vai_ve dv JOIN phan_in pin ON pin.id = dv.phan_in_id
      LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id
      WHERE dv.id = ANY($1::uuid[])`.replace(/\s+/g, ' '),
@@ -699,7 +701,10 @@ const CHO_KY_THUAT_SQL = (lenhCol) => `EXISTS (
   SELECT 1 FROM lenh_sx_dot_vai lk JOIN dot_vai_ve dk ON dk.id = lk.dot_vai_ve_id
    WHERE lk.lenh_san_xuat_id = ${lenhCol}
      AND NOT EXISTS (SELECT 1 FROM ket_qua_checkpoint kq JOIN checkpoint cq ON cq.id = kq.checkpoint_id
-                      WHERE kq.phan_in_id = dk.phan_in_id AND cq.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT'))`;
+                      WHERE kq.phan_in_id = dk.phan_in_id AND cq.ma_checkpoint = 'QC_XAC_NHAN' AND kq.trang_thai = 'DAT')
+     AND NOT ${giuReadyGdSql('dk', `(SELECT zlg.giai_doan FROM lenh_san_xuat zlg WHERE zlg.id = ${lenhCol})`)})`;
+// ⚠ Vế cuối (23/11/2026): đợt có dấu GIỮ READY cho công đoạn của lệnh (công đoạn kia của đợt bị trả về KT —
+//   `utils/giuReadyCongDoan.js`) ⇒ lệnh KHÔNG bị khóa "chờ kỹ thuật".
 
 // ⚠⚠ PHẦN IN ĐÃ HỦY (xóa mềm, `dang_hoat_dong = false`) KHÔNG được hiện ở các màn mức lệnh
 //   (fix 19/08/2026 — người dùng bắt được qua chênh lệch số liệu). `PHAN_INFO_LATERAL`,
@@ -1445,7 +1450,7 @@ async function keHoachTamTheoDoi({ search = '', tuNgay = '', denNgay = '', loaiN
                           ORDER BY ls.created_date DESC LIMIT 1) lsx ON true
       CROSS JOIN LATERAL (SELECT EXISTS (SELECT 1 FROM ke_hoach_tam t
                             WHERE t.dot_vai_ve_id = dv.id AND t.trang_thai = 'CHO' AND ${khtLaGdSql('t', 'k.gd')}) AS con) live
-      CROSS JOIN LATERAL (SELECT ${qcDotSql('dv', 'pin.id', maQcGdSql('pin', 'k.gd'), true)} AS done) qc
+      CROSS JOIN LATERAL (SELECT ${qcDotGdSql('dv', 'pin.id', 'k.gd', maQcGdSql('pin', 'k.gd'), true)} AS done) qc
      WHERE ${dkPain} AND ${SEARCH}
        AND ($2 = '' OR ${COT_NGAY} >= $2::date)
        AND ($3 = '' OR ${COT_NGAY} <= $3::date)
@@ -1486,7 +1491,7 @@ async function listKeHoachTamRows({ search = '', offset = 0, limit = 200, locPai
            ${hsktCols('pin.id', khtGdSql('kt'))},
            (SELECT gs.ma_set FROM gom_set_dot_vai gsd JOIN gom_set gs ON gs.id = gsd.gom_set_id
              WHERE gsd.dot_vai_ve_id = dv.id AND gs.trang_thai = 'MO' LIMIT 1) AS ma_set,
-           ${qcDotSql('dv', 'pin.id', maQcGdSql('pin', khtGdSql('kt')), true)} AS qc_done
+           ${qcDotGdSql('dv', 'pin.id', khtGdSql('kt'), maQcGdSql('pin', khtGdSql('kt')), true)} AS qc_done
     ${FROM}
     ORDER BY kt.ngay_ke_hoach NULLS LAST, kt.created_date, ${khtGdSql('kt')}
     LIMIT $2 OFFSET $3`;
@@ -1521,7 +1526,7 @@ async function getKeHoachTam(id) {
     `SELECT kt.id, kt.dot_vai_ve_id, kt.phan_in_id, kt.chuyen_id, kt.ngay_ke_hoach, kt.tg_bd_kh, kt.tg_kt_kh, kt.so_luong,
             ${colTho}, ${colDm}, ${khtGdSql('kt')} AS giai_doan,
             EXISTS (SELECT 1 FROM dot_vai_ve zdv JOIN phan_in zpk ON zpk.id = kt.phan_in_id WHERE zdv.id = kt.dot_vai_ve_id
-                      AND ${qcDotSql('zdv', 'kt.phan_in_id', maQcGdSql('zpk', khtGdSql('kt')), true)}) AS qc_done
+                      AND ${qcDotGdSql('zdv', 'kt.phan_in_id', khtGdSql('kt'), maQcGdSql('zpk', khtGdSql('kt')), true)}) AS qc_done
      FROM ke_hoach_tam kt WHERE kt.id = $1`.replace(/\s+/g, ' '),
     [id]
   );

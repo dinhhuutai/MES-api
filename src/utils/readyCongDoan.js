@@ -88,6 +88,18 @@ function lenhDotGdDk(ls, dv, gd, pin = null) {
   const g = dotGdSql(dv, pin ? `${pin}.luong_sx` : null);
   return `(CASE WHEN ${g} IS NULL THEN ${lenhGdDk(ls, gd)} ELSE ${gdSql(ls)} = ${g} END)`;
 }
+// Bản dùng cho câu "ĐỢT CÒN CHỜ Ở READY" (`NOT EXISTS (lệnh sống AND …)`) — 23/11/2026, trả về KT theo công đoạn
+//   (`utils/giuReadyCongDoan.js`): phần in In + Ép/Logo (`IN_EP`, 1 đợt mang 2 công đoạn) ⇒ lệnh In chỉ "đưa đợt rời READY"
+//   khi đợt CŨNG có lệnh Ép/Logo sống. Trước đây chỉ xét lệnh In ⇒ trả về KT công đoạn Ép/Logo lúc In đã có lệnh thì đợt
+//   không hiện ở READY ⇒ KT/QC không xác nhận lại được, dòng Ép kẹt "Chờ Ready". Đợt đã QC không đổi gì (màn READY còn lọc
+//   `NOT qcDotSql`). ⚠ Guard (bỏ tích, phần in đã release, lệnh chờ KT…) GIỮ `lenhDotGdDk`.
+function lenhRoiReadyDk(ls, dv, gd, pin = null) {
+  if (chuanGd(gd) === GD_EP) return lenhDotGdDk(ls, dv, gd, pin);
+  const luong = pin ? `${pin}.luong_sx` : `(SELECT zrp.luong_sx FROM phan_in zrp WHERE zrp.id = ${dv}.phan_in_id)`;
+  return `(${lenhDotGdDk(ls, dv, gd, pin)} AND (${luong} IS DISTINCT FROM 'IN_EP'
+    OR EXISTS (SELECT 1 FROM lenh_sx_dot_vai zre JOIN lenh_san_xuat zrl ON zrl.id = zre.lenh_san_xuat_id
+               WHERE zre.dot_vai_ve_id = ${dv}.id AND zrl.trang_thai <> 'HUY' AND zrl.giai_doan = '${GD_EP}')))`;
+}
 
 // ⚠⚠ BỘ CHECKLIST RIÊNG CỦA CÔNG ĐOẠN ÉP/LOGO ĐÃ BỎ (17/11/2026, người dùng chốt "chỗ này dùng chung như bình thường"):
 //   mỗi đợt vải chỉ thuộc 1 công đoạn (kiếng ủi: 4I In kiếng / đợt khác Ép — `luongSanXuat.dotGd`; không có In rồi Ép) ⇒ đợt
@@ -103,5 +115,5 @@ async function coBoEp() {
 
 module.exports = {
   GD_IN, GD_EP, HAU_TO, MA_GOC, CHE_DO, chuanGd, chuanCheDo, maCd, maGocCua, laMaEp, gdCuaMa, gdReady,
-  cheDoSql, gdReadySql, maQcGdSql, coDongReadySql, lenhGdDk, coBoEp, dotOBoSql, lenhDotGdDk,
+  cheDoSql, gdReadySql, maQcGdSql, coDongReadySql, lenhGdDk, coBoEp, dotOBoSql, lenhDotGdDk, lenhRoiReadyDk,
 };

@@ -13,7 +13,7 @@ const CONG_CU = [
       type: 'object',
       properties: {
         tu_khoa: { type: 'string', description: 'Từ khóa tiếng Việt, vd "xác nhận test run ngoài giờ", "in phiếu giao"' },
-        nguon: { type: 'string', enum: ['HUONG_DAN', 'LUAT_NGHIEP_VU', 'DU_LIEU'], description: 'Lọc nguồn (tùy chọn)' },
+        nguon: { type: 'string', enum: ['SO_TAY', 'HUONG_DAN', 'LUAT_NGHIEP_VU', 'DU_LIEU'], description: 'Lọc nguồn (tùy chọn)' },
         so_doan: { type: 'integer', description: 'Số đoạn muốn lấy (1–8, mặc định 5)' },
       },
       required: ['tu_khoa'],

@@ -142,6 +142,10 @@ async function main() {
   const doc = (p) => fs.readFileSync(path.join(GOC, p), 'utf8');
   const doan = [];
 
+  // Sổ tay trả lời (23/11/2026) — nguồn `SO_TAY`, được `kienThuc.tim` cộng điểm ưu tiên.
+  if (fs.existsSync(path.join(GOC, 'docs/AI-SO-TAY-AGENT.md'))) {
+    doan.push(...catMarkdown(doc('docs/AI-SO-TAY-AGENT.md'), 'SO_TAY', 'Sổ tay trả lời'));
+  }
   doan.push(...(await huongDanModule()));
   ['docs/HUONG-DAN-SU-DUNG-THLA-MES.md', 'docs/HUONG-DAN-SU-DUNG.md', 'docs/HUONG-DAN-OWNER-SLA.md'].forEach((p) => {
     if (fs.existsSync(path.join(GOC, p))) {

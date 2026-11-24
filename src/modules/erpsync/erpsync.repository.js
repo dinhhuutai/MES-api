@@ -806,9 +806,11 @@ async function flagLamLaiReady(pinId) {
 //   *Quản trị phần in → đặt lại giai đoạn READY_KT* (ở đó đã có sẵn đích READY_QA = chỉ hủy QC).
 // `gd` (14/11/2026 — READY theo công đoạn): công đoạn bị trả về ⇒ chỉ hủy QC của BỘ mà công đoạn đó đọc
 //   (`readyCongDoan.maQcGdSql`). Mặc định 'IN' = như cũ.
-async function chiHuyQcReady(pinId, gd = 'IN') {
+// `clientNgoai` (23/11/2026): chạy trong transaction của caller (trả về theo công đoạn — `utils/giuReadyCongDoan.js`).
+async function chiHuyQcReady(pinId, gd = 'IN', clientNgoai = null) {
   const { maQcGdSql, chuanGd } = require('../../utils/readyCongDoan');
-  await withTransaction(async (client) => {
+  const chay = clientNgoai ? (fn) => fn(clientNgoai) : withTransaction;
+  await chay(async (client) => {
     await client.query(
       `UPDATE ket_qua_checkpoint SET trang_thai='HUY', nguoi_xac_nhan_id=NULL, tg_xac_nhan=NULL, updated_date=now() WHERE phan_in_id=$1 AND trang_thai='DAT' AND checkpoint_id IN (SELECT cp.id FROM checkpoint cp JOIN tram t ON t.id=cp.tram_id JOIN workflow_version wv ON wv.id=t.workflow_version_id AND wv.la_hien_hanh WHERE t.ma_tram='READY' AND cp.ma_checkpoint=(SELECT ${maQcGdSql('zp', `'${chuanGd(gd)}'`)} FROM phan_in zp WHERE zp.id=$1))`.replace(/\s+/g, ' '),
       [pinId]

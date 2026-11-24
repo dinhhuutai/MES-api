@@ -140,7 +140,10 @@ function lenhStageCase(lenhCol, trangThaiCol) {
   // ⚠ QC theo ĐỢT VẢI (`qcDotSql`) y như `dotStageCase` — đợt của lệnh này đã release nên luôn về
   //   TRƯỚC mốc QC ⇒ đợt vải MỚI của phần in KHÔNG kéo lệnh đã release ngược về READY. Chỉ ca QC bị
   //   HỦY thật (Test Run trả về Kỹ thuật) mới cho ra READY, đúng như trước.
-  const conPinChuaQc = `EXISTS(SELECT 1 FROM lenh_sx_dot_vai lg JOIN dot_vai_ve dg ON dg.id=lg.dot_vai_ve_id WHERE lg.lenh_san_xuat_id=${lenhCol} AND NOT ${qcDotSql('dg', 'dg.phan_in_id')})`;
+  // 23/11/2026: đợt có dấu GIỮ READY cho công đoạn của lệnh (công đoạn kia bị trả về KT — `utils/giuReadyCongDoan.js`)
+  //   ⇒ lệnh không bị vẽ ở READY (gương `planning.CHO_KY_THUAT_SQL`).
+  const { qcDotGdSql } = require('./giuReadyCongDoan');
+  const conPinChuaQc = `EXISTS(SELECT 1 FROM lenh_sx_dot_vai lg JOIN dot_vai_ve dg ON dg.id=lg.dot_vai_ve_id WHERE lg.lenh_san_xuat_id=${lenhCol} AND NOT ${qcDotGdSql('dg', 'dg.phan_in_id', `(SELECT zsg.giai_doan FROM lenh_san_xuat zsg WHERE zsg.id = ${lenhCol})`)})`;
   const duMucKt = `EXISTS(SELECT 1 FROM lenh_sx_dot_vai lt JOIN dot_vai_ve dt ON dt.id=lt.dot_vai_ve_id WHERE lt.lenh_san_xuat_id=${lenhCol} AND ${techDoneSqlByPin('dt.phan_in_id')})`;
   return `CASE
       WHEN ${trangThaiCol}='GIA_CONG' THEN 'GIA_CONG'

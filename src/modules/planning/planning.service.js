@@ -29,6 +29,7 @@ const thongBao = require('../thongbao/thongbao.service');
 const release1Erp = require('./release1Erp');
 // Khách gia công (II/AD) miễn Khuôn — nhãn cột Khuôn của Danh sách release.
 const { isKhuonOptional } = require('../../utils/tech');
+const giuReady = require('../../utils/giuReadyCongDoan'); // trả về KT theo công đoạn — giữ Ready công đoạn kia (23/11/2026)
 const { ngayHomNayVN } = require('../../utils/khoangNgay');
 const { TOI_DA_TIM: TOI_DA_TIM_LS } = require('../../utils/lichSuTim');
 const { ganThongTinPhanIn } = require('../../utils/thongTinLichSu');
@@ -304,7 +305,11 @@ async function traVeKyThuat({ dotVaiId, lyDo, giaiDoan }, actorId) {
   //   *Lịch sử* + *Đã hoàn thành* của màn READY không mất dấu công tổ kỹ thuật đã làm. Phần in vẫn
   //   quay về màn READY vì `qc_done` đã false; kỹ thuật biết phải làm lại gì qua badge + lý do.
   //   Chi tiết đánh đổi: `erpsync.repository.chiHuyQcReady`.
-  await erpRepo.chiHuyQcReady(pinId, gdTv);
+  // ⚠⚠ TRẢ VỀ THEO CÔNG ĐOẠN (23/11/2026): phần in In + Ép/Logo — công đoạn còn lại của CHÍNH đợt này giữ "Đã Ready"
+  //   (`utils/giuReadyCongDoan.js`), không rớt theo dòng bị trả về.
+  await withTransaction((client) => giuReady.traVeCongDoan(client,
+    { dotVaiIds: [dotVaiId], gd: gdTv, actorId, meta: { nguon: 'RELEASE1', ly_do: reason } },
+    (c) => erpRepo.chiHuyQcReady(pinId, gdTv, c)));
   await repo.auditTraVeKyThuat(pinId, dotVaiId, reason, actorId);
   // Ghi qc_tra_ve loai='RELEASE1' (mức phần in) → màn READY/QC READY hiện badge + LÝ DO trả về;
   // cờ tự tắt khi QC xác nhận READY lại (technical.confirmQC → resolveReturns('RELEASE1')).
@@ -1480,7 +1485,12 @@ async function rollbackLenh(lenhId, { target, lyDo, force = false, boTestRunIds 
     // không phải đảo gì) rồi mới hủy lệnh — cùng 1 transaction để không áp dụng nửa vời.
     if (force && lenh.co_phieu) await repo.cancelPhieuTemByLenhTx(client, lenhId, actorId);
     await repo.cancelLenhOrder(client, lenhId, actorId);
-    if (TARGET === 'READY') await repo.cancelReadyQcForDotVai(client, dotVaiIds, actorId, lenh.giai_doan);
+    // READY: hủy QC; công đoạn còn lại của các đợt giữ "Đã Ready" (23/11/2026 — `utils/giuReadyCongDoan.js`).
+    if (TARGET === 'READY') {
+      await giuReady.traVeCongDoan(client, { dotVaiIds, gd: lenh.giai_doan, actorId,
+        meta: { nguon: 'HUY_LENH_VE_READY', lenh_id: lenhId, ly_do: lyDo || null } },
+      (c) => repo.cancelReadyQcForDotVai(c, dotVaiIds, actorId, lenh.giai_doan));
+    }
   });
   const ghiChu = force
     ? `[${TARGET}] (HỦY TÙY CHỌN từ ${lenh.trang_thai}${lenh.so_tem ? `, hủy ${lenh.so_tem} tem` : ''}) ${lyDo || ''}`.trim()
@@ -1607,7 +1617,11 @@ async function returnTestRunToReady(lenhId, { checklists, lyDo, loai, nguon }, a
     //   nên khuôn/film/mực CŨ không dùng được về mặt VẬT LÝ — giữ lại là nói dối "đã có khuôn" cho
     //   một phương án in khác hẳn. Đây là hành động khác bản chất với "test lỗi" (nó còn hủy cả lệnh).
     if (doiPaIn && chosen.length) await repo.cancelReadyItemsByPhanIn(client, pinIds, chosen, actorId);
-    await repo.cancelReadyQcForDotVai(client, dotVaiIds, actorId, lenh.giai_doan); // QC phải duyệt lại (công đoạn của lệnh)
+    // QC phải duyệt lại (công đoạn của lệnh). Công đoạn còn lại của các đợt này giữ "Đã Ready" (23/11/2026 —
+    //   `utils/giuReadyCongDoan.js`), TRỪ đổi phương án in (làm lại cả phần in).
+    await giuReady.traVeCongDoan(client, { dotVaiIds, gd: lenh.giai_doan, actorId, giuCongDoanKia: !doiPaIn,
+      meta: { nguon: tuRelease2 ? 'RELEASE2' : 'TEST_RUN', lenh_id: lenhId, ly_do: reason } },
+    (c) => repo.cancelReadyQcForDotVai(c, dotVaiIds, actorId, lenh.giai_doan));
     // ĐỔI PHƯƠNG ÁN IN → HỦY LỆNH trong CÙNG transaction ⇒ đợt vải quay về pool Release 1.
     // ⚠ Đã chặn `co_phieu` ở trên nên chắc chắn chưa in tem — không phải dọn tem/phiếu.
     // ⚠ `cancelLenhOrder` cũng lo luôn việc mở lại gom set nếu đợt vải thuộc set đã đóng.

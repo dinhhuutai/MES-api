@@ -63,9 +63,15 @@ async function listCandidates({ search, page, limit, offset }) {
 }
 
 async function getRun(lenhId) {
-  const lenh = await repo.getLenhBasic(lenhId);
-  if (!lenh) throw new AppError('Lệnh sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  const lenhGoc = await repo.getLenhBasic(lenhId);
+  if (!lenhGoc) throw new AppError('Lệnh sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   const phieu = await repo.getActivePhieu(lenhId);
+  // ⚠ 24/11/2026: lệnh đã chạy (SAN_XUAT / HOAN_TAT) mà phiếu mới nhất KHÔNG còn DANG_CHAY (vd vừa Chạy hoàn tất) ⇒
+  //   `getLenhBasic` lùi về chuyền KẾ HOẠCH ⇒ panel hiện sai chuyền + phân công đầu ca của chuyền kế hoạch (ca thật
+  //   LSX14246: chạy 9A9B phân công Cường, hoàn tất xong panel hiện "Chuyền 7A7B" + Tuấn Anh). Lấy chuyền của chính phiếu.
+  const lenh = laPhieuDaChay(lenhGoc, phieu) && phieu.chuyen_id && String(phieu.chuyen_id) !== String(lenhGoc.chuyen_id)
+    ? { ...lenhGoc, chuyen_id: phieu.chuyen_id, ma_chuyen: phieu.ma_chuyen, ten_chuyen: phieu.ten_chuyen }
+    : lenhGoc;
   const tems = phieu ? await repo.getTemsByPhieu(phieu.id) : [];
   const printed = tems.reduce((s, t) => s + (t.trang_thai === 'HUY' ? 0 : (Number(t.so_luong) || 0)), 0);
   // Phần đã in là tem BTP trước — trần riêng (29/10/2026, `kiemTranIn`); FE tính "còn in được" theo ô BTP trước.
@@ -93,7 +99,9 @@ async function getRun(lenhId) {
   const vaiCho = phieu ? await repo.docVaiChoTem(phieu.id).catch(() => null) : null;
   return { lenh, phieu, tems, printed, printed_btp: printedBtp, ngung_list: ngungList, ngung_active: ngungActive,
            dot_vai: dotVai, vai_huy: vaiHuy, vai_cho_tem: vaiTrong(vaiCho) ? null : vaiCho,
-           phan_cong: phieu ? await phanCongHienThi(lenh, phieu, phanCong) : phanCong,
+           // Phân công đầu ca của chuyền CHỈ đè khi phiếu ĐANG CHẠY (lượt in kế tiếp sẽ áp nó). Phiếu đã xong ⇒ hiện đúng phân
+           //   công THẬT của phiếu (đã dùng cho các tem đã in) — 24/11/2026.
+           phan_cong: phieu && phieu.trang_thai === 'DANG_CHAY' ? await phanCongHienThi(lenh, phieu, phanCong) : phanCong,
            goi_y_tem: await goiYTemMeta(lenhId, phieu?.id),
            cong_doan: nhanCongDoan(lenh.luong_sx, lenh.giai_doan), // "In kiếng" / "In" / "Ép" (kiếng ủi) / "Ép/Logo" — null với phần in 1 công đoạn
            // Phần in 2 công đoạn ⇒ lệnh của công đoạn CÒN LẠI (sidebar hiện khung công đoạn — chống bấm nhầm lệnh). Lỗi ⇒ [].
@@ -102,6 +110,12 @@ async function getRun(lenhId) {
            kieng: await kiengCuaLenh(lenh),
            so_phan_in: soPhanIn, co_gom_set: soPhanIn > 1 };
 }
+
+// Phiếu mới nhất của lệnh là lượt chạy THẬT (không HỦY) và lệnh đang ở trạng thái đã chạy.
+const laPhieuDaChay = (lenh, phieu) => !!(phieu && phieu.trang_thai !== 'HUY' && lenh && ['SAN_XUAT', 'HOAN_TAT'].includes(lenh.trang_thai));
+// Lệnh "nhìn theo phiếu": chuyền = chuyền THỰC TẾ của phiếu (phiếu không có chuyền ⇒ giữ như cũ). Phân công đầu ca nhớ theo
+//   CHUYỀN × CA ⇒ phải lấy đúng chuyền phiếu đã / đang chạy, không phải chuyền kế hoạch của lệnh (24/11/2026).
+const lenhTheoPhieu = (lenh, phieu) => (lenh && phieu && phieu.chuyen_id ? { ...lenh, chuyen_id: phieu.chuyen_id } : lenh);
 
 // Phân công HIỆN cho sidebar (19/10/2026 — xem `phanCongCaHienTai`): chuyền ĐÃ phân công trong lượt ca hiện tại ⇒
 //   trả phân công đang nhớ (`tu_dau_ca`, kèm `dau_ca` = mã ngày ca + người + lúc lưu) — in tem sẽ tự áp vào phiếu,
@@ -213,7 +227,10 @@ async function canToIn() {
   try { return (await repo.phieuCoCotToIn()) && (await repo.listToIn({})).length > 0; } catch { return false; }
 }
 async function kiemThoInPhanCong(phieu, actorId = null) {
-  const lenh = await repo.getLenhBasic(phieu.lenh_san_xuat_id);
+  // Chuyền của CHÍNH phiếu (24/11/2026 — `lenhTheoPhieu`); phiếu truyền vào thiếu cột chuyền ⇒ đọc lại.
+  const chuyenPhieu = phieu.chuyen_id !== undefined ? phieu.chuyen_id
+    : ((await repo.getPhieuById(phieu.id).catch(() => null)) || {}).chuyen_id;
+  const lenh = lenhTheoPhieu(await repo.getLenhBasic(phieu.lenh_san_xuat_id), { chuyen_id: chuyenPhieu });
   const pcCa = lenh ? await phanCongCaHienTai(lenh, phieu.id) : null;
   if (pcCa) {
     if (!String((pcCa.nho && pcCa.nho.tho_in) || '').trim()) {
@@ -495,6 +512,22 @@ async function ghiVaiTem({ tem, temId, cu, dot, ly, moiHuy, moiThieu, dHuy, dThi
 // in của phiếu không vượt 110% SL release (cùng luật In tem). Giờ / ca sửa được cả khi đã kiểm (không đụng sổ cái).
 // Lưu xong gửi lại phiếu in tem sang ERP (SF0) CÙNG IDMES — proc ghi đè theo IDMES ⇒ ERP nhận số mới, không thêm phiếu.
 const GIO_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+// Sửa tem khi lượt SF0 lúc in chưa ghi kết quả (xem cuối `suaTem`): dò lại sau 30 s · 2 phút · 5 phút.
+const CHO_DO_SF0_MS = [30000, 120000, 300000];
+function henGuiLaiSf0SauIn(temId, maTem, actorId, opts = {}, lan = 0) {
+  if (lan >= CHO_DO_SF0_MS.length) return;
+  setTimeout(async () => {
+    try {
+      const d = await repo.dongGhiInTemCuoi(temId);
+      if (!d) { henGuiLaiSf0SauIn(temId, maTem, actorId, opts, lan + 1); return; }
+      if (d.hanh_dong !== 'ERP_GHI_IN_TEM') return; // chỉ có dòng lỗi ⇒ hàng đợi tự gửi lại (SL theo tem)
+      await require('../caidatapi/guiLai').guiLai('ERP_GHI_IN_TEM', d.id, actorId, { slTheoTem: true, ...opts });
+    } catch (e) {
+      console.error(`[sua-tem] ✗ Gửi lại ERP tem ${maTem} sau lượt in: ${e.message}`);
+    }
+  }, CHO_DO_SF0_MS[lan]).unref?.();
+}
+
 async function suaTem(temId, body = {}, actorId, { boQuaKhoa = false } = {}) {
   const ly = String(body.lyDo || '').trim();
   if (!ly) throw new AppError('Nhập lý do sửa tem', { status: 422, errorCode: 'NO_LY_DO' });
@@ -621,7 +654,9 @@ async function suaTem(temId, body = {}, actorId, { boQuaKhoa = false } = {}) {
       if (!(await coCotChuyenTem())) {
         throw new AppError('Chưa chạy migration 124 nên chưa sửa được chuyền của tem', { status: 409, errorCode: 'CHUA_MIGRATION_124' });
       }
-      doi.chuyenRiengId = String(chuyenMoi.id) === String(t.chuyen_phieu_id) ? null : chuyenMoi.id;
+      // 23/11/2026: LUÔN ghi chuyền vào tem (kể cả trùng chuyền phiếu) — trước đây trùng ⇒ NULL ⇒ tem lại đi theo phiếu, đổi
+      //   chuyền phiếu sau đó kéo tem đi mất (`utils/temChuyen.js chotChuyenTemTx`).
+      doi.chuyenRiengId = chuyenMoi.id;
     }
     if (!Object.keys(doi).length && !ngayCtMoi && !pcMoi) {
       throw new AppError('Không có gì thay đổi', { status: 422, errorCode: 'KHONG_DOI' });
@@ -677,6 +712,11 @@ async function suaTem(temId, body = {}, actorId, { boQuaKhoa = false } = {}) {
   if (dong) {
     guiLai('ERP_GHI_IN_TEM', dong.id, actorId, { slTheoTem: true, ...(ngayCtMoi ? { ngayCt: ngayCtMoi } : {}) })
       .catch((e) => console.error(`[sua-tem] ✗ Gửi lại ERP tem ${kq.t.ma_tem}: ${e.message}`));
+  } else {
+    // ⚠ 23/11/2026: chưa có dòng SF0 nào có thể là lượt gửi LÚC IN còn đang chạy (ERP chậm / deadlock, thử lại tới ~1,5
+    //   phút — ca 152608085192: Sửa 20 s sau khi in, lượt in xong sau đó mang SL cũ) ⇒ hẹn dò lại; có dòng thành công thì
+    //   gửi lại theo tem. Dòng lỗi ⇒ hàng đợi tự gửi lại lo (SL nay lấy theo tem). API tắt ⇒ không bao giờ có dòng, tự dừng.
+    henGuiLaiSf0SauIn(temId, kq.t.ma_tem, actorId, ngayCtMoi ? { ngayCt: ngayCtMoi } : {});
   }
   // ⚠ 08/11/2026 (người dùng: "sửa chuyền ở Danh sách tem in, không thấy gửi cập nhật lại ở ERP"): phiếu KIỂM PHẨM (Sh6) ·
   //   SỬA ĐẠT (SK6) · OQC (QO6) đã gửi của tem cũng mang chuyền (`banin`) + phân công ⇒ đổi chuyền / phân công thì gửi
@@ -732,7 +772,10 @@ async function savePhanCong(phieuId, body, actorId) {
   const phieu = await repo.getPhieuById(phieuId);
   if (!phieu) throw new AppError('Phiếu sản xuất không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
   await ghiPhanCongPhieu(phieu, body || {}, actorId);
-  const lenhKhac = await nhoPhanCongDauCa(phieu, actorId);
+  // ⚠ 24/11/2026: CHỈ phiếu ĐANG CHẠY mới nhớ thành phân công đầu ca của chuyền + áp cho lệnh khác. Phiếu đã xong mà nhớ
+  //   ⇒ ghi phân công đầu ca cho chuyền KẾ HOẠCH (getLenhBasic lùi về khi không còn phiếu chạy) ⇒ đè phân công của các lệnh
+  //   ĐANG CHẠY THẬT trên chuyền đó (ca LSX14246: chạy 9A9B, kế hoạch 7A7B). Phiếu xong ⇒ như `suaPhanCongPhieuXong`.
+  const lenhKhac = phieu.trang_thai === 'DANG_CHAY' ? await nhoPhanCongDauCa(phieu, actorId) : [];
   sockets.emit('production:updated', { lenhId: phieu.lenh_san_xuat_id, action: 'phan-cong' });
   lenhKhac.forEach((lenhId) => sockets.emit('production:updated', { lenhId, action: 'phan-cong' }));
   return getRun(phieu.lenh_san_xuat_id);
@@ -755,7 +798,7 @@ async function suaPhanCongPhieuXong(phieuId, body, actorId) {
 async function nhoPhanCongDauCa(phieu, actorId) {
   const daAp = [];
   try {
-    const lenh = await repo.getLenhBasic(phieu.lenh_san_xuat_id);
+    const lenh = lenhTheoPhieu(await repo.getLenhBasic(phieu.lenh_san_xuat_id), phieu); // chuyền của chính phiếu (24/11/2026)
     const pcCa = await phanCongCaHienTai(lenh, phieu.id);
     if (!pcCa) return daAp;
     const pc = await repo.getPhanCongByPhieu(phieu.id);

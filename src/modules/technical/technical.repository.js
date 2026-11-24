@@ -16,7 +16,7 @@ const { mauTim } = require('../../utils/timKiem');
 // READY theo công đoạn (14/11/2026): `gd` ở module này = BỘ checklist đang xem ('IN' bộ gốc · 'EP_UI' bộ Ép/Logo).
 // `dotOBoSql` / `lenhDotGdDk` (16/11/2026): đợt của phần in kiếng ủi thuộc 1 công đoạn theo loaikd ⇒ chỉ nằm ở dòng READY của
 //   công đoạn đó, "đã release" = lệnh của chính công đoạn đó (luật `utils/readyCongDoan.js`).
-const { GD_IN, GD_EP, chuanGd, lenhGdDk, coDongReadySql, dotOBoSql, lenhDotGdDk } = require('../../utils/readyCongDoan');
+const { GD_IN, GD_EP, chuanGd, lenhGdDk, coDongReadySql, dotOBoSql, lenhDotGdDk, lenhRoiReadyDk } = require('../../utils/readyCongDoan');
 const LS = require('../../utils/lichSuTim');
 const { sqlKhopMa } = require('../../utils/maPhanIn');
 
@@ -98,7 +98,7 @@ async function listCandidates({
                WHERE dv5.phan_in_id = pin.id AND dv5.trang_thai NOT IN ('DA_GOP','DA_HUY')
                  AND dv5.tg_chuyen_ready IS NOT NULL AND ${dotOBoSql('dv5', gd, 'pin')}
                  AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsr JOIN lenh_san_xuat lr ON lr.id = lsr.lenh_san_xuat_id
-                                 WHERE lsr.dot_vai_ve_id = dv5.id AND lr.trang_thai <> 'HUY' AND ${lenhDotGdDk('lr', 'dv5', gd, 'pin')})),
+                                 WHERE lsr.dot_vai_ve_id = dv5.id AND lr.trang_thai <> 'HUY' AND ${lenhRoiReadyDk('lr', 'dv5', gd, 'pin')})),
              (SELECT max(dv6.tg_chuyen_ready) FROM dot_vai_ve dv6
                WHERE dv6.phan_in_id = pin.id AND dv6.trang_thai NOT IN ('DA_GOP','DA_HUY')
                  AND dv6.tg_chuyen_ready IS NOT NULL AND ${dotOBoSql('dv6', gd, 'pin')})
@@ -106,11 +106,11 @@ async function listCandidates({
            (SELECT count(*) FROM ket_qua_checkpoint k
               WHERE k.phan_in_id = pin.id AND k.checkpoint_id = ANY($2::uuid[]) AND k.trang_thai = 'DAT')::int AS n_tech_done,
            ${doneExpr('$3')} AS qc_done,
-           ${conDotChuaReadySql('pin.id', qcMa, lenhDotGdDk('zls', 'zd', gd, 'pin'), dotOBoSql('zd', gd, 'pin'))} AS con_dot_chua_ready,
+           ${conDotChuaReadySql('pin.id', qcMa, lenhRoiReadyDk('zls', 'zd', gd, 'pin'), dotOBoSql('zd', gd, 'pin'))} AS con_dot_chua_ready,
            EXISTS (SELECT 1 FROM dot_vai_ve dvr WHERE dvr.phan_in_id = pin.id AND dvr.trang_thai NOT IN ('DA_GOP','DA_HUY')
                      AND dvr.tg_chuyen_ready IS NOT NULL AND ${dotOBoSql('dvr', gd, 'pin')}
                      AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsr2 JOIN lenh_san_xuat lr2 ON lr2.id = lsr2.lenh_san_xuat_id
-                                     WHERE lsr2.dot_vai_ve_id = dvr.id AND lr2.trang_thai <> 'HUY' AND ${lenhDotGdDk('lr2', 'dvr', gd, 'pin')})) AS co_dot_chua_release${withItems ? `,
+                                     WHERE lsr2.dot_vai_ve_id = dvr.id AND lr2.trang_thai <> 'HUY' AND ${lenhRoiReadyDk('lr2', 'dvr', gd, 'pin')})) AS co_dot_chua_release${withItems ? `,
            ${doneExpr('$6')} AS khuon_done,
            ${doneExpr('$7')} AS film_done,
            ${doneExpr('$8')} AS muc_done,
@@ -174,7 +174,7 @@ async function listCandidates({
     WHERE (EXISTS (SELECT 1 FROM dot_vai_ve dvu WHERE dvu.phan_in_id = pin.id AND dvu.trang_thai NOT IN ('DA_GOP','DA_HUY') AND dvu.tg_chuyen_ready IS NOT NULL
                      AND ${dotOBoSql('dvu', gd, 'pin')}
                      AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsu JOIN lenh_san_xuat lu ON lu.id = lsu.lenh_san_xuat_id
-                                     WHERE lsu.dot_vai_ve_id = dvu.id AND lu.trang_thai <> 'HUY' AND ${lenhDotGdDk('lu', 'dvu', gd, 'pin')}))
+                                     WHERE lsu.dot_vai_ve_id = dvu.id AND lu.trang_thai <> 'HUY' AND ${lenhRoiReadyDk('lu', 'dvu', gd, 'pin')}))
              OR EXISTS (SELECT 1 FROM dot_vai_ve dvt JOIN lenh_sx_dot_vai lst ON lst.dot_vai_ve_id = dvt.id
                           JOIN lenh_san_xuat lt ON lt.id = lst.lenh_san_xuat_id AND lt.trang_thai = 'RELEASE_1' AND ${lenhDotGdDk('lt', 'dvt', gd, 'pin')}
                          WHERE dvt.phan_in_id = pin.id AND dvt.trang_thai NOT IN ('DA_GOP','DA_HUY') AND dvt.tg_chuyen_ready IS NOT NULL
@@ -853,7 +853,7 @@ async function dsDotChoReady(phanInIds = [], gd = GD_IN) {
       WHERE dv.phan_in_id = ANY($1::uuid[]) AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY')
         AND dv.tg_chuyen_ready IS NOT NULL AND ${dotOBoSql('dv', gd)}
         AND NOT EXISTS (SELECT 1 FROM lenh_sx_dot_vai l JOIN lenh_san_xuat ls ON ls.id = l.lenh_san_xuat_id
-                         WHERE l.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY' AND ${lenhDotGdDk('ls', 'dv', gd)})
+                         WHERE l.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY' AND ${lenhRoiReadyDk('ls', 'dv', gd)})
         AND NOT ${qcDotSql('dv', 'dv.phan_in_id', chuanGd(gd) === GD_EP ? 'QC_XAC_NHAN_EP' : 'QC_XAC_NHAN')}
       ORDER BY dv.tg_chuyen_ready`.replace(/\s+/g, ' '),
     [phanInIds]);
@@ -864,7 +864,7 @@ async function dsDotChoReady(phanInIds = [], gd = GD_IN) {
 // Dùng ở các guard KHÓA của service: dòng TỔNG đang DAT KHÔNG còn đồng nghĩa "READY đã xong hết".
 async function conDotChuaReady(phanInId, gd = GD_IN) {
   const g = chuanGd(gd);
-  const { rows } = await query(`SELECT ${conDotChuaReadySql('$1::uuid', g === GD_EP ? 'QC_XAC_NHAN_EP' : 'QC_XAC_NHAN', lenhDotGdDk('zls', 'zd', g), dotOBoSql('zd', g))} AS e`.replace(/\s+/g, ' '), [phanInId]);
+  const { rows } = await query(`SELECT ${conDotChuaReadySql('$1::uuid', g === GD_EP ? 'QC_XAC_NHAN_EP' : 'QC_XAC_NHAN', lenhRoiReadyDk('zls', 'zd', g), dotOBoSql('zd', g))} AS e`.replace(/\s+/g, ' '), [phanInId]);
   return !!rows[0].e;
 }
 

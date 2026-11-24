@@ -43,7 +43,7 @@ const soHoacNull = (v) => { const n = Number(v); return v == null || v === '' ||
 
 async function docDong(ma, auditId) {
   const { rows } = await query(
-    `SELECT id, id_ban_ghi, hanh_dong, gia_tri_moi FROM audit_log
+    `SELECT id, id_ban_ghi, hanh_dong, gia_tri_moi, thoi_gian FROM audit_log
       WHERE id::text = $1 AND hanh_dong IN ($2, $3)`, [String(auditId), ma, `${ma}_LOI`]);
   return rows[0] || null;
 }
@@ -108,6 +108,22 @@ async function guiLai(ma, auditId, actorId, opts = {}) {
   //   `planning/release1Erp.guiLai` vì sao không dựng lại từ dữ liệu hiện tại.
   if (ma === 'ERP_GUI_RELEASE_1') {
     const release1Erp = require('../planning/release1Erp');
+    // ⚠ 23/11/2026: thân cũ chỉ còn đúng khi nó vẫn là kế hoạch MỚI NHẤT của các lệnh trong lượt. Lệnh đã HỦY, hoặc đã có lượt
+    //   Release 1 mới hơn gửi thành công (lập lại kế hoạch / gửi lại sau hủy — IDMES mới) ⇒ gửi lại thân cũ là dựng lại kế hoạch
+    //   cũ bên ERP ⇒ chặn 409 `CO_KE_HOACH_MOI`.
+    const dsMa = release1Erp.maLenhTuDs((g.gui || {}).DsRelease).split(',').map((s) => s.trim()).filter(Boolean);
+    if (dsMa.length) {
+      const { rows: [c] } = await query(
+        `SELECT (SELECT string_agg(ma_lenh_san_xuat, ', ') FROM lenh_san_xuat WHERE ma_lenh_san_xuat = ANY($1::text[]) AND trang_thai = 'HUY') AS huy,
+                (SELECT string_agg(DISTINCT a.gia_tri_moi->>'ma_tem', ' | ') FROM audit_log a WHERE a.hanh_dong = 'ERP_GUI_RELEASE_1'
+                   AND a.thoi_gian > $2 AND string_to_array(replace(COALESCE(a.gia_tri_moi->>'ma_tem', ''), ' ', ''), ',') && $1::text[]) AS moi`
+          .replace(/\s+/g, ' '), [dsMa, d.thoi_gian]);
+      if (c && (c.huy || c.moi)) {
+        throw new AppError(c.huy ? `Lệnh ${c.huy} đã hủy — không gửi lại kế hoạch cũ`
+          : `Đã có lượt Release 1 mới hơn gửi thành công (${c.moi}) — gửi lại lượt cũ sẽ đè kế hoạch mới bên ERP`,
+        { status: 409, errorCode: 'CO_KE_HOACH_MOI' });
+      }
+    }
     const kq = await release1Erp.guiLai(g.gui, { idBanGhi: d.id_ban_ghi, actorId });
     if (kq && kq.bo_qua && kq.ly_do === 'THIEU_DU_LIEU') {
       throw new AppError('Dòng lịch sử không có dữ liệu đã gửi (DsRelease) — không gửi lại được', { status: 409, errorCode: 'THIEU_DU_LIEU' });
@@ -207,11 +223,26 @@ async function guiLai(ma, auditId, actorId, opts = {}) {
     try { vaiTem = await prodRepo.vaiCuaTem(id); } catch { vaiTem = null; }
   }
   const coVaiTem = !!(vaiTem && vaiTem.so_dong > 0);
+  // ⚠⚠ 23/11/2026: SF0 tem SẢN XUẤT (`ERP_GHI_IN_TEM`) LUÔN gửi SL HIỆN TẠI của tem (`r.so_luong` — lúc in cũng gửi đúng số
+  //   này), KHÔNG giữ `Soluong` của dòng cũ. Giữ số cũ làm ERP bị đè số trước khi Sửa tem: hàng đợi tự gửi lại lượt in tem
+  //   lỗi (tem 152608085192: in 847 → lượt gửi lúc in deadlock → Sửa 846 → hàng đợi gửi lại 847) · Vải hủy/thiếu theo tem /
+  //   Mở lại tem / nút "Gửi lại ERP" lấy dòng cũ trước lúc Sửa xong (152608083463: Sửa 219 rồi đường vải gửi lại 98).
+  //   `opts.slTheoTem` còn để tương thích.
+  // Tem gia công (23/11/2026): số theo SỔ CÁI tem hiện tại — đạt = `sl_kcs_dat`, hủy = `sl_kcs_huy` (hủy + lỗi vải), thiếu =
+  //   −`sl_chenh_lech` (DATABASE.md §5 — đúng thứ lúc nhận hàng gửi; đo prod 23/11: 11/11 tem khớp số đã gửi). Lỗi đọc ⇒ số cũ.
+  let gc = null;
+  if (ma === 'ERP_GUI_TEM_GIA_CONG') {
+    try {
+      const { rows: t } = await query(
+        'SELECT sl_kcs_dat, sl_kcs_huy, sl_chenh_lech FROM tem WHERE id = $1 AND sl_kcs_dat IS NOT NULL', [id]);
+      gc = t[0] || null;
+    } catch { gc = null; }
+  }
   const payload = taoPayload(r, {
     idMes,
-    soLuong: ma === 'ERP_GHI_IN_TEM' && opts.slTheoTem ? null : soHoacNull(cu.Soluong),
-    soLuongHuy: coVaiTem ? vaiTem.huy : (soHoacNull(cu.Soluongloi) || 0),
-    soLuongThieu: coVaiTem ? vaiTem.thieu : (soHoacNull(cu.SOLUONGTHIEU) || 0),
+    soLuong: ma === 'ERP_GHI_IN_TEM' ? null : gc ? Number(gc.sl_kcs_dat) || 0 : soHoacNull(cu.Soluong),
+    soLuongHuy: gc ? Number(gc.sl_kcs_huy) || 0 : coVaiTem ? vaiTem.huy : (soHoacNull(cu.Soluongloi) || 0),
+    soLuongThieu: gc ? Math.max(0, -(Number(gc.sl_chenh_lech) || 0)) : coVaiTem ? vaiTem.thieu : (soHoacNull(cu.SOLUONGTHIEU) || 0),
   });
   // ⚠ 19/11/2026: SF0 gửi lại (kể cả từ Sửa tem) GIỮ ca trưởng / chuyền trưởng / thợ in của lần gửi LÚC IN — thân dựng từ
   //   phân công HIỆN TẠI của phiếu mang người ca sau (ca thật 152608084040: in 012401261, gửi lại thành 012201060). Tem có

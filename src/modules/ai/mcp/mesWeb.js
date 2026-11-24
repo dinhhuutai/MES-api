@@ -69,7 +69,7 @@ const CONG_CU = [
   },
   {
     name: 'mes_web_tra_ma',
-    description: 'Tra nhanh 1 mã người dùng đưa (code phần, mã tem, barcode đợt vải / HSKT): ra phần in và tình trạng từng đợt vải (đang ở trạm nào, bao lâu, SLA).',
+    description: 'Tra nhanh 1 mã người dùng đưa (code phần, mã tem, barcode đợt vải / HSKT): ra phần in và VỊ TRÍ THẬT theo từng đợt vải × từng công đoạn / lệnh (trạm, lệnh, chuyền, tem theo trạng thái). LUÔN gọi công cụ này khi được hỏi "đang ở đâu / tới đâu rồi". 1 phần in có thể đồng thời ở nhiều trạm — nêu đủ.',
     inputSchema: {
       type: 'object',
       properties: { ma: { type: 'string', description: 'Mã cần tra' } },
@@ -88,12 +88,17 @@ const CONG_CU = [
       const items = (ds.du_lieu && ds.du_lieu.items) || [];
       const khop = items.filter((x) => x.ma_phan === kq.ma_phan);
       if (!khop.length) return jsonGon({ loai: 'PHAN_IN', ma_phan: kq.ma_phan, ghi_chu: 'Không đọc được tình trạng chi tiết' });
+      // ⚠ 23/11/2026: đọc `/ai/vi-tri-phan-in/:id` (giai đoạn theo `utils/stage.js`, từng đợt × công đoạn) — KHÔNG đọc
+      //   `/dashboard/tinh-trang/phan-in/:id` (trạm lấy từ `ton_tram` + `lich_su_luan_chuyen` hỏng ⇒ từng báo READY trong
+      //   khi đợt khác đang Chờ sản xuất). Cùng code phần khác màu mực = nhiều phần in ⇒ trả từng cái.
       const chiTiet = [];
       for (const pin of khop.slice(0, 3)) {
-        const ct = await docApi(`/dashboard/tinh-trang/phan-in/${pin.id}`, '', ctx);
-        chiTiet.push({ phan_in: pin, tinh_trang: ct.loi ? { loi: ct.loi } : ct.du_lieu });
+        const ct = await docApi(`/ai/vi-tri-phan-in/${pin.id}`, '', ctx);
+        chiTiet.push(ct.loi ? { phan_in_id: pin.id, loi: ct.loi } : ct.du_lieu);
       }
-      return jsonGon({ loai: 'PHAN_IN', ma_phan: kq.ma_phan, so_phan_in: khop.length, chi_tiet: chiTiet });
+      return jsonGon({ loai: 'PHAN_IN', ma_phan: kq.ma_phan, so_phan_in: khop.length,
+        luu_y: khop.length > 1 ? 'Cùng code phần có nhiều phần in (khác màu mực) — nêu riêng từng phần in.' : undefined,
+        vi_tri: chiTiet });
     },
   },
 ];

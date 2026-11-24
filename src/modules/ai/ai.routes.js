@@ -39,6 +39,11 @@ router.get('/hoi-thoai', asyncHandler(async (req, res) => ok(res, await service.
 router.get('/hoi-thoai/:id', kiemId, asyncHandler(async (req, res) => ok(res, await service.chiTietHoiThoai(req.params.id, req.user.id))));
 router.delete('/hoi-thoai/:id', kiemId, asyncHandler(async (req, res) => ok(res, await service.xoaHoiThoai(req.params.id, req.user.id), 'Đã xóa cuộc trò chuyện')));
 router.post('/tin-nhan/:id/danh-gia', kiemId, asyncHandler(async (req, res) => ok(res, await service.danhGia(req.params.id, req.user.id, req.body || {}))));
+// Vị trí 1 phần in theo từng đợt vải / công đoạn (nguồn `utils/stage.js`) — công cụ `mes_web_tra_ma` của Agent (23/11/2026).
+router.get('/vi-tri-phan-in/:id', kiemId, asyncHandler(async (req, res) => {
+  const kq = await require('./viTriPhanIn').viTriPhanIn(req.params.id);
+  return kq ? ok(res, kq) : fail(res, 'Không tìm thấy phần in', 'NOT_FOUND', [], 404);
+}));
 router.put('/mau-robot', asyncHandler(async (req, res) => ok(res, await service.datMauRobot(req.user.id, req.body || {}), 'Đã đổi hình robot')));
 router.put('/che-do-hien', asyncHandler(async (req, res) => ok(res, await service.datCheDoHien(req.user.id, req.body || {}), 'Đã đổi chỗ hiện robot')));
 
