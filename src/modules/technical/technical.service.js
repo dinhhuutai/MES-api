@@ -27,10 +27,12 @@ const { dotGd, paCongDoanEp, laHaiCongDoan, theoDot } = require('../../utils/luo
 //   LUÔN đọc bộ gốc (`giaiDoan` FE gửi lên bị bỏ qua). Mỗi đợt vải chỉ 1 công đoạn nên xác nhận theo đợt không đụng nhau.
 //   Luật KT của công đoạn Ép/Logo (không Film · Khuôn/Mực theo tính chất in · HSKT) nay xét theo NHÓM ĐỢT: `laEpNhom`.
 const chuanGd = () => GD_IN;
-// Nhóm đợt (từ `taiNhomLoai`) là công đoạn Ép/Logo: phần in luồng LOGO, hoặc đợt Ép của phần in kiếng ủi (`dotGd`).
-//   `p` = dòng phần in có `luong_sx`, `kt_yc_in/kt_yc_ep`, `kt_hskt_in/kt_hskt_ep` (listCandidates / getPhanInBasic).
+// Nhóm đợt (từ `taiNhomLoai`) là công đoạn Ép/Logo: phần in luồng LOGO, hoặc đợt CHỈ công đoạn Ép (kiếng ủi theo loại đợt /
+//   đợt đánh dấu 'EP_UI' — mig 139). `p` = dòng phần in có `luong_sx`, `kt_yc_in/kt_yc_ep`, `kt_hskt_in/kt_hskt_ep`.
+// Công đoạn của 1 đợt: `gd_dot` do SQL tính (`dsDotChoReady` — gồm đánh dấu `cong_doan_dot`); thiếu ⇒ luật loại đợt.
+const gdCuaDot = (luong, d) => (d && d.gd_dot !== undefined ? d.gd_dot : dotGd(luong, d && d.ma_loai));
 const laEpNhom = (g, p) => !!p && (p.luong_sx === 'LOGO'
-  || ((g && g.dots) || []).some((d) => dotGd(p.luong_sx, d.ma_loai) === GD_EP));
+  || ((g && g.dots) || []).some((d) => gdCuaDot(p.luong_sx, d) === GD_EP));
 const ycNhom = (g, p) => {
   const ep = laEpNhom(g, p);
   return { ep, yc: p ? (ep ? p.kt_yc_ep : p.kt_yc_in) : undefined, hskt: !!(p && (ep ? p.kt_hskt_ep : p.kt_hskt_in)) };
@@ -155,7 +157,7 @@ async function epCuaDot(phanInId, dotVaiIds) {
     if (!pb || pb.luong_sx === 'LOGO') return false;
     const s = new Set(dotVaiIds.map(String));
     const ds = dots.filter((d) => s.has(String(d.dot_vai_ve_id)));
-    return ds.length > 0 && ds.every((d) => dotGd(pb.luong_sx, d.ma_loai) === GD_EP);
+    return ds.length > 0 && ds.every((d) => gdCuaDot(pb.luong_sx, d) === GD_EP);
   } catch (e) { return false; }
 }
 
@@ -353,10 +355,14 @@ const techDoneNhom = (g, tenKhach, ktYc, hskt = false) => {
   return !!((!can.muc || g.items.MUC?.done) && (!can.khuon || g.items.KHUON?.done) && (!can.hskt || g.items.HSKT?.done));
 };
 // Trường KT của DÒNG nhóm đợt (FE: ẩn Film, cột HSKT, nhãn yêu cầu) + công đoạn hiển thị của dòng.
+// `ca_hai_cong_doan` (mig 139): dòng là đợt mang CẢ 2 công đoạn (In + Logo mặc định, kiếng ủi đợt 'CA_HAI') ⇒ FE vẽ "In kiếng +
+//   Ép" / "In + Logo" (`CodePhanCongDoan caHaiDot`); false ⇒ 1 badge theo `giai_doan`.
 const ktDongNhom = (g, r) => {
   const y = ycNhom(g, r);
-  const laDotEp = ((g && g.dots) || []).some((d) => dotGd(r.luong_sx, d.ma_loai) === GD_EP);
-  return { kt_yc: chuanKtYc(y.yc), kt_ep: y.ep || !!r.kt_ep, kt_hskt: y.hskt, ...(laDotEp ? { giai_doan: GD_EP } : {}) };
+  const dots = (g && g.dots) || [];
+  const laDotEp = dots.some((d) => gdCuaDot(r.luong_sx, d) === GD_EP);
+  const caHai = laHaiCongDoan(r.luong_sx) && dots.length > 0 && dots.every((d) => (d.ca_hai_cd !== undefined ? !!d.ca_hai_cd : gdCuaDot(r.luong_sx, d) === null));
+  return { kt_yc: chuanKtYc(y.yc), kt_ep: y.ep || !!r.kt_ep, kt_hskt: y.hskt, ca_hai_cong_doan: caHai, ...(laDotEp ? { giai_doan: GD_EP } : {}) };
 };
 // Nhóm đợt `g` đã đủ KT theo yêu cầu của CHÍNH công đoạn của nhóm (17/11/2026 — `ycNhom`).
 const techDoneNhomP = (g, p) => { const y = ycNhom(g, p); return techDoneNhom(g, p && p.ten_khach_hang, y.yc, y.hskt); };
@@ -607,7 +613,7 @@ async function listCandidates({ search, page, limit, offset, onlyQcReady = false
       // eslint-disable-next-line no-await-in-loop
       const pa = await paCongDoanEp(it.tinh_chat_in); // bảng tính chất nhớ 60 s ⇒ không truy vấn mỗi dòng
       if (it.phuong_an_in !== pa) { it.phuong_an_in_hskt = it.phuong_an_in; it.phuong_an_in = pa; }
-    } else if (laHaiCongDoan(it.luong_sx) && !theoDot(it.luong_sx)) {
+    } else if (it.ca_hai_cong_doan ?? (laHaiCongDoan(it.luong_sx) && !theoDot(it.luong_sx))) {
       // eslint-disable-next-line no-await-in-loop
       it.pa_cd_ep = await paCongDoanEp(it.tinh_chat_in);
     }

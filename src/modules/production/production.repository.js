@@ -203,7 +203,21 @@ async function nextMaPhieu() {
   return rows[0].ma;
 }
 
+// ⚠⚠ CHỐNG XÁC NHẬN CHẠY 2 LẦN (25/11/2026 — prod có 10 lệnh mang 2 phiếu DANG_CHAY: 2 yêu cầu "Xác nhận chạy" song song
+//   (bấm / Enter 2 lần) cùng đọc lệnh RELEASE_2 NGOÀI transaction rồi cùng tạo phiếu; ca 25/11 10:41 LSX14045/46/47 ⇒ sidebar
+//   thấy 2 "lệnh" cùng code phần, gộp báo "Chọn ít nhất 2 lệnh để gộp"). Khóa dòng LỆNH trong transaction rồi mới tạo phiếu:
+//   yêu cầu thứ 2 chờ khóa, sau đó thấy phiếu đang chạy của yêu cầu 1 ⇒ 409 `DA_CHAY`. Dùng chung mọi đường tạo phiếu DANG_CHAY
+//   (Xác nhận chạy · chạy đặc biệt) — lệnh hợp lệ để chạy (RELEASE_2 / RELEASE_1) không bao giờ đã có phiếu đang chạy.
+//   ⚠ Kiểm phiếu ở CÂU RIÊNG sau câu khóa: READ COMMITTED — câu `FOR UPDATE` chờ khóa xong vẫn đọc bảng khác theo ảnh chụp
+//   lúc câu BẮT ĐẦU (chưa thấy phiếu vừa commit); câu sau lấy ảnh chụp mới.
 async function createPhieu(client, { lenhId, chuyenId, maPhieu }, actorId) {
+  const { rows: [l] } = await client.query('SELECT ma_lenh_san_xuat FROM lenh_san_xuat WHERE id = $1 FOR UPDATE', [lenhId]);
+  const { rows: [dc] } = await client.query(
+    "SELECT EXISTS (SELECT 1 FROM phieu_san_xuat WHERE lenh_san_xuat_id = $1 AND trang_thai = 'DANG_CHAY') AS co", [lenhId]);
+  if (l && dc.co) {
+    const AppError = require('../../utils/AppError');
+    throw new AppError(`Lệnh ${l.ma_lenh_san_xuat} vừa được xác nhận chạy (có thể bấm 2 lần) — tải lại màn hình`, { status: 409, errorCode: 'DA_CHAY' });
+  }
   const { rows } = await client.query(
     `INSERT INTO phieu_san_xuat (lenh_san_xuat_id, chuyen_id, ma_phieu_san_xuat, trang_thai, tg_bd, created_by)
      VALUES ($1,$2,$3,'DANG_CHAY',CURRENT_TIMESTAMP,$4) RETURNING id`,

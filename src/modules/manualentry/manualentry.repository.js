@@ -146,6 +146,8 @@ async function createChainTx(client, p, actorId) {
         d.loai_dot_vai_id || null, d.barcode || null, d.inset ?? null, d.nha_gia_cong || null,
         d.du_an || null, d.kt_can_kiem_tra ?? null, d.ghi_chu || null, actorId]
     );
+    // Tính chất "chỉ 1 tờ TDTHĐH" (mig 139) ⇒ đợt mang cả 2 công đoạn — CÙNG luật đợt mới từ ERP.
+    await require('../erpsync/erpsync.repository').datCaHaiTheoTinhChat(client, r.rows[0].id);
     dots.push(r.rows[0]);
   }
 

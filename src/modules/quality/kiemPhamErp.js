@@ -7,7 +7,8 @@
 //   sửa đạt `suaDatErp.js`, người dùng từng chốt "tham số giống tem 15"): tái dùng `duLieuGhiInTem`
 //   + `taoPayload` + `ghiInTem({ maApi })`. ERP đòi tham số khác thì lỗi của proc sẽ hiện nguyên văn
 //   ở Hệ thống › Cài đặt API › Lịch sử ("expects parameter '@pXxx'") — sửa đúng chỗ `taoPayload` dưới.
-//   · `BarcodeIn` = mã tem 15 được kiểm · `Soluong` = SL ĐẠT · `Soluongloi` = SL HƯ · `SOLUONGTHIEU` = SL thiếu.
+//   · `BarcodeIn` = mã tem 15 được kiểm · `Barcode17` = tem 17 của lượt giao trước ('' nếu không) · `Soluong` = SL ĐẠT ·
+//     `Soluongloi` = SL HƯ · `SOLUONGTHIEU` = SL thiếu.
 //
 // ⚠ GỬI ĐÚNG 1 LẦN MỖI LƯỢT KIỂM — khóa chống trùng = `kcs.id` (`audit_log ten_bang='kcs'`).
 // ⚠ KHÔNG BAO GIỜ NÉM LỖI (bên gọi không `await`) — hỏng chiều đẩy không được chặn việc xác nhận KCS.
@@ -56,11 +57,12 @@ async function mocNhapKcs(kcsId) {
 // `opts.guiLai` (nút "Gửi lại ERP" ở Cài đặt API › Lịch sử, 26/09/2026): bỏ qua chặn "đã gửi thành công"
 //   và DÙNG LẠI `opts.idMes` cũ ⇒ proc `MES_spr_MES2Sh6` xóa phiếu SH6 cùng `Soctcu` rồi tạo lại (không đẻ phiếu trùng).
 // `opts.ngayCt` / `opts.ngayCa`: Ngày CT + mã ngày ca của lần gửi trước. Gửi lại mà dòng cũ không có Ngày CT ⇒ ngày của lượt kiểm.
-// ⚠⚠ LƯỢT KCS ĐÃ TÁCH TEM 17 (kiểm một phần / chốt sau giao trước — mig 122) ⇒ Sh6 gửi bằng MÃ TEM 17 của lượt
-//   (người dùng chốt 19/11/2026: "tem 15 kiểm trước bị tách thì lấy tem 17 gửi với câu Sh6, không gọi SK6 nữa, tem 15 bị
-//   tách rồi nên không cần gửi nữa"). Thân phiếu vẫn dựng từ TEM 15 (ngày ca, giờ SX, chuyền, tổ, đợt, phân công SF0 —
-//   y như trước), CHỈ `BarcodeIn` đổi sang tem 17; SL = đạt / hư / thiếu của lượt. Mỗi lượt tách = 1 tem 17 = 1 phiếu Sh6.
-//   Tem 17 đã hủy (OQC trả về) ⇒ lùi về tem 15. Bản trước (08/11): Sh6 bằng tem 15 + SK6 khi in tem 17 lần đầu — ĐÃ BỎ.
+// ⚠⚠ LƯỢT KCS GIAO TRƯỚC (đã tách tem 17: kiểm một phần / chốt sau giao trước — mig 122) — 1 phiếu Sh6, KHÔNG gọi SK6.
+//   25/11/2026 (người dùng gửi proc Sh6 mới có `@pBarcode17`: "truyền tem 17 nếu có giao trước, còn không thì để trống"):
+//   `BarcodeIn` = TEM 15 được kiểm (như mọi lượt — proc lấy 10 số sau làm nhãn 16) · `Barcode17` = mã TEM 17 của lượt
+//   giao trước, lượt không tách ⇒ ''. Thân phiếu dựng từ tem 15 (ngày ca, giờ SX, chuyền, tổ, đợt, phân công SF0);
+//   SL = đạt / hư / thiếu của lượt. Tem 17 đã hủy (OQC trả về) ⇒ `Barcode17` ''. (19/11–25/11 `BarcodeIn` mang tem 17
+//   vì proc chưa có tham số riêng — ĐÃ BỎ; gửi lại cùng IDMES ⇒ proc ghi đè phiếu theo thân mới.)
 async function guiKiemPham(kcsId, temId, { dat = 0, hu = 0, thieu = 0 } = {}, actorId = null, opts = {}) {
   if (!kcsId || !temId) return { ok: false, bo_qua: true, ly_do: 'THIEU_DU_LIEU' };
   if (!opts.guiLai && await daGuiThanhCong(kcsId)) return { ok: true, bo_qua: true, ly_do: 'DA_GUI' };
@@ -88,7 +90,10 @@ async function guiKiemPham(kcsId, temId, { dat = 0, hu = 0, thieu = 0 } = {}, ac
   if (idMes == null) return { ok: false, error: 'Không cấp được IDMES' };
 
   const payload = taoPayload(r, { idMes, soLuong: Number(dat) || 0, soLuongHuy: Number(hu) || 0, soLuongThieu: Number(thieu) || 0 });
-  if (t17) payload.BarcodeIn = t17.ma_tem;
+  // ⚠⚠ 23/11/2026 ~07:10 ERP ALTER `MES_spr_MES2Sh6` thêm `@pBarcode17 nvarchar(20)` (KHÔNG mặc định ⇒ router không truyền là
+  //   MỌI lượt Sh6 lỗi 500 "expects parameter '@pBarcode17'"). `BarcodeIn` GIỮ tem 15 (`taoPayload`); `Barcode17` = tem 17 của
+  //   lượt giao trước, không có ⇒ ''. Router ERP `/gui-erp-kiem-pham` phải truyền khóa này (`docs/erp-router/gui-erp-kiem-pham.js`).
+  payload.Barcode17 = t17 ? t17.ma_tem : '';
   // ⚠⚠ NGƯỜI KIỂM ⇒ `dsthoin` (09/11/2026, người dùng: "gửi dữ liệu Sh6 phải là của tên người này"): người nhập ở chỗ
   //   xác nhận KCS / modal In tem (`NGUOI_KIEM_KCS` của lượt) thay cho danh sách thợ in của phiếu sản xuất. Chọn tài khoản
   //   ⇒ gửi thẳng mã số nhân viên; tên gõ tay ⇒ `chuanHoa` tra họ tên → mã như thợ in (không ra ⇒ tên gọi).

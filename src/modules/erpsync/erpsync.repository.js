@@ -8,7 +8,8 @@ const { coCotGia, TEN_COT: TEN_COT_GIA } = require('../../utils/giaPhanIn');
 // Khóa đồng bộ ERP của phần in admin đã sửa tay (mig 116) — xem đầu file utils/khoaErp.js.
 const { coCotKhoaErp, khongKhoaSql, dangKhoa } = require('../../utils/khoaErp');
 const { chuanMauMuc, MAU_IN_KHOA_SQL } = require('../../utils/mauMuc');
-const { luongTheoTinhChat } = require('../../utils/luongSanXuat');
+const { luongTheoTinhChat, coCotCdDot } = require('../../utils/luongSanXuat');
+const { MA_TCIN_SQL } = require('../../utils/tinhChatIn');
 
 // LUỒNG SẢN XUẤT (mig 126): phần in CHƯA có luồng (vừa tạo từ ERP) ⇒ gán theo *Tính chất in*. Phần in đã có luồng GIỮ
 //   NGUYÊN (đổi tay ở Quản trị phần in; đổi phân loại tính chất in thì `tinhchatin.service` tự áp cho phần in chưa có lệnh).
@@ -481,7 +482,32 @@ async function upsertDotVai(client, { maDotVai, phanInId, loaiDotVaiId, ngayVaiV
     [phanInId, loaiDotVaiId || null, maDotVai, ngayVaiVe || null, hanGiao || null, sl, tgChuyenReady || null, barcode || null, inset ?? null,
       ...(coNGC ? [nhaGiaCong || null] : []), ...(co74 ? [duAn || null] : [])]
   );
+  await datCaHaiTheoTinhChat(client, rows[0].id);
   return { id: rows[0].id, inserted: true };
+}
+
+// ⚠⚠ "CHỈ 1 TỜ TDTHĐH" (mig 139, 25/11/2026, người dùng chốt): tính chất in nhiều công đoạn bật `tinh_chat_in.mot_tdthdh` ⇒ ERP
+//   chỉ gửi phần in lên MES 1 LẦN (kiếng ủi thường 2 lần: 4I In kiếng + đợt Ép) ⇒ đợt MỚI của phần in đó mang CẢ 2 công đoạn
+//   (`cong_doan_dot = 'CA_HAI'`, như In + Logo — Release 1 ra 2 dòng). CHỈ đợt mới (nhánh INSERT); đợt đã có giữ nguyên — đánh
+//   dấu tay ở Quản trị phần in. Phần in 1 công đoạn: đánh dấu vô hại (`luongSanXuat.dotGdSql` bỏ qua). Chưa mig 139 ⇒ bỏ qua.
+//   Vết: audit `dot_vai_ve` · `DAT_CONG_DOAN_DOT` (`nguon` = 'ERP_MOT_TDTHDH').
+async function datCaHaiTheoTinhChat(client, dotVaiId) {
+  if (!(await coCotCdDot(client))) return false;
+  const { rows } = await client.query(
+    `UPDATE dot_vai_ve dv SET cong_doan_dot = 'CA_HAI'
+      WHERE dv.id = $1 AND dv.cong_doan_dot IS NULL
+        AND EXISTS (SELECT 1 FROM phan_in pin JOIN tinh_chat_in tc ON tc.ma_chuan = ${MA_TCIN_SQL('pin.tinh_chat_in')}
+                     AND tc.dang_hoat_dong AND tc.mot_tdthdh WHERE pin.id = dv.phan_in_id)
+      RETURNING dv.id, dv.ma_dot_vai, dv.phan_in_id,
+                (SELECT pin.tinh_chat_in FROM phan_in pin WHERE pin.id = dv.phan_in_id) AS tinh_chat_in`.replace(/\s+/g, ' '),
+    [dotVaiId]);
+  if (!rows[0]) return false;
+  await client.query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_cu, gia_tri_moi, thoi_gian)
+     VALUES ('dot_vai_ve', $1, 'DAT_CONG_DOAN_DOT', jsonb_build_object('cong_doan_dot', NULL::text), $2::jsonb, clock_timestamp())`,
+    [String(rows[0].id), JSON.stringify({ cong_doan_dot: 'CA_HAI', ma_dot_vai: rows[0].ma_dot_vai, phan_in_id: rows[0].phan_in_id,
+      tinh_chat_in: rows[0].tinh_chat_in, nguon: 'ERP_MOT_TDTHDH' })]);
+  return true;
 }
 
 // ─── CẬP NHẬT LẠI THEO CODE PHẦN + NGÀY (Hệ thống › Đồng bộ ERP, 21/09/2026) ────────────────────
@@ -1168,7 +1194,7 @@ async function openSetByGhiChu(ghiChu) {
 module.exports = {
   createSyncLog, finishSyncLog, listSyncHistory, insertRawBatch, saveSyncRaw, getSyncRaw,
   upsertKhachHang, upsertDonHang, upsertMaHang, upsertPhanIn, setPhanInDryMin, capNhatPhanInPhu, getLoaiDotVaiId, upsertDotVai,
-  findPhanInIdByMaPhan, promotePhanInToReady,
+  datCaHaiTheoTinhChat, findPhanInIdByMaPhan, promotePhanInToReady,
   anhChupPhanInTheoMa, dotVaiDaCo, ganLaiPhanIn,
   ganLuongSx, readyCheckpointIds, simulateReadyDone, isPhanInReleased, canLamLaiReady, flagLamLaiReady,
   chiHuyQcReady, reopenReadyForPhanIn, setDotVaiKtCanKiemTra,

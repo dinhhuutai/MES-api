@@ -19,6 +19,13 @@
 //   phiếu ⇒ chạy lại vô hại, không cần mốc.
 // ⚠ CHỈ 1 TIẾN TRÌNH CHẠY: khóa phiên `pg_try_advisory_lock` + chỉ chạy trên máy chủ (PGHOST cục bộ) hoặc khi
 //   `HANG_DOI_JOB=true` (tên cũ `KCS_HANG_DOI_JOB` vẫn nhận) — máy dev trỏ DB production không chạy mục của xưởng.
+// ⚠⚠ XÍCH THEO TEM (25/11/2026, người dùng: "phân loại lỗi đang trong hàng đợi, chưa kịp lưu thì bên sửa vẫn cho lên hàng
+//   đợi; chạy theo thứ tự: tem phân loại lỗi chạy xong mới cho chạy tem sửa — những chỗ kia cũng làm vậy"): thứ tự bước
+//   `THU_TU` = KCS → Phân loại lỗi → Nhận sửa → Sửa. Tem còn mục CHỜ ở bước TRƯỚC ⇒
+//   · màn sau quét tem vẫn ra dòng với SỐ DỰ KIẾN sau khi các bước đó chạy (`duKien`, GET /hang-doi/du-kien) — xác nhận là
+//     dòng đó vào THẲNG hàng đợi (không lưu thẳng được vì DB chưa có số);
+//   · mục mới (mọi đường xếp) mang `sau_muc` = mục chờ cuối của tem + `moc` = số DỰ KIẾN (chống ghi đôi vẫn đúng); bộ chạy
+//     KHÔNG lấy mục khi `sau_muc` còn chờ; `sau_muc` LỖI / BỎ ⇒ mục sau ghi LỖI "bước trước…" (không chạy trên số sai).
 // ─────────────────────────────────────────────────────────────────────────────
 
 const crypto = require('crypto');
@@ -93,6 +100,108 @@ const LOAI = {
   },
 };
 
+// ─── XÍCH THEO TEM ───────────────────────────────────────────────────────────
+const THU_TU = ['KCS', 'PHAN_LOAI_LOI', 'NHAN_SUA', 'SUA'];
+const viTri = (loai) => THU_TU.indexOf(loai);
+const KHONG_KET_THUC = (a) => `NOT EXISTS (SELECT 1 FROM audit_log zk WHERE zk.ten_bang = '${TB}' AND zk.id_ban_ghi = ${a}.id_ban_ghi AND zk.hanh_dong IN ${KET_THUC})`;
+
+// Mục CHỜ của các tem, cũ trước ⇒ Map tem_id → [{ id, loai, body, moc }].
+async function mucChoTheoTem(temIds) {
+  const m = new Map();
+  if (!temIds.length) return m;
+  const { rows } = await query(
+    `SELECT a.id_ban_ghi AS id, a.gia_tri_moi->>'tem_id' AS tem_id, a.gia_tri_moi->>'loai' AS loai, a.gia_tri_moi->'body' AS body
+       FROM audit_log a
+      WHERE a.ten_bang = '${TB}' AND a.hanh_dong = 'HANG_DOI_THEM' AND a.gia_tri_moi->>'tem_id' = ANY($1::text[]) AND ${KHONG_KET_THUC('a')}
+      ORDER BY a.thoi_gian, a.id`.replace(/\s+/g, ' '), [temIds.map(String)]);
+  rows.forEach((r) => { const a = m.get(r.tem_id) || []; a.push({ ...r, body: r.body || {} }); m.set(r.tem_id, a); });
+  return m;
+}
+
+// Số của tem SAU KHI các mục chờ `cho` (bước trước) chạy xong — cùng công thức sổ cái `utils/choSua.js` (đã nhận hiệu lực =
+//   LEAST(GREATEST(sl_nhan_sua, đã xử lý), sl_kcs_sua)). KCS: hư ⇒ `sl_kcs_sua` (body KCS không có ô sửa riêng) · Phân loại
+//   lỗi: GHI ĐÈ sửa / hủy · Nhận sửa: `sl_nhan_sua = đã nhận + SL` · Sửa: đã xử lý += đạt + hủy + hủy thẳng.
+async function duKienSo(temId, cho) {
+  const t = await qaRepo().getTemLedger(temId);
+  if (!t) return null;
+  const [s] = await qaRepo().soSuaCuaTem([temId]);
+  let kcsSua = so(t.sl_kcs_sua);
+  let kcsHuy = so(t.sl_kcs_huy);
+  let nhan = s && s.sl_nhan_sua != null ? so(s.sl_nhan_sua) : kcsSua;
+  let xuLy = so(t.sl_sua_dat) + so(t.sl_sua_huy);
+  let daPll = !!(s && s.vao_sua_duoc);
+  const tinh = () => {
+    const daNhan = Math.min(Math.max(nhan, xuLy), kcsSua);
+    return { daNhan, choNhan: Math.max(kcsSua - daNhan, 0), dangSua: Math.max(daNhan - xuLy, 0) };
+  };
+  for (const m of cho) {
+    const b = m.body || {};
+    if (m.loai === 'KCS') kcsSua += so(b.soLuongHu);
+    else if (m.loai === 'PHAN_LOAI_LOI') {
+      const d = Array.isArray(b.dong) ? b.dong : [];
+      kcsSua = d.reduce((x, r) => x + so(r.soLuongSua), 0);
+      kcsHuy = d.reduce((x, r) => x + so(r.soLuongHuy), 0);
+      daPll = true;
+    } else if (m.loai === 'NHAN_SUA') {
+      const { daNhan, choNhan } = tinh();
+      nhan = daNhan + Math.min(so(b.soLuong) || choNhan, choNhan);
+    } else if (m.loai === 'SUA') xuLy += so(b.soLuongSuaDat) + so(b.soLuongSuaHuy) + so(b.soLuongHuyThang);
+  }
+  return { t, kcsSua, kcsHuy, hu: kcsSua + kcsHuy, daPll, ...tinh() };
+}
+
+// Mốc chống ghi đôi của mục loại `loai` khi chạy SAU các mục `truoc` — số dự kiến; `loi` = sau các bước trước vẫn không làm được.
+function mocDuKien(loai, dk, tenTruoc) {
+  if (loai === 'PHAN_LOAI_LOI') return dk.hu > 0 ? { moc: null } : { loi: `Sau ${tenTruoc} tem vẫn không có SL hư để phân loại` };
+  if (loai === 'NHAN_SUA') {
+    if (!dk.daPll) return { loi: `Sau ${tenTruoc} tem vẫn chưa phân loại lỗi — cần Phân loại lỗi trước` };
+    return dk.choNhan > 0 ? { moc: dk.choNhan } : { loi: `Sau ${tenTruoc} tem không có phần chờ nhận sửa` };
+  }
+  if (loai === 'SUA') {
+    if (dk.dangSua > 0) return { moc: dk.dangSua };
+    return { loi: dk.choNhan > 0
+      ? `Sau ${tenTruoc} tem còn ${dk.choNhan} chờ NHẬN SỬA — quét ở hộp "Nhận sửa" trước (cũng vào hàng đợi được)`
+      : `Sau ${tenTruoc} tem không có phần đang sửa` };
+  }
+  return { loi: 'KCS là bước đầu — không xếp sau bước khác' };
+}
+const tenCacBuoc = (ds) => [...new Set(ds.map((m) => (LOAI[m.loai] || {}).ten || m.loai))].join(' → ');
+
+/** Quét tem ở màn `loai` mà tem còn mục CHỜ ở bước trước ⇒ dòng DỰ KIẾN (cùng các trường màn đó đọc) hoặc `loi`.
+ *  `{ row: null }` = tem không có bước trước đang chờ (FE giữ câu lỗi của màn). */
+async function duKien(user, { loai, ma } = {}) {
+  if (!LOAI[loai]) throw new AppError('Loại hàng đợi không hợp lệ', { status: 422, errorCode: 'LOAI_SAI' });
+  if (!coQuyen(user.permissions, loai)) throw new AppError('Không có quyền thao tác màn này', { status: 403, errorCode: 'FORBIDDEN' });
+  if (viTri(loai) <= 0) return { row: null };
+  const ds = require('../../utils/temPrefix').maTemUngVien(String(ma || '').trim());
+  if (!ds.length) return { row: null };
+  const tem = await require('../quality/phanloailoi.repository').timTemDePhanLoai(ds);
+  if (!tem || tem.trang_thai === 'HUY') return { row: null };
+  const cho = (await mucChoTheoTem([tem.tem_id])).get(String(tem.tem_id)) || [];
+  const truoc = cho.filter((m) => viTri(m.loai) >= 0 && viTri(m.loai) < viTri(loai));
+  if (!truoc.length) return { row: null };
+  const tenTruoc = tenCacBuoc(truoc);
+  if (cho.some((m) => m.loai === loai)) return { loi: `Tem đã có trong hàng đợi ${LOAI[loai].ten} (sau ${tenTruoc})` };
+  const dk = await duKienSo(tem.tem_id, truoc);
+  if (!dk) return { row: null };
+  const kq = mocDuKien(loai, dk, `${tenTruoc} (hàng đợi)`);
+  if (kq.loi) return { loi: kq.loi };
+  if (loai === 'PHAN_LOAI_LOI') {
+    const { rows } = await query('SELECT 1 FROM phan_loai_loi WHERE tem_id = $1 LIMIT 1', [tem.tem_id]);
+    if (rows.length) return { loi: `Tem đã có phiếu phân loại lỗi — đợi ${tenTruoc} trong hàng đợi chạy xong rồi sửa phiếu ở danh sách` };
+  }
+  const cuoi = truoc[truoc.length - 1];
+  const row = {
+    tem_id: tem.tem_id, ma_tem: tem.ma_tem, ten_khach_hang: tem.ten_khach_hang, ma_don_hang: tem.ma_don_hang, ma_hang: tem.ma_hang,
+    ma_phan: tem.ma_phan, phan_list: tem.ma_phan, mau_vai: tem.mau_vai, kich_vai: tem.kich_vai, kich_phim: tem.kich_phim,
+    qua_hang_doi: { muc_id: cuoi.id, loai_truoc: cuoi.loai, ten_truoc: tenTruoc },
+  };
+  if (loai === 'PHAN_LOAI_LOI') Object.assign(row, { sl_kcs_sua: dk.kcsSua, sl_kcs_huy: dk.kcsHuy, sl_hu: dk.hu });
+  if (loai === 'NHAN_SUA') Object.assign(row, { cho_nhan: dk.choNhan });
+  if (loai === 'SUA') Object.assign(row, { con_sua: dk.dangSua, dang_sua: dk.dangSua });
+  return { row };
+}
+
 function duocChayTrenMayNay() {
   const v = String(process.env.HANG_DOI_JOB || process.env.KCS_HANG_DOI_JOB || '').trim().toLowerCase();
   if (v === 'true') return true;
@@ -124,12 +233,28 @@ async function xep(user, { loai, items, nguon = 'TICH_TEM' } = {}) {
   const lo = crypto.randomUUID();
   const muc = [];
   const boQua = [];
+  // Xích theo tem: mục chờ của BƯỚC TRƯỚC (KCS → Phân loại lỗi → Nhận sửa → Sửa) ⇒ chạy sau mục cuối + mốc = số dự kiến.
+  const choTem = await mucChoTheoTem(ids);
   for (const x of ds) {
     const temId = String(x.temId);
     if (trung.has(temId)) { boQua.push({ tem_id: temId, ly_do: 'Tem đang chờ trong hàng đợi' }); continue; }
-    const m = await LOAI[loai].moc(temId); // eslint-disable-line no-await-in-loop
+    const truoc = (choTem.get(temId) || []).filter((c) => viTri(c.loai) >= 0 && viTri(c.loai) < viTri(loai));
+    let m;
+    let sau = null;
+    if (truoc.length) {
+      const dk = await duKienSo(temId, truoc); // eslint-disable-line no-await-in-loop
+      if (!dk) { boQua.push({ tem_id: temId, ly_do: 'Tem không tồn tại' }); continue; }
+      const tenTruoc = tenCacBuoc(truoc);
+      const kq = mocDuKien(loai, dk, `${tenTruoc} (hàng đợi)`);
+      if (kq.loi) { boQua.push({ tem_id: temId, ly_do: kq.loi }); continue; }
+      m = { ma_tem: dk.t.ma_tem, moc: kq.moc };
+      const cuoi = truoc[truoc.length - 1];
+      sau = { sau_muc: cuoi.id, sau_loai: cuoi.loai };
+    } else {
+      m = await LOAI[loai].moc(temId); // eslint-disable-line no-await-in-loop
+    }
     if (!m) { boQua.push({ tem_id: temId, ly_do: 'Tem không tồn tại' }); continue; }
-    muc.push({ id: crypto.randomUUID(), loai, lo, tem_id: temId, ma_tem: m.ma_tem, moc: m.moc, body: locBody(loai, x.body) });
+    muc.push({ id: crypto.randomUUID(), loai, lo, tem_id: temId, ma_tem: m.ma_tem, moc: m.moc, body: locBody(loai, x.body), ...(sau || {}) });
   }
   if (muc.length) {
     await query(
@@ -171,6 +296,7 @@ async function danhSach({ loai = '', trangThai = '', lo = '', tim = '', soGio = 
       id: r.id, loai: g.loai || 'KCS', ten_loai: (LOAI[g.loai] || LOAI.KCS).ten, lo: g.lo || null, tem_id: g.tem_id, ma_tem: g.ma_tem,
       moc: g.moc, nguon: g.nguon, nguoi_xep: r.nguoi_xep, nguoi_xep_id: r.nguoi_xep_id, tg_xep: r.tg_xep, tg_xong: r.tg_xong,
       trang_thai: TT[r.ket_thuc] || 'CHO', loi: r.kq && r.kq.loi ? r.kq.loi : null, ket_qua: r.kq && r.kq.ket_qua ? r.kq.ket_qua : null,
+      sau_muc: g.sau_muc || null, sau_ten: g.sau_loai ? (LOAI[g.sau_loai] || {}).ten || g.sau_loai : null,
       nguoi_bo: r.nguoi_bo, ly_do_bo: r.kq && r.ket_thuc === 'HANG_DOI_BO' ? r.kq.ly_do : null,
       tom_tat: tomTat(g.loai, b),
     };
@@ -231,10 +357,26 @@ async function ghiKetThuc(m, hd, moi) {
     [m.id, hd, JSON.stringify(moi), m.nguoi_id]);
 }
 
+// Kết thúc của mục bước trước (`sau_muc`): 'HANG_DOI_XONG' | 'HANG_DOI_LOI' | 'HANG_DOI_BO' | null (còn chờ).
+async function ketThucCua(id) {
+  const { rows } = await query(
+    `SELECT hanh_dong FROM audit_log WHERE ten_bang = '${TB}' AND id_ban_ghi = $1 AND hanh_dong IN ${KET_THUC} ORDER BY thoi_gian DESC LIMIT 1`, [id]);
+  return rows[0] ? rows[0].hanh_dong : null;
+}
+
 async function lamMot(m) {
   const cfg = LOAI[m.loai] || LOAI.KCS;
   let loi = false;
   try {
+    // Xích theo tem: bước trước LỖI / BỊ BỎ ⇒ số dự kiến không còn đúng ⇒ không chạy (người dùng làm lại tay rồi Bỏ).
+    if (m.sau_muc) {
+      const kt = await ketThucCua(m.sau_muc);
+      if (kt !== 'HANG_DOI_XONG') {
+        const ten = (LOAI[m.sau_loai] || {}).ten || 'bước trước';
+        throw new AppError(`Bước trước (${ten}) của tem ${m.ma_tem} ${kt === 'HANG_DOI_BO' ? 'đã bị bỏ' : kt ? 'bị lỗi' : 'chưa chạy'} trong hàng đợi — làm lại tay bước đó rồi tới bước này`,
+          { status: 409, errorCode: 'BUOC_TRUOC_LOI' });
+      }
+    }
     const kq = await cfg.chay(m);
     await ghiKetThuc(m, 'HANG_DOI_XONG', { ket_qua: kq || {} });
   } catch (e) {
@@ -289,11 +431,14 @@ async function chay() {
         const { rows: ds } = await client.query(
           `SELECT a.id_ban_ghi AS id, a.gia_tri_moi->>'loai' AS loai, a.gia_tri_moi->>'lo' AS lo, a.gia_tri_moi->>'tem_id' AS tem_id,
                   a.gia_tri_moi->>'ma_tem' AS ma_tem, a.gia_tri_moi->'moc' AS moc, a.gia_tri_moi->'body' AS body,
+                  a.gia_tri_moi->>'sau_muc' AS sau_muc, a.gia_tri_moi->>'sau_loai' AS sau_loai,
                   a.nguoi_thuc_hien_id AS nguoi_id
              FROM audit_log a
             WHERE a.ten_bang = '${TB}' AND a.hanh_dong = 'HANG_DOI_THEM'
               AND NOT EXISTS (SELECT 1 FROM audit_log b WHERE b.ten_bang = '${TB}' AND b.id_ban_ghi = a.id_ban_ghi
                                AND b.hanh_dong IN ${KET_THUC})
+              AND NOT EXISTS (SELECT 1 FROM audit_log p WHERE p.ten_bang = '${TB}' AND p.hanh_dong = 'HANG_DOI_THEM'
+                               AND p.id_ban_ghi = a.gia_tri_moi->>'sau_muc' AND ${KHONG_KET_THUC('p')})
             ORDER BY a.thoi_gian, a.id LIMIT 1`.replace(/\s+/g, ' '));
         if (!ds.length) break;
         const m = { ...ds[0], body: ds[0].body || {}, moc: ds[0].moc == null ? null : Number(ds[0].moc) };
@@ -327,4 +472,4 @@ function startHangDoiJob() {
   console.log('[hang-doi] ▶ Chạy hàng đợi tích tem (KCS · Phân loại lỗi · Nhận sửa · Sửa)');
 }
 
-module.exports = { xep, danhSach, bo, startHangDoiJob, kich, LOAI, coQuyen };
+module.exports = { xep, duKien, danhSach, bo, startHangDoiJob, kich, LOAI, coQuyen, THU_TU };

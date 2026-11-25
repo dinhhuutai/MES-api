@@ -207,7 +207,7 @@ async function guiSuaDat(suaId, actorId, opts = {}) {
 //   Sửa, đã nằm ở phiếu Sh6). Ngày CT / ngày ca / giờ = MỐC XÁC NHẬN lượt KCS (không phải lúc in).
 //   `id_ban_ghi` Lịch sử = LƯỢT KCS ⇒ khóa "1 lần / lượt" + hủy xác nhận KCS báo hủy được (`erpHuy` KENH.SUA).
 // ⚠⚠ ĐÃ BỎ 19/11/2026 (người dùng chốt: "tem 15 kiểm trước bị tách thì lấy tem 17 gửi với câu Sh6, không gọi SK6 nữa"):
-//   tem 17 của lượt KCS nay báo ERP bằng phiếu Sh6 (`kiemPhamErp` — `BarcodeIn` = tem 17). In tem 17 không gọi hàm này nữa;
+//   tem 17 của lượt KCS nay báo ERP bằng phiếu Sh6 (`kiemPhamErp` — `Barcode17` = tem 17, `BarcodeIn` tem 15 từ 25/11/2026). In tem 17 không gọi hàm này nữa;
 //   "Gửi lại ERP" / hàng đợi tự gửi lại các dòng SK6 cũ của lượt KCS ⇒ bỏ qua `TEM_17_GUI_BANG_SH6` (gửi lại là ERP đếm
 //   đôi với Sh6). Phiếu SK6 cũ đã nằm trên ERP thì hủy bằng script SQL Server (`taoSqlServerSh6Tem17Kcs.js`).
 //   Thân hàm giữ lại (không gọi) để đọc luật cũ.

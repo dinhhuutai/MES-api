@@ -112,21 +112,43 @@ const haiCongDoanSql = (pin = 'pin') => `(${pin}.luong_sx IN ('IN_KIENG','IN_EP'
 //   nó ⇒ Release 1 / Kế hoạch tạm / Gom đợt vải ra 1 dòng / đợt; ở READY đợt nằm ở dòng của công đoạn nó; "đã release" của
 //   đợt = lệnh của chính công đoạn đó. Phần in có mấy công đoạn vẫn theo *Tính chất in* (`phan_in.luong_sx`). Phần in 2 công
 //   đoạn khác (In + Ép/Logo — ERP chỉ gửi 1 lần) GIỮ luật cũ: 1 đợt ra cả 2 công đoạn (`dotGd` = null).
+// ⚠⚠ CÔNG ĐOẠN ĐÁNH DẤU CỦA ĐỢT (mig 139, 25/11/2026, người dùng chốt) — `dot_vai_ve.cong_doan_dot` THẮNG luật loại đợt ở
+//   trên, CHỈ với phần in 2 công đoạn: 'IN' (chỉ In / In kiếng) · 'EP_UI' (chỉ Ép / Logo) · 'CA_HAI' (cả 2 — như In + Logo) ·
+//   NULL = theo luật cũ. Đặt ở: "Thêm đợt vải tay" (chọn tự do In / In kiếng / Logo / Ép / Cả 2, không phụ thuộc loại đợt —
+//   chỉ công đoạn phần in đang có) · sửa đợt ở Quản trị phần in · ERP tự đặt 'CA_HAI' cho đợt MỚI khi tính chất in bật
+//   "Chỉ 1 tờ TDTHĐH" (`tinh_chat_in.mot_tdthdh` — kiếng ủi ERP chỉ gửi 1 lần ⇒ MES tự có công đoạn còn lại). Phần in 1 công
+//   đoạn: cột bị bỏ qua. Đọc qua `to_jsonb` ⇒ chạy cả khi chưa chạy mig 139 (thiếu cột ⇒ luật cũ).
 const LUONG_THEO_DOT = new Set(['IN_KIENG']);
 const LOAI_DOT_KIENG = 'IN_KIENG'; // loại đợt của loaikd 4I (`erpsync.service LOAIKD_MAP`)
+const CD_CA_HAI = 'CA_HAI';
+const CD_DOT = [GD_IN, GD_EP, CD_CA_HAI];
+const chuanCdDot = (v) => (CD_DOT.includes(v) ? v : null);
 const theoDot = (luong) => LUONG_THEO_DOT.has(luong);
-// Công đoạn của 1 đợt: 'IN' | 'EP_UI' — null = đợt có cả 2 công đoạn (hoặc phần in 1 công đoạn).
-function dotGd(luong, maLoaiDot) {
+// Công đoạn của 1 đợt: 'IN' | 'EP_UI' — null = đợt có cả 2 công đoạn (hoặc phần in 1 công đoạn). `cdDot` = `cong_doan_dot`.
+function dotGd(luong, maLoaiDot, cdDot = null) {
+  if (!laHaiCongDoan(luong)) return null;
+  const cd = chuanCdDot(cdDot);
+  if (cd) return cd === CD_CA_HAI ? null : cd;
   if (!theoDot(luong)) return null;
   return maLoaiDot === LOAI_DOT_KIENG ? GD_IN : GD_EP;
 }
-const dotThuocGd = (luong, maLoaiDot, gd) => { const g = dotGd(luong, maLoaiDot); return !g || g === chuanGd(gd); };
+const dotThuocGd = (luong, maLoaiDot, gd, cdDot = null) => { const g = dotGd(luong, maLoaiDot, cdDot); return !g || g === chuanGd(gd); };
+// Đợt của phần in 2 công đoạn mang CẢ 2 công đoạn (READY xác nhận 1 lần, Release 1 tách 2 dòng).
+const dotCaHai = (luong, maLoaiDot, cdDot = null) => laHaiCongDoan(luong) && dotGd(luong, maLoaiDot, cdDot) === null;
+// SQL: `cong_doan_dot` của đợt `dv` — tra lại theo `id` (không dựa cột của alias: `dv` có thể là subquery / câu GROUP BY).
+const cdDotSql = (dv = 'dv') => `(SELECT to_jsonb(zcd)->>'cong_doan_dot' FROM dot_vai_ve zcd WHERE zcd.id = ${dv}.id)`;
 // SQL: công đoạn của đợt `dv` ('IN' | 'EP_UI' | NULL). `luongExpr` = luồng phần in nếu câu đã JOIN phần in (vd 'pin.luong_sx'),
-//   bỏ trống ⇒ tự tra phần in của đợt.
+//   bỏ trống ⇒ tự tra phần in của đợt. CASE đơn ⇒ luồng tính 1 lần; đợt của phần in 1 công đoạn không tra `cong_doan_dot`.
 function dotGdSql(dv = 'dv', luongExpr = null) {
   const l = luongExpr || `(SELECT zgp.luong_sx FROM phan_in zgp WHERE zgp.id = ${dv}.phan_in_id)`;
-  return `(CASE WHEN ${l} IN (${[...LUONG_THEO_DOT].map((x) => `'${x}'`).join(',')}) THEN (CASE WHEN ${dv}.loai_dot_vai_id = (SELECT zgl.id FROM loai_dot_vai zgl WHERE zgl.ma_loai = '${LOAI_DOT_KIENG}' LIMIT 1) THEN '${GD_IN}' ELSE '${GD_EP}' END) END)`;
+  const theoLoai = `(CASE WHEN ${dv}.loai_dot_vai_id = (SELECT zgl.id FROM loai_dot_vai zgl WHERE zgl.ma_loai = '${LOAI_DOT_KIENG}' LIMIT 1) THEN '${GD_IN}' ELSE '${GD_EP}' END)`;
+  return `(CASE ${l} WHEN 'IN_KIENG' THEN NULLIF(COALESCE(${cdDotSql(dv)}, ${theoLoai}), '${CD_CA_HAI}') WHEN 'IN_EP' THEN NULLIF(COALESCE(${cdDotSql(dv)}, '${CD_CA_HAI}'), '${CD_CA_HAI}') END)`;
 }
+// SQL boolean: đợt `dv` của phần in 2 công đoạn mang CẢ 2 công đoạn (gương `dotCaHai`).
+const dotCaHaiSql = (dv = 'dv', luongExpr = null) => {
+  const l = luongExpr || `(SELECT zgp2.luong_sx FROM phan_in zgp2 WHERE zgp2.id = ${dv}.phan_in_id)`;
+  return `(COALESCE(${l} IN ('IN_KIENG','IN_EP'), false) AND ${dotGdSql(dv, luongExpr)} IS NULL)`;
+};
 // SQL: đợt `dv` có phần của công đoạn `gd` (literal 'IN' / 'EP_UI' hoặc biểu thức).
 const dotThuocGdSql = (dv, gd, luongExpr = null) => `(COALESCE(${dotGdSql(dv, luongExpr)}, ${gd}) = ${gd})`;
 // SQL: công đoạn "CHÍNH" của đợt — đợt 1 công đoạn ⇒ công đoạn đó; còn lại ⇒ IN (phần in, như trước). "Đã release / đã rời
@@ -178,6 +200,17 @@ async function bangLuongTinhChat() {
   return map;
 }
 const xoaNho = () => { nho = { luc: 0, map: null }; };
+// Mig 139 đã chạy chưa (`dot_vai_ve.cong_doan_dot` + `tinh_chat_in.mot_tdthdh`) — nhớ khi CÓ. `db` = client transaction (tùy chọn).
+let _coCdDot = false;
+async function coCotCdDot(db = null) {
+  if (_coCdDot) return true;
+  try {
+    const { rows } = await (db ? db.query.bind(db) : query)(
+      `SELECT count(*)::int AS n FROM information_schema.columns WHERE table_schema = 'public' AND ((table_name = 'dot_vai_ve' AND column_name = 'cong_doan_dot') OR (table_name = 'tinh_chat_in' AND column_name = 'mot_tdthdh'))`);
+    _coCdDot = rows[0].n === 2;
+  } catch { _coCdDot = false; }
+  return _coCdDot;
+}
 // PA hiển thị của dòng công đoạn ép theo tính chất in (gương JS của `paCongDoanSql`): tính chất có công tắc Logo ⇒ Logo (5),
 //   còn lại Ép (4). Dùng ở chỗ dựng dòng bằng JS (READY — `technical.service`).
 async function paCongDoanEp(tinhChatIn) {
@@ -196,4 +229,5 @@ module.exports = {
   gdSql, daRelSql, laPhanInSql, haiCongDoanSql, khtGdSql, khtLaGdSql, khtCoCotGd, PAIN_EP, paCongDoanSql,
   bangLuongTinhChat, luongTheoTinhChat, xoaNho, paCongDoanEp, PAIN_LOGO_CD,
   LUONG_THEO_DOT, LOAI_DOT_KIENG, theoDot, dotGd, dotThuocGd, dotGdSql, dotThuocGdSql, gdChinhDotSql, lenhChinhCuaDotSql,
+  CD_CA_HAI, CD_DOT, chuanCdDot, dotCaHai, cdDotSql, dotCaHaiSql, coCotCdDot,
 };

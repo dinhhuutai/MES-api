@@ -88,7 +88,9 @@ const KENH = {
     //   định cho các tham số này, thiếu là lỗi "expects parameter … not supplied" (router ERP truyền thẳng khóa của thân).
     macDinh: { Labtp: 0, LabtpCuoi: 0, Kieng: '', HsKieng: 0, SoluongKieng: 0, SLBSCty: 0, SLBSKhachHang: 0 },
   }),
-  ERP_GUI_KIEM_PHAM: kenh20('ERP_GUI_KIEM_PHAM'),
+  // 23/11/2026: proc Sh6 thêm `@pBarcode17` (tem 17 của lượt giao trước, không có ⇒ trống; `BarcodeIn` = tem 15).
+  //   Thân cũ (trước 23/11) thiếu khóa ⇒ "Sửa & gửi" điền ''.
+  ERP_GUI_KIEM_PHAM: kenh20('ERP_GUI_KIEM_PHAM', { truong: ['Barcode17'], dai: { Barcode17: 20 }, macDinh: { Barcode17: '' } }),
   ERP_GUI_TEM_GIA_CONG: kenh20('ERP_GUI_TEM_GIA_CONG'),
   ERP_GUI_SUA_DAT: kenh20('ERP_GUI_SUA_DAT', {
     truong: ['BarcodeSua16', 'BarcodeSua17', 'BarcodeSua'],

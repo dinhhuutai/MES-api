@@ -7,7 +7,7 @@ const {
   LUONG, MA_LUONG, BO_QUA_MAC_DINH, BO_QUA_MAC_DINH_RAW, normTcin, luongTuCongDoan, congDoanCuaLuong, luongSxTheoPhanLoai,
   coCongDoanEp, khongInRoiEp, epThanhLogo,
 } = require('../../utils/tinhChatIn');
-const { xoaNho: xoaNhoLuong } = require('../../utils/luongSanXuat');
+const { xoaNho: xoaNhoLuong, theoDot } = require('../../utils/luongSanXuat');
 // Chế độ READY của tính chất nhiều công đoạn (mig 131 — `utils/readyCongDoan.js`).
 const { CHE_DO } = require('../../utils/readyCongDoan');
 // Yêu cầu KT của công đoạn Ép/Logo (mig 133 — `utils/tech.js`).
@@ -66,12 +66,16 @@ function chuanDong(x) {
   const coEp = coCongDoanEp(congDoanCuaLuong(luong)); // Logo hoặc Ép
   // "Xác nhận HSKT" của công đoạn Ép/Logo (mig 134) — mặc định BẬT; chỉ có nghĩa khi tính chất có Ép/Logo.
   const ktHskt = x.kt_hskt == null ? true : !!x.kt_hskt;
+  // "Chỉ 1 tờ TDTHĐH" (mig 139, 25/11/2026): chỉ có nghĩa khi luồng SẢN XUẤT mà ERP gửi THEO TỪNG CÔNG ĐOẠN (kiếng ủi —
+  //   `luongSanXuat.theoDot`); In + Logo vốn đã 1 đợt mang 2 công đoạn, 1 công đoạn thì không có công đoạn còn lại ⇒ luôn lưu
+  //   false. Bật ⇒ đợt MỚI từ ERP mang cả 2 công đoạn (`erpsync.repository datCaHaiTheoTinhChat`), đợt đã có giữ nguyên.
+  const motTdthdh = x.mot_tdthdh === true && theoDot(luongPhanIn(luong));
   return { ma_chuan: ma, ten, luong, bo_qua: x.bo_qua, ghi_chu: ghiChu || null, ready_che_do: cheDo, kt_yeu_cau: coEp ? ktYc : KT_YC_MAC_DINH,
-    kt_hskt: ktHskt, dsp_logo: dspLogo };
+    kt_hskt: ktHskt, dsp_logo: dspLogo, mot_tdthdh: motTdthdh };
 }
 
 const giaTri = (r) => ({ ten: r.ten, luong: r.luong, bo_qua: r.bo_qua, ghi_chu: r.ghi_chu || null, ready_che_do: r.ready_che_do || 'RIENG',
-  kt_yeu_cau: r.kt_yeu_cau || KT_YC_MAC_DINH, kt_hskt: r.kt_hskt !== false, dsp_logo: r.dsp_logo === true });
+  kt_yeu_cau: r.kt_yeu_cau || KT_YC_MAC_DINH, kt_hskt: r.kt_hskt !== false, dsp_logo: r.dsp_logo === true, mot_tdthdh: r.mot_tdthdh === true });
 // Chưa có cột (chưa chạy mig 131) mà muốn đặt chế độ khác mặc định ⇒ 409 (đừng âm thầm bỏ qua).
 async function kiemCheDo(ds) {
   if (ds.some((d) => d.ready_che_do !== 'RIENG') && !(await repo.coCotCheDo())) {
@@ -83,6 +87,9 @@ async function kiemCheDo(ds) {
   if (ds.some((d) => d.dsp_logo) && !(await repo.coCotDspLogo())) {
     throw new AppError('Chưa chạy migration 137 nên chưa lưu được "DSP Logo"', { status: 409, errorCode: 'CHUA_MIGRATION_137' });
   }
+  if (ds.some((d) => d.mot_tdthdh) && !(await repo.coCotMotTdthdh())) {
+    throw new AppError('Chưa chạy migration 139 nên chưa lưu được "1 tờ TDTHĐH"', { status: 409, errorCode: 'CHUA_MIGRATION_139' });
+  }
 }
 
 // Danh mục + số liệu. Tính chất có trong dữ liệu mà chưa có trong danh mục ⇒ dòng `moi` (đồng bộ không bỏ qua nó).
@@ -91,7 +98,7 @@ async function danhSach() {
   const [dm, pis, dots] = await Promise.all([coBang ? repo.danhMuc() : [], repo.demPhanIn(), repo.demDotErp()]);
   const m = new Map();
   const dat = (ma, ten, them) => {
-    if (!m.has(ma)) m.set(ma, { id: null, ma_chuan: ma, ten, luong: 'CHUA_PHAN_LOAI', bo_qua: false, ghi_chu: null, ready_che_do: 'RIENG', kt_yeu_cau: KT_YC_MAC_DINH, kt_hskt: true, dsp_logo: false, moi: true, so_phan_in: 0, so_dot_erp: 0 });
+    if (!m.has(ma)) m.set(ma, { id: null, ma_chuan: ma, ten, luong: 'CHUA_PHAN_LOAI', bo_qua: false, ghi_chu: null, ready_che_do: 'RIENG', kt_yeu_cau: KT_YC_MAC_DINH, kt_hskt: true, dsp_logo: false, mot_tdthdh: false, moi: true, so_phan_in: 0, so_dot_erp: 0 });
     Object.assign(m.get(ma), them);
   };
   if (coBang) {
@@ -108,7 +115,7 @@ async function danhSach() {
     || b.so_phan_in - a.so_phan_in || b.so_dot_erp - a.so_dot_erp || a.ten.localeCompare(b.ten));
   return { items, luong: LUONG, chua_migration: !coBang, co_che_do_ready: coBang && (await repo.coCotCheDo()),
     co_kt_yeu_cau: coBang && (await repo.coCotKtYc()), kt_yeu_cau: KT_YC, co_kt_hskt: coBang && (await repo.coCotKtHskt()),
-    co_dsp_logo: coBang && (await repo.coCotDspLogo()) };
+    co_dsp_logo: coBang && (await repo.coCotDspLogo()), co_mot_tdthdh: coBang && (await repo.coCotMotTdthdh()) };
 }
 
 // Lưu nhiều dòng 1 lượt. Chỉ ghi + ghi vết dòng THẬT SỰ đổi (giữ `updated_*` đúng người đã sửa).
@@ -122,6 +129,7 @@ async function luu(items, actorId) {
   // Chưa chạy mig 134 ⇒ không so cột kt_hskt (giao diện khóa công tắc, giá trị đọc ra là false giả).
   const coHskt = await repo.coCotKtHskt();
   const coDsp = await repo.coCotDspLogo(); // mig 137 — chưa có cột ⇒ không so dsp_logo
+  const coMot = await repo.coCotMotTdthdh(); // mig 139 — chưa có cột ⇒ không so mot_tdthdh
 
   const soDoi = await withTransaction(async (client) => {
     const cu = new Map((await repo.docTheoMaTx(client, [...theoMa.keys()])).map((r) => [r.ma_chuan, r]));
@@ -136,7 +144,8 @@ async function luu(items, actorId) {
         n += 1;
       } else if (!c.dang_hoat_dong || c.luong !== d.luong || c.bo_qua !== d.bo_qua || (c.ghi_chu || null) !== d.ghi_chu
                  || (c.ready_che_do || 'RIENG') !== d.ready_che_do || (c.kt_yeu_cau || KT_YC_MAC_DINH) !== d.kt_yeu_cau
-                 || (coHskt && c.kt_hskt !== d.kt_hskt) || (coDsp && (c.dsp_logo === true) !== d.dsp_logo)) {
+                 || (coHskt && c.kt_hskt !== d.kt_hskt) || (coDsp && (c.dsp_logo === true) !== d.dsp_logo)
+                 || (coMot && (c.mot_tdthdh === true) !== d.mot_tdthdh)) {
         await repo.suaTx(client, c.id, d, actorId);
         await repo.logTx(client, c.id, 'SUA_TINH_CHAT_IN', giaTri(c), giaTri(d), actorId);
         if (c.luong !== d.luong) apPhanIn += await repo.apLuongChoPhanInTx(client, d.ma_chuan, luongPhanIn(d.luong));

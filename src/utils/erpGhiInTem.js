@@ -217,6 +217,9 @@ const KENH = {
     //   SH6 nhận mã tem ở `@pBarcodeIn` (y hệt ghi-in-tem) ⇒ KHÔNG gửi khóa `BarcodeSua` nữa.
     //   Proc tự đổi 2 số đầu thành 16 cho `MaboSua`, và XÓA phiếu cùng Soctcu(=IDMES)+SH6 trước khi
     //   tạo lại ⇒ gửi lại với cùng IDMES không đẻ phiếu trùng.
+    // ⚠ 23/11/2026 proc thêm `@pBarcode17 nvarchar(20)` ⇒ khóa `Barcode17` = tem 17 của lượt GIAO TRƯỚC (không có ⇒ '');
+    //   `BarcodeIn` luôn là tem 15 (25/11/2026).
+    them: (b, r = {}) => ({ Barcode17: chuoi(r.Barcode17, 20) }),
   },
   // ⚠⚠ OQC BỐC MẪU (02/10/2026) — proc `MES_spr_MES2QO6`, CÙNG 20 tham số nhưng mã tem ở `@pBarcodeSua`
   //   (như SK6) ⇒ gửi kèm khóa `BarcodeSua`. Mã ở đây đã là mã ĐÚNG NHƯ NHÃN của nguồn OQC (15/17/13) —

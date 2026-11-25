@@ -150,18 +150,20 @@ async function dsReleaseSx(tuNgay, denNgay) {
     o.in += x.da_in; o.giao += x.da_giao; o.inHt += x.da_in_ht; o.giaoHt += x.da_giao_ht; o.lenh.set(x.lenh_id, x.da_in);
     theoPin.set(k, o);
   });
-  // SLNV: kiếng ủi theo công đoạn của đợt; luồng khác (đợt mang mọi công đoạn) = tổng mọi đợt.
+  // SLNV: phần in 2 công đoạn theo công đoạn của ĐỢT (`gd_dot` — kiếng ủi theo loại đợt, đợt đánh dấu mig 139; NULL = đợt mang
+  //   cả 2 công đoạn ⇒ cộng cho cả 2); phần in 1 công đoạn = tổng mọi đợt.
   const nvMap = new Map();
+  const congNv = (k, v) => nvMap.set(k, (nvMap.get(k) || 0) + v);
   nvPin.rows.forEach((x) => {
     const luong = L.chuanLuong((luongMap.get(x.phan_in_id) || {}).luong_sx);
-    const k = L.theoDot(luong) && x.gd_dot ? `${x.phan_in_id}|${x.gd_dot}` : `${x.phan_in_id}|*`;
-    nvMap.set(k, (nvMap.get(k) || 0) + x.slnv);
+    if (!L.laHaiCongDoan(luong)) { congNv(`${x.phan_in_id}|*`, x.slnv); return; }
+    (x.gd_dot ? [x.gd_dot] : [L.GD_IN, L.GD_EP]).forEach((g) => congNv(`${x.phan_in_id}|${g}`, x.slnv));
   });
   const slnvDong = (pinId, gd) => {
     const luong = L.chuanLuong((luongMap.get(pinId) || {}).luong_sx);
     // Không có đợt nào của công đoạn này (dữ liệu trước luật đợt-theo-công-đoạn) ⇒ null ⇒ vải đợt trong lệnh (`r.slnv`).
-    if (L.theoDot(luong)) return nvMap.has(`${pinId}|${L.chuanGd(gd)}`) ? nvMap.get(`${pinId}|${L.chuanGd(gd)}`) : null;
-    return nvMap.has(`${pinId}|*`) ? nvMap.get(`${pinId}|*`) : null;
+    const k = L.laHaiCongDoan(luong) ? `${pinId}|${L.chuanGd(gd)}` : `${pinId}|*`;
+    return nvMap.has(k) ? nvMap.get(k) : null;
   };
   // Nhãn công đoạn của dòng — phần in 2 công đoạn theo `nhanCongDoan` (PA ép theo tính chất in: Ép / Logo).
   const paEp = new Map();

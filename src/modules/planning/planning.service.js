@@ -382,12 +382,14 @@ async function kiemKhongGiaCongLenh(lenhId, chuyenId) {
 // ⚠⚠ ĐỢT THEO CÔNG ĐOẠN (16/11/2026, người dùng chốt — luật `utils/luongSanXuat.dotGd`): đợt của phần in kiếng ủi chỉ thuộc 1
 //   công đoạn theo loaikd (4I ⇒ In kiếng, đợt khác ⇒ Ép). Lập kế hoạch đợt cho công đoạn kia ⇒ 422 `SAI_CONG_DOAN_DOT`, kiểm
 //   TRƯỚC mọi thao tác ghi (cả nhánh Kế hoạch tạm). `info` = dòng của `repo.getDotVaiForCompose(ids, gd)` (có `thuoc`).
-const TEN_GD_DOT = { [GD_IN]: 'In kiếng (4I)', [GD_EP]: 'Ép' };
+// ⚠ 25/11/2026 (mig 139): đợt còn có thể ĐÁNH DẤU 1 công đoạn (`dot_vai_ve.cong_doan_dot` — Thêm đợt vải tay / Quản trị phần in),
+//   kể cả đợt In + Logo ⇒ nhãn lỗi trung tính.
+const TEN_GD_DOT = { [GD_IN]: 'In / In kiếng', [GD_EP]: 'Ép / Logo' };
 function kiemDotDungCongDoan(info, gd) {
   const sai = (info || []).filter((r) => r.thuoc === false);
   if (!sai.length) return;
   const ds = sai.map((r) => `${r.ma_phan} · đợt ${r.ma_dot_vai} (công đoạn ${TEN_GD_DOT[r.cong_doan_dot] || r.cong_doan_dot})`);
-  throw new AppError(`Đợt vải không thuộc công đoạn ${chuanGd(gd) === GD_EP ? 'Ép' : 'In kiếng'} — phần in kiếng ủi: đợt 4I là công đoạn In kiếng, đợt khác là công đoạn Ép: ${ds.join('; ')}`,
+  throw new AppError(`Đợt vải không thuộc công đoạn ${TEN_GD_DOT[chuanGd(gd)]} — mỗi đợt chỉ lập kế hoạch ở công đoạn của nó (kiếng ủi: đợt 4I là In kiếng, đợt khác là Ép, trừ đợt đã đánh dấu công đoạn ở Quản trị phần in): ${ds.join('; ')}`,
     { status: 422, errorCode: 'SAI_CONG_DOAN_DOT', details: sai.map((r) => ({ dot_vai_id: r.id, ma_phan: r.ma_phan, cong_doan_dot: r.cong_doan_dot })) });
 }
 
@@ -1830,7 +1832,7 @@ async function confirmKeHoachTam(id, actorId) {
   // Kế hoạch tạm lập cho công đoạn mà đợt không thuộc (lập trước luật "đợt theo công đoạn" 16/11/2026) ⇒ báo rõ, KHÔNG
   //   tự dọn (người lập phải biết để lập lại đúng dòng).
   if (con && !con.thuoc) {
-    throw new AppError(`Kế hoạch tạm này lập cho công đoạn ${gd === GD_EP ? 'Ép' : 'In kiếng'} nhưng đợt vải thuộc công đoạn ${TEN_GD_DOT[con.cong_doan_dot] || con.cong_doan_dot} — xóa kế hoạch tạm rồi lập lại ở dòng đúng công đoạn`,
+    throw new AppError(`Kế hoạch tạm này lập cho công đoạn ${TEN_GD_DOT[gd]} nhưng đợt vải thuộc công đoạn ${TEN_GD_DOT[con.cong_doan_dot] || con.cong_doan_dot} — xóa kế hoạch tạm rồi lập lại ở dòng đúng công đoạn`,
       { status: 422, errorCode: 'SAI_CONG_DOAN_DOT' });
   }
   if (!con || con.con_release <= 0) {

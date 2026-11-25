@@ -1,6 +1,7 @@
 const { query } = require('../../config/db');
 const { mauTim } = require('../../utils/timKiem');
 const { dotStageCase, STAGE_LABEL } = require('../../utils/stage');
+const { dotGdSql } = require('../../utils/luongSanXuat');
 const { chuanHoaDsMa } = require('../../utils/maPhanIn');
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -91,7 +92,8 @@ const NGUON_DOT = `
 
 async function getDotVaiList(phanInId) {
   const sql = `
-    SELECT d.*, ${dotStageCase('d')} AS giai_doan,
+    SELECT d.*, ${dotStageCase('d')} AS giai_doan, ${dotGdSql('d')} AS gd_dot,
+           (SELECT to_jsonb(zc)->>'cong_doan_dot' FROM dot_vai_ve zc WHERE zc.id = d.id) AS cong_doan_dot_dat,
            ldv.ten_loai AS loai_dot_vai, ldv.ma_loai AS ma_loai_dot_vai,
            ls.id AS lenh_id, ls.ma_lenh_san_xuat, ls.trang_thai AS lenh_trang_thai,
            ls.ngay_ke_hoach, ls.tg_bd_kh, ls.tg_kt_kh,
@@ -140,7 +142,24 @@ const COT_DOT_VAI = {
   ngay_vai_ve: 'date', han_giao_hang: 'date',
   can_lam_lai_ready: 'bool', kt_can_kiem_tra: 'bool',
   loai_dot_vai_id: 'uuid',
+  // Mig 139 — công đoạn của đợt (IN · EP_UI · CA_HAI · '' = theo loại đợt). Service kiểm luồng + chặn bỏ công đoạn đang dùng
+  //   và GỠ khóa khi giá trị không đổi (chưa chạy mig thì không bao giờ tới đây).
+  cong_doan_dot: 'text',
 };
+
+// Công đoạn đang DÙNG của 1 đợt (mig 139 — chặn bỏ công đoạn khi sửa `cong_doan_dot` / loại đợt): lệnh sống có SL của đợt
+//   + kế hoạch tạm đang chờ, theo công đoạn ('IN' | 'EP_UI').
+async function congDoanDangDungCuaDot(dotVaiId) {
+  const { rows } = await query(
+    `SELECT CASE WHEN ls.giai_doan = 'EP_UI' THEN 'EP_UI' ELSE 'IN' END AS gd, ls.ma_lenh_san_xuat AS ma
+       FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id
+      WHERE lsd.dot_vai_ve_id = $1 AND ls.trang_thai <> 'HUY' AND COALESCE(lsd.so_luong, 0) > 0
+     UNION ALL
+     SELECT COALESCE(to_jsonb(k)->>'giai_doan', 'IN'), 'kế hoạch tạm'
+       FROM ke_hoach_tam k WHERE k.dot_vai_ve_id = $1 AND k.trang_thai = 'CHO'`.replace(/\s+/g, ' '),
+    [dotVaiId]);
+  return rows;
+}
 
 function dungCauUpdate(bang, whitelist, id, patch, actorId) {
   const set = []; const val = []; const cu = {};
@@ -186,16 +205,23 @@ async function getDotVaiRaw(id) {
   return rows[0] || null;
 }
 
-// SL đã in tem của 1 đợt vải — chặn hạ `so_luong_vai_ve` xuống dưới phần đã sản xuất.
-async function slDaInCuaDotVai(dotVaiId) {
+// MỨC TỐI THIỂU của `so_luong_vai_ve` khi sửa ở Quản trị phần in — từng LỆNH SỐNG chứa đợt (25/11/2026):
+//   · `da_release` = SL release của CHÍNH đợt trong lệnh (`lenh_sx_dot_vai.so_luong`) — hạ vải dưới số này là release vượt
+//     sức chứa (luật `utils/btpKhacKh` — chia số đầu BTP ở service);
+//   · `da_in` = tem của lệnh CHỈ khi lệnh có đúng 1 đợt (tem sản xuất không lưu đợt ⇒ lệnh gộp nhiều đợt không chia được).
+//   ⚠ Bản cũ cộng MỌI tem của lệnh cho đợt ⇒ lệnh gộp 3 đợt (ca LSX12885: 1740 + 1740 + 1722, đã in 3462) chặn hạ đợt bổ sung
+//     3500 xuống dưới 3462 dù đợt đó chỉ release 1722. "Đã in" của lệnh gộp đã được giữ ở mức LỆNH (release ≥ đã in —
+//     `manualentry.updateReleaseTx` / `planning` BELOW_PRINTED) nên chặn theo release của đợt là đủ.
+async function mucToiThieuDotVai(dotVaiId) {
   const sql = `
-    SELECT COALESCE(SUM(t.so_luong), 0)::int AS sl
-      FROM lenh_sx_dot_vai lsd
-      JOIN phieu_san_xuat ps ON ps.lenh_san_xuat_id = lsd.lenh_san_xuat_id AND ps.trang_thai <> 'HUY'
-      JOIN tem t ON t.phieu_san_xuat_id = ps.id AND t.trang_thai <> 'HUY'
+    SELECT ls.ma_lenh_san_xuat, ls.giai_doan, COALESCE(lsd.so_luong, 0)::int AS da_release,
+           (SELECT count(*) FROM lenh_sx_dot_vai x WHERE x.lenh_san_xuat_id = ls.id)::int AS so_dot,
+           (SELECT COALESCE(SUM(t.so_luong), 0) FROM phieu_san_xuat ps JOIN tem t ON t.phieu_san_xuat_id = ps.id
+             WHERE ps.lenh_san_xuat_id = ls.id AND ps.trang_thai <> 'HUY' AND t.trang_thai <> 'HUY')::int AS da_in_lenh
+      FROM lenh_sx_dot_vai lsd JOIN lenh_san_xuat ls ON ls.id = lsd.lenh_san_xuat_id AND ls.trang_thai <> 'HUY'
      WHERE lsd.dot_vai_ve_id = $1`;
   const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), [dotVaiId]);
-  return Number(rows[0]?.sl) || 0;
+  return rows.map((r) => ({ ...r, da_in: r.so_dot === 1 ? r.da_in_lenh : 0 }));
 }
 
 // `client` (tùy chọn) = ghi trong transaction của bên gọi.
@@ -303,6 +329,7 @@ async function doiGdLenhTx(client, lenhIds, gd, actorId) {
 async function dotChoThemCongDoan(phanInId) {
   const { rows } = await query(
     `SELECT dv.id::text AS id, dv.ma_dot_vai, ldv.ma_loai, ldv.ten_loai, COALESCE(dv.so_luong_vai_ve,0)::int AS so_luong,
+            to_jsonb(dv)->>'cong_doan_dot' AS cong_doan_dot,
             (SELECT string_agg(DISTINCT ls.ma_lenh_san_xuat, ', ') FROM lenh_sx_dot_vai x JOIN lenh_san_xuat ls ON ls.id = x.lenh_san_xuat_id
               WHERE x.dot_vai_ve_id = dv.id AND ls.trang_thai <> 'HUY' AND COALESCE(x.so_luong,0) > 0) AS ma_lenh,
             EXISTS (SELECT 1 FROM ke_hoach_tam k WHERE k.dot_vai_ve_id = dv.id) AS co_kht
@@ -449,7 +476,7 @@ async function danhMucLoaiDotVai() {
 
 module.exports = {
   traCuu, getPhanIn, getReady, getDotVaiList, getDotVaiRaw,
-  updatePhanIn, updateDotVai, slDaInCuaDotVai, ghiAudit, danhMucLoaiDotVai, toanCanh,
+  updatePhanIn, updateDotVai, mucToiThieuDotVai, congDoanDangDungCuaDot, ghiAudit, danhMucLoaiDotVai, toanCanh,
   lenhTheoCongDoan, keHoachTamTheoCongDoan, phanInCungHskt, datLuongPhanInTx, datCongDoanLenhTx, nhaTemCongDoanDauTx,
   doiKeHoachTamSangInTx, lenhEpDaDoiConSong,
   doiKeHoachTamGdTx, doiGdLenhTx, dotChoThemCongDoan,

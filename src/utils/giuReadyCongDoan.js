@@ -23,11 +23,12 @@
 //       không làm dấu mất hiệu lực.
 // ⚠ Chỉ ghi dấu khi đợt ĐANG Ready cho công đoạn Y trước lúc trả về (QC đợt, hoặc dấu cũ của Y còn hiệu lực).
 //   Trả về CHÍNH công đoạn đang được giữ ⇒ ghi `BO_…` để bỏ dấu.
-// ⚠ Phạm vi: chỉ phần in `IN_EP` (đợt mang 2 công đoạn). Kiếng ủi (`IN_KIENG`) mỗi đợt đã chỉ 1 công đoạn (`dotGd`) ⇒
-//   không cần. Đổi phương án in (Test Run `DOI_PA_IN`) CỐ Ý không ghi dấu — đổi PA là làm lại cả phần in.
+// ⚠ Phạm vi: chỉ ĐỢT mang 2 công đoạn (`luongSanXuat.dotCaHaiSql` — In + Logo mặc định, kiếng ủi đợt 'CA_HAI' của mig 139).
+//   Đợt 1 công đoạn (kiếng ủi theo loại đợt / đợt đánh dấu 1 công đoạn) ⇒ không cần. Đổi phương án in (Test Run `DOI_PA_IN`) CỐ Ý không ghi dấu — đổi PA là làm lại cả phần in.
 // ⚠ Vẫn còn ràng buộc GIỮA CÁC ĐỢT (hủy QC tổng của phần in kéo theo đợt khác chưa release) — luật cũ, chưa đổi.
 // ─────────────────────────────────────────────────────────────────────────────
 const { qcDotSql } = require('./tech');
+const { dotCaHaiSql } = require('./luongSanXuat');
 
 const TEN_BANG = 'ready_giu_cong_doan';
 const HD_GIU = 'GIU_READY_CONG_DOAN';
@@ -71,7 +72,7 @@ async function docTruoc(db, dotVaiIds, gdTraVe) {
             (${qcDotGdSql('dv', 'dv.phan_in_id', `'${y}'`)}) AS giu_kia,
             (${giuReadyGdSql('dv', `'${x}'`)}) AS bo_x
        FROM dot_vai_ve dv JOIN phan_in pin ON pin.id = dv.phan_in_id
-      WHERE dv.id = ANY($1::uuid[]) AND pin.luong_sx = 'IN_EP'
+      WHERE dv.id = ANY($1::uuid[]) AND ${dotCaHaiSql('dv', 'pin.luong_sx')}
         AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY')`.replace(/\s+/g, ' '),
     [ids]);
   return rows.map((r) => ({ ...r, gd_tra_ve: x, gd_kia: y }));

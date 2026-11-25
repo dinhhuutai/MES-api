@@ -178,7 +178,8 @@ async function lichSu({ ma, date = '', search = '', offset = 0, limit = 20, loc 
     WITH b AS MATERIALIZED (
       SELECT a.id, a.thoi_gian, a.hanh_dong, a.nguoi_thuc_hien_id, ${ID_MES} AS idm,
              (($3 = '' OR (a.thoi_gian AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $3::date)
-              AND ($4 = '' OR ${ID_MES} ~* $4 OR ${MA_TEM} ~* $4 OR ($5 <> '' AND substr(${MA_TEM}, 3) = $5))
+              AND ($4 = '' OR ${ID_MES} ~* $4 OR ${MA_TEM} ~* $4 OR ($5 <> '' AND substr(${MA_TEM}, 3) = $5)
+                   OR COALESCE(a.gia_tri_moi->'gui'->>'Barcode17', '') ~* $4)
               ${dkTruong ? `AND ${dkTruong}` : ''}) AS khop,
              (a.hanh_dong = $2 OR a.gia_tri_moi ? 'cac_lan_loi') AS co_loi,
              CASE WHEN ${SO_LUONG_GUI} ~ '^-?[0-9]+([.][0-9]+)?$' THEN (${SO_LUONG_GUI})::numeric END AS sl

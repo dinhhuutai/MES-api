@@ -42,7 +42,18 @@ async function chiTiet(phanInId) {
     const { rows } = await query('SELECT ho_ten FROM nguoi_dung WHERE id = $1', [pin.khoa_erp_boi]);
     khoa = { ...khoa, nguoi: rows[0] ? rows[0].ho_ten : null };
   }
-  return { phan_in: pin, ready, dot_vai: dotVai, loai_dot_vai: loaiDotVai, toan_canh: toanCanh, khoa_erp: khoa, dich_lui: DICH_LUI, luong_sx: LUONG_SX };
+  // Công đoạn của từng đợt (mig 139 — đánh dấu thắng loại đợt) + lựa chọn để đánh dấu tay (chỉ phần in 2 công đoạn).
+  const L = require('../../utils/luongSanXuat');
+  const luong = L.chuanLuong(pin.luong_sx);
+  const haiCd = L.laHaiCongDoan(luong);
+  const paEp = haiCd ? await L.paCongDoanEp(pin.tinh_chat_in).catch(() => null) : null;
+  const dots = dotVai.map((d) => ({ ...d, cong_doan_dot: L.chuanCdDot(d.cong_doan_dot_dat),
+    cong_doan_ten: tenCongDoanDot(L, luong, d.ma_loai_dot_vai, d.cong_doan_dot_dat, paEp) }));
+  return {
+    phan_in: pin, ready, dot_vai: dots, loai_dot_vai: loaiDotVai, toan_canh: toanCanh, khoa_erp: khoa, dich_lui: DICH_LUI, luong_sx: LUONG_SX,
+    cong_doan_dot_chon: haiCd ? luaChonCongDoan(L, luong, paEp).map((c) => ({ id: c.ma, ten: c.ten })) : [],
+    co_cot_cong_doan: haiCd ? await L.coCotCdDot() : false,
+  };
 }
 
 // ─── SỬA TRƯỜNG ──────────────────────────────────────────────────────────────
@@ -431,8 +442,8 @@ async function dungKeHoachThemCongDoan(phanInId, epTruocVao) {
   const qc = dots.length ? await planningRepo.getDotVaiForCompose(dots.map((d) => d.id)) : [];
   const qcMap = new Map(qc.map((r) => [String(r.id), r]));
   const dot = dots.map((d) => {
-    const thuoc = L.dotThuocGd(luongMoi, d.ma_loai, them);
-    return { ...d, thuoc, gd_dot: L.dotGd(luongMoi, d.ma_loai), ready: !!(qcMap.get(d.id) || {}).qc_done, sl_moi: thuoc ? d.so_luong : 0 };
+    const thuoc = L.dotThuocGd(luongMoi, d.ma_loai, them, d.cong_doan_dot);
+    return { ...d, thuoc, gd_dot: L.dotGd(luongMoi, d.ma_loai, d.cong_doan_dot), ready: !!(qcMap.get(d.id) || {}).qc_done, sl_moi: thuoc ? d.so_luong : 0 };
   });
   if (luongMoi === 'IN_KIENG') {
     dot.filter((d) => d.gd_dot === L.GD_EP && (d.ma_lenh || d.co_kht)).forEach((d) => {
@@ -639,12 +650,46 @@ async function dayLenhSangChoChay(lenhMoi, nguon, lyDoGhi, actorId) {
 //   READY_KT (Kỹ thuật làm — như ERP `KTCankiemtra=1`) · READY_QA (KT coi như xong, chờ QA) · RELEASE_1 (đã Ready — như
 //   `KTCankiemtra=0`, `simulateReadyDone`) · TEST_RUN / CHO_CHAY (Ready + `planning.createRelease1` lập lệnh ngay; Chờ chạy
 //   = quản trị bỏ Test Run cho lệnh In). Bước đặt màn lỗi KHÔNG xóa đợt đã tạo (trả `ket_qua.dich.loi`).
-// CÔNG ĐOẠN của đợt = theo luồng phần in + LOẠI đợt (luật sẵn có, không đổi luồng): kiếng ủi ⇒ loại 4I = In kiếng, loại khác
-//   = Ép (`luongSanXuat.dotGd`) · In + Logo/Ép ⇒ 1 đợt mang CẢ 2 công đoạn (chọn công đoạn nào lập lệnh) · In thường / In kiếng
-//   / Logo ⇒ công đoạn duy nhất của luồng. Muốn thêm công đoạn phần in CHƯA có ⇒ "Thêm 1 công đoạn" (đổi luồng).
+// ⚠⚠ CÔNG ĐOẠN của đợt CHỌN TỰ DO (25/11/2026, người dùng: "chỗ thêm đợt vải cho phép đánh dấu đợt đó là in hay kiếng hay logo
+//   hay ép gì cũng đều được") — trong các công đoạn PHẦN IN ĐANG CÓ (người dùng chốt; thiếu ⇒ "Thêm 1 công đoạn" đổi luồng):
+//   FE có 4 nút In · In kiếng · Logo · Ép (+ "Cả 2" với phần in 2 công đoạn), nút ngoài luồng bị khóa. KHÔNG còn phụ thuộc
+//   LOẠI đợt (vd đợt 5I bổ sung cho In kiếng, đợt chỉ Logo của In + Logo). Phần in 2 công đoạn ⇒ ghi `dot_vai_ve.cong_doan_dot`
+//   (mig 139; chưa chạy mig ⇒ chỉ chọn được đúng công đoạn luật loại đợt cho ra). Body cũ không gửi `congDoanDot` ⇒ luật cũ
+//   theo loại đợt (kiếng ủi 4I = In kiếng, loại khác = Ép · In + Logo cả 2).
 // ERP sau này gửi đợt thật ⇒ vào như đợt MỚI (người dùng chốt) — đợt tạo tay thừa thì hủy ở tab Hủy đợt vải.
 const DICH_DOT_TAY = ['READY_KT', 'READY_QA', 'RELEASE_1', 'TEST_RUN', 'CHO_CHAY'];
 const LOAI_DOT_MAC_DINH = 'SO_LUONG';
+
+// Các lựa chọn công đoạn của đợt tay theo luồng phần in. `ma` = giá trị `cong_doan_dot` (null = phần in 1 công đoạn);
+//   `nut` = nút FE (IN · KIENG · LOGO · EP · CA_HAI); `loai_goi_y` = loại đợt mặc định khi chọn (kiếng ủi In kiếng ⇒ 4I).
+function luaChonCongDoan(L, luong, paEp) {
+  const tenEp = luong === 'IN_KIENG' ? 'Ép' : (L.nhanCongDoan(luong, L.GD_EP, paEp) || 'Logo');
+  const nutEp = tenEp === 'Ép' ? 'EP' : 'LOGO';
+  const mot = (nut, ten) => [{ ma: null, nut, ten, gd: [L.GD_IN], loai_goi_y: LOAI_DOT_MAC_DINH }];
+  if (luong === 'IN_KIENG') {
+    return [
+      { ma: L.GD_IN, nut: 'KIENG', ten: 'In kiếng', gd: [L.GD_IN], loai_goi_y: L.LOAI_DOT_KIENG },
+      { ma: L.GD_EP, nut: 'EP', ten: 'Ép', gd: [L.GD_EP], loai_goi_y: LOAI_DOT_MAC_DINH },
+      { ma: L.CD_CA_HAI, nut: 'CA_HAI', ten: 'In kiếng + Ép', gd: [L.GD_IN, L.GD_EP], loai_goi_y: LOAI_DOT_MAC_DINH },
+    ];
+  }
+  if (luong === 'IN_EP') {
+    return [
+      { ma: L.GD_IN, nut: 'IN', ten: 'In', gd: [L.GD_IN], loai_goi_y: LOAI_DOT_MAC_DINH },
+      { ma: L.GD_EP, nut: nutEp, ten: tenEp, gd: [L.GD_EP], loai_goi_y: LOAI_DOT_MAC_DINH },
+      { ma: L.CD_CA_HAI, nut: 'CA_HAI', ten: `In + ${tenEp}`, gd: [L.GD_IN, L.GD_EP], loai_goi_y: LOAI_DOT_MAC_DINH },
+    ];
+  }
+  if (luong === 'LOGO') return mot(Number(paEp) === L.PAIN_EP ? 'EP' : 'LOGO', Number(paEp) === L.PAIN_EP ? 'Ép' : 'Logo');
+  if (luong === 'KIENG_KHONG_EP') return mot('KIENG', 'In kiếng');
+  return mot('IN', 'In');
+}
+// Nhãn công đoạn của 1 đợt đang có — đánh dấu `cong_doan_dot` (mig 139) thắng loại đợt.
+function tenCongDoanDot(L, luong, maLoai, cdDot, paEp) {
+  if (!L.laHaiCongDoan(luong)) return congDoanCuaDot(L, luong, maLoai, paEp).map((c) => c.ten).join(' + ');
+  const g = L.dotGd(luong, maLoai, cdDot);
+  return (g ? [g] : [L.GD_IN, L.GD_EP]).map((x) => L.nhanCongDoan(luong, x, paEp)).join(' + ');
+}
 
 // Công đoạn (mã gd + nhãn) mà 1 đợt loại `maLoai` mang, theo luồng phần in.
 function congDoanCuaDot(L, luong, maLoai, paEp) {
@@ -662,6 +707,7 @@ async function dungKeHoachDotTay(phanInId) {
   const luong = L.chuanLuong(pin.luong_sx);
   const [{ rows: dots }, { rows: loais }, paEp] = await Promise.all([
     query(`SELECT dv.id::text AS id, dv.ma_dot_vai, ldv.ma_loai, ldv.ten_loai, COALESCE(dv.so_luong_vai_ve,0)::int AS so_luong,
+                  to_jsonb(dv)->>'cong_doan_dot' AS cong_doan_dot,
                   to_char(dv.han_giao_hang, 'YYYY-MM-DD') AS han_giao_hang, dv.barcode, dv.nha_gia_cong, dv.du_an,
                   to_char(dv.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh', 'DD/MM/YYYY HH24:MI') AS tao_luc
              FROM dot_vai_ve dv LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id
@@ -677,7 +723,9 @@ async function dungKeHoachDotTay(phanInId) {
     : [{ ma: LOAI_DOT_MAC_DINH, ten: congDoanCuaDot(L, luong, LOAI_DOT_MAC_DINH, paEp).map((c) => c.ten).join(' + ') }];
   const canhBao = [];
   if (!dots.length) canhBao.push('Phần in không còn đợt vải sống — nhập SL + hạn giao tay');
-  return { pin, luong, tenLuong: (L.LUONG_SX.find((x) => x.ma === luong) || {}).ten || luong, dots, loai, nhanh, paEp, canhBao };
+  const chon = luaChonCongDoan(L, luong, paEp).map((c) => ({ ...c, qua_test_run: c.gd.some((g) => !L.boQuaTestRun(luong, g)) }));
+  const coCot = await L.coCotCdDot();
+  return { pin, luong, tenLuong: (L.LUONG_SX.find((x) => x.ma === luong) || {}).ten || luong, dots, loai, nhanh, paEp, canhBao, chon, coCot };
 }
 
 async function themDotVai(phanInId, body = {}, actorId) {
@@ -687,14 +735,18 @@ async function themDotVai(phanInId, body = {}, actorId) {
     dich = 'READY_KT', lyDo, chuyenId, ngayKeHoach, tgBdKh, tgKtKh, thoIn, dinhMuc,
   } = body || {};
   const kh = await dungKeHoachDotTay(phanInId);
+  const haiCd = L.laHaiCongDoan(kh.luong);
   const moTa = {
     phan_in_id: kh.pin.id, ma_phan: kh.pin.ma_phan, tinh_chat_in: kh.pin.tinh_chat_in, luong_sx: kh.luong, ten_luong: kh.tenLuong,
     dot: kh.dots.map((d) => ({ id: d.id, ma_dot_vai: d.ma_dot_vai, ma_loai: d.ma_loai, loai: d.ten_loai || d.ma_loai,
       so_luong: d.so_luong, han_giao_hang: d.han_giao_hang, barcode: d.barcode, tao_luc: d.tao_luc,
-      cong_doan: congDoanCuaDot(L, kh.luong, d.ma_loai, kh.paEp).map((c) => c.ten).join(' + ') })),
+      cong_doan: tenCongDoanDot(L, kh.luong, d.ma_loai, d.cong_doan_dot, kh.paEp) })),
     loai_dot: kh.loai.map((l) => ({ ma: l.ma_loai, ten: l.ten_loai, cong_doan: l.cong_doan.map((c) => c.ten).join(' + '),
       gd: l.cong_doan.map((c) => c.gd), qua_test_run: l.cong_doan.some((c) => !L.boQuaTestRun(kh.luong, c.gd)) })),
     nhanh: kh.nhanh, hai_cong_doan_chung: kh.luong === 'IN_EP',
+    // 25/11/2026: lựa chọn công đoạn tự do (4 nút FE) — `co_cot_cong_doan` = đã chạy mig 139 (chưa ⇒ chỉ chọn theo luật loại đợt).
+    cong_doan_chon: kh.chon, cong_doan_mac_dinh: (kh.chon.find((c) => c.ma === L.CD_CA_HAI && kh.luong === 'IN_EP') || kh.chon[0]).ma,
+    co_cot_cong_doan: kh.coCot,
     goi_y_nguon: kh.dots.length ? kh.dots[kh.dots.length - 1].id : null,
     dich_ho_tro: DICH_DOT_TAY, chan: [], canh_bao: kh.canhBao,
   };
@@ -703,8 +755,28 @@ async function themDotVai(phanInId, body = {}, actorId) {
   if (!DICH_DOT_TAY.includes(dich)) throw new AppError(`Màn đích không hợp lệ (${DICH_DOT_TAY.join(' · ')})`, { status: 422, errorCode: 'DICH_SAI' });
   const ly = String(lyDo || '').trim();
   if (!ly) throw new AppError('Nhập lý do (vd ERP lỗi không gửi đợt vải)', { status: 422, errorCode: 'NO_LY_DO' });
-  const loai = kh.loai.find((l) => l.ma_loai === String(loaiDot));
-  if (!loai) throw new AppError('Loại đợt vải không hợp lệ', { status: 422, errorCode: 'LOAI_DOT_SAI' });
+  const loaiGoc = kh.loai.find((l) => l.ma_loai === String(loaiDot));
+  if (!loaiGoc) throw new AppError('Loại đợt vải không hợp lệ', { status: 422, errorCode: 'LOAI_DOT_SAI' });
+  // Công đoạn chọn (mig 139): có khóa `congDoanDot` ⇒ chọn tự do trong công đoạn của luồng; thiếu khóa ⇒ luật cũ theo loại đợt.
+  let cdDot = null;
+  let cdChon = null;
+  if (haiCd && body && Object.prototype.hasOwnProperty.call(body, 'congDoanDot')) {
+    cdChon = kh.chon.find((c) => c.ma === L.chuanCdDot(body.congDoanDot));
+    if (!cdChon) {
+      throw new AppError(`Phần in ${kh.pin.ma_phan} (${kh.tenLuong}) không có công đoạn này — chọn ${kh.chon.map((c) => c.ten).join(' / ')}, `
+        + 'hoặc dùng "Thêm 1 công đoạn" trước', { status: 422, errorCode: 'CONG_DOAN_SAI' });
+    }
+    cdDot = cdChon.ma;
+    // Chưa chạy mig 139 ⇒ chỉ nhận lựa chọn trùng luật loại đợt (khỏi ghi cột) — khác thì báo, đừng âm thầm ra công đoạn khác.
+    if (!kh.coCot) {
+      if (L.dotGd(kh.luong, loaiGoc.ma_loai) !== L.dotGd(kh.luong, loaiGoc.ma_loai, cdDot)) {
+        throw new AppError(`Chưa chạy migration 139 nên đợt loại ${loaiGoc.ten_loai} chỉ là công đoạn ${loaiGoc.cong_doan.map((c) => c.ten).join(' + ')}`,
+          { status: 409, errorCode: 'CHUA_MIGRATION_139' });
+      }
+      cdDot = null;
+    }
+  }
+  const loai = cdChon ? { ...loaiGoc, cong_doan: cdChon.gd.map((g) => ({ gd: g, ten: L.nhanCongDoan(kh.luong, g, kh.paEp) })) } : loaiGoc;
   const nguon = dotNguonId ? kh.dots.find((d) => d.id === String(dotNguonId)) : null;
   if (dotNguonId && !nguon) throw new AppError('Đợt nguồn không thuộc phần in này / đã hủy', { status: 422, errorCode: 'DOT_NGUON_SAI' });
   const sl = soLuong == null || soLuong === '' ? (nguon ? nguon.so_luong : NaN) : Number(soLuong);
@@ -713,9 +785,9 @@ async function themDotVai(phanInId, body = {}, actorId) {
   if (hg && !/^\d{4}-\d{2}-\d{2}$/.test(hg)) throw new AppError('Hạn giao không hợp lệ', { status: 422, errorCode: 'HAN_GIAO_SAI' });
   const bc = String(barcode == null ? ((nguon && nguon.barcode) || '') : barcode).trim() || null;
 
-  // Công đoạn lập lệnh (Test Run / Chờ chạy): In + Logo/Ép chọn được 1 hoặc cả 2; luồng khác = công đoạn của đợt.
+  // Công đoạn lập lệnh (Test Run / Chờ chạy): đợt mang cả 2 công đoạn chọn được 1 hoặc cả 2; còn lại = công đoạn của đợt.
   const gdDot = loai.cong_doan.map((c) => c.gd);
-  const gdLap = kh.luong === 'IN_EP' && congDoanLap !== 'CA_HAI' ? gdDot.filter((g) => g === congDoanLap) : gdDot;
+  const gdLap = gdDot.length > 1 && congDoanLap !== 'CA_HAI' ? gdDot.filter((g) => g === congDoanLap) : gdDot;
   const canLenh = dich === 'TEST_RUN' || dich === 'CHO_CHAY';
   if (canLenh) {
     if (!gdLap.length) throw new AppError('Chọn công đoạn lập lệnh', { status: 422, errorCode: 'CONG_DOAN_SAI' });
@@ -734,16 +806,17 @@ async function themDotVai(phanInId, body = {}, actorId) {
     const { rows: [p] } = await client.query('SELECT luong_sx FROM phan_in WHERE id = $1 FOR UPDATE', [phanInId]);
     if (!p || L.chuanLuong(p.luong_sx) !== kh.luong) throw new AppError('Luồng của phần in vừa bị đổi — tải lại', { status: 409, errorCode: 'DA_DOI' });
     const ma = `MAN-${Date.now().toString(36).toUpperCase()}${Math.random().toString(36).slice(2, 5).toUpperCase()}`;
+    const ghiCd = !!cdDot; // phần in 2 công đoạn + có cột (mig 139) ⇒ lưu công đoạn chọn
     const { rows: [d] } = await client.query(
       `INSERT INTO dot_vai_ve (phan_in_id, ma_dot_vai, so_luong_vai_ve, ngay_vai_ve, han_giao_hang, loai_dot_vai_id, barcode,
-         nha_gia_cong, du_an, kt_can_kiem_tra, ghi_chu, trang_thai, tg_chuyen_ready, created_by)
-       VALUES ($1, $2, $3, (now() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date, $4::date, $5, $6, $7, $8, $9, $10, 'NHAN_VAI', clock_timestamp(), $11)
+         nha_gia_cong, du_an, kt_can_kiem_tra, ghi_chu, trang_thai, tg_chuyen_ready, created_by${ghiCd ? ', cong_doan_dot' : ''})
+       VALUES ($1, $2, $3, (now() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date, $4::date, $5, $6, $7, $8, $9, $10, 'NHAN_VAI', clock_timestamp(), $11${ghiCd ? ', $12' : ''})
        RETURNING id::text AS id, ma_dot_vai`.replace(/\s+/g, ' '),
       [phanInId, ma, sl, hg || null, loai.id, bc, nguon ? nguon.nha_gia_cong : null, nguon ? nguon.du_an : null,
-        dich === 'READY_KT', `[Quản trị phần in] ${lyDoGhi}`, actorId]);
+        dich === 'READY_KT', `[Quản trị phần in] ${lyDoGhi}`, actorId, ...(ghiCd ? [cdDot] : [])]);
     const ghi = {
-      dot_vai_id: d.id, ma_dot_vai: d.ma_dot_vai, loai_dot: loai.ma_loai, cong_doan: tenCd, so_luong: sl, han_giao_hang: hg || null,
-      barcode: bc, dot_nguon: nguon ? nguon.ma_dot_vai : null, dich, cong_doan_lap: canLenh ? gdLap : null, ly_do: ly,
+      dot_vai_id: d.id, ma_dot_vai: d.ma_dot_vai, loai_dot: loai.ma_loai, cong_doan: tenCd, cong_doan_dot: cdDot, so_luong: sl,
+      han_giao_hang: hg || null, barcode: bc, dot_nguon: nguon ? nguon.ma_dot_vai : null, dich, cong_doan_lap: canLenh ? gdLap : null, ly_do: ly,
     };
     await repo.ghiAudit('phan_in', phanInId, 'THEM_DOT_VAI_TAY', null, ghi, actorId, client);
     await repo.ghiAudit('dot_vai_ve', d.id, 'TAO_TAY_DOT_VAI', null, { ...ghi, phan_in_id: phanInId, ma_phan: kh.pin.ma_phan }, actorId, client);
@@ -788,6 +861,56 @@ async function themDotVai(phanInId, body = {}, actorId) {
   };
 }
 
+// ⚠⚠ ĐÁNH DẤU CÔNG ĐOẠN CỦA ĐỢT ĐANG CÓ (mig 139, 25/11/2026 — người dùng chốt "đợt cũ thiếu công đoạn thì đánh dấu riêng từng
+//   đợt ở Quản trị phần in"): `cong_doan_dot` IN · EP_UI · CA_HAI · '' (= theo loại đợt). Chỉ phần in 2 công đoạn. Đổi công
+//   đoạn (kể cả đổi LOẠI đợt của kiếng ủi khi đợt chưa đánh dấu — loại quyết định công đoạn) mà BỎ MẤT công đoạn đang có lệnh
+//   sống / kế hoạch tạm của đợt ⇒ 409 `CONG_DOAN_DANG_DUNG` (hủy lệnh / KH tạm trước). Thêm công đoạn (vd Ép → Cả 2) luôn được —
+//   READY theo đợt dùng chung nên công đoạn mới thừa hưởng trạng thái Ready của đợt. Giá trị không đổi ⇒ gỡ khóa khỏi patch
+//   (form gửi đủ mọi trường mỗi lần lưu). Trả patch đã chuẩn hóa.
+async function kiemCongDoanDot(truoc, patch, { xetLoai = false } = {}) {
+  const L = require('../../utils/luongSanXuat');
+  const coCd = Object.prototype.hasOwnProperty.call(patch, 'cong_doan_dot');
+  const cdTruoc = L.chuanCdDot(truoc.cong_doan_dot);
+  let cdSau = cdTruoc;
+  if (coCd) {
+    const raw = patch.cong_doan_dot == null ? '' : String(patch.cong_doan_dot).trim();
+    if (raw && !L.chuanCdDot(raw)) throw new AppError('Công đoạn của đợt không hợp lệ (IN · EP_UI · CA_HAI)', { status: 422, errorCode: 'CONG_DOAN_SAI' });
+    cdSau = L.chuanCdDot(raw);
+    if (cdSau === cdTruoc) delete patch.cong_doan_dot;
+    else patch.cong_doan_dot = cdSau;
+  }
+  const doiLoai = xetLoai && 'loai_dot_vai_id' in patch && String(patch.loai_dot_vai_id || '') !== String(truoc.loai_dot_vai_id || '');
+  if (!('cong_doan_dot' in patch) && !doiLoai) return patch;
+
+  const { rows: [p] } = await query('SELECT luong_sx, ma_phan, tinh_chat_in FROM phan_in WHERE id = $1', [truoc.phan_in_id]);
+  const luong = L.chuanLuong(p && p.luong_sx);
+  if ('cong_doan_dot' in patch) {
+    if (!(await L.coCotCdDot())) throw new AppError('Chưa chạy migration 139 nên chưa đánh dấu được công đoạn của đợt', { status: 409, errorCode: 'CHUA_MIGRATION_139' });
+    if (cdSau && !L.laHaiCongDoan(luong)) {
+      throw new AppError(`Phần in ${p ? p.ma_phan : ''} chỉ có 1 công đoạn — muốn thêm công đoạn dùng "Thêm 1 công đoạn"`, { status: 422, errorCode: 'MOT_CONG_DOAN' });
+    }
+  }
+  if (!L.laHaiCongDoan(luong)) return patch;
+  const maLoai = async (id) => {
+    if (!id) return null;
+    const { rows } = await query('SELECT ma_loai FROM loai_dot_vai WHERE id = $1', [id]);
+    return rows[0] ? rows[0].ma_loai : null;
+  };
+  const gds = (g) => (g ? [g] : [L.GD_IN, L.GD_EP]);
+  const gTruoc = L.dotGd(luong, await maLoai(truoc.loai_dot_vai_id), cdTruoc);
+  const gSau = L.dotGd(luong, await maLoai(doiLoai ? patch.loai_dot_vai_id : truoc.loai_dot_vai_id), cdSau);
+  const bo = gds(gTruoc).filter((g) => !gds(gSau).includes(g));
+  if (!bo.length) return patch;
+  const dung = (await repo.congDoanDangDungCuaDot(truoc.id)).filter((x) => bo.includes(x.gd));
+  if (dung.length) {
+    const paEp = await L.paCongDoanEp(p && p.tinh_chat_in).catch(() => null);
+    const ten = (g) => L.nhanCongDoan(luong, g, paEp) || g;
+    throw new AppError(`Đợt ${truoc.ma_dot_vai} đang có ${[...new Set(dung.map((x) => `${x.ma} (${ten(x.gd)})`))].join(', ')} — đổi sẽ bỏ công đoạn `
+      + `${bo.map(ten).join(' + ')} của đợt. Hủy lệnh / kế hoạch tạm của công đoạn đó trước`, { status: 409, errorCode: 'CONG_DOAN_DANG_DUNG' });
+  }
+  return patch;
+}
+
 async function datKhoaErp(phanInId, khoa, actorId) {
   const pin = await repo.getPhanIn(phanInId);
   if (!pin) throw new AppError('Phần in không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
@@ -796,21 +919,37 @@ async function datKhoaErp(phanInId, khoa, actorId) {
   return { phan_in_id: phanInId, khoa_erp: !!khoa, doi };
 }
 
-async function suaDotVai(dotVaiId, patch, actorId, opts = {}) {
+async function suaDotVai(dotVaiId, patchVao, actorId, opts = {}) {
   const truoc = await repo.getDotVaiRaw(dotVaiId);
   if (!truoc) throw new AppError('Đợt vải không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+  // Đổi loại đợt chỉ chặn ở trang Quản trị phần in (`opts.khoa`) — đường GN / ERP dùng chung hàm này giữ hành vi cũ.
+  const patch = await kiemCongDoanDot(truoc, { ...(patchVao || {}) }, { xetLoai: !!opts.khoa });
 
-  // ⚠ Guard SL vải về: không hạ xuống dưới SL ĐÃ IN TEM của chính đợt đó — hạ nữa là sổ cái số lượng
-  //   sai (in nhiều hơn nhận), đúng luật đang áp ở trang "Cập nhật SL nhận vải / release".
+  // ⚠ Guard SL vải về (25/11/2026 — `repo.mucToiThieuDotVai`): không hạ xuống dưới
+  //   · SL ĐÃ RELEASE của chính đợt (mỗi công đoạn, chia số đầu BTP) — hạ nữa là release vượt sức chứa;
+  //   · SL ĐÃ IN TEM của lệnh mà đợt nằm MỘT MÌNH (tem không lưu đợt ⇒ lệnh gộp nhiều đợt giữ "đã in" ở mức lệnh).
+  //   Bản cũ cộng mọi tem của lệnh gộp cho từng đợt ⇒ không hạ được đợt bổ sung (ca TN-2611-009-A06-F03-C01).
   if ('so_luong_vai_ve' in (patch || {})) {
     const moiSl = Number(patch.so_luong_vai_ve);
     if (!Number.isFinite(moiSl) || moiSl < 0) {
       throw new AppError('SL vải về phải là số ≥ 0', { status: 422, errorCode: 'INVALID_QTY' });
     }
-    const daIn = await repo.slDaInCuaDotVai(dotVaiId);
-    if (moiSl < daIn) {
-      throw new AppError(`SL vải về (${moiSl}) nhỏ hơn SL đã in tem (${daIn}) của đợt này`,
+    const ds = await repo.mucToiThieuDotVai(dotVaiId);
+    const soDau = Math.max(1, Math.floor(Number(truoc.so_dau_btp) || (truoc.btp_khac_kh ? 2 : 1)));
+    const relTheoCd = {};
+    ds.forEach((l) => { const g = l.giai_doan === 'EP_UI' ? 'EP_UI' : 'IN'; relTheoCd[g] = (relTheoCd[g] || 0) + l.da_release; });
+    const daRelease = Math.max(0, ...Object.values(relTheoCd));
+    const minRelease = Math.ceil(daRelease / soDau);
+    const lenhIn = ds.filter((l) => l.da_in > 0).sort((a, b) => b.da_in - a.da_in)[0];
+    if (lenhIn && moiSl < lenhIn.da_in) {
+      throw new AppError(`SL vải về (${moiSl}) nhỏ hơn SL đã in tem (${lenhIn.da_in}) của lệnh ${lenhIn.ma_lenh_san_xuat} (chỉ có đợt này)`,
         { status: 409, errorCode: 'DUOI_SL_DA_IN' });
+    }
+    if (moiSl < minRelease) {
+      const dsLenh = ds.map((l) => `${l.ma_lenh_san_xuat} ${l.da_release}`).join(', ');
+      throw new AppError(`SL vải về (${moiSl}) nhỏ hơn SL đã release của đợt này (${daRelease}${soDau > 1 ? ` ÷ ${soDau} đầu BTP = ${minRelease}` : ''} — `
+        + `${dsLenh}) — giảm SL release trước ở Hệ thống › Cập nhật SL nhận vải / release`,
+      { status: 409, errorCode: 'DUOI_SL_DA_RELEASE' });
     }
   }
 

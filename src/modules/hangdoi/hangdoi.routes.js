@@ -18,6 +18,8 @@ router.use(auth);
 const QUYEN_MAN = ['KCS', 'PHAN_LOAI_LOI', 'SUA', 'WORKFLOW_VIEW'];
 
 router.get('/', rbac(...QUYEN_MAN), asyncHandler(async (req, res) => ok(res, await hd.danhSach(req.query || {}))));
+// GET /du-kien?loai&ma (25/11/2026) — quét tem ở màn `loai` mà tem còn mục chờ ở BƯỚC TRƯỚC ⇒ dòng số dự kiến (vào hàng đợi).
+router.get('/du-kien', rbac(...QUYEN_MAN), asyncHandler(async (req, res) => ok(res, await hd.duKien(req.user, req.query || {}))));
 router.post('/', rbac(...QUYEN_MAN), asyncHandler(async (req, res) => {
   const kq = await hd.xep(req.user, req.body || {});
   return ok(res, kq, `Đã đưa ${kq.so} tem vào hàng đợi`);

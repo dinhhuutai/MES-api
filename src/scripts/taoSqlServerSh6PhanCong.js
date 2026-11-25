@@ -32,10 +32,13 @@ const THAM_SO = [
   ['Chuyentruong', 'chuoi'], ['Catruong', 'chuoi'], ['dsthoin', 'chuoi'], ['Toin', 'chuoi'], ['banin', 'chuoi'],
   ['IDDotNhanvai', 'chuoi'], ['DDHID', 'chuoi'], ['DDHsubID', 'so'], ['BarcodeIn', 'chuoi'], ['inbosung', 'so'],
   ['Lenhbosung', 'chuoi'], ['Soluong', 'so'], ['Soluongloi', 'so'], ['SOLUONGTHIEU', 'so'], ['GCMauvai', 'chuoi'],
+  // 23/11/2026 proc Sh6 thêm `@pBarcode17` (KHÔNG mặc định): tem 17 của lượt giao trước, không có ⇒ N'' (không NULL).
+  ['Barcode17', 'rong'],
 ];
-const giaTri = (b, [k, kieu]) => (kieu === 'so' ? tSo(b[k]) : kieu === 'ngay' ? tNgay(b[k]) : tChuoi(rong(b[k])));
+const giaTri = (b, [k, kieu]) => (kieu === 'so' ? tSo(b[k]) : kieu === 'ngay' ? tNgay(b[k])
+  : kieu === 'rong' ? tChuoi(String(b[k] || '').slice(0, 20)) : tChuoi(rong(b[k])));
 
-// Đầu file: kiểm proc có ĐỦ 20 tham số đúng tên — thiếu ⇒ in tên thiếu và ép chạy thử (không EXEC gì).
+// Đầu file: kiểm proc có ĐỦ 21 tham số đúng tên — thiếu ⇒ in tên thiếu và ép chạy thử (không EXEC gì).
 // ⚠ SQL Server ERP là bản CŨ (< 2017): KHÔNG có `STRING_AGG` (ca thật 19/11/2026: Msg 195) ⇒ ghép bằng `FOR XML PATH` + `STUFF`.
 function kiemThamSo() {
   const ds = THAM_SO.map(([k]) => `(N'@p${k}')`).join(', ');
@@ -102,6 +105,8 @@ async function main() {
     if (!sf0) { boQua.push(`${t.ma_tem} — không có SF0`); continue; }
     if (cu.IDMES == null) { boQua.push(`${t.ma_tem} — Sh6 cũ không có IDMES`); continue; }
     const b = { ...cu, Catruong: sf0.Catruong, Chuyentruong: sf0.Chuyentruong, dsthoin: sf0.dsthoin };
+    // Thân 19/11–25/11 của lượt giao trước mang tem 17 ở `BarcodeIn` ⇒ đổi về thân mới: tem 15 + `Barcode17` = tem 17.
+    if (/^17\d{10}$/.test(String(cu.BarcodeIn || ''))) { b.Barcode17 = cu.Barcode17 || cu.BarcodeIn; b.BarcodeIn = t.ma_tem; }
     const doi = ['Catruong', 'Chuyentruong', 'dsthoin']
       .map((k) => `${k} ${cu[k] || '∅'} → ${b[k] || '∅'}`).join(' · ');
     khoi.push(`-- ${t.ma_tem} · lượt KCS ${l.kcs_id} · IDMES ${cu.IDMES} · ${doi}\n`

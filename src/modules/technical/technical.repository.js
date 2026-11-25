@@ -17,6 +17,8 @@ const { mauTim } = require('../../utils/timKiem');
 // `dotOBoSql` / `lenhDotGdDk` (16/11/2026): đợt của phần in kiếng ủi thuộc 1 công đoạn theo loaikd ⇒ chỉ nằm ở dòng READY của
 //   công đoạn đó, "đã release" = lệnh của chính công đoạn đó (luật `utils/readyCongDoan.js`).
 const { GD_IN, GD_EP, chuanGd, lenhGdDk, coDongReadySql, dotOBoSql, lenhDotGdDk, lenhRoiReadyDk } = require('../../utils/readyCongDoan');
+// Công đoạn THỰC của đợt (mig 139: đánh dấu `cong_doan_dot` thắng loại đợt) — service đọc `gd_dot` / `ca_hai_cd`, không tự suy.
+const { dotGdSql, dotCaHaiSql } = require('../../utils/luongSanXuat');
 const LS = require('../../utils/lichSuTim');
 const { sqlKhopMa } = require('../../utils/maPhanIn');
 
@@ -847,7 +849,8 @@ async function dsDotChoReady(phanInIds = [], gd = GD_IN) {
   if (!phanInIds.length) return [];
   const { rows } = await query(
     `SELECT dv.phan_in_id, dv.id AS dot_vai_ve_id, dv.ma_dot_vai, dv.loai_dot_vai_id, ldv.ten_loai, ldv.ma_loai,
-            dv.han_giao_hang, dv.tg_chuyen_ready, dv.barcode, dv.so_luong_vai_ve, dv.ngay_vai_ve
+            dv.han_giao_hang, dv.tg_chuyen_ready, dv.barcode, dv.so_luong_vai_ve, dv.ngay_vai_ve,
+            ${dotGdSql('dv')} AS gd_dot, ${dotCaHaiSql('dv')} AS ca_hai_cd
        FROM dot_vai_ve dv
        LEFT JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id
       WHERE dv.phan_in_id = ANY($1::uuid[]) AND dv.trang_thai NOT IN ('DA_GOP','DA_HUY')

@@ -51,9 +51,18 @@ async function coCotDspLogo() {
   _coDsp = rows.length > 0;
   return _coDsp;
 }
-// Thiếu cột (chưa mig 134) ⇒ false (không cần HSKT) — khớp `utils/tech.js ktHsktSql`. Thiếu `dsp_logo` (mig 137) ⇒ false.
+// Cột `mot_tdthdh` (mig 139 — tính chất nhiều công đoạn chỉ có 1 tờ TDTHĐH ⇒ đợt mới từ ERP mang cả 2 công đoạn). Cache khi CÓ.
+let _coMot = false;
+async function coCotMotTdthdh() {
+  if (_coMot) return true;
+  const { rows } = await query("SELECT 1 FROM information_schema.columns WHERE table_name = 'tinh_chat_in' AND column_name = 'mot_tdthdh' LIMIT 1");
+  _coMot = rows.length > 0;
+  return _coMot;
+}
+// Thiếu cột (chưa mig 134) ⇒ false (không cần HSKT) — khớp `utils/tech.js ktHsktSql`. Thiếu `dsp_logo` (mig 137) / `mot_tdthdh`
+//   (mig 139) ⇒ false.
 const COT_KT_YC = "COALESCE(to_jsonb(t)->>'kt_yeu_cau', 'KHUON_MUC') AS kt_yeu_cau, COALESCE((to_jsonb(t)->>'kt_hskt')::boolean, false) AS kt_hskt, "
-  + "COALESCE((to_jsonb(t)->>'dsp_logo')::boolean, false) AS dsp_logo";
+  + "COALESCE((to_jsonb(t)->>'dsp_logo')::boolean, false) AS dsp_logo, COALESCE((to_jsonb(t)->>'mot_tdthdh')::boolean, false) AS mot_tdthdh";
 
 async function coBang() {
   const { rows } = await query("SELECT to_regclass('public.tinh_chat_in') AS bang");
@@ -124,6 +133,7 @@ async function cotTuyChon(d) {
   if (await coCotKtYc()) cot.push(['kt_yeu_cau', d.kt_yeu_cau || 'KHUON_MUC']);
   if (await coCotKtHskt()) cot.push(['kt_hskt', d.kt_hskt !== false]);
   if (await coCotDspLogo()) cot.push(['dsp_logo', d.dsp_logo === true]);
+  if (await coCotMotTdthdh()) cot.push(['mot_tdthdh', d.mot_tdthdh === true]);
   return cot;
 }
 
@@ -162,4 +172,4 @@ async function logTx(client, id, hanhDong, cu, moi, actorId) {
   );
 }
 
-module.exports = { coCotCheDo, coCotKtYc, coCotKtHskt, coCotDspLogo, coBang, danhMuc, demPhanIn, demDotErp, demPhanInCua, docTheoMaTx, docTheoIdTx, themTx, suaTx, anTx, logTx, apLuongChoPhanInTx };
+module.exports = { coCotCheDo, coCotKtYc, coCotKtHskt, coCotDspLogo, coCotMotTdthdh, coBang, danhMuc, demPhanIn, demDotErp, demPhanInCua, docTheoMaTx, docTheoIdTx, themTx, suaTx, anTx, logTx, apLuongChoPhanInTx };

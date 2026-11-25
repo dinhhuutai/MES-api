@@ -19,7 +19,7 @@
 //     SAU_THEO_DAU      — "công đoạn sau không Ready": công đoạn sau theo READY của công đoạn đầu (`phan_in.ep_truoc`).
 //   ⇒ `gdReady(pin, gd)` = bộ checklist mà công đoạn `gd` đọc ('IN' | 'EP_UI').
 // ─────────────────────────────────────────────────────────────────────────────
-const { dotGdSql, gdSql } = require('./luongSanXuat');
+const { dotGdSql, gdSql, dotCaHaiSql } = require('./luongSanXuat');
 
 const GD_IN = 'IN';
 const GD_EP = 'EP_UI';
@@ -93,10 +93,11 @@ function lenhDotGdDk(ls, dv, gd, pin = null) {
 //   khi đợt CŨNG có lệnh Ép/Logo sống. Trước đây chỉ xét lệnh In ⇒ trả về KT công đoạn Ép/Logo lúc In đã có lệnh thì đợt
 //   không hiện ở READY ⇒ KT/QC không xác nhận lại được, dòng Ép kẹt "Chờ Ready". Đợt đã QC không đổi gì (màn READY còn lọc
 //   `NOT qcDotSql`). ⚠ Guard (bỏ tích, phần in đã release, lệnh chờ KT…) GIỮ `lenhDotGdDk`.
+// ⚠ 25/11/2026 (mig 139): "đợt mang 2 công đoạn" không còn = luồng `IN_EP` — đợt kiếng ủi đánh dấu / ERP đặt 'CA_HAI' cũng
+//   vậy, đợt In + Logo đánh dấu 1 công đoạn thì không ⇒ xét theo ĐỢT (`luongSanXuat.dotCaHaiSql`).
 function lenhRoiReadyDk(ls, dv, gd, pin = null) {
   if (chuanGd(gd) === GD_EP) return lenhDotGdDk(ls, dv, gd, pin);
-  const luong = pin ? `${pin}.luong_sx` : `(SELECT zrp.luong_sx FROM phan_in zrp WHERE zrp.id = ${dv}.phan_in_id)`;
-  return `(${lenhDotGdDk(ls, dv, gd, pin)} AND (${luong} IS DISTINCT FROM 'IN_EP'
+  return `(${lenhDotGdDk(ls, dv, gd, pin)} AND (NOT ${dotCaHaiSql(dv, pin ? `${pin}.luong_sx` : null)}
     OR EXISTS (SELECT 1 FROM lenh_sx_dot_vai zre JOIN lenh_san_xuat zrl ON zrl.id = zre.lenh_san_xuat_id
                WHERE zre.dot_vai_ve_id = ${dv}.id AND zrl.trang_thai <> 'HUY' AND zrl.giai_doan = '${GD_EP}')))`;
 }

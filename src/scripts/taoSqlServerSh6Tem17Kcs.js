@@ -122,6 +122,11 @@ ELSE IF @chi_stt IS NULL OR @chi_stt = ${stt} BEGIN SET @dem += 1; SET @dem_huy 
 }
 
 async function main() {
+  // ⚠⚠ LỖI THỜI từ 25/11/2026: proc Sh6 nay có `@pBarcode17` (không mặc định) và `BarcodeIn` phải là TEM 15 — file sinh ra
+  //   đổi `BarcodeIn` sang tem 17 và thiếu `@pBarcode17` ⇒ sai luật + lỗi "expects parameter". Gửi lại các lượt này qua MES:
+  //   `node src/scripts/guiLaiLuotLoiErp.js --ma=ERP_GUI_KIEM_PHAM --tu=2026-11-19 --tem17 [--gui]`. Hủy SK6 cũ: `taoSqlServerHuySk6Tem17Kcs.js`.
+  throw new Error('Script lỗi thời (25/11/2026) — dùng guiLaiLuotLoiErp.js --tem17, xem chú thích đầu hàm main');
+  // eslint-disable-next-line no-unreachable
   const vao = process.argv.slice(2).map((x) => String(x).trim()).filter((x) => /^\d{9,12}$/.test(x));
   const ma = vao.length ? vao.map((x) => (x.length === 12 ? x : `15${x.padStart(10, '2')}`)) : null;
   // Mã 17 truyền dạng đuôi thì cũng thử khớp tiền tố 17.

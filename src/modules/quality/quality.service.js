@@ -399,7 +399,7 @@ async function recordKcs(temId, body, actorId) {
   //   tem gốc đang có phần đã tách tem 17 còn hiệu lực (`sl_kcs_tach` > 0 — hủy xác nhận / OQC trả về tem 17 đều trừ lại)
   //   ⇒ mọi lượt KCS sau đó (kể cả lượt kiểm hết phần còn lại) tách phần đạt sang 1 tem 17 MỚI. Trước đây lượt chốt đi bằng
   //   tem 15 ⇒ xưởng cầm 2 nhãn giao của cùng lô, 1 nhãn 17 + 1 nhãn 15. Tem chưa từng giao trước ⇒ vẫn tem 15 như cũ.
-  //   ERP y hệt lượt một phần: Sh6 gửi bằng MÃ TEM 17 lúc xác nhận, KHÔNG gửi tem 15, KHÔNG SK6 (19/11/2026, `kiemPhamErp`).
+  //   ERP y hệt lượt một phần: 1 phiếu Sh6 lúc xác nhận — `BarcodeIn` tem 15 + `Barcode17` tem 17, KHÔNG SK6 (`kiemPhamErp`).
   //   Xin mã TRƯỚC transaction (luật `layBarcodeTem*`, như `recordSua`). `null` = API xin mã 17 đang TẮT hoặc chưa chạy
   //   mig ⇒ giữ hành vi cũ: phần đạt đi bằng tem 15. ERP lỗi ⇒ `layBarcodeTem17` ném lỗi, KHÔNG lưu lượt kiểm — người dùng
   //   bấm lại (nếu lưu xong đi bằng tem 15 thì nhãn giấy sai mà không ai biết).
@@ -435,7 +435,7 @@ async function recordKcs(temId, body, actorId) {
   sockets.emit('quality:updated', { temId, stage: 'KCS' });
   sockets.emit('dashboard:refresh', {});
   // Đẩy kết quả kiểm sang ERP (/gui-erp-kiem-pham) — NGẦM, không bao giờ chặn việc xác nhận KCS.
-  // Lượt đã tách tem 17 (kiểm một phần / chốt sau giao trước) ⇒ `kiemPhamErp` gửi Sh6 bằng MÃ TEM 17 (19/11/2026), không SK6.
+  // Lượt đã tách tem 17 (giao trước) ⇒ Sh6 mang thêm `Barcode17` = tem 17 (`BarcodeIn` vẫn tem 15), không SK6.
   if (kcsId) kiemPhamErp.guiNgam(kcsId, temId, { dat, hu, thieu }, actorId);
   const conLai = conSauChenh - tong; // = 0 khi cân đối; > 0 ở lượt "kiểm một phần" (27/10/2026)
   return {
@@ -1148,7 +1148,7 @@ async function luuNguoiKiemKcs(items, actorId) {
   const kq = await repo.luuNguoiKiemKcs(dong, actorId);
   if (kq.ton_tai !== dong.length) throw new AppError('Có lượt KCS không còn tồn tại — tải lại danh sách', { status: 404, errorCode: 'NOT_FOUND' });
   // ⚠ 19/11/2026: IN TEM 17 KHÔNG còn gửi SK6 — tem 17 của lượt KCS đã báo ERP bằng chính phiếu Sh6 lúc xác nhận
-  //   (`kiemPhamErp` đổi `BarcodeIn` sang tem 17). Giữ khóa `gui_erp_tem_17` rỗng cho FE cũ.
+  //   (`kiemPhamErp` gửi tem 17 ở `Barcode17`). Giữ khóa `gui_erp_tem_17` rỗng cho FE cũ.
   // 09/11/2026: Sh6 mang NGƯỜI KIỂM ⇒ đổi tên ở đây sau khi Sh6 đã gửi thì gửi lại phiếu cùng IDMES (ngầm). Chưa từng gửi
   //   thành công ⇒ thôi (lần gửi / gửi lại sau tự đọc tên mới).
   for (const kcsId of kq.doi || []) kiemPhamErp.guiLaiNguoiKiemNgam(kcsId, actorId);
