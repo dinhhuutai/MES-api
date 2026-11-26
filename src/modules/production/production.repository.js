@@ -25,6 +25,7 @@ const { khoaDemLo, dungMaLo, chuanNgayCa } = require('../../utils/maLo');
 // Cấp mã tăng dần PSX/TEM — không cắt khi vượt số chữ số (sự cố LSX10000 → LSX1000 ngày 21/10/2026).
 const { maKeTiepSql } = require('../../utils/maKeTiep');
 const { khoaNgcLenhSql, khoaNgcSql } = require('../../utils/nhaGiaCong'); // đợt khác NGC không gộp (27/10/2026)
+const { loaiSlBsLenhSql } = require('../../utils/loaiSlBs'); // số lượng / bổ sung không gộp (26/11/2026)
 // Mốc tuyệt đối của giờ SX nhập ở ô In tem (ngày ca + giờ, ca đêm qua nửa đêm +1 ngày) — dùng chung Báo cáo sản xuất.
 const { MOC_TEM } = require('./baoCaoSanXuat');
 const { chuanMaChuyen, chuanMaChuyenSql } = require('../../utils/maChuyen');
@@ -1076,7 +1077,8 @@ async function docLenhGopTx(client, ids) {
             (SELECT COUNT(*) FROM phieu_san_xuat p2 WHERE p2.lenh_san_xuat_id = ls.id AND p2.trang_thai <> 'HUY')::int AS so_phieu,
             (SELECT array_agg(DISTINCT dv.phan_in_id::text) FROM lenh_sx_dot_vai x JOIN dot_vai_ve dv ON dv.id = x.dot_vai_ve_id
               WHERE x.lenh_san_xuat_id = ls.id) AS phan_in_ids,
-            ${khoaNgcLenhSql('ls.id')} AS ngc_khoa
+            ${khoaNgcLenhSql('ls.id')} AS ngc_khoa,
+            ${loaiSlBsLenhSql('ls.id')} AS loai_sl_bs
        FROM lenh_san_xuat ls
        LEFT JOIN phieu_san_xuat ps ON ps.lenh_san_xuat_id = ls.id AND ps.trang_thai = 'DANG_CHAY'
       WHERE ls.id = ANY($1::uuid[])

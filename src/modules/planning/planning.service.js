@@ -35,6 +35,7 @@ const { TOI_DA_TIM: TOI_DA_TIM_LS } = require('../../utils/lichSuTim');
 const { ganThongTinPhanIn } = require('../../utils/thongTinLichSu');
 const { trongGioHanhChinh } = require('../../utils/gioHanhChinh'); // Test Run ngoài giờ ⇒ QA kiêm Release 2
 const { khoaNgc, tenNgc } = require('../../utils/nhaGiaCong'); // đợt khác nhà gia công không gom (27/10/2026)
+const { khoaLoaiDot, TEN_LOAI } = require('../../utils/loaiSlBs'); // số lượng / bổ sung không gom chung lệnh (26/11/2026)
 const { coCotBtp, datSoDauTx, coDauCho } = require('../../utils/btpKhacKh'); // BTP khác kế hoạch (mig 120, 28/10/2026)
 // Luồng theo tính chất in (mig 126, 09/11/2026): phần ÉP ỦI của phần in 2 công đoạn · Logo + công đoạn ép bỏ Test Run
 //   (`boQuaTestRun` — 11/11/2026).
@@ -549,7 +550,7 @@ async function releasePhanEp({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach,
   const nhomMap = new Map();
   for (const p of plan) {
     const dv = byId[p.dvId];
-    const k = `${dv.phan_in_id}|${khoaNgc(dv.nha_gia_cong)}`;
+    const k = `${dv.phan_in_id}|${khoaNgc(dv.nha_gia_cong)}|${khoaLoaiDot(dv.ma_loai_dot_vai)}`; // + số lượng / bổ sung (26/11/2026)
     if (!nhomMap.has(k)) nhomMap.set(k, []);
     nhomMap.get(k).push(p);
   }
@@ -724,7 +725,9 @@ async function releasePhanIn({ dotVaiIds, chuyenId, soLuongRelease, ngayKeHoach,
   const nhomMap = new Map();
   for (const p of plan) {
     const dv = cById[p.dvId];
-    const k = `${dv?.phan_in_id || p.dvId}|${khoaNgc(dv?.nha_gia_cong)}`;
+    // ⚠ 26/11/2026 (người dùng: số lượng / bổ sung "như 2 phần riêng") — đợt BỔ SUNG không gom chung lệnh với đợt số lượng
+    //   (`utils/loaiSlBs.js`); câu "đợt bổ sung gom CHUNG với đợt thường" của 27/10 ở trên không còn đúng.
+    const k = `${dv?.phan_in_id || p.dvId}|${khoaNgc(dv?.nha_gia_cong)}|${khoaLoaiDot(dv?.ma_loai_dot_vai)}`;
     if (!nhomMap.has(k)) nhomMap.set(k, []);
     nhomMap.get(k).push(p);
   }
@@ -860,6 +863,12 @@ async function createDotSanXuat({ items, chuyenId, ngayKeHoach, tgBdKh, tgKtKh, 
   if (ngcs.length > 1) {
     throw new AppError(`Các đợt vải khác nhà gia công (${ngcs.map(tenNgc).join(', ')}) — không gộp chung một đợt sản xuất, gom riêng từng nhà gia công`,
       { status: 422, errorCode: 'KHAC_NHA_GIA_CONG' });
+  }
+  // Đợt số lượng và đợt bổ sung là 2 phần riêng (26/11/2026, `utils/loaiSlBs.js`).
+  const loaiDot = [...new Set(plan.map((p) => khoaLoaiDot(byId[p.dotVaiId]?.ma_loai_dot_vai)))];
+  if (loaiDot.length > 1) {
+    throw new AppError(`Có cả đợt ${TEN_LOAI.SL} và đợt ${TEN_LOAI.BS} — không gộp chung một đợt sản xuất, tạo riêng từng phần`,
+      { status: 422, errorCode: 'KHAC_LOAI_SL_BS' });
   }
 
   // CHỈ gộp các đợt vải CÙNG PHẦN IN (code phần) vào 1 đợt SX. Muốn gom nhiều phần in cùng màu → dùng Gom set (READY).
