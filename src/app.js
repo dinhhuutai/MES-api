@@ -75,6 +75,9 @@ app.use('/uploads', express.static(require('path').join(env.upload.root)));
 // Health check
 app.get('/api/health', (req, res) => ok(res, { status: 'up', time: new Date().toISOString() }, 'OK'));
 
+// ⚠ TRANG CÔNG KHAI — KHÔNG ĐĂNG NHẬP (26/11/2026, trang `/san-luong`): chỉ đọc + danh sách trắng trường, xem file router.
+app.use('/api/cong-khai', require('./modules/congkhai/congkhai.routes'));
+
 // Modules
 app.use('/api/auth', authRoutes);
 app.use('/api/users', usersRoutes);

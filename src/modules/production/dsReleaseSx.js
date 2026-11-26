@@ -58,7 +58,8 @@ async function dsReleaseSx(tuNgay, denNgay, { ca } = {}) {
   //   đang chạy hoặc đã chạy hoàn tất; bỏ phiếu script hệ thống `PHIEU_THAT`, cùng luật Báo cáo sản xuất).
   const { PHIEU_THAT } = require('./baoCaoSanXuat');
   const ungVien = items.filter((r) => String(r.ma_loai_chuyen || '').toUpperCase() !== 'GIA_CONG');
-  if (!ungVien.length) return { ngay, items: [] };
+  // Luôn trả `ca` (kể cả rỗng) — FE dựa vào khóa này để biết máy chủ đã có bản lọc ca / bổ sung (25/11) hay chưa.
+  if (!ungVien.length) return { ngay, den_ngay: den, ca: dsCa, items: [] };
   const { rows: daChay } = await query(
     `SELECT DISTINCT ps.lenh_san_xuat_id AS id FROM phieu_san_xuat ps
       WHERE ps.lenh_san_xuat_id = ANY($1::uuid[]) AND ps.trang_thai <> 'HUY' AND ${PHIEU_THAT}`.replace(/\s+/g, ' '),
