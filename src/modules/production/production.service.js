@@ -23,7 +23,6 @@ const { layBarcodeTem, layNhieuBarcodeTem } = require('../../utils/erpTemBarcode
 const { ghiInTem, taoPayload, laMaTemErp, ghiChuaCoMaErp, ghiChuaGuiDuoc } = require('../../utils/erpGhiInTem');
 const { apiChoPhepPhanIn } = require('../../utils/caiDatApi');
 const { tenNgc } = require('../../utils/nhaGiaCong'); // tách lệnh theo nhà gia công (27/10/2026)
-const { TEN_LOAI } = require('../../utils/loaiSlBs'); // số lượng / bổ sung không gộp (26/11/2026)
 const { coCotThoInKh, chuanHoaThoIn } = require('../../utils/thoInKeHoach');
 // Luồng theo tính chất in (mig 126): tem in kiếng nhập loại + hệ số kiếng; tem công đoạn đầu không vào KCS.
 const { canNhapKieng, nhanCongDoan } = require('../../utils/luongSanXuat');
@@ -1119,13 +1118,6 @@ async function gopLenhCungPhan(lenhIds, actorId, { lyDo = '' } = {}) {
     if (new Set(ds.map((l) => l.ngc_khoa || '')).size !== 1 || ds.some((l) => String(l.ngc_khoa || '').includes('|'))) {
       throw new AppError('Các lệnh khác nhà gia công — không gộp số lượng chung', { status: 409, errorCode: 'KHAC_NHA_GIA_CONG' });
     }
-    // Số lượng / bổ sung là 2 phần riêng (26/11/2026, `utils/loaiSlBs.js`) — chỉ gộp lệnh cùng loại; lệnh lẫn cả hai (MIX, có từ
-    //   trước) không nhận thêm lệnh nào.
-    const loais = new Set(ds.map((l) => l.loai_sl_bs || 'SL'));
-    if (loais.size !== 1 || loais.has('MIX')) {
-      throw new AppError(`Lệnh số lượng và lệnh bổ sung là 2 phần riêng — không gộp chung (${ds.map((l) => `${l.ma_lenh_san_xuat}: ${TEN_LOAI[l.loai_sl_bs] || 'số lượng'}`).join(' · ')})`,
-        { status: 409, errorCode: 'KHAC_LOAI_SL_BS' });
-    }
     const dich = [...ds].sort((a, b) => (b.phieu_id ? 1 : 0) - (a.phieu_id ? 1 : 0) || b.da_in - a.da_in
       || String(a.ma_lenh_san_xuat).localeCompare(String(b.ma_lenh_san_xuat), 'vi', { numeric: true }))[0];
     const nguon = ds.filter((l) => l.id !== dich.id);
@@ -1352,9 +1344,7 @@ async function startProductionBatch(items, actorId) {
     for (const x of hopLe) {
       const l = theoId.get(x.lenhId);
       if (!l || l.trang_thai !== 'RELEASE_2' || l.so_phieu > 0 || (l.phan_in_ids || []).length !== 1) continue;
-      // + nhà gia công + công đoạn + loại số lượng / bổ sung (26/11/2026 — lệnh MIX không gộp với ai: khóa riêng theo id).
-      const loai = l.loai_sl_bs === 'MIX' ? `MIX:${l.id}` : (l.loai_sl_bs || 'SL');
-      const k = `${l.phan_in_ids[0]}|${l.chuyen_id || ''}|${x.chuyenId || l.chuyen_id || ''}|${l.ngc_khoa || ''}|${l.giai_doan || 'IN'}|${loai}`;
+      const k = `${l.phan_in_ids[0]}|${l.chuyen_id || ''}|${x.chuyenId || l.chuyen_id || ''}|${l.ngc_khoa || ''}|${l.giai_doan || 'IN'}`; // + nhà gia công + công đoạn
       if (!nhom.has(k)) nhom.set(k, []);
       nhom.get(k).push(x);
     }

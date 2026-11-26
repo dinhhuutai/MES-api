@@ -25,7 +25,6 @@ const { khoaDemLo, dungMaLo, chuanNgayCa } = require('../../utils/maLo');
 // Cấp mã tăng dần PSX/TEM — không cắt khi vượt số chữ số (sự cố LSX10000 → LSX1000 ngày 21/10/2026).
 const { maKeTiepSql } = require('../../utils/maKeTiep');
 const { khoaNgcLenhSql, khoaNgcSql } = require('../../utils/nhaGiaCong'); // đợt khác NGC không gộp (27/10/2026)
-const { loaiSlBsLenhSql } = require('../../utils/loaiSlBs'); // số lượng / bổ sung không gộp (26/11/2026)
 // Mốc tuyệt đối của giờ SX nhập ở ô In tem (ngày ca + giờ, ca đêm qua nửa đêm +1 ngày) — dùng chung Báo cáo sản xuất.
 const { MOC_TEM } = require('./baoCaoSanXuat');
 const { chuanMaChuyen, chuanMaChuyenSql } = require('../../utils/maChuyen');
@@ -702,8 +701,10 @@ async function getPhieuById(phieuId) {
 }
 
 async function getTemsByPhieu(phieuId) {
+  // SL bổ sung của tem (mig 135) — sidebar Sản xuất tách "đã in" phần số lượng / bổ sung của lệnh lẫn cả hai (26/11/2026).
+  const colBs = (await temCoCotBoSung()) ? 't.sl_bo_sung_cty, t.sl_bo_sung_khach' : 'NULL::int AS sl_bo_sung_cty, NULL::int AS sl_bo_sung_khach';
   const { rows } = await query(
-    `SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.created_date, COALESCE(t.btp_truoc, false) AS btp_truoc,
+    `SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.created_date, COALESCE(t.btp_truoc, false) AS btp_truoc, ${colBs},
             (SELECT COALESCE(MAX(lt.so_lan_in),1) FROM log_tem lt WHERE lt.tem_id = t.id)::int AS so_lan_in,
             (COALESCE(t.sl_kcs_dat,0) + COALESCE(t.sl_kcs_sua,0) + COALESCE(t.sl_kcs_huy,0)
               + COALESCE(t.sl_oqc_dat,0) + COALESCE(t.sl_da_giao,0)) > 0 AS da_kiem,
@@ -1077,8 +1078,7 @@ async function docLenhGopTx(client, ids) {
             (SELECT COUNT(*) FROM phieu_san_xuat p2 WHERE p2.lenh_san_xuat_id = ls.id AND p2.trang_thai <> 'HUY')::int AS so_phieu,
             (SELECT array_agg(DISTINCT dv.phan_in_id::text) FROM lenh_sx_dot_vai x JOIN dot_vai_ve dv ON dv.id = x.dot_vai_ve_id
               WHERE x.lenh_san_xuat_id = ls.id) AS phan_in_ids,
-            ${khoaNgcLenhSql('ls.id')} AS ngc_khoa,
-            ${loaiSlBsLenhSql('ls.id')} AS loai_sl_bs
+            ${khoaNgcLenhSql('ls.id')} AS ngc_khoa
        FROM lenh_san_xuat ls
        LEFT JOIN phieu_san_xuat ps ON ps.lenh_san_xuat_id = ls.id AND ps.trang_thai = 'DANG_CHAY'
       WHERE ls.id = ANY($1::uuid[])

@@ -31,8 +31,6 @@ const { coCotDinhMuc, cotDinhMucSql } = require('../../utils/dinhMucKeHoach'); /
 const { cotGiaSql } = require('../../utils/giaPhanIn');
 const { LOAI_TRA_VE_KH, LENH_CHO_KH_SQL } = require('../../utils/traVeKeHoach');
 const { khoaNgcLenhSql } = require('../../utils/nhaGiaCong');
-// Lệnh bổ sung chỉ cộng thẳng vào lệnh đang chạy CÙNG loại (26/11/2026 — số lượng / bổ sung là 2 phần riêng).
-const { loaiSlBsLenhSql } = require('../../utils/loaiSlBs');
 const { temTrongKySql } = require('../../utils/ngaySxTem');
 // BTP khác kế hoạch (mig 120): đợt có cờ release được 2 × SL vải (2 đầu tấm vải, 2 kế hoạch) — nguồn luật duy nhất.
 const { coBtpSql, soDauSql, sucChuaSql, conReleaseSql, conRelease, coDauCho } = require('../../utils/btpKhacKh');
@@ -242,8 +240,6 @@ async function phanInDangChay(phanInIds) {
 //   (đích) để gộp không bị từ chối. Nhiều lệnh thỏa ⇒ ưu tiên lệnh trên chuyền `chuyenId` (chuyền kế hoạch của lệnh bỏ
 //   test), rồi lệnh in nhiều nhất. Trả kèm `chuyen_id` của lệnh đang chạy.
 // `cungNgcLenhId` (27/10/2026): chỉ lấy lệnh đang chạy có CÙNG nhà gia công với lệnh này (đợt khác NGC không cộng chung).
-//   26/11/2026: + CÙNG loại số lượng / bổ sung (`utils/loaiSlBs.js`) — lệnh bổ sung bỏ test mà phần in chỉ có lệnh số lượng
-//   đang chạy ⇒ không cộng, lệnh bổ sung vào Chờ chạy thành dòng riêng.
 async function lenhDangChayCuaPhanIn(phanInIds, chuyenId, cungNgcLenhId = null) {
   if (!phanInIds || !phanInIds.length) return [];
   const sql = `SELECT DISTINCT ON (dv.phan_in_id) dv.phan_in_id::text AS phan_in_id, ls.id, ls.ma_lenh_san_xuat,
@@ -260,7 +256,6 @@ async function lenhDangChayCuaPhanIn(phanInIds, chuyenId, cungNgcLenhId = null) 
      AND (SELECT count(*) FROM phieu_san_xuat p2 WHERE p2.lenh_san_xuat_id = ls.id AND p2.trang_thai <> 'HUY') = 1
      AND ($3::uuid IS NULL OR ${khoaNgcLenhSql('ls.id')} = ${khoaNgcLenhSql('$3::uuid')})
      AND ($3::uuid IS NULL OR ${gdSql('ls')} = (SELECT ${gdSql('l3')} FROM lenh_san_xuat l3 WHERE l3.id = $3::uuid))
-     AND ($3::uuid IS NULL OR (${loaiSlBsLenhSql('ls.id')} = ${loaiSlBsLenhSql('$3::uuid')} AND ${loaiSlBsLenhSql('ls.id')} <> 'MIX'))
    ORDER BY dv.phan_in_id, (COALESCE(ps.chuyen_id, ls.chuyen_id) IS NOT DISTINCT FROM $2::uuid) DESC,
      (SELECT COALESCE(SUM(t.so_luong), 0) FROM tem t WHERE t.phieu_san_xuat_id = ps.id AND t.trang_thai <> 'HUY') DESC,
      ls.ma_lenh_san_xuat`;
