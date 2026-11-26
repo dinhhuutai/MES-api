@@ -1559,10 +1559,11 @@ async function printTem(phieuId, soLuong, actorId, body) {
   const target = Number(lenh?.so_luong_release) || 0;
   const them = meta.btpTruoc ? { btp: qty } : qty;
   if (target > 0) kiemTranIn(target, await repo.getPrintedTach(phieuId), them);
-  // Mig 126/127: tem in kiếng ⇒ bắt buộc loại kiếng + hệ số + SL kiếng (trước khi xin mã tem ERP); tem công đoạn đầu
-  //   không vào KCS.
+  // Mig 126/127: tem in kiếng ⇒ bắt buộc loại kiếng + hệ số + SL kiếng (trước khi xin mã tem ERP).
+  // ⚠ 26/11/2026 người dùng chốt: tem in khô xong ⇒ qua KCS LUÔN, KHÔNG chờ công đoạn sau ⇒ KHÔNG còn ghi
+  //   `tem.cong_doan_dau` (cờ "tem không vào KCS") — kể cả lệnh công đoạn đầu (`la_cong_doan_dau`).
   const kieng = await loaiKieng.kiemKiengIn(canNhapKieng(lenh?.luong_sx, lenh?.giai_doan), body);
-  const metaCd = { congDoanDau: !!lenh?.la_cong_doan_dau, ...kieng, ...(await boSungTem(body, qty)) };
+  const metaCd = { ...kieng, ...(await boSungTem(body, qty)) };
 
   // In tem xong tự đưa vào xe phơi mặc định + bắt đầu đếm ngược ngay.
   const xe = await repo.getDefaultXePhoi();
@@ -1707,7 +1708,7 @@ async function printTemBatch(phieuId, items, actorId, body) {
     // eslint-disable-next-line no-await-in-loop
     it.boSungDong = await boSungTem(it.boSung, it.soLuong, nhan);
   }
-  const metaCd = { congDoanDau: !!lenh?.la_cong_doan_dau };
+  const metaCd = {}; // 26/11/2026: tem công đoạn đầu cũng vào KCS — không ghi `cong_doan_dau` (xem `printTem`)
 
   const xe = await repo.getDefaultXePhoi();
   if (!xe) throw new AppError('Chưa cấu hình xe phơi để bắt đầu phơi', { status: 409, errorCode: 'NO_XE' });
@@ -2148,6 +2149,7 @@ async function reopenPrintTem(temId, lyDo, actorId, { boQuaKhoa = false } = {}) 
   let trangThai = ['IN', 'DANG_PHOI', 'DA_KHO', 'CHO_CD_SAU'].includes(chup.trang_thai_cu) ? chup.trang_thai_cu : null;
   if (!trangThai) trangThai = xeIds.length ? 'DANG_PHOI' : (tem.da_phoi_xong ? 'DA_KHO' : 'IN');
   if (trangThai === 'DANG_PHOI' && !xeIds.length) trangThai = tem.da_phoi_xong ? 'DA_KHO' : 'IN';
+  if (trangThai === 'CHO_CD_SAU') trangThai = 'DA_KHO'; // 26/11/2026: không còn "chờ công đoạn sau" — tem khô vào KCS
 
   const ok = await withTransaction((client) => repo.reopenTem(client, temId, { trangThai, xePhoiIds: xeIds }, actorId));
   if (!ok) throw new AppError('Tem vừa được người khác mở lại', { status: 409, errorCode: 'ALREADY' });

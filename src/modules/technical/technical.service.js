@@ -601,6 +601,11 @@ async function listCandidates({ search, page, limit, offset, onlyQcReady = false
   });
   // Nhận file BH (11/11/2026) — chỉ màn READY Kỹ thuật; trạng thái theo đợt của dòng (`nhanFileBh.ganVaoDong`, lỗi ⇒ bỏ qua).
   if (!onlyQcReady) await require('./nhanFileBh').ganVaoDong(items);
+  // Chờ ký tên (26/11/2026) — CẢ 2 màn; màn QC: đợt KT xong mà đang chờ ký tên ⇒ SLA QC chưa đếm, bỏ chờ ⇒ đếm từ lúc bỏ
+  //   (`choKyTen.apSlaQc`). Lỗi đọc ⇒ bỏ qua (tính năng phụ).
+  const choKyTen = require('./choKyTen');
+  await choKyTen.ganVaoDong(items);
+  if (onlyQcReady) choKyTen.apSlaQc(items, (moc) => slaQcReady(moc, qcSla));
   // Dòng công đoạn Ép/Logo: khóa dòng riêng + PA hiển thị = Ép (4) / Logo (5) theo tính chất in (PA hồ sơ giữ ở
   //   `phuong_an_in_hskt`, như Release 1 — `luongSanXuat.paCongDoanEp`, gương `paCongDoanSql`; 18/11/2026 4 Ép · 5 Logo).
   // 17/11/2026 (dùng chung 1 bộ): dòng đợt Ép của kiếng ủi mang `giai_doan` 'EP_UI' (do `ktDongNhom` gắn) CHỈ để vẽ badge

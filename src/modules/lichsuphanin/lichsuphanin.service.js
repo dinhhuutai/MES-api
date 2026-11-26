@@ -39,6 +39,7 @@ const HANH_DONG = {
   HUY_XAC_NHAN: ['READY', 'Hủy xác nhận', 'h'],
   KHOI_PHUC_READY_TU_DONG_DE: ['READY', 'Khôi phục xác nhận READY bị lượt tự động ghi đè', 'a'],
   NHAN_FILE_BH: ['READY', 'Nhận file Bán hàng'], HUY_NHAN_FILE_BH: ['READY', 'Hủy nhận file Bán hàng', 'h'],
+  CHO_KY_TEN: ['READY', 'Đánh dấu chờ ký tên'], HUY_CHO_KY_TEN: ['READY', 'Bỏ chờ ký tên', 'h'],
   // đợt vải
   HUY_DOT_VAI: ['DON_HANG', 'Hủy đợt vải', 'h'], MO_DOT_VAI: ['DON_HANG', 'Mở lại đợt vải'],
   QUAN_TRI_DAT_GIAI_DOAN: ['HE_THONG', 'Quản trị: đặt lại giai đoạn đợt', 't'],
@@ -219,7 +220,7 @@ async function lichSu(phanInId) {
     const id = a.id_ban_ghi;
     switch (a.ten_bang) {
       case 'lenh_san_xuat': return maLenh.get(id) || '';
-      case 'dot_vai_ve': case 'ke_hoach_tam': case 'nhan_file_bh': return maDot.get(id) ? `Đợt ${maDot.get(id)}` : '';
+      case 'dot_vai_ve': case 'ke_hoach_tam': case 'nhan_file_bh': case 'cho_ky_ten': return maDot.get(id) ? `Đợt ${maDot.get(id)}` : '';
       case 'tem': case 'tem_phan_cong': return maTemTheoId.get(id) ? `Tem ${maTem(maTemTheoId.get(id))}` : '';
       default: return '';
     }

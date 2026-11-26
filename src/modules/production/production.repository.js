@@ -128,10 +128,25 @@ const SL_NHAN_VAI_LENH = `(SELECT COALESCE(SUM(x.sl), 0)::int FROM (SELECT DISTI
     FROM lenh_sx_dot_vai lsx JOIN dot_vai_ve dvx ON dvx.id = lsx.dot_vai_ve_id
    WHERE lsx.lenh_san_xuat_id = COALESCE(ls.lenh_lien_ket_id, ls.id)) x)`;
 const COT_THEM_XAC_NHAN_CHAY = `info.so_luong_don_hang, ${SL_NHAN_VAI_LENH} AS sl_nhan_vai, ls.tg_bd_kh, ls.tg_kt_kh`;
+// ⚠ SỐ LƯỢNG / BỔ SUNG của lệnh (26/11/2026, người dùng: "Xác nhận chạy tách 2 dòng nếu là bổ sung và số lượng, đang gộp số lượng
+//   vào nhau" — ca LSX13237: đợt SO_LUONG 1512 + đợt BO_SUNG 143 cộng thẳng vào lệnh đang chạy). `sl_release_bs` = phần SL
+//   release thuộc đợt MÃ loại `BO_SUNG` (không so tên — cùng luật Danh sách release SX); phần số lượng = SL release − phần này.
+//   `printed_bs` / `da_in_truoc_bs` = Σ SL bổ sung (công ty + khách — mig 135) CỦA TEM đã in ⇒ đã in phần SL = đã in − phần này.
+//   FE (`utils/locLenhChay.js loaiSlBs`) gom dòng theo loại + tách lệnh lẫn cả 2 thành 2 dòng con.
+const SL_RELEASE_BS_LENH = `(SELECT COALESCE(SUM(lsb.so_luong), 0)::int FROM lenh_sx_dot_vai lsb
+    JOIN dot_vai_ve dvb ON dvb.id = lsb.dot_vai_ve_id
+    JOIN loai_dot_vai ldb ON ldb.id = dvb.loai_dot_vai_id AND ldb.ma_loai = 'BO_SUNG'
+   WHERE lsb.lenh_san_xuat_id = ls.id)`;
+// `dk` = điều kiện lọc tem (bí danh `tb`). Thiếu cột mig 135 ⇒ 0.
+const slInBsSql = (coBs, dk) => (coBs
+  ? `(SELECT COALESCE(SUM(COALESCE(tb.sl_bo_sung_cty, 0) + COALESCE(tb.sl_bo_sung_khach, 0)), 0)::int FROM tem tb
+       WHERE ${dk} AND tb.trang_thai <> 'HUY' AND tb.tem_goc_id IS NULL)`
+  : '0');
 
 async function listProductionCandidates({ search = '', offset = 0, limit = 20 }) {
   const tim = mauTim(search);
   const dkPain = await dkTrang('SX_CHO_CHAY', 'lenh', 'ls.id');
+  const coBs = await temCoCotBoSung();
   const FROM = `
     FROM lenh_san_xuat ls
     JOIN chuyen_san_xuat cs ON cs.id = ls.chuyen_id
@@ -152,6 +167,8 @@ async function listProductionCandidates({ search = '', offset = 0, limit = 20 })
            (SELECT count(DISTINCT dv.phan_in_id) FROM lenh_sx_dot_vai lsd2 JOIN dot_vai_ve dv ON dv.id = lsd2.dot_vai_ve_id WHERE lsd2.lenh_san_xuat_id = ls.id)::int AS so_phan_in,
            (SELECT COALESCE(SUM(t.so_luong),0)::int FROM tem t JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
               WHERE ps.lenh_san_xuat_id = ls.id AND t.trang_thai <> 'HUY') AS da_in_truoc,
+           ${SL_RELEASE_BS_LENH} AS sl_release_bs,
+           ${slInBsSql(coBs, 'tb.phieu_san_xuat_id IN (SELECT psb.id FROM phieu_san_xuat psb WHERE psb.lenh_san_xuat_id = ls.id)')} AS da_in_truoc_bs,
            (SELECT a.thoi_gian FROM audit_log a WHERE a.ten_bang = 'lenh_san_xuat'
               AND a.hanh_dong = 'NGUNG_LENH_CHAY' AND a.id_ban_ghi = ls.id::text
               ORDER BY a.thoi_gian DESC LIMIT 1) AS tg_ngung,
@@ -2239,6 +2256,7 @@ async function logTraVeKeHoachSx(client, lenhId, cu, moi, actorId) {
 async function monitorRunning() {
   const dkPain = await dkTrang('SX_DANG_CHAY', 'lenh', 'ls.id');
   const colThoKh = (await coCotThoInKh()) ? 'ls.tho_in_kh' : 'NULL::text AS tho_in_kh';
+  const coBs = await temCoCotBoSung();
   const { rows } = await query(
     `SELECT ps.id AS phieu_id, ls.id AS lenh_id, cs.id AS chuyen_id, cs.ma_chuyen, cs.ten_chuyen,
             lc.ma_loai AS ma_loai_chuyen, lc.ten_loai AS ten_loai_chuyen,
@@ -2263,6 +2281,10 @@ async function monitorRunning() {
             tm.phut_in, tm.ca, tm.ngay_ca, tm.tg_in_cuoi,
             (SELECT COALESCE(SUM(t.so_luong),0)::int FROM tem t WHERE t.phieu_san_xuat_id=ps.id AND t.trang_thai <> 'HUY') AS printed,
             (SELECT count(*) FROM tem t WHERE t.phieu_san_xuat_id=ps.id AND t.trang_thai <> 'HUY')::int AS so_tem,
+            ${SL_RELEASE_BS_LENH} AS sl_release_bs,
+            ${slInBsSql(coBs, 'tb.phieu_san_xuat_id = ps.id')} AS printed_bs,
+            ${coBs ? `(SELECT count(*) FROM tem tb WHERE tb.phieu_san_xuat_id = ps.id AND tb.trang_thai <> 'HUY'
+               AND tb.tem_goc_id IS NULL AND COALESCE(tb.sl_bo_sung_cty, 0) + COALESCE(tb.sl_bo_sung_khach, 0) > 0)::int` : '0'} AS so_tem_bs,
             EXISTS (SELECT 1 FROM ngung_chuyen n WHERE n.phieu_san_xuat_id=ps.id AND n.trang_thai='DANG_NGUNG') AS dang_ngung,
             (SELECT COALESCE(SUM(
                CASE WHEN n.trang_thai='DA_HOAT_DONG_LAI' THEN COALESCE(n.so_phut,0)
@@ -2421,8 +2443,9 @@ async function accumulateDryTime(client, temId) {
 //   mốc vào KCS của dải Theo dõi / SLA KCS (`siSoTram.MOC_VAO_TEM.KIEM`) — rơi vào tương lai). Ghi audit `XAC_NHAN_KHO`
 //   (giờ phơi dự kiến cũ) để tra ai xác nhận sớm.
 // Số phút CÒN LẠI tới giờ phơi xong dự kiến của phiên đang phơi (khóa phiên `FOR UPDATE`); ≤ 0 ⇒ đã tới giờ.
-// Trạng thái tem khi KHÔ (mig 126): tem công đoạn đầu (in kiếng / in trước khi ép) không vào KCS ⇒ `CHO_CD_SAU`
-//   ("chờ công đoạn sau"); tem thường ⇒ `DA_KHO` (vào hàng đợi KCS).
+// Trạng thái tem khi KHÔ: tem thường ⇒ `DA_KHO` (vào hàng đợi KCS). Nhánh `CHO_CD_SAU` ("chờ công đoạn sau", mig 126)
+//   chỉ còn cho tem cũ mang `cong_doan_dau` — từ 26/11/2026 in tem KHÔNG ghi cờ này nữa (tem in khô ⇒ KCS luôn, người
+//   dùng chốt); tem cũ nhả bằng `database/scripts/nha_tem_cong_doan_dau_kcs_2611.sql`.
 const TT_SAU_KHO = "CASE WHEN cong_doan_dau THEN 'CHO_CD_SAU' ELSE 'DA_KHO' END";
 
 async function phutKhoSomTx(client, temId) {

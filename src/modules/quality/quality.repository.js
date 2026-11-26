@@ -22,7 +22,8 @@ const { vaoSuaDuocSql, xuLySql, daNhanSql, dangSuaSql, choNhanSql, coNhanSua } =
 //   bị cộng tổng ở bất kỳ đâu, chỉ dùng làm điều kiện `> 0` và hiển thị (đã rà 05/09/2026).
 // ⚠ Tem con vốn đã không lọt màn KCS (`listKcsCand` còn đòi `trang_thai='DA_KHO'`), nhưng để số âm
 //   hiện lên bảng/báo cáo là mời gọi hiểu nhầm — kẹp ở NGUỒN, đừng vá từng màn.
-// ⚠ Mig 126: tem CÔNG ĐOẠN ĐẦU (in kiếng / in trước khi ép — `cong_doan_dau`) KHÔNG vào KCS ⇒ còn kiểm = 0.
+// ⚠ Mig 126: tem mang `cong_doan_dau` KHÔNG vào KCS ⇒ còn kiểm = 0. Từ 26/11/2026 in tem không ghi cờ này nữa (tem in
+//   khô ⇒ KCS luôn, kể cả công đoạn đầu) — nhánh chỉ còn cho tem cũ chưa nhả.
 const conKcsSql = (a = 't.') =>
   `(CASE WHEN ${a}tem_goc_id IS NOT NULL OR ${a}cong_doan_dau THEN 0 ELSE (${a}so_luong + ${a}sl_chenh_lech) - (${a}sl_kcs_dat + ${a}sl_kcs_sua + ${a}sl_kcs_huy) END)`;
 const CON_KCS = conKcsSql();

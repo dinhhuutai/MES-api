@@ -106,7 +106,7 @@ async function phamVi(pinId) {
 async function auditTrongPhamVi(pv) {
   const cap = [
     ['phan_in', [pv.pinId]], ['ket_qua_checkpoint', [pv.pinId, ...pv.kqIds]],
-    ['dot_vai_ve', pv.dotIds], ['ke_hoach_tam', pv.dotIds], ['nhan_file_bh', pv.dotIds],
+    ['dot_vai_ve', pv.dotIds], ['ke_hoach_tam', pv.dotIds], ['nhan_file_bh', pv.dotIds], ['cho_ky_ten', pv.dotIds],
     ['lenh_san_xuat', pv.lenhIds], ['phieu_san_xuat', pv.phieuIds], ['vai_cho_tem', pv.phieuIds],
     ['tem', pv.temIds], ['tem_phan_cong', pv.temIds],
     ['kcs', pv.kcsIds], ['sua', pv.suaIds], ['oqc', pv.oqcIds], ['test_run', pv.testIds],

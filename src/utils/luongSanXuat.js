@@ -8,8 +8,10 @@
 //   · 2 CÔNG ĐOẠN (IN_KIENG · IN_EP): mỗi đợt vải có 2 phần ở Kế hoạch — phần IN (`lenh_san_xuat.giai_doan = 'IN'`) và
 //     phần ÉP ỦI (`giai_doan = 'EP_UI'`). Mỗi phần có sức chứa release RIÊNG (= SL vải × số đầu BTP), lập kế hoạch phần
 //     nào trước cũng được, 2 lệnh chạy song song. Lệnh IN qua Test Run; lệnh ÉP ỦI vào thẳng Chờ chạy (`boQuaTestRun`).
-//   · CÔNG ĐOẠN ĐẦU (mặc định IN; `phan_in.ep_truoc` ⇒ ÉP) — lệnh mang `la_cong_doan_dau`, tem chép sang
-//     `tem.cong_doan_dau`: tem không vào KCS (khô ⇒ `CHO_CD_SAU`). Tem công đoạn CUỐI mới đi KCS → OQC → giao.
+//   · CÔNG ĐOẠN ĐẦU (mặc định IN; `phan_in.ep_truoc` ⇒ ÉP) — lệnh mang `la_cong_doan_dau` (thứ tự 1/2 · 2/2, chọn lệnh
+//     suy giai đoạn đợt). ⚠ 26/11/2026 người dùng chốt: tem in khô xong ⇒ qua KCS LUÔN, KHÔNG chờ công đoạn sau ⇒ tem
+//     của MỌI công đoạn đi KCS → OQC → giao; in tem không còn ghi `tem.cong_doan_dau` (tem cũ `CHO_CD_SAU` nhả bằng
+//     `database/scripts/nha_tem_cong_doan_dau_kcs_2611.sql`).
 //   · LOGO: đợt mới từ ERP vào thẳng Kế hoạch (hệ thống tự xác nhận READY), lệnh không qua Test Run / Release 2
 //     (Release 1 ⇒ chờ chạy).
 //   · Tem công đoạn IN của phần in KIẾNG phải nhập loại kiếng + hệ số kiếng.
