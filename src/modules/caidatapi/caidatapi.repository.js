@@ -135,6 +135,7 @@ function dkTruongSql(loc, p, chuyenTem = 'ps.chuyen_id') {
   const coGui = !v.don && !v.maHang && !v.kich && !v.mau;
   const tem = `(SELECT ${U} UNION ALL SELECT k.tem_id FROM kcs k WHERE k.id = ${U}
       UNION ALL SELECT s.tem_id FROM sua s WHERE s.id = ${U} UNION ALL SELECT o.tem_id FROM oqc o WHERE o.id = ${U}
+      UNION ALL SELECT ns.tem_id FROM nhan_sua ns WHERE ns.id = ${U}
       UNION ALL SELECT ght.tem_id FROM giao_hang_tem ght WHERE ght.giao_hang_id = ${U})`;
   const nguon = `(
       SELECT ps.lenh_san_xuat_id AS lenh_id, ${chuyenTem} AS chuyen_id, t.ma_ngay_ca, NULL::uuid AS pin_id

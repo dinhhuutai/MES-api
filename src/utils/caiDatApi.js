@@ -110,6 +110,17 @@ const DANH_MUC_API = [
     macDinh: () => env.erp.guiSuaDatEnabled,
     url: () => env.erp.guiSuaDatUrl,
   },
+  // NHẬN SỬA (26/11/2026) — /gui-erp-nhan-sua → proc MES_spr_MES2JH0. Luật ở `quality/nhanSuaErp.js`.
+  {
+    ma: 'ERP_GUI_NHAN_SUA',
+    ten: 'Gửi nhận sửa sang ERP',
+    mo_ta: 'Gửi ĐÚNG 1 LẦN mỗi lượt NHẬN SỬA của 1 tem (proc MES_spr_MES2JH0): BarcodeSua16 = nhãn 16 của tem, Soluong = SL '
+      + 'nhận của lượt, ngày CT / ngày ca / giờ = lúc nhận; chuyền (banin) · tổ · ca trưởng · chuyền trưởng · thợ in lấy theo '
+      + 'phiếu IN TEM (SF0) của tem. Hủy lượt nhận ⇒ báo ERP hủy IDMES. Chạy ngầm — TẮT hay lỗi đều KHÔNG chặn việc nhận sửa.',
+    canh_bao: 'Chỉ BẬT khi bên ERP đã có router /gui-erp-nhan-sua (bật trước thì mọi lượt nhận ghi lỗi ở Lịch sử).',
+    macDinh: () => env.erp.guiNhanSuaEnabled,
+    url: () => env.erp.guiNhanSuaUrl,
+  },
   // KẾT QUẢ KIỂM KCS (24/09/2026) — /gui-erp-kiem-pham.
   {
     ma: 'ERP_GUI_KIEM_PHAM',

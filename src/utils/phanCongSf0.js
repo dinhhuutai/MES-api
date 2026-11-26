@@ -42,6 +42,8 @@ async function phanCongSf0(temIds = []) {
     const g = r.gui || {};
     return [String(r.tem_id), {
       Catruong: sach(g.Catruong), Chuyentruong: sach(g.Chuyentruong), dsthoin: sach(g.dsthoin), id_mes_sf0: g.IDMES ?? null,
+      // Thiết bị (chuyền = `banin`) + tổ in của lượt SF0 — chỉ `thietBi` mới dùng (Nhận sửa JH0, 26/11/2026).
+      banin: sach(g.banin), Toin: sach(g.Toin),
       rieng: !!r.rieng,
     }];
   }));
@@ -50,13 +52,18 @@ async function phanCongSf0(temIds = []) {
 // Đè 3 trường người của payload Sh6 / SK6 / SF0 gửi lại (`taoPayload`) bằng giá trị SF0 lúc in. Trả true nếu đã đè.
 // `CatruongMsnv` phải xóa: `chuanHoa` ưu tiên nó hơn `Catruong`.
 // `giuKhiRieng` (SF0 gửi lại): tem có phân công riêng ⇒ KHÔNG đè — payload đã dựng từ phân công riêng (`duLieuGhiInTem`).
-async function apPhanCongSf0(payload, temId, { giuKhiRieng = false } = {}) {
+// `thietBi` (Nhận sửa JH0): đè thêm chuyền (`banin`) + tổ in (`Toin`) bằng giá trị SF0 khi SF0 có (trống ⇒ giữ của tem).
+async function apPhanCongSf0(payload, temId, { giuKhiRieng = false, thietBi = false } = {}) {
   const pc = (await phanCongSf0([temId])).get(String(temId));
   if (!pc || (giuKhiRieng && pc.rieng)) return false;
   payload.Catruong = pc.Catruong;
   payload.Chuyentruong = pc.Chuyentruong;
   payload.dsthoin = pc.dsthoin;
   payload.CatruongMsnv = null;
+  if (thietBi) {
+    if (pc.banin) payload.banin = pc.banin;
+    if (pc.Toin) payload.Toin = pc.Toin;
+  }
   return true;
 }
 

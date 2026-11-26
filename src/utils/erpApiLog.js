@@ -38,6 +38,8 @@ const TEN_BANG = {
   // ⚠ Gắn theo LƯỢT SỬA (`sua.id`), KHÔNG theo tem con: khi API mã tem 17 tắt thì nhiều lượt cộng dồn
   //   vào CÙNG 1 tem con — khóa theo tem là lượt thứ hai bị coi như "đã gửi" và mất luôn.
   ERP_GUI_SUA_DAT: 'sua',
+  // Gắn theo LƯỢT NHẬN SỬA (`nhan_sua.id`, 26/11/2026) — 1 tem nhận nhiều lượt; khóa chống gửi trùng mỗi lượt.
+  ERP_GUI_NHAN_SUA: 'nhan_sua',
   // Gắn theo LƯỢT KIỂM (`kcs.id`) — 1 tem có thể kiểm nhiều lượt; khóa chống gửi trùng mỗi lượt.
   ERP_GUI_KIEM_PHAM: 'kcs',
   // Gắn theo LƯỢT OQC (`oqc.id`, 02/10/2026) — 1 tem có thể OQC nhiều lượt/nhiều nguồn; khóa chống gửi trùng.

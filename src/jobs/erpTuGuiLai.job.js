@@ -38,7 +38,7 @@ const erpChoHuy = require('../utils/erpChoHuy');
 // Kênh đưa vào hàng đợi — các kênh đẩy dữ liệu theo TEM (gửi lại theo IDMES là ghi đè). Release 1 / hủy vải / báo hủy
 //   không đưa vào (không phải dữ liệu tem; gửi lại thân cũ của kế hoạch đã bị thay là sai).
 const KENH = ['ERP_GHI_IN_TEM', 'ERP_GUI_TEM_GIA_CONG', 'ERP_GUI_KIEM_PHAM', 'ERP_GUI_SUA_DAT', 'ERP_GUI_OQC',
-  'ERP_GUI_PHAN_LOAI_LOI', 'ERP_GUI_PHIEU_GIAO'];
+  'ERP_GUI_PHAN_LOAI_LOI', 'ERP_GUI_PHIEU_GIAO', 'ERP_GUI_NHAN_SUA'];
 const KENH_GAN_TEM = new Set(['ERP_GHI_IN_TEM', 'ERP_GUI_TEM_GIA_CONG', 'ERP_GUI_PHAN_LOAI_LOI']); // `id_ban_ghi` = tem
 // Giãn cách trước lần gửi thứ (n + 1), theo số lần đã gửi n: 1 → 2 phút · 2 → 5 · 3 → 15 · ≥ 4 → 30.
 const GIAN_CACH_PHUT = [2, 5, 15, 30];

@@ -38,6 +38,7 @@ const KENH = {
   TEM_GIA_CONG: { ma: 'ERP_GUI_TEM_GIA_CONG', bang: 'tem', ten: 'tem gia công' },
   KCS: { ma: 'ERP_GUI_KIEM_PHAM', bang: 'kcs', ten: 'kiểm KCS' },
   SUA: { ma: 'ERP_GUI_SUA_DAT', bang: 'sua', ten: 'sửa đạt' },
+  NHAN_SUA: { ma: 'ERP_GUI_NHAN_SUA', bang: 'nhan_sua', ten: 'nhận sửa' },
   OQC: { ma: 'ERP_GUI_OQC', bang: 'oqc', ten: 'OQC' },
   PHAN_LOAI_LOI: { ma: 'ERP_GUI_PHAN_LOAI_LOI', bang: 'tem', ten: 'phân loại lỗi' },
   PHIEU_GIAO: { ma: 'ERP_GUI_PHIEU_GIAO', bang: 'giao_hang', ten: 'phiếu giao', chiGui: true },

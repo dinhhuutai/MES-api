@@ -101,7 +101,7 @@ const BO_AUDIT = new Set(['NGUOI_KIEM_KCS', 'XAC_NHAN_GIAO', 'DAU_CA_IN_TEM', 'D
 
 const KENH_ERP = {
   ERP_GHI_IN_TEM: 'in tem (SF0)', ERP_GUI_TEM_GIA_CONG: 'tem gia công (JQ6)', ERP_GUI_KIEM_PHAM: 'kiểm phẩm KCS (Sh6)',
-  ERP_GUI_SUA_DAT: 'sửa đạt (SK6)', ERP_GUI_OQC: 'OQC (QO6)', ERP_GUI_PHAN_LOAI_LOI: 'phân loại lỗi (SU6)',
+  ERP_GUI_SUA_DAT: 'sửa đạt (SK6)', ERP_GUI_NHAN_SUA: 'nhận sửa (JH0)',ERP_GUI_OQC: 'OQC (QO6)', ERP_GUI_PHAN_LOAI_LOI: 'phân loại lỗi (SU6)',
   ERP_GUI_PHIEU_GIAO: 'phiếu giao (SQ0)', ERP_GUI_RELEASE_1: 'kế hoạch Release 1', ERP_GUI_HUY_RELEASE_1: 'hủy kế hoạch Release 1',
   ERP_GUI_HUY_IDMES: 'hủy chứng từ', ERP_GUI_DS_HUY_VAI: 'hủy đợt READY (trả về GN)', ERP_DS_SUA_THONG_TIN: 'danh sách sửa thông tin',
 };

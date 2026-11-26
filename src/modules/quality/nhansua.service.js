@@ -96,6 +96,8 @@ async function nhanSua({ items = [], ghiChu = '' } = {}, actorId) {
   });
   sockets.emit('quality:updated', { stage: 'SUA', action: 'NHAN_SUA' });
   sockets.emit('dashboard:refresh', {});
+  // ERP JH0 (26/11/2026): mỗi lượt nhận 1 lần gọi, chạy NGẦM sau khi đã ghi xong — lỗi / API tắt không chặn việc nhận.
+  require('./nhanSuaErp').guiNgam(kq.map((x) => x.id), actorId);
   return { so_tem: kq.length, tong_sl: kq.reduce((s, x) => s + x.so_luong, 0), items: kq };
 }
 
@@ -126,6 +128,8 @@ async function huyNhanSua(id, lyDo, actorId) {
   });
   sockets.emit('quality:updated', { stage: 'SUA', action: 'HUY_NHAN_SUA' });
   sockets.emit('dashboard:refresh', {});
+  // Lượt đã gửi ERP JH0 thành công ⇒ báo ERP hủy IDMES (ngầm; chưa từng gửi ⇒ không gọi).
+  require('../../utils/erpHuy').baoHuyNgam('NHAN_SUA', id, { lyDo: ly, actorId, maHien: out.ma_tem });
   return out;
 }
 

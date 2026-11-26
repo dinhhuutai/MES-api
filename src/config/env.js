@@ -110,6 +110,13 @@ const env = {
     guiSuaDatTimeoutMs: parseInt(process.env.ERP_GUI_SUA_DAT_TIMEOUT_MS || '10000', 10),
     guiSuaDatRetry: parseInt(process.env.ERP_GUI_SUA_DAT_RETRY || '3', 10),
     guiSuaDatEnabled: String(process.env.ERP_GUI_SUA_DAT_ENABLED || 'true').toLowerCase() === 'true',
+    // Đẩy NHẬN SỬA sang ERP — proc `MES_spr_MES2JH0` (26/11/2026), 1 lượt nhận = 1 lần gọi. Xem `quality/nhanSuaErp.js`.
+    // ⚠ MẶC ĐỊNH TẮT: router `/gui-erp-nhan-sua` bên ERP chưa có (soạn sẵn ở docs/erp-router/gui-erp-nhan-sua.js) — ERP dựng
+    //   router xong thì BẬT ở Hệ thống › Cài đặt API (khỏi sửa .env).
+    guiNhanSuaUrl: process.env.ERP_GUI_NHAN_SUA_URL || `${ERP_GOC}/gui-erp-nhan-sua`,
+    guiNhanSuaTimeoutMs: parseInt(process.env.ERP_GUI_NHAN_SUA_TIMEOUT_MS || '10000', 10),
+    guiNhanSuaRetry: parseInt(process.env.ERP_GUI_NHAN_SUA_RETRY || '3', 10),
+    guiNhanSuaEnabled: String(process.env.ERP_GUI_NHAN_SUA_ENABLED || 'false').toLowerCase() === 'true',
     // Đẩy KẾT QUẢ KIỂM KCS (kiểm phẩm) sang ERP lúc xác nhận KCS — proc `MES_spr_MES2Sh6` (chốt 27/09/2026),
     // cùng 20 tham số `@pBarcodeIn` với `ghi-in-tem`. Xem `quality/kiemPhamErp.js`.
     guiKiemPhamUrl: process.env.ERP_GUI_KIEM_PHAM_URL || `${ERP_GOC}/gui-erp-kiem-pham`,

@@ -208,6 +208,19 @@ const KENH = {
       BarcodeSua17: b.BarcodeIn,
     }),
   },
+  // ⚠ NHẬN SỬA (26/11/2026) — proc `MES_spr_MES2JH0`: 18 tham số = bộ 20 của ghi-in-tem BỎ `@pBarcodeIn` · `@pSoluongloi` ·
+  //   `@pSOLUONGTHIEU` · `@pGCMauvai`, THÊM `@pBarcodeSua16` (nhãn 16 của tem) + `@pBarcodeSua17` (lúc nhận chưa có tem 17 ⇒ '').
+  //   Router chỉ đọc khóa cần, các khóa thừa vô hại. `BarcodeIn` (tem 15) vẫn gửi để Lịch sử hiện mã + lưới mã ERP.
+  ERP_GUI_NHAN_SUA: {
+    nhan: 'gui-nhan-sua',
+    url: () => env.erp.guiNhanSuaUrl,
+    timeoutMs: () => env.erp.guiNhanSuaTimeoutMs,
+    retry: () => env.erp.guiNhanSuaRetry,
+    them: (b, r = {}) => ({
+      BarcodeSua16: chuoi(r.BarcodeSua16, 20),
+      BarcodeSua17: chuoi(r.BarcodeSua17, 20),
+    }),
+  },
   ERP_GUI_KIEM_PHAM: {
     nhan: 'gui-kiem-pham',
     url: () => env.erp.guiKiemPhamUrl,

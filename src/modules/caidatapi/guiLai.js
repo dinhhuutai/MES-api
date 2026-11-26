@@ -36,7 +36,7 @@ const erp = require('../../utils/erpApiChung');
 const MA_GUI_LAI = new Set([
   'ERP_GHI_IN_TEM', 'ERP_GUI_PHIEU_GIAO', 'ERP_GUI_PHAN_LOAI_LOI', 'ERP_GUI_SUA_DAT', 'ERP_GUI_KIEM_PHAM',
   'ERP_GUI_TEM_GIA_CONG', 'ERP_GUI_DS_HUY_VAI', 'ERP_GUI_OQC', 'ERP_GUI_RELEASE_1', 'ERP_GUI_HUY_IDMES',
-  'ERP_GUI_HUY_RELEASE_1',
+  'ERP_GUI_HUY_RELEASE_1', 'ERP_GUI_NHAN_SUA',
 ]);
 
 const soHoacNull = (v) => { const n = Number(v); return v == null || v === '' || !Number.isFinite(n) ? null : n; };
@@ -149,6 +149,16 @@ async function guiLai(ma, auditId, actorId, opts = {}) {
         { status: 409, errorCode: 'TEM_17_GUI_BANG_SH6' });
     }
     loiNeu(kq, 'Gửi sửa đạt');
+    return { ok: true };
+  }
+
+  // Nhận sửa JH0 (26/11/2026) — dựng lại từ lượt `nhan_sua` (mốc nhận giữ nguyên ⇒ ngày CT không đổi), giữ IDMES cũ.
+  if (ma === 'ERP_GUI_NHAN_SUA') {
+    const kq = await require('../quality/nhanSuaErp').guiNhanSua(id, actorId, { guiLai: true, idMes: idMesCu(g) });
+    if (kq && kq.bo_qua && kq.ly_do === 'DA_HUY') {
+      throw new AppError('Lượt nhận sửa này đã bị hủy — không gửi lại', { status: 409, errorCode: 'DA_HUY' });
+    }
+    loiNeu(kq, 'Gửi nhận sửa');
     return { ok: true };
   }
 
