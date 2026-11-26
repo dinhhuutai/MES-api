@@ -72,8 +72,27 @@ app.use(require('./middlewares/danhDauGhi'));
 // dòng này cho phép truy cập trực tiếp qua chính backend (hữu ích khi test local).
 app.use('/uploads', express.static(require('path').join(env.upload.root)));
 
-// Health check
-app.get('/api/health', (req, res) => ok(res, { status: 'up', time: new Date().toISOString() }, 'OK'));
+// Health check — kèm COMMIT git đang chạy + giờ KHỞI ĐỘNG tiến trình (26/11/2026: prod chạy bản cũ nhiều ngày vì 1 tiến
+//   trình node mồ côi giữ cổng, PM2 `mes` chết EADDRINUSE lặp 257 nghìn lần mà `git pull` + `pm2 restart` vẫn "thành công").
+//   Deploy xong mở `/api/health`: `commit` phải = commit vừa pull, `khoi_dong` phải là vừa xong.
+const KHOI_DONG = new Date().toISOString();
+const COMMIT = (() => {
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    const git = path.join(__dirname, '..', '.git');
+    const head = fs.readFileSync(path.join(git, 'HEAD'), 'utf8').trim();
+    if (!head.startsWith('ref:')) return head.slice(0, 7);
+    const ref = head.slice(4).trim();
+    const f = path.join(git, ref);
+    if (fs.existsSync(f)) return fs.readFileSync(f, 'utf8').trim().slice(0, 7);
+    const packed = fs.readFileSync(path.join(git, 'packed-refs'), 'utf8').split('\n').find((l) => l.endsWith(` ${ref}`));
+    return packed ? packed.slice(0, 7) : null;
+  } catch { return null; }
+})();
+app.get('/api/health', (req, res) => ok(res, {
+  status: 'up', time: new Date().toISOString(), khoi_dong: KHOI_DONG, commit: COMMIT,
+}, 'OK'));
 
 // ⚠ TRANG CÔNG KHAI — KHÔNG ĐĂNG NHẬP (26/11/2026, trang `/san-luong`): chỉ đọc + danh sách trắng trường, xem file router.
 app.use('/api/cong-khai', require('./modules/congkhai/congkhai.routes'));
