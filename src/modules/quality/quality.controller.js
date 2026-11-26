@@ -47,8 +47,12 @@ const lichSuNhanSua = asyncHandler(async (req, res) => {
   const tuNgay = ngayHop(req.query.tuNgay) || ngayHomNayVN();
   return ok(res, await nhanSuaService.lichSuNhan({
     tuNgay, denNgay: ngayHop(req.query.denNgay) || tuNgay, search: String(req.query.search || '').trim(),
+    trangThai: ['SONG', 'HUY'].includes(req.query.trangThai) ? req.query.trangThai : '',
+    moiNgay: req.query.moiNgay === '1' || req.query.moiNgay === 'true',
   }));
 });
+const moLaiNhanSua = asyncHandler(async (req, res) =>
+  ok(res, await nhanSuaService.moLaiNhanSua(req.params.id, (req.body || {}).lyDo, req.user.id), 'Đã mở lại lượt nhận sửa'));
 const nhanSua = asyncHandler(async (req, res) => {
   const r = await nhanSuaService.nhanSua(req.body || {}, req.user.id);
   return ok(res, r, `Đã nhận sửa ${r.so_tem} tem · ${r.tong_sl} pcs`);
@@ -221,7 +225,7 @@ const bpToggle = asyncHandler(async (req, res) => { await plService.doiTrangThai
 module.exports = {
   plList, plTraTem, plChiTiet, plLuu, bpList, bpCreate, bpUpdate, bpToggle,
   kcsCandidates, kcsTonChuaKiem, recordKcs, gopTem, suaCandidates, recordSua, oqcCandidates, recordOqc,
-  choNhanSua, lichSuNhanSua, nhanSua, huyNhanSua,
+  choNhanSua, lichSuNhanSua, nhanSua, huyNhanSua, moLaiNhanSua,
   kcsHistory, suaHistory, oqcHistory,
   kcsDone, suaDone, oqcDone, oqcFinishList, finishChuyen, finishHuyChuyen, finishMoDieuKien, finishDsMoDieuKien, inlineDone, luuNguoiSua, luuNguoiKiemKcs, guiLaiErpSua,
   inlineCandidates, inlineLoaiLoi, inlineHistory, recordInline,

@@ -32,6 +32,7 @@ router.get('/sua/cho-nhan', rbac('SUA', 'PHAN_LOAI_LOI', 'KCS', 'WORKFLOW_VIEW')
 router.get('/sua/nhan-lich-su', rbac('SUA', 'PHAN_LOAI_LOI', 'KCS', 'WORKFLOW_VIEW'), c.lichSuNhanSua);
 router.post('/sua/nhan', rbac('SUA'), c.nhanSua);
 router.post('/sua/nhan/:id/huy', rbac('SUA'), c.huyNhanSua);
+router.post('/sua/nhan/:id/mo-lai', rbac('SUA'), c.moLaiNhanSua);
 // Gửi LẠI sửa đạt sang ERP (proc MES_spr_MES2SK6) cho 1 lượt trượt — 4 đoạn nên không va `/sua/:temId`.
 router.post('/sua/luot/:suaId/gui-lai-erp', rbac('SUA'), c.guiLaiErpSua);
 router.post('/sua/:temId', rbac('SUA'), c.recordSua);

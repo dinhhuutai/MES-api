@@ -134,14 +134,25 @@ async function huyNhanSua(id, lyDo, actorId) {
 }
 
 // Lịch sử lượt nhận theo NGÀY NHẬN (giờ VN, khoảng ngày) — kèm số hiện tại của tem (đang sửa / chờ nhận) để biết hủy được không.
-async function lichSuNhan({ tuNgay, denNgay, search = '' } = {}) {
+// `trangThai`: '' = mọi lượt (lọc theo NGÀY NHẬN) · 'SONG' = chưa hủy (ngày nhận) · 'HUY' = đã hủy (lọc theo NGÀY HỦY) —
+//   2 tab Hủy / Mở lại nhận sửa ở *Hủy lệnh xác nhận*. `moiNgay` + có ô tìm ⇒ bỏ lọc ngày (tìm mọi ngày).
+async function lichSuNhan({ tuNgay, denNgay, search = '', trangThai = '', moiNgay = false } = {}) {
   if (!(await coNhanSua())) return { co_cot: false, items: [] };
-  const params = [tuNgay, denNgay];
-  const conds = ["(n.created_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date BETWEEN $1::date AND $2::date"];
+  const params = [];
+  const conds = [];
+  const cotNgay = trangThai === 'HUY' ? 'n.tg_huy' : 'n.created_date';
+  if (!(moiNgay && search)) {
+    params.push(tuNgay, denNgay);
+    conds.push(`(${cotNgay} AT TIME ZONE 'Asia/Ho_Chi_Minh')::date BETWEEN $1::date AND $2::date`);
+  }
+  if (trangThai === 'HUY') conds.push('n.da_huy');
+  if (trangThai === 'SONG') conds.push('NOT n.da_huy');
   if (search) {
     params.push(mauTim(timTem(search)));
-    conds.push(`(t.ma_tem ~* $3 OR info.ma_phan ~* $3 OR info.ma_hang ~* $3 OR info.ten_khach_hang ~* $3)`);
+    const p = `$${params.length}`;
+    conds.push(`(t.ma_tem ~* ${p} OR info.ma_phan ~* ${p} OR info.ma_hang ~* ${p} OR info.ten_khach_hang ~* ${p})`);
   }
+  if (!conds.length) conds.push('true');
   const { rows } = await query(`SELECT n.id, n.tem_id, n.so_luong, n.loai, n.ghi_chu, n.da_huy, n.ly_do_huy, n.tg_huy,
       n.created_date AS tg_nhan, nd.ho_ten AS nguoi_nhan, nh.ho_ten AS nguoi_huy,
       t.ma_tem, t.sl_kcs_sua, ls.ma_lenh_san_xuat, cs.ma_chuyen,
@@ -159,7 +170,7 @@ async function lichSuNhan({ tuNgay, denNgay, search = '' } = {}) {
       JOIN khach_hang kh ON kh.id = dh.khach_hang_id
       WHERE lsd.lenh_san_xuat_id = ls.id ORDER BY pin.ma_phan, dv.ma_dot_vai LIMIT 1) info ON true
     WHERE ${conds.join(' AND ')}
-    ORDER BY n.created_date DESC LIMIT 2000`.replace(/\s+/g, ' '), params);
+    ORDER BY ${cotNgay} DESC LIMIT 2000`.replace(/\s+/g, ' '), params);
   if (rows.length) {
     const so = new Map((await repo.soSuaCuaTem([...new Set(rows.map((r) => r.tem_id))])).map((x) => [x.tem_id, x]));
     rows.forEach((r) => {
@@ -167,9 +178,64 @@ async function lichSuNhan({ tuNgay, denNgay, search = '' } = {}) {
       r.dang_sua = Number(x.dang_sua) || 0;
       r.cho_nhan = Number(x.cho_nhan) || 0;
       r.huy_duoc = !r.da_huy && r.dang_sua >= r.so_luong;
+      r.mo_lai_duoc = !!r.da_huy && r.cho_nhan >= r.so_luong;
     });
   }
   return { co_cot: true, items: rows };
 }
 
-module.exports = { listChoNhan, nhanSua, huyNhanSua, lichSuNhan };
+// MỞ LẠI LƯỢT NHẬN ĐÃ HỦY (26/11/2026): trả đúng SL của lượt về "đang sửa" — chỉ khi tem còn CHỜ NHẬN ≥ SL lượt (phần đó chưa
+//   được nhận lại bằng lượt khác / chưa hủy tem sửa). Vết hủy cũ chép vào `audit_log` `nhan_sua` · `MO_LAI_NHAN_SUA` rồi xóa ở
+//   dòng (dòng trở lại như chưa từng hủy). ERP: lượt từng gửi JH0 ⇒ gửi lại CÙNG IDMES (ngầm); chưa từng gửi ⇒ gửi như lượt mới.
+async function moLaiNhanSua(id, lyDo, actorId) {
+  await canMig();
+  const ly = String(lyDo || '').trim();
+  if (!ly) throw new AppError('Phải nhập lý do mở lại lượt nhận sửa', { status: 422, errorCode: 'NO_LY_DO' });
+  if (ly.length > GHI_CHU_TOI_DA) throw new AppError(`Lý do dài quá ${GHI_CHU_TOI_DA} ký tự`, { status: 422, errorCode: 'LY_DO_QUA_DAI' });
+  let out = null;
+  await withTransaction(async (client) => {
+    const { rows } = await client.query('SELECT * FROM nhan_sua WHERE id = $1 FOR UPDATE', [id]);
+    const n = rows[0];
+    if (!n) throw new AppError('Không tìm thấy lượt nhận sửa', { status: 404, errorCode: 'NOT_FOUND' });
+    if (!n.da_huy) throw new AppError('Lượt nhận sửa này đang hiệu lực — không cần mở lại', { status: 409, errorCode: 'CHUA_HUY' });
+    const tem = await repo.getTemLedger(n.tem_id, { client, khoa: true });
+    if (!tem) throw new AppError('Tem không tồn tại', { status: 404, errorCode: 'NOT_FOUND' });
+    if (tem.trang_thai === 'HUY') throw new AppError(`Tem ${tem.ma_tem} đã bị HỦY`, { status: 409, errorCode: 'TEM_HUY' });
+    const [so] = await repo.soSuaCuaTem([n.tem_id], client);
+    const choNhan = Number(so.cho_nhan) || 0;
+    if (choNhan < n.so_luong) {
+      throw new AppError(`Tem ${tem.ma_tem}: chỉ còn ${choNhan} pcs chờ nhận (đã nhận lại bằng lượt khác / hủy tem sửa) — không mở lại được lượt ${n.so_luong} pcs`,
+        { status: 409, errorCode: 'KHONG_DU_CHO_NHAN' });
+    }
+    const dangSua = Number(so.dang_sua) || 0;
+    await client.query(
+      `UPDATE tem SET sl_nhan_sua = $2,
+         tg_nhan_sua = CASE WHEN $3::int <= 0 OR tg_nhan_sua IS NULL THEN CURRENT_TIMESTAMP ELSE tg_nhan_sua END,
+         updated_by = $4, updated_date = CURRENT_TIMESTAMP WHERE id = $1`.replace(/\s+/g, ' '),
+      [n.tem_id, (Number(so.da_nhan) || 0) + n.so_luong, dangSua, actorId]);
+    await client.query(
+      `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_cu, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+       VALUES ('nhan_sua', $1, 'MO_LAI_NHAN_SUA', $2::jsonb, $3::jsonb, $4, CURRENT_TIMESTAMP, $4)`.replace(/\s+/g, ' '),
+      [String(id), JSON.stringify({ da_huy: true, ly_do_huy: n.ly_do_huy, tg_huy: n.tg_huy, nguoi_huy_id: n.nguoi_huy_id }),
+        JSON.stringify({ ly_do: ly, ma_tem: tem.ma_tem, so_luong: n.so_luong }), actorId]);
+    await client.query(
+      `UPDATE nhan_sua SET da_huy = false, ly_do_huy = NULL, tg_huy = NULL, nguoi_huy_id = NULL,
+         updated_by = $2, updated_date = CURRENT_TIMESTAMP WHERE id = $1`.replace(/\s+/g, ' '), [id, actorId]);
+    out = { id, tem_id: n.tem_id, ma_tem: tem.ma_tem, so_luong: n.so_luong, dang_sua: dangSua + n.so_luong };
+  });
+  sockets.emit('quality:updated', { stage: 'SUA', action: 'MO_LAI_NHAN_SUA' });
+  sockets.emit('dashboard:refresh', {});
+  // ERP JH0 — ngầm, không chặn.
+  (async () => {
+    const { rows } = await query(
+      `SELECT COALESCE(gia_tri_moi->'gui'->>'IDMES', gia_tri_moi->>'id_mes') AS idm FROM audit_log
+        WHERE ten_bang = 'nhan_sua' AND id_ban_ghi = $1 AND hanh_dong IN ('ERP_GUI_NHAN_SUA', 'ERP_GUI_NHAN_SUA_LOI')
+        ORDER BY (hanh_dong = 'ERP_GUI_NHAN_SUA') DESC, thoi_gian DESC LIMIT 1`.replace(/\s+/g, ' '), [String(id)]);
+    const idm = rows[0] && /^\d{6,10}$/.test(String(rows[0].idm || '')) ? Number(rows[0].idm) : null;
+    const erp = require('./nhanSuaErp');
+    await (idm ? erp.guiNhanSua(id, actorId, { guiLai: true, idMes: idm }) : erp.guiNhanSua(id, actorId));
+  })().catch((e) => console.error(`[gui-nhan-sua] ✗ Gửi lại sau mở lại lượt ${id}: ${e.message}`));
+  return out;
+}
+
+module.exports = { listChoNhan, nhanSua, huyNhanSua, moLaiNhanSua, lichSuNhan };
