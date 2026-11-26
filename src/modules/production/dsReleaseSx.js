@@ -89,10 +89,12 @@ async function dsReleaseSx(tuNgay, denNgay, { ca } = {}) {
   const { dotStageCase, ORDER_SQL_ARRAY, STAGE_LABEL } = require('../../utils/stage');
   const L = require('../../utils/luongSanXuat');
   const prodRepo = require('./production.repository');
-  const [coVaiTem, coBsTem] = await Promise.all([prodRepo.vaiHuyCoCotTem(), prodRepo.temCoCotBoSung()]);
+  const [coVaiTem, coBsTem, CHUYEN_TM] = await Promise.all([
+    prodRepo.vaiHuyCoCotTem(), prodRepo.temCoCotBoSung(), chuyenTemSql({ t: 'tm', ps: 'ps', ls: 'ls' }),
+  ]);
   // Tem thuộc KỲ đang xem (ngày SX trong khoảng + ca đang lọc) — tham số $2 / $3 / $4 của các câu dưới.
   const TRONG_KY = `${NGAY_TM} BETWEEN $2::date AND $3::date AND ${temThuocCaSql('tm', '$4')}`;
-  const [inTruoc, nvPin, inLenh, vai, ghi, ttLenh, pinLuong, relBs] = await Promise.all([
+  const [inTruoc, nvPin, inLenh, vai, ghi, ttLenh, pinLuong, relBs, chuyenIn, thuTuChuyen] = await Promise.all([
     // Theo cặp (lệnh × phần in): đã in TRƯỚC kỳ (tem gốc) + đã giao của phần in (mọi tem). `gd` = công đoạn của lệnh.
     query(
       `WITH p AS (SELECT DISTINCT dv.phan_in_id, ls.id AS lenh_id, COALESCE(ls.giai_doan, '${L.GD_IN}') AS gd
@@ -178,7 +180,38 @@ async function dsReleaseSx(tuNgay, denNgay, { ca } = {}) {
         WHERE lsd.lenh_san_xuat_id = ANY($1::uuid[]) GROUP BY 1, 2`.replace(/\s+/g, ' '),
       [lenhIds]
     ),
+    // CHUYỀN IN THẬT của tem trong KỲ theo lệnh (`chuyenTemSql` — cùng luật cột Máy/Bàn của Nhật ký in) + SL in / bổ sung
+    //   từng chuyền — xem ghi chú "CHUYỀN CỦA DÒNG" dưới.
+    query(
+      `SELECT ps.lenh_san_xuat_id AS lenh_id, cs.ma_chuyen, cs.ten_chuyen, lc.ma_loai AS ma_loai_chuyen,
+              lc.ten_loai AS ten_loai_chuyen, COALESCE(SUM(tm.so_luong), 0)::int AS sl_in,
+              ${coBsTem ? 'COALESCE(SUM(tm.sl_bo_sung_cty), 0)::int AS bs_cty, COALESCE(SUM(tm.sl_bo_sung_khach), 0)::int AS bs_khach'
+    : '0 AS bs_cty, 0 AS bs_khach'}, max(tm.created_date) AS tg_cuoi
+         FROM phieu_san_xuat ps JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
+         JOIN tem tm ON tm.phieu_san_xuat_id = ps.id AND tm.trang_thai <> 'HUY' AND tm.tem_goc_id IS NULL
+         LEFT JOIN chuyen_san_xuat cs ON cs.id = ${CHUYEN_TM}
+         LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
+        WHERE ps.lenh_san_xuat_id = ANY($1::uuid[]) AND tm.ma_tem NOT LIKE 'HT-%' AND ${TRONG_KY}
+        GROUP BY 1, 2, 3, 4, 5`.replace(/\s+/g, ' '),
+      [lenhIds, ngay, den, dsCa]
+    ),
+    // Thứ tự chuyền theo ĐÚNG collation DB (= `ORDER BY cs.ten_chuyen` của `releaseList`) để xếp lại dòng đổi chuyền.
+    query('SELECT ten_chuyen FROM chuyen_san_xuat WHERE ten_chuyen IS NOT NULL ORDER BY ten_chuyen'),
   ]);
+  // ⚠⚠ CHUYỀN CỦA DÒNG = chuyền IN THẬT (26/11/2026, người dùng: "M3 với M7 có bổ sung gì đâu mà lại hiện bổ sung"). Ca thật:
+  //   lệnh bổ sung LSX14488 / LSX14119 "Không test run — cộng thẳng vào lệnh đang chạy" (lệnh cũ M3 / M7), rồi Đổi chuyền phiếu
+  //   sang 1A1B và in tem bổ sung ở 1A1B — Nhật ký in + SF0 (`banin`) ghi 1A1B nhưng Danh sách release vẫn xếp theo chuyền KẾ
+  //   HOẠCH của lệnh (M3 / M7) ⇒ Tổng theo chuyền dồn bổ sung cho máy không in. Danh sách này là lệnh CÓ TEM TRONG KỲ ⇒ chuyền
+  //   = chuyền của các tem đó (`chuyenTemSql`); tem trong kỳ ở nhiều chuyền ⇒ chuyền in nhiều nhất (bằng ⇒ in sau cùng), và
+  //   dòng đầu của lệnh mang `in_theo_chuyen` (SL in / BS từng chuyền) để Tổng theo chuyền chia đúng phần in. Chuyền kế hoạch
+  //   khác chuyền in ⇒ giữ ở `ma_chuyen_kh` (FE hiện kèm). Đo prod 30 ngày: ~28 % (lệnh × ngày) in khác chuyền kế hoạch.
+  const chuyenInMap = new Map();
+  chuyenIn.rows.forEach((x) => {
+    if (!x.ma_chuyen) return;
+    if (!chuyenInMap.has(x.lenh_id)) chuyenInMap.set(x.lenh_id, []);
+    chuyenInMap.get(x.lenh_id).push(x);
+  });
+  chuyenInMap.forEach((ds) => ds.sort((a, b) => (b.sl_in - a.sl_in) || (new Date(b.tg_cuoi) - new Date(a.tg_cuoi))));
   const relBsMap = new Map(relBs.rows.map((x) => [`${x.lenh_id}|${x.phan_in_id}`, x.sl_bs]));
   const ttMap = new Map(ttLenh.rows.map((x) => [`${x.lenh_id}|${x.phan_in_id}`, x.stage]));
   // ⚠⚠ THEO CÔNG ĐOẠN (19/11/2026, người dùng: "danh sách release của sản xuất tách dòng theo công đoạn, 2 công đoạn thì
@@ -236,8 +269,23 @@ async function dsReleaseSx(tuNgay, denNgay, { ca } = {}) {
     daGhiSlLenh.add(r.lenh_id);
     const g = ghiMap.get(`${r.lenh_id}|${r.phan_in_id}`) || {};
     const stage = ttMap.get(`${r.lenh_id}|${r.phan_in_id}`);
+    const dsChIn = chuyenInMap.get(r.lenh_id) || [];
+    const chIn = dsChIn[0];
+    const doiCh = !!chIn && chIn.ma_chuyen !== r.ma_chuyen;
     return {
       ...r,
+      // Chuyền in thật (xem "CHUYỀN CỦA DÒNG") — chuyền kế hoạch giữ ở `*_kh` khi khác.
+      ...(doiCh ? {
+        ma_chuyen: chIn.ma_chuyen, ten_chuyen: chIn.ten_chuyen, ma_loai_chuyen: chIn.ma_loai_chuyen,
+        ten_loai_chuyen: chIn.ten_loai_chuyen, dinh_muc_gio: null,
+        ma_chuyen_kh: r.ma_chuyen, ten_chuyen_kh: r.ten_chuyen, ma_loai_chuyen_kh: r.ma_loai_chuyen,
+      } : {}),
+      in_theo_chuyen: dau && dsChIn.length > 1
+        ? dsChIn.map((x) => ({
+          ma_chuyen: x.ma_chuyen, ten_chuyen: x.ten_chuyen, ma_loai_chuyen: x.ma_loai_chuyen,
+          sl_in: x.sl_in, bs_cty: x.bs_cty, bs_khach: x.bs_khach,
+        }))
+        : null,
       // Trạng thái của LỆNH (thay giai đoạn của cả phần in); giữ bản phần in ở `giai_doan_phan_in`.
       giai_doan_phan_in: r.giai_doan_ten,
       giai_doan_ten: stage ? (STAGE_LABEL[stage] || stage) : r.giai_doan_ten,
@@ -261,6 +309,10 @@ async function dsReleaseSx(tuNgay, denNgay, { ca } = {}) {
       ghi_chu_sx: g.ghi_chu ?? null,
     };
   });
+  // Dòng đổi chuyền về đúng nhóm chuyền mới — sort ỔN ĐỊNH theo thứ tự chuyền của DB, trong nhóm giữ thứ tự cũ (khách · đơn…).
+  const hang = new Map(thuTuChuyen.rows.map((x, i) => [x.ten_chuyen, i]));
+  const hangDong = (r) => (r.ten_chuyen != null && hang.has(r.ten_chuyen) ? hang.get(r.ten_chuyen) : Number.MAX_SAFE_INTEGER);
+  out.sort((a, b) => hangDong(a) - hangDong(b));
   return { ngay, den_ngay: den, ca: dsCa, items: out };
 }
 
