@@ -923,7 +923,8 @@ async function cancelKcs(kcsId, lyDo, actorId) {
     }
     await repo.recomputeTemStageMany(client, [r.tem_id, temCon && temCon.id].filter(Boolean), actorId);
   });
-  await repo.logCancelQc('kcs', kcsId, r.tem_id, r.ma_tem, lyDo, actorId);
+  // `tem_con_id` = tem 17 vừa đảo cùng lượt (null = phần đạt nằm ở tem gốc) — để MỞ LẠI bật đúng tem đó (25/11/2026).
+  await repo.logCancelQc('kcs', kcsId, r.tem_id, r.ma_tem, lyDo, actorId, { tem_con_id: temCon ? temCon.id : null });
   // Báo ERP hủy phiếu kiểm phẩm của lượt này theo IDMES — chạy ngầm (14/10/2026, `utils/erpHuy.js`).
   erpHuy.baoHuyNgam('KCS', kcsId, { lyDo, actorId, maHien: r.ma_tem });
   // Lượt kiểm một phần đã gửi SK6 cho tem 17 (08/11/2026, dòng Lịch sử `ten_bang='sua'` mang id LƯỢT KCS) ⇒ báo hủy cả
@@ -986,12 +987,141 @@ async function cancelSua(suaId, lyDo, actorId) {
     }
     await repo.recomputeTemStageMany(client, [r.tem_id, temCon && temCon.id].filter(Boolean), actorId);
   });
-  await repo.logCancelQc('sua', suaId, r.tem_id, r.ma_tem, lyDo, actorId);
+  await repo.logCancelQc('sua', suaId, r.tem_id, r.ma_tem, lyDo, actorId, { tem_con_id: dat > 0 && temCon ? temCon.id : null });
   erpHuy.baoHuyNgam('SUA', suaId, { lyDo, actorId, maHien: r.ma_tem }); // báo ERP hủy phiếu sửa đạt của lượt này
   await tracking.moveByTem(r.tem_id, 'SUA', actorId);
   sockets.emit('quality:updated', { temId: r.tem_id, stage: 'SUA', huy: true });
   sockets.emit('dashboard:refresh', {});
   return { tem_id: r.tem_id, ma_tem: r.ma_tem };
+}
+
+// ----- MỞ LẠI LƯỢT ĐÃ HỦY XÁC NHẬN KCS / SỬA (25/11/2026, người dùng: "kcs, phân loại lỗi, sửa khi hủy vẫn cho mở lại
+//   được" — trang Hệ thống › Hủy lệnh xác nhận) -----
+// Mở lại = ĐẢO ĐÚNG phép trừ của lần hủy (cùng công thức `cancelKcs` / `cancelSua`, số đọc từ CHÍNH lượt — lượt không bị
+//   sửa khi hủy) + bật lại tem 17 của lượt (bị lần hủy đưa về 0 + HUY) + bỏ dấu hủy (`repo.boDauHuyQcTx`) + gửi lại ERP
+//   CÙNG IDMES lần gửi thành công trước (proc ghi đè; chưa từng gửi ⇒ gửi như lượt mới). Lý do BẮT BUỘC.
+// Chặn: phần hàng của lượt đã được kiểm / sửa lại bằng lượt khác (`con_kcs` / `con_sua` không đủ) · lượt tự hủy do OQC trả
+//   về KCS · lượt kiểm lại đã dùng lại IDMES của lượt này · tem đã HỦY.
+const loiMoLai = (msg, code, status = 409) => new AppError(msg, { status, errorCode: code });
+const listMoLaiKcs = (q) => repo.listDaHuyQc('kcs', q);
+const listMoLaiSua = (q) => repo.listDaHuyQc('sua', q);
+
+async function moLaiKcs(kcsId, lyDo, actorId) {
+  const ly = String(lyDo || '').trim();
+  if (!ly) throw loiMoLai('Phải nhập lý do mở lại', 'NO_LY_DO', 422);
+  const r = await repo.getCancelKcsRow(kcsId);
+  if (!r) throw loiMoLai('Bản ghi KCS không tồn tại', 'NOT_FOUND', 404);
+  if (!r.da_huy) throw loiMoLai('Lượt KCS này đang còn hiệu lực — không có gì để mở lại', 'CHUA_HUY');
+  const dau = await repo.dauHuyQcMoiNhat('kcs', kcsId);
+  const g = (dau && dau.gia_tri_moi) || {};
+  if (g.nguon === 'OQC_TRA_VE_KCS') {
+    throw loiMoLai('Lượt này tự hủy vì OQC trả về KCS (hàng đã quay lại chờ kiểm) — kiểm lại ở màn KCS, không mở lại', 'HUY_TU_DONG');
+  }
+  const temKhac = await repo.luotKhacDungIdMesKcs(kcsId);
+  if (temKhac) {
+    throw loiMoLai(`Lượt kiểm lại sau (tem ${temKhac}) đã dùng phiếu ERP của lượt này — hủy lượt đó trước rồi mới mở lại`, 'IDMES_DA_DUNG');
+  }
+  const dat = N(r.so_luong_dat);
+  const sua = N(r.so_luong_kiem) - N(r.so_luong_dat) - N(r.so_luong_huy);
+  const huy = N(r.so_luong_huy);
+  const chenh = N(r.so_luong_chenh_lech) - mauTruTong(r);
+  // Tem 17 mà lần hủy đã đảo: bản ghi từ 25/11/2026 nói rõ (`tem_con_id`, null = phần đạt ở tem gốc); lần hủy cũ hơn ⇒ tem 17
+  //   sinh ra bởi lượt (lần hủy đưa nó về 0 + HUY — đo prod 25/11: 12/12 lượt đều vậy). Tem 17 còn số ⇒ không đoán, chặn.
+  let temCon = null;
+  if (dat > 0) {
+    if (Object.prototype.hasOwnProperty.call(g, 'tem_con_id')) {
+      temCon = g.tem_con_id ? await repo.getTemConById(g.tem_con_id) : null;
+      if (g.tem_con_id && !temCon) throw loiMoLai('Không tìm thấy tem 17 của lượt này', 'KHONG_TEM_17');
+    } else {
+      temCon = await repo.temConTachCuaLuotKcs(kcsId);
+      if (temCon && (N(temCon.sl_kcs_dat) !== 0 || N(temCon.sl_oqc_dat) !== 0 || N(temCon.sl_da_giao) !== 0)) {
+        throw loiMoLai(`Tem 17 ${temCon.ma_tem} của lượt này còn số lượng — không mở lại tự động được`, 'TEM_17_LECH');
+      }
+    }
+  }
+  const canKiem = dat + sua + huy - chenh; // phần "chưa kiểm" của tem mà lượt chiếm lại
+  await withTransaction(async (client) => {
+    const dauHuy = await repo.boDauHuyQcTx(client, 'kcs', kcsId);
+    if (!dauHuy) throw loiMoLai('Lượt này vừa được mở lại', 'DA_MO');
+    const sd = await repo.getTemLedger(r.tem_id, { client, khoa: true });
+    if (!sd || sd.trang_thai === 'HUY') throw loiMoLai(`Tem ${r.ma_tem} đã bị hủy — không mở lại được`, 'TEM_HUY');
+    if (N(sd.con_kcs) < canKiem) {
+      throw loiMoLai(`Tem ${r.ma_tem} chỉ còn ${N(sd.con_kcs)} pcs chưa kiểm, lượt này cần ${canKiem} — phần hàng đã được kiểm lại bằng lượt khác (hủy lượt đó trước)`, 'DA_KIEM_LAI');
+    }
+    await repo.addKcsLedger(client, r.tem_id, { dat, sua, huy, chenh }, actorId);
+    if (temCon) {
+      await repo.congKcsTach(client, r.tem_id, dat, actorId);
+      await repo.congSlTemCon(client, temCon.id, dat, actorId); // tem 17 đang HUY ⇒ CHO_OQC
+    }
+    await repo.recomputeTemStageMany(client, [r.tem_id, temCon && temCon.id].filter(Boolean), actorId);
+    await repo.logMoLaiQcTx(client, 'kcs', kcsId, {
+      tem_id: r.tem_id, ma_tem: r.ma_tem, ly_do: ly, huy_audit_id: dauHuy.id, huy_luc: dauHuy.thoi_gian,
+      so: { dat, sua, huy, chenh }, tem_con_id: temCon ? temCon.id : null, ma_tem_17: temCon ? temCon.ma_tem : null,
+    }, actorId);
+  });
+  // ERP: lượt từng gửi Sh6 thành công ⇒ gửi lại CÙNG IDMES (proc tạo lại phiếu đã bị báo hủy); chưa ⇒ gửi như lượt mới.
+  const idMes = await repo.idMesGuiGanNhat('kcs', kcsId, kiemPhamErp.MA_API).catch(() => null);
+  if (idMes) kiemPhamErp.guiLaiSauMoLaiNgam(kcsId, actorId);
+  else kiemPhamErp.guiNgam(kcsId, r.tem_id, { dat, hu: N(r.so_luong_loi), thieu: Math.max(0, -N(r.so_luong_chenh_lech)) }, actorId);
+  await tracking.moveByTem(r.tem_id, 'KIEM', actorId);
+  sockets.emit('quality:updated', { temId: r.tem_id, stage: 'KCS', moLai: true });
+  sockets.emit('dashboard:refresh', {});
+  return { tem_id: r.tem_id, ma_tem: r.ma_tem, ma_tem_17: temCon ? temCon.ma_tem : null };
+}
+
+async function moLaiSua(suaId, lyDo, actorId) {
+  const ly = String(lyDo || '').trim();
+  if (!ly) throw loiMoLai('Phải nhập lý do mở lại', 'NO_LY_DO', 422);
+  const r = await repo.getCancelSuaRow(suaId);
+  if (!r) throw loiMoLai('Bản ghi Sửa không tồn tại', 'NOT_FOUND', 404);
+  if (!r.da_huy) throw loiMoLai('Lượt Sửa này đang còn hiệu lực — không có gì để mở lại', 'CHUA_HUY');
+  const dau = await repo.dauHuyQcMoiNhat('sua', suaId);
+  const g = (dau && dau.gia_tri_moi) || {};
+  const dat = N(r.so_luong_sua_dat);
+  const huy = N(r.so_luong_sua_huy);
+  // Tem 17 (sửa đạt) mà lần hủy đã đảo: bản ghi từ 25/11/2026 (`tem_con_id`), cũ hơn ⇒ `sua.tem_con_id` của lượt (mig 100).
+  //   Lượt cũ không neo tem 17 mà có sửa đạt ⇒ không biết tem nào, chặn (đo prod 25/11: 2 lượt như vậy đều không có sửa đạt).
+  let temCon = null;
+  if (dat > 0) {
+    const id17 = Object.prototype.hasOwnProperty.call(g, 'tem_con_id') ? g.tem_con_id : r.tem_con_id;
+    if (id17) {
+      temCon = await repo.getTemConById(id17);
+      if (!temCon) throw loiMoLai('Không tìm thấy tem 17 của lượt sửa này', 'KHONG_TEM_17');
+    } else if (!Object.prototype.hasOwnProperty.call(g, 'tem_con_id')) {
+      throw loiMoLai('Lượt sửa cũ chưa neo tem 17 — không mở lại tự động được', 'KHONG_MO_TU_DONG');
+    }
+  }
+  await withTransaction(async (client) => {
+    const dauHuy = await repo.boDauHuyQcTx(client, 'sua', suaId);
+    if (!dauHuy) throw loiMoLai('Lượt này vừa được mở lại', 'DA_MO');
+    const sd = await repo.getTemLedger(r.tem_id, { client, khoa: true });
+    if (!sd || sd.trang_thai === 'HUY') throw loiMoLai(`Tem ${r.ma_tem} đã bị hủy — không mở lại được`, 'TEM_HUY');
+    if (N(sd.con_sua) < dat + huy) {
+      throw loiMoLai(`Tem ${r.ma_tem} chỉ còn ${N(sd.con_sua)} pcs chờ sửa, lượt này cần ${dat + huy} — phần đó đã được sửa lại bằng lượt khác / đã hủy tem sửa (xử lý cái đó trước)`, 'DA_SUA_LAI');
+    }
+    await repo.addSuaLedger(client, r.tem_id, { dat, huy }, actorId);
+    if (dat > 0 && temCon) {
+      await repo.congSuaTach(client, r.tem_id, dat, actorId);
+      await repo.congSlTemCon(client, temCon.id, dat, actorId); // tem 17 đang HUY ⇒ CHO_OQC
+    }
+    await repo.recomputeTemStageMany(client, [r.tem_id, temCon && temCon.id].filter(Boolean), actorId);
+    await repo.logMoLaiQcTx(client, 'sua', suaId, {
+      tem_id: r.tem_id, ma_tem: r.ma_tem, ly_do: ly, huy_audit_id: dauHuy.id, huy_luc: dauHuy.thoi_gian,
+      so: { dat, huy }, tem_con_id: temCon ? temCon.id : null, ma_tem_17: temCon ? temCon.ma_tem : null,
+    }, actorId);
+  });
+  // ERP SK6 chỉ khi có sửa đạt: từng gửi thành công ⇒ gửi lại CÙNG IDMES, chưa ⇒ gửi như lượt mới.
+  if (dat > 0) {
+    const idMes = await repo.idMesGuiGanNhat('sua', suaId, suaDatErp.MA_API).catch(() => null);
+    if (idMes) {
+      suaDatErp.guiSuaDat(suaId, actorId, { guiLai: true, idMes })
+        .catch((e) => console.error(`[gui-sua-dat] ✗ Gửi lại sau khi mở lại lượt sửa ${suaId}: ${e.message}`));
+    } else suaDatErp.guiNgam(suaId, actorId);
+  }
+  await tracking.moveByTem(r.tem_id, 'SUA', actorId);
+  sockets.emit('quality:updated', { temId: r.tem_id, stage: 'SUA', moLai: true });
+  sockets.emit('dashboard:refresh', {});
+  return { tem_id: r.tem_id, ma_tem: r.ma_tem, ma_tem_17: temCon ? temCon.ma_tem : null };
 }
 
 async function cancelOqc(oqcId, lyDo, actorId) {
@@ -1245,6 +1375,7 @@ async function toggleGiaoDacBiet(id, active, actorId) {
 module.exports = {
   listKcsCandidates, tonChuaKiemKcs, recordKcs, gopTem, listSuaCandidates, recordSua, listOqcCandidates, recordOqc,
   listCancelKcs, listCancelSua, listCancelOqc, cancelKcs, cancelSua, cancelOqc,
+  listMoLaiKcs, listMoLaiSua, moLaiKcs, moLaiSua,
   listTemSuaCancelable, listTemSuaDeleted, huyTemSua, moTemSua,
   kcsHistory, suaHistory, oqcHistory, temHanhTrinh,
   kcsDone, suaDone, oqcDone, inlineDone, luuNguoiSua, luuNguoiKiemKcs, guiLaiErpSua,

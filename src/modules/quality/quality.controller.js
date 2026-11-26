@@ -78,6 +78,24 @@ const cancelSua = asyncHandler(async (req, res) =>
 const cancelOqc = asyncHandler(async (req, res) =>
   ok(res, await service.cancelOqc(req.params.id, (req.body.lyDo || '').trim() || null, req.user.id), 'Đã hủy xác nhận OQC'));
 
+// MỞ LẠI lượt đã hủy xác nhận KCS / Sửa + phân loại lỗi đã hủy (25/11/2026) — trang Hủy lệnh xác nhận. Lý do bắt buộc (service).
+//   Danh sách: `?date=` (ngày HỦY) hoặc `?search=` (mã tem / code phần, mọi ngày).
+const RE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const idHopLe = (v) => { if (!RE_UUID.test(String(v || ''))) throw new AppError('Mã bản ghi không hợp lệ', { status: 422, errorCode: 'VALIDATION' }); return v; };
+const qDaHuy = (q) => ({ date: q.date || todayD(), search: String(q.search || '').trim().slice(0, 60) });
+const moLaiKcsList = asyncHandler(async (req, res) => ok(res, await service.listMoLaiKcs(qDaHuy(req.query))));
+const moLaiSuaList = asyncHandler(async (req, res) => ok(res, await service.listMoLaiSua(qDaHuy(req.query))));
+const moLaiKcs = asyncHandler(async (req, res) =>
+  ok(res, await service.moLaiKcs(idHopLe(req.params.id), req.body && req.body.lyDo, req.user.id), 'Đã mở lại lượt KCS'));
+const moLaiSua = asyncHandler(async (req, res) =>
+  ok(res, await service.moLaiSua(idHopLe(req.params.id), req.body && req.body.lyDo, req.user.id), 'Đã mở lại lượt Sửa'));
+const plMoLaiList = asyncHandler(async (req, res) => {
+  const q = qDaHuy(req.query);
+  ok(res, await plService.listMoLai({ ngay: q.date, search: q.search }));
+});
+const plMoLai = asyncHandler(async (req, res) =>
+  ok(res, await plService.moLai(idHopLe(req.params.huyId), req.body && req.body.lyDo, req.user.id), 'Đã mở lại phân loại lỗi'));
+
 // Xóa mềm TEM SỬA (mig 055) — tab "Hủy tem sửa" / "Mở lại tem sửa" ở trang Hủy lệnh xác nhận
 const temSuaList = asyncHandler(async (req, res) => ok(res, await service.listTemSuaCancelable({ search: req.query.search || '' })));
 const temSuaDeletedList = asyncHandler(async (req, res) => ok(res, await service.listTemSuaDeleted({ search: req.query.search || '' })));
@@ -211,6 +229,7 @@ module.exports = {
   giaoDacBietActive, giaoDacBietList, giaoDacBietCreate, giaoDacBietUpdate, giaoDacBietToggle,
   oqcReturn, qcTraVeHistory, traVeDanhSach, temHanhTrinh,
   cancelKcsList, cancelSuaList, cancelOqcList, cancelKcs, cancelSua, cancelOqc,
+  moLaiKcsList, moLaiSuaList, moLaiKcs, moLaiSua, plMoLaiList, plMoLai,
   cancelKcsLichSu, cancelSuaLichSu, cancelOqcLichSu, plHuy,
   temSuaList, temSuaDeletedList, temSuaHuy, temSuaMo,
 };

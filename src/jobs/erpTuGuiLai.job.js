@@ -22,6 +22,9 @@
 // ⚠⚠ KHÔNG GỬI LẠI BẢN GHI ĐÃ HỦY Ở MES: IDMES đã từng được báo hủy (`ERP_GUI_HUY_IDMES`) hoặc tem đã HỦY (kênh gắn
 //   tem) ⇒ bỏ qua — gửi lại là dựng lại phiếu ERP mà MES đã hủy. Lượt KCS / Sửa / OQC đã hủy xác nhận, phiếu giao HUY
 //   do chính `guiLai` chặn (409 ⇒ bỏ qua).
+//   ⚠ TRỪ SF0 của tem ĐANG CHỜ HỦY (26/11/2026, `utils/erpChoHuy.js`): tem hủy lúc lượt in còn lỗi / đang chạy ⇒ VẪN gửi
+//   lại tới khi thành công (timeout có thể đã tạo phiếu bên ERP), thành công thì báo hủy ngay (`erpApiLog` → hàng chờ).
+//   Cuối mỗi lượt còn quét hàng chờ hủy (`erpChoHuy.quetHangCho`) — lưới an toàn cho lượt báo hủy lỗi / bị bỏ lỡ.
 // ⚠ CHỈ 1 MÁY CHẠY: mặc định chỉ chạy khi PGHOST là chính máy này (backend production nối DB qua 127.0.0.1) — máy dev
 //   trỏ DB production từ xa mà cũng chạy là 2 máy cùng gửi 1 IDMES song song (đúng ca "ERP ra 2 phiếu", `erpThuLai`).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -30,6 +33,7 @@ const env = require('../config/env');
 const repo = require('../modules/caidatapi/caidatapi.repository');
 const { apiBat } = require('../utils/caiDatApi');
 const { chayTuGuiLai } = require('../utils/erpApiLog');
+const erpChoHuy = require('../utils/erpChoHuy');
 
 // Kênh đưa vào hàng đợi — các kênh đẩy dữ liệu theo TEM (gửi lại theo IDMES là ghi đè). Release 1 / hủy vải / báo hủy
 //   không đưa vào (không phải dữ liệu tem; gửi lại thân cũ của kế hoạch đã bị thay là sai).
@@ -69,7 +73,7 @@ function lyDoBoQua(e) {
 async function chayMotLuot() {
   const bd = Date.now();
   const kq = { tg: new Date().toISOString(), dang_loi: 0, da_gui: 0, thanh_cong: 0, con_loi: 0, bo_qua_moi: 0,
-    het_luot: 0, cho_gian_cach: 0, da_bo_qua: 0, api_tat: 0, con_trong_hang: 0, ms: 0 };
+    het_luot: 0, cho_gian_cach: 0, da_bo_qua: 0, api_tat: 0, con_trong_hang: 0, gui_de_huy: 0, ms: 0 };
   const toiDa = env.erp.tuGuiLaiToiDa;
   const ds = await repo.hangDoiTuGuiLai({ dsMa: KENH, soNgay: env.erp.tuGuiLaiSoNgay });
   kq.dang_loi = ds.length;
@@ -92,16 +96,18 @@ async function chayMotLuot() {
   kq.con_trong_hang = sanSang.length - lam.length;
   if (!lam.length) { kq.ms = Date.now() - bd; return kq; }
 
-  const [daHuy, temHuy] = await Promise.all([
+  const [daHuy, temHuy, guiDeHuy] = await Promise.all([
     repo.idMesDaBaoHuy(),
     repo.temDaHuy(lam.filter((r) => KENH_GAN_TEM.has(r.ma)).map((r) => r.id_ban_ghi)),
+    erpChoHuy.luotGuiLaiDeHuy(lam), // SF0 lỗi của tem đang chờ hủy ⇒ vẫn gửi (xem đầu file)
   ]);
   const { guiLai } = require('../modules/caidatapi/guiLai'); // nạp lười: guiLai kéo nhiều module nghiệp vụ
   for (const r of lam) {
     const lan = r.so_lan_gui + 1;
     const vet = { ma: r.ma, idm: r.idm, auditId: r.audit_id, lan };
     let boQua = null;
-    if (daHuy.has(String(r.idm))) boQua = 'DA_BAO_HUY: IDMES đã được báo hủy sang ERP — bản ghi đã hủy ở MES';
+    if (guiDeHuy.has(String(r.audit_id))) kq.gui_de_huy += 1;
+    else if (daHuy.has(String(r.idm))) boQua = 'DA_BAO_HUY: IDMES đã được báo hủy sang ERP — bản ghi đã hủy ở MES';
     else if (KENH_GAN_TEM.has(r.ma) && temHuy.has(String(r.id_ban_ghi))) boQua = 'TEM_HUY: tem đã hủy ở MES';
     if (boQua) {
       kq.bo_qua_moi += 1;
@@ -137,7 +143,19 @@ async function run() {
     if (kq.da_gui || kq.bo_qua_moi) {
       console.log(`[erp-tu-gui-lai] gửi lại ${kq.da_gui} lượt: ${kq.thanh_cong} thành công · ${kq.con_loi} còn lỗi · `
         + `${kq.bo_qua_moi} bỏ qua (đã hủy ở MES / dữ liệu) · còn chờ ${kq.con_trong_hang + kq.cho_gian_cach} · `
-        + `đủ ${env.erp.tuGuiLaiToiDa} lần ${kq.het_luot} (${Math.round(kq.ms / 1000)} s)`);
+        + `đủ ${env.erp.tuGuiLaiToiDa} lần ${kq.het_luot}`
+        + (kq.gui_de_huy ? ` · ${kq.gui_de_huy} lượt in tem của tem chờ hủy` : '') + ` (${Math.round(kq.ms / 1000)} s)`);
+    }
+    // Hàng chờ báo hủy phiếu in tem (26/11/2026) — lỗi ở đây không làm hỏng lượt gửi lại ở trên.
+    try {
+      kq.cho_huy = await erpChoHuy.quetHangCho({ soNgay: env.erp.tuGuiLaiSoNgay, toiDaTem: env.erp.tuGuiLaiMoiLuot });
+      if (kq.cho_huy.da_gui) {
+        console.log(`[erp-tu-gui-lai] hàng chờ hủy in tem: báo hủy ${kq.cho_huy.thanh_cong}/${kq.cho_huy.da_gui} IDMES `
+          + `(${kq.cho_huy.da_xu_ly} tem · còn chờ ${kq.cho_huy.tem_cho} tem)`);
+      }
+    } catch (e) {
+      kq.cho_huy = { loi: e.message };
+      console.error('[erp-tu-gui-lai] Lỗi hàng chờ hủy in tem:', e.message);
     }
   } catch (e) {
     tt.lan_cuoi = { tg: new Date().toISOString(), loi: e.message };

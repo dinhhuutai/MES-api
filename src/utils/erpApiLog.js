@@ -76,6 +76,17 @@ function gonPhanHoi(v) {
 //   người đang bấm, vd xin mã tem), dòng giữ đúng giờ của lượt gọi. Hết lượt thử ⇒ in NGUYÊN dòng ra log để còn bù tay.
 const THU_LAI_MS = [5000, 15000, 30000, 60000, 120000];
 
+// ⚠ 26/11/2026 — HÀNG CHỜ HỦY PHIẾU IN TEM (`utils/erpChoHuy.js`): ghi xong 1 dòng SF0 THÀNH CÔNG mà tem đã bị hủy ở MES
+//   (lượt SF0 xong SAU lúc hủy: đang chạy lúc hủy / lỗi rồi được gửi lại) ⇒ báo ERP hủy IDMES đó ngay. Nạp lười (erpChoHuy →
+//   erpHuy → erpApiChung → file này). Không bao giờ ném.
+//   Chạy NGOÀI bối cảnh "tự gửi lại" (`exit`) — dòng báo hủy không phải lần gửi lại của hàng đợi.
+function sauGhiThanhCong(maApi, idBanGhi) {
+  if (maApi !== 'ERP_GHI_IN_TEM') return;
+  try { boiCanhTuGuiLai.exit(() => require('./erpChoHuy').sauGuiThanhCong(maApi, idBanGhi)); } catch (e) {
+    console.error(`[erp-api-log] ✗ Hàng chờ hủy sau lượt ${maApi} ${idBanGhi}: ${e.message}`);
+  }
+}
+
 // ─── HÀNG ĐỢI TỰ GỬI LẠI (06/11/2026, `jobs/erpTuGuiLai.job.js`) ─────────────────────────────────────────────────
 // Job gửi lại bằng CHÍNH hàm "Gửi lại ERP" của từng kênh (`caidatapi/guiLai.js`) — không luồn tham số qua 7 kênh mà bọc
 //   lượt gọi trong `chayTuGuiLai({ lan }, fn)`: mọi dòng lịch sử ghi trong lượt đó tự mang `gia_tri_moi.tu_gui_lai =
@@ -95,6 +106,7 @@ function thuLaiNen(thamSo, maApi, lan = 0) {
     try {
       await query(SQL_GHI, thamSo);
       console.warn(`[erp-api-log] ✓ Đã ghi bù lịch sử ${maApi} (tem/bản ghi ${thamSo[1]}) ở lần thử lại ${lan + 1}`);
+      if (thamSo[2] === maApi) sauGhiThanhCong(maApi, thamSo[1]); // dòng thành công (không phải `_LOI`)
     } catch (e) {
       console.error(`[erp-api-log] ✗ Thử lại ${lan + 1} vẫn không ghi được lịch sử ${maApi}: ${e.message}`);
       thuLaiNen(thamSo, maApi, lan + 1);
@@ -164,6 +176,7 @@ async function ghiLog(maApi, o = {}) {
         o.actorId || null,
     ];
     await query(SQL_GHI, [...thamSo, null]);
+    if (o.thanhCong) sauGhiThanhCong(maApi, o.idBanGhi);
   } catch (e) {
     console.error(`[erp-api-log] ✗ Không ghi được lịch sử ${maApi}: ${e.message}${thamSo ? ' — sẽ thử lại ở nền' : ''}`);
     if (thamSo) thuLaiNen([...thamSo, luc], maApi);

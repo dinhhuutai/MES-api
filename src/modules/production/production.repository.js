@@ -13,6 +13,8 @@ const { timTem } = require('../../utils/temPrefix');
 // Ghi vết lượt gọi API ERP (nguồn cho nút "Lịch sử" ở trang Cài đặt API).
 const { ghiLog } = require('../../utils/erpApiLog');
 const { thuCua } = require('../../utils/erpThuLai');
+// Trạng thái báo ERP hủy phiếu in tem (nút "Hủy lại ERP" của admin ở Danh sách tem in — 26/11/2026).
+const { HUY_ERP_LATERAL } = require('../../utils/erpChoHuy');
 // Cấp mã IDMES (dãy dùng chung mọi chiều đẩy ERP) — nguồn luật ở `utils/idMes.js`.
 const { capIdMes: capIdMesChung } = require('../../utils/idMes');
 // Lệnh có phần in đang ở Giao nhận (trả về GN) ⇒ tạm rời danh sách Chờ chạy (06/10/2026, `utils/traVeGn.js`).
@@ -661,12 +663,16 @@ async function getPhanCongByPhieu(phieuId) {
 
 // `chuyen_id` / `ma_chuyen` / `ten_chuyen` (24/11/2026) = chuyền THỰC TẾ của chính phiếu — panel Sản xuất của phiếu đã
 //   Hoàn tất hiện đúng chuyền đã chạy (trước lùi về chuyền kế hoạch của lệnh vì `getLenhBasic` chỉ xét phiếu DANG_CHAY).
+// ⚠ 25/11/2026: ưu tiên phiếu KHÔNG HỦY, rồi phiếu ĐANG CHẠY, rồi mới nhất. Trước đây lấy phiếu mới nhất bất kể trạng thái ⇒
+//   lệnh có phiếu HỦY tạo sau phiếu đang chạy (dọn phiếu trùng do Xác nhận chạy 2 lần — ca LSX14045/46/47) mở panel Sản xuất
+//   ra phiếu HỦY ("Đã hoàn tất", không in được). Lệnh chỉ còn phiếu HỦY ⇒ vẫn trả phiếu HỦY mới nhất như cũ.
 async function getActivePhieu(lenhId) {
   const { rows } = await query(
     `SELECT p.id, p.ma_phieu_san_xuat, p.trang_thai, p.so_luong_in, p.tg_bd, p.tg_kt,
             p.chuyen_id, cs.ma_chuyen, cs.ten_chuyen
        FROM phieu_san_xuat p LEFT JOIN chuyen_san_xuat cs ON cs.id = p.chuyen_id
-      WHERE p.lenh_san_xuat_id = $1 ORDER BY p.created_date DESC LIMIT 1`.replace(/\s+/g, ' '),
+      WHERE p.lenh_san_xuat_id = $1
+      ORDER BY (p.trang_thai = 'HUY'), (p.trang_thai = 'DANG_CHAY') DESC, p.created_date DESC LIMIT 1`.replace(/\s+/g, ' '),
     [lenhId]
   );
   return rows[0] || null;
@@ -977,13 +983,15 @@ async function listTemDaIn({
   const JOIN_KHUNG = dk.some((x) => /\binfo\./.test(x)) ? JOIN_GOC : JOIN_GOC.replace(PHAN_INFO_LATERAL, '');
   const FROM = `${JOIN_KHUNG} ${WHERE_GOC}`;
   const cotMaLo = (await temCoCot('ma_lo')) ? 't.ma_lo' : 'NULL::text AS ma_lo';   // mig 114
-  // SL bổ sung do công ty / khách CỦA TEM (mig 135) + lệnh có đợt vải BỔ SUNG không (sidebar + Sửa tem chỉ hiện khi có).
+  // SL bổ sung do công ty / khách CỦA TEM (mig 135) + lệnh có SỐ LƯỢNG của đợt vải BỔ SUNG không (sidebar + Sửa tem chỉ hiện
+  //   khi có) — gương FE `RunPanel laDotCoSlBoSung` (mã loại BO_SUNG + SL của đợt trong lệnh > 0).
   const coBsTem = await temCoCotBoSung();
   const cotBsTem = `${coBsTem ? 't.sl_bo_sung_cty, t.sl_bo_sung_khach' : 'NULL::int AS sl_bo_sung_cty, NULL::int AS sl_bo_sung_khach'},
            ${coBsTem} AS co_bs_tem,
            EXISTS (SELECT 1 FROM lenh_sx_dot_vai lsb JOIN dot_vai_ve dvb ON dvb.id = lsb.dot_vai_ve_id
                      JOIN loai_dot_vai ldb ON ldb.id = dvb.loai_dot_vai_id AND ldb.ma_loai = 'BO_SUNG'
-                    WHERE lsb.lenh_san_xuat_id = ls.id) AS co_dot_bo_sung`;
+                    WHERE lsb.lenh_san_xuat_id = ls.id
+                      AND COALESCE(lsb.so_luong, dvb.so_luong_vai_ve) > 0) AS co_dot_bo_sung`;
   const { soVai, ERP_VAI_LATERAL } = await vaiTemSql();
   // Chọn trang TRƯỚC (chỉ khóa + cột sắp xếp), rồi mới tính nhãn phần in · sự kiện hủy · số ERP cho đúng các tem của trang.
   const dataSql = `
@@ -997,6 +1005,7 @@ async function listTemDaIn({
            (COALESCE(t.sl_kcs_dat,0) + COALESCE(t.sl_kcs_sua,0) + COALESCE(t.sl_kcs_huy,0)
              + COALESCE(t.sl_oqc_dat,0) + COALESCE(t.sl_da_giao,0)) > 0 AS da_kiem,
            COALESCE(${MO_LAI_DUOC_SQL}, false) AS mo_lai_duoc,
+           COALESCE(herp.co_sf0, false) AS huy_lai_erp_duoc, COALESCE(herp.chua_huy, false) AS erp_chua_huy,
            ${temDaKhoaSql('t')} AS da_khoa, ${khoaLucSql('t')} AS khoa_luc, ${khoaTaySql('t')} AS khoa_tay,
            to_char(t.gio_sx_bd, 'HH24:MI') AS gio_sx_bd, to_char(t.gio_sx_kt, 'HH24:MI') AS gio_sx_kt,
            t.btp_truoc, t.btp_cuoi, t.gc_mau_vai, ${cotBsTem},
@@ -1017,6 +1026,7 @@ async function listTemDaIn({
     ${JOIN_GOC.replace('FROM tem t', 'FROM trang JOIN tem t ON t.id = trang.id')}
     ${SU_KIEN_CUOI_LATERAL}
     ${ERP_VAI_LATERAL}
+    ${HUY_ERP_LATERAL('t')}
     ORDER BY trang.stt`;
   // TỔNG SL IN theo đúng bộ lọc (08/11/2026, người dùng: "cho thêm tổng số lượng in ở Danh sách tem in, theo lọc luôn")
   //   — cùng câu đếm, KHÔNG tính tem HỦY (tem đã hủy không còn là hàng in; số của chúng trả riêng để báo).

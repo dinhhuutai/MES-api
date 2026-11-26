@@ -82,7 +82,8 @@ const MOC_TEM = (cotGio) => `CASE WHEN ${cotGio} IS NULL THEN t.created_date
 
 // 26/10/2026: 1 dòng / TEM (trước GROUP BY phiếu × đợt × ca × giờ) — modal "bấm ô SL in thực tế" cần danh sách tem
 //   (mã tem · mã ngày ca · giờ SX · người in). Vài trăm tem / ngày ⇒ payload vẫn nhỏ; phép cộng ở hàm thuần không đổi.
-async function docTem(ngay, phieuIds, { coNgayCa, coDot, coGoc, coChuyenRieng }) {
+// 25/11/2026: kèm SL BỔ SUNG do công ty / khách CỦA TEM (mig 135 — `coBs`) cho 2 cột của modal "Tem in thực tế".
+async function docTem(ngay, phieuIds, { coNgayCa, coDot, coGoc, coChuyenRieng, coBs }) {
   if (!phieuIds.length) return [];
   // `coNgayCa` (mig 066) mang theo cả `gio_sx_bd/gio_sx_kt` — cùng một migration.
   const tu = coNgayCa ? MOC_TEM('t.gio_sx_bd') : 't.created_date';
@@ -94,6 +95,7 @@ async function docTem(ngay, phieuIds, { coNgayCa, coDot, coGoc, coChuyenRieng })
       t.so_luong::int AS so_luong, ${tu} AS tu_min, ${den} AS den_max, t.created_date AS tg_in,
       ${coChuyenRieng ? 't.chuyen_id' : 'NULL::uuid'} AS chuyen_rieng_id,
       ${coNgayCa ? "to_char(t.gio_sx_bd, 'HH24:MI')" : 'NULL'} AS gio_sx_bd, ${coNgayCa ? "to_char(t.gio_sx_kt, 'HH24:MI')" : 'NULL'} AS gio_sx_kt,
+      ${coBs ? 't.sl_bo_sung_cty, t.sl_bo_sung_khach' : 'NULL::int AS sl_bo_sung_cty, NULL::int AS sl_bo_sung_khach'},
       (SELECT nd.ho_ten FROM nguoi_dung nd WHERE nd.id = t.created_by) AS nguoi_in
     FROM tem t
     WHERE t.phieu_san_xuat_id = ANY($2::uuid[]) AND t.trang_thai <> 'HUY' AND ${TEM_THAT} ${coGoc ? 'AND t.tem_goc_id IS NULL' : ''}
@@ -173,14 +175,15 @@ const duyNhat = (arr) => [...new Set(arr.filter(Boolean).map(String))];
 const CACHE_MS = 15000;
 
 async function dungMoi(ngay) {
-  const [coTo, coNgayCa, coDot, coGoc] = await Promise.all([
+  const [coTo, coNgayCa, coDot, coGoc, coBs] = await Promise.all([
     coCot('phieu_san_xuat', 'to_in_id'), coCot('tem', 'ngay_ca'), coCot('tem', 'dot_vai_ve_id'), coCot('tem', 'tem_goc_id'),
+    coCot('tem', 'sl_bo_sung_cty'),
   ]);
   const coThoKh = await coCotThoInKh();
   const coChuyenRieng = await coCotChuyenTem();
   const [phieus, loaiCa] = await Promise.all([docPhieu(ngay, { coTo, coNgayCa, coThoKh }), loaiCaCuaNgay(ngay)]);
   const lenhIds = duyNhat(phieus.map((p) => p.lenh_id));
-  const tems = phieus.length ? await docTem(ngay, phieus.map((p) => p.id), { coNgayCa, coDot, coGoc, coChuyenRieng }) : [];
+  const tems = phieus.length ? await docTem(ngay, phieus.map((p) => p.id), { coNgayCa, coDot, coGoc, coChuyenRieng, coBs }) : [];
   const [lenhs, pins, chuyens, tos] = phieus.length ? await Promise.all([
     docLenh(lenhIds),
     docPhanIn(lenhIds),

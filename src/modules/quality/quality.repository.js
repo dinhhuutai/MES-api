@@ -1460,12 +1460,114 @@ async function getCancelOqcRow(id) {
 }
 
 // Ghi audit_log HỦY XÁC NHẬN (đánh dấu bản ghi đã hủy — loại khỏi mọi danh sách/lịch sử/hành trình).
-async function logCancelQc(table, id, temId, maTem, lyDo, actorId) {
+// `them` (25/11/2026) = dữ liệu thêm cho lần MỞ LẠI (vd `tem_con_id` = tem 17 bị đảo cùng lượt).
+async function logCancelQc(table, id, temId, maTem, lyDo, actorId, them = {}) {
   await query(
     `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
      VALUES ($1, $2, 'HUY_XAC_NHAN', $3::jsonb, $4, CURRENT_TIMESTAMP, $4)`,
-    [table, String(id), JSON.stringify({ tem_id: temId, ma_tem: maTem || null, ly_do: lyDo || null }), actorId]
+    [table, String(id), JSON.stringify({ tem_id: temId, ma_tem: maTem || null, ly_do: lyDo || null, ...them }), actorId]
   );
+}
+
+// ============ MỞ LẠI LƯỢT ĐÃ HỦY XÁC NHẬN KCS / SỬA (25/11/2026, người dùng: "khi hủy vẫn cho mở lại được") ============
+// ⚠⚠ "BỎ HỦY" = đổi `hanh_dong` dòng dấu `HUY_XAC_NHAN` của ĐÚNG lượt thành `HUY_XAC_NHAN_DA_MO` (giữ nguyên nội dung = vết
+//   lần hủy) + ghi 1 dòng `MO_LAI_XAC_NHAN`. ~90 chỗ đọc dấu `HUY_XAC_NHAN` (`notCancelledQc` + câu tự viết ở dashboard, báo
+//   cáo, đơn hàng, finish…) tự coi lượt là CÒN HIỆU LỰC, không phải sửa từng câu. Hủy lại lần nữa = dòng `HUY_XAC_NHAN` mới.
+const HD_HUY_DA_MO = 'HUY_XAC_NHAN_DA_MO';
+
+// Lượt ĐANG bị hủy xác nhận để chọn mở lại: theo NGÀY HỦY (giờ VN) — hoặc ô tìm (mã tem / code phần, mọi ngày).
+//   `table` là literal nội bộ ('kcs' | 'sua'). Kèm lần hủy mới nhất (giờ, người, lý do, nguồn tự động OQC trả về).
+async function listDaHuyQc(table, { date = null, search = '' } = {}) {
+  const cols = table === 'kcs'
+    ? 'x.ket_qua, x.so_luong_kiem, x.so_luong_dat, x.so_luong_loi, x.so_luong_huy, x.so_luong_chenh_lech'
+    : 'x.so_luong_sua, x.so_luong_sua_dat, x.so_luong_sua_huy';
+  const s = String(search || '').trim();
+  const p = [];
+  let dkNgay = '';
+  let dkTim = '';
+  if (s) {
+    p.push(mauTim(s));
+    dkTim = 'WHERE (t.ma_tem ~* $1 OR info.ma_phan ~* $1)';
+  } else {
+    p.push(date);
+    dkNgay = "AND (a.thoi_gian AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date";
+  }
+  // Đi TỪ dòng dấu hủy (ít — vài chục) rồi mới nối lượt + tem; đi từ bảng lượt là tra audit cho MỌI lượt KCS / Sửa.
+  const sql = `
+    SELECT x.id, x.created_date AS tg, nd.ho_ten AS nguoi, t.id AS tem_id, t.ma_tem, t.trang_thai AS tem_trang_thai, ${cols},
+           h.thoi_gian AS tg_huy, nh.ho_ten AS nguoi_huy, h.gia_tri_moi->>'ly_do' AS ly_do_huy, h.gia_tri_moi->>'nguon' AS nguon_huy,
+           info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan, info.mau_vai, info.kich_vai, info.kich_phim
+    FROM (SELECT DISTINCT ON (a.id_ban_ghi) a.id_ban_ghi, a.thoi_gian, a.gia_tri_moi, a.nguoi_thuc_hien_id
+            FROM audit_log a WHERE a.ten_bang = '${table}' AND a.hanh_dong = 'HUY_XAC_NHAN' ${dkNgay}
+           ORDER BY a.id_ban_ghi, a.thoi_gian DESC) h
+    JOIN ${table} x ON x.id = CASE WHEN h.id_ban_ghi ~ '^[0-9a-f-]{36}$' THEN (h.id_ban_ghi)::uuid END
+    JOIN tem t ON t.id = x.tem_id
+    LEFT JOIN nguoi_dung nd ON nd.id = x.created_by
+    LEFT JOIN nguoi_dung nh ON nh.id = h.nguoi_thuc_hien_id
+    ${TEM_INFO_LATERAL}
+    ${dkTim}
+    ORDER BY h.thoi_gian DESC LIMIT 300`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), p);
+  return rows;
+}
+
+// Dòng dấu HỦY mới nhất (còn hiệu lực) của 1 lượt — `gia_tri_moi` có `nguon` (tự động OQC trả về) + `tem_con_id` (bản ghi
+//   từ 25/11/2026). Không có ⇒ null.
+async function dauHuyQcMoiNhat(table, id) {
+  const { rows } = await query(
+    `SELECT id, thoi_gian, gia_tri_moi FROM audit_log WHERE ten_bang = $1 AND id_ban_ghi = $2 AND hanh_dong = 'HUY_XAC_NHAN'
+      ORDER BY thoi_gian DESC LIMIT 1`.replace(/\s+/g, ' '), [table, String(id)]);
+  return rows[0] || null;
+}
+
+// Tem 17 sinh ra bởi lượt KCS (mọi trạng thái — tem bị lần hủy đưa về 0 + HUY vẫn tìm được để bật lại).
+async function temConTachCuaLuotKcs(kcsId) {
+  if (!(await coKcsTach())) return null;
+  const { rows } = await query(
+    'SELECT id, ma_tem, trang_thai, sl_kcs_dat, sl_oqc_dat, sl_da_giao FROM tem WHERE kcs_tach_id = $1 ORDER BY created_date DESC LIMIT 1',
+    [kcsId]);
+  return rows[0] || null;
+}
+
+// Lượt KCS KHÁC còn hiệu lực đang mang IDMES Sh6 của lượt này (lượt kiểm lại dùng lại IDMES của lượt đã hủy —
+//   `idMesKcsDaHuy`) ⇒ mở lại rồi gửi lại cùng IDMES là GHI ĐÈ phiếu ERP của lượt kia. Trả mã tem của lượt đó hoặc null.
+async function luotKhacDungIdMesKcs(kcsId) {
+  const HD = "('ERP_GUI_KIEM_PHAM','ERP_GUI_KIEM_PHAM_LOI')";
+  const { rows } = await query(
+    `SELECT t.ma_tem FROM audit_log a
+       JOIN audit_log b ON b.ten_bang = 'kcs' AND b.hanh_dong IN ${HD} AND b.id_ban_ghi <> a.id_ban_ghi
+                       AND b.gia_tri_moi->>'id_mes' = a.gia_tri_moi->>'id_mes'
+       JOIN kcs y ON y.id = CASE WHEN b.id_ban_ghi ~ '^[0-9a-f-]{36}$' THEN (b.id_ban_ghi)::uuid END
+       JOIN tem t ON t.id = y.tem_id
+      WHERE a.ten_bang = 'kcs' AND a.id_ban_ghi = $1 AND a.hanh_dong IN ${HD} AND (a.gia_tri_moi->>'id_mes') ~ '^[0-9]+$'
+        AND ${notCancelledQc('y', 'kcs')} LIMIT 1`.replace(/\s+/g, ' '), [String(kcsId)]);
+  return rows[0] ? rows[0].ma_tem : null;
+}
+
+// Bỏ dấu hủy của 1 lượt TRONG transaction (khóa dòng audit). Trả dòng hủy mới nhất (trước khi đổi) hoặc null nếu lượt
+//   không còn bị hủy (người khác vừa mở lại) — service báo 409.
+async function boDauHuyQcTx(client, table, id) {
+  const { rows } = await client.query(
+    `UPDATE audit_log SET hanh_dong = '${HD_HUY_DA_MO}' WHERE ten_bang = $1 AND id_ban_ghi = $2 AND hanh_dong = 'HUY_XAC_NHAN'
+     RETURNING id, thoi_gian, gia_tri_moi`.replace(/\s+/g, ' '), [table, String(id)]);
+  if (!rows.length) return null;
+  return rows.sort((a, b) => new Date(b.thoi_gian) - new Date(a.thoi_gian))[0];
+}
+
+async function logMoLaiQcTx(client, table, id, giaTri, actorId) {
+  await client.query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ($1, $2, 'MO_LAI_XAC_NHAN', $3::jsonb, $4, clock_timestamp(), $4)`.replace(/\s+/g, ' '),
+    [table, String(id), JSON.stringify(giaTri), actorId]);
+}
+
+// IDMES của lần gửi ERP THÀNH CÔNG gần nhất của 1 lượt (kênh `maApi`) — mở lại thì gửi lại CÙNG số này.
+async function idMesGuiGanNhat(table, id, maApi) {
+  const { rows } = await query(
+    `SELECT a.gia_tri_moi->>'id_mes' AS id_mes FROM audit_log a
+      WHERE a.ten_bang = $1 AND a.id_ban_ghi = $2 AND a.hanh_dong = $3 AND (a.gia_tri_moi->>'id_mes') ~ '^[0-9]+$'
+      ORDER BY a.thoi_gian DESC LIMIT 1`.replace(/\s+/g, ' '), [table, String(id), maApi]);
+  return rows[0] ? Number(rows[0].id_mes) : null;
 }
 
 // ============ HỦY TEM SỬA — XÓA SL SỬA khỏi sổ cái (KHÔNG cần cột cờ / migration) ============
@@ -1645,6 +1747,7 @@ module.exports = {
   listTemSua, listTemSuaDaHuy, getTemSuaRow, getTemSuaRows, applyTemSuaLedgerMany, logTemSuaMany,
   getTemsForMerge, addTemSoLuong, logGopTem,
   listCancelKcs, listCancelSua, listCancelOqc, getCancelKcsRow, getCancelSuaRow, getCancelOqcRow, logCancelQc,
+  listDaHuyQc, dauHuyQcMoiNhat, temConTachCuaLuotKcs, luotKhacDungIdMesKcs, boDauHuyQcTx, logMoLaiQcTx, idMesGuiGanNhat, HD_HUY_DA_MO,
   listKcsCand, listKcsTon, thongTinTonKcs, listSuaCand, listChoNhanSua, soSuaCuaTem, listOqcCand, caPartsForTems, prevConfirmerByTems, tgKiemByTems, getTemBasic, setTemTrangThai, setTemStatusQty,
   getTemLedger, addKcsLedger, addSuaLedger, addOqcLedger, addGiaoLedger, reduceKcsDat, reduceSuaDat,
   getTemConCuaGoc, getTemConById, coCotSuaTemCon, taoTemCon, congSlTemCon, congSuaTach, huyTemConNeuRong,

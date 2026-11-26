@@ -186,10 +186,16 @@ function guiLaiTheoLuotNgam(kcsId, actorId, viec, lan = -1) {
   if (lan < 0) boc(); else setTimeout(boc, CHO_DO_MS[lan]);
 }
 
+// Mở lại lượt đã hủy xác nhận KCS (25/11/2026, `quality.service moLaiKcs`) ⇒ gửi lại Sh6 CÙNG IDMES + Ngày CT lần gửi thành
+//   công trước (phiếu ERP đã bị báo hủy — proc tạo lại theo `Soctcu`). Không ném lỗi.
+function guiLaiSauMoLaiNgam(kcsId, actorId) {
+  guiLaiTheoLuotNgam(kcsId, actorId, 'mở lại xác nhận KCS');
+}
+
 function guiNgam(kcsId, temId, sl, actorId) {
   guiKiemPham(kcsId, temId, sl, actorId).catch((e) => {
     console.error(`[gui-kiem-pham] ✗ Lỗi ngoài dự kiến (lượt kiểm ${kcsId}): ${e.message}`);
   });
 }
 
-module.exports = { guiKiemPham, guiNgam, guiLaiSauDieuChinhNgam, guiLaiNguoiKiemNgam, daGuiThanhCong, MA_API };
+module.exports = { guiKiemPham, guiNgam, guiLaiSauDieuChinhNgam, guiLaiNguoiKiemNgam, guiLaiSauMoLaiNgam, daGuiThanhCong, MA_API };

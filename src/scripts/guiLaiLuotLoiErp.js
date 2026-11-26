@@ -56,10 +56,11 @@ async function main() {
         ORDER BY a.ten_bang, a.id_ban_ghi, a.thoi_gian DESC`.replace(/\s+/g, ' '), [MA, TU]);
   const loi = TEM17
     ? rows.filter((r) => String(r.barcode_17 || '') !== r.tem_17)
-    : rows.filter((r) => r.hanh_dong.endsWith('_LOI'));
+    // ⚠ So ĐÚNG `<MÃ>_LOI` — mã kênh phân loại lỗi (`ERP_GUI_PHAN_LOAI_LOI`) tự nó đã kết thúc bằng `_LOI`.
+    : rows.filter((r) => r.hanh_dong === `${MA}_LOI`);
   if (!loi.length) { console.log(TEM17 ? 'Không có lượt giao trước nào thiếu Barcode17.' : 'Không có lượt nào đang lỗi.'); return; }
   loi.forEach((r) => console.log(TEM17
-    ? `  ${String(r.ma_tem || '').padEnd(14)} ${r.tg}  BarcodeIn ${r.barcode_in} → tem 15 · Barcode17 ${r.tem_17}${r.hanh_dong.endsWith('_LOI') ? ' (đang lỗi)' : ''}`
+    ? `  ${String(r.ma_tem || '').padEnd(14)} ${r.tg}  BarcodeIn ${r.barcode_in} → tem 15 · Barcode17 ${r.tem_17}${r.hanh_dong === `${MA}_LOI` ? ' (đang lỗi)' : ''}`
     : `  ${String(r.ma_tem || '').padEnd(14)} ${r.tg}  ${r.loi || ''}`));
   console.log(`\nTổng ${loi.length} lượt ${TEM17 ? 'giao trước cần gửi lại theo thân mới' : 'đang lỗi'}.`);
   if (!GUI) { console.log('XEM THỬ — chưa gửi gì. Chạy lại với --gui để gửi.'); return; }

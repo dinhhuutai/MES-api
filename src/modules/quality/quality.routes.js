@@ -66,6 +66,11 @@ router.get('/sua/cancelable', rbac('SUA'), c.cancelSuaList);
 router.post('/sua/:id/huy', rbac('SUA'), rbac.huyXacNhan(), c.cancelSua);
 router.get('/oqc/cancelable', rbac('OQC'), c.cancelOqcList);
 router.post('/oqc/:id/huy', rbac('OQC'), rbac.huyXacNhan(), c.cancelOqc);
+// MỞ LẠI lượt đã hủy xác nhận KCS / Sửa (25/11/2026) — cùng quyền với hủy (quyền công đoạn + `HUY_XAC_NHAN`), lý do bắt buộc.
+router.get('/kcs/da-huy', rbac('KCS'), c.moLaiKcsList);
+router.post('/kcs/:id/mo-lai', rbac('KCS'), rbac.huyXacNhan(), c.moLaiKcs);
+router.get('/sua/da-huy', rbac('SUA'), c.moLaiSuaList);
+router.post('/sua/:id/mo-lai', rbac('SUA'), rbac.huyXacNhan(), c.moLaiSua);
 // HỦY NGAY TẠI "Lịch sử" của từng màn (14/10/2026, người dùng chốt): CHỈ cần quyền công đoạn (không đòi
 // `HUY_XAC_NHAN`), LÝ DO BẮT BUỘC. Cùng service với 3 dòng trên ⇒ cùng chốt chặn sổ cái + cùng báo ERP hủy.
 router.post('/kcs/:id/huy-lich-su', rbac('KCS'), c.cancelKcsLichSu);
@@ -104,6 +109,9 @@ router.patch('/giao-dac-biet/:id', rbac('GIAODB_MANAGE'), c.giaoDacBietUpdate);
 // Route TĨNH `phan-loai-loi/tra-tem` đặt TRƯỚC `:temId` (nếu không Express nuốt mất).
 router.get('/phan-loai-loi', rbac('PHAN_LOAI_LOI', 'KCS'), c.plList);
 router.get('/phan-loai-loi/tra-tem', rbac('PHAN_LOAI_LOI', 'KCS'), c.plTraTem);
+// Mở lại phân loại lỗi đã hủy (25/11/2026) — tab ở trang Hủy lệnh xác nhận; route TĨNH trước `:temId`.
+router.get('/phan-loai-loi/da-huy', rbac('PHAN_LOAI_LOI', 'KCS'), c.plMoLaiList);
+router.post('/phan-loai-loi/mo-lai/:huyId', rbac('PHAN_LOAI_LOI'), rbac.huyXacNhan(), c.plMoLai);
 router.get('/phan-loai-loi/:temId', rbac('PHAN_LOAI_LOI', 'KCS'), c.plChiTiet);
 router.post('/phan-loai-loi/:temId', rbac('PHAN_LOAI_LOI'), c.plLuu);
 // Hủy phân loại lỗi (14/10/2026): tem về "chưa phân loại" + báo ERP hủy phiếu đã gửi. Lý do bắt buộc.

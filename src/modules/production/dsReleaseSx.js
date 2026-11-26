@@ -18,7 +18,7 @@
 
 const { query, withTransaction } = require('../../config/db');
 const { chuyenTemSql } = require('../../utils/temChuyen');
-const { ngaySxTemSql, temTrongKySql } = require('../../utils/ngaySxTem');
+const { ngaySxTemSql, temTrongKySql, caTemSql, chuanDsCa, temThuocCaSql } = require('../../utils/ngaySxTem');
 const planningService = require('../planning/planning.service');
 
 const KHOA_DONG = 'ds_release_sx';
@@ -38,9 +38,20 @@ const VN = "AT TIME ZONE 'Asia/Ho_Chi_Minh'";
 //   · `sl_in_truoc_lenh` = tem của CHÍNH lệnh in trước kỳ ⇒ CL = Tổng + phần này − SL release (= còn thiếu của lệnh).
 //   · Vải hư / thiếu = sổ `vai_huy` của lệnh thuộc kỳ: dòng gắn tem (mig 118) theo ngày SX của TEM đó, dòng không gắn tem
 //     theo lúc ghi (cắt 06:00).
-async function dsReleaseSx(tuNgay, denNgay) {
+// ⚠⚠ LỌC CA (25/11/2026, người dùng: "bộ lọc cho thêm theo ngày ca / ca"): `ca` = danh sách mã ca của tem (HC · C1 · C2 · C3
+//   · D1 · D2 — 2 ký tự cuối mã ngày ca, `utils/ngaySxTem.js`; rỗng = mọi ca). "Kỳ" = ngày SX trong khoảng VÀ ca thuộc danh
+//   sách ⇒ dòng chỉ còn lệnh có tem trong kỳ đó; SL IN / bổ sung / vải hư–thiếu (chỉ dòng gắn tem) theo kỳ đó. Tem của chính
+//   lệnh cùng khoảng ngày nhưng KHÁC ca cộng vào `sl_in_truoc_lenh` ⇒ CL vẫn là còn thiếu / dư của lệnh tới hết ngày đến.
+//   SL ĐÃ IN (mức phần in) vẫn = trước NGÀY đầu kỳ.
+// BỔ SUNG (25/11/2026, người dùng gửi mẫu ô vàng IN SL · IN BS · CTY · KH + sheet tổng theo chuyền):
+//   · `sl_release_bs` = phần SL release của dòng thuộc đợt loại `BO_SUNG` (Σ `lenh_sx_dot_vai` của lệnh × phần in, kẹp ≤ SL
+//     release của dòng) — Release SL = SL release − phần này (FE).
+//   · `sl_in_bs_cty` / `sl_in_bs_khach` = Σ SL bổ sung do công ty / khách CỦA TEM (mig 135) của tem trong kỳ — mức LỆNH như
+//     `sl_in` (chỉ ở dòng đầu của lệnh). In BS = cty + khách · In SL = SL IN − In BS (FE).
+async function dsReleaseSx(tuNgay, denNgay, { ca } = {}) {
   const ngay = tuNgay;
   const den = denNgay || tuNgay;
+  const dsCa = chuanDsCa(ca);
   const { items } = await planningService.releaseList(tuNgay, 'IN_TEM', den);
   const NGAY_TM = ngaySxTemSql('tm');
   // ⚠ 26/10/2026 (người dùng: "chỉ lấy những phần đã xác nhận chạy"): giữ lệnh ĐÃ CÓ phiếu Xác nhận chạy (phiếu ≠ HUY —
@@ -54,8 +65,20 @@ async function dsReleaseSx(tuNgay, denNgay) {
     [[...new Set(ungVien.map((r) => r.lenh_id))]]
   );
   const setChay = new Set(daChay.map((x) => x.id));
-  const rows = ungVien.filter((r) => setChay.has(r.lenh_id));
-  if (!rows.length) return { ngay, items: [] };
+  let rows = ungVien.filter((r) => setChay.has(r.lenh_id));
+  // Lọc ca: chỉ giữ lệnh có tem gốc sống (không `HT-`) thuộc ngày + ca đang lọc.
+  if (rows.length && dsCa.length) {
+    const { rows: coTem } = await query(
+      `SELECT DISTINCT ps.lenh_san_xuat_id AS id FROM phieu_san_xuat ps
+         JOIN tem tm ON tm.phieu_san_xuat_id = ps.id AND tm.trang_thai <> 'HUY' AND tm.tem_goc_id IS NULL
+        WHERE ps.lenh_san_xuat_id = ANY($1::uuid[]) AND tm.ma_tem NOT LIKE 'HT-%'
+          AND ${temTrongKySql('tm', '$2', '$3')} AND ${temThuocCaSql('tm', '$4')}`.replace(/\s+/g, ' '),
+      [[...new Set(rows.map((r) => r.lenh_id))], ngay, den, dsCa]
+    );
+    const setCa = new Set(coTem.map((x) => x.id));
+    rows = rows.filter((r) => setCa.has(r.lenh_id));
+  }
+  if (!rows.length) return { ngay, den_ngay: den, ca: dsCa, items: [] };
   const lenhIds = [...new Set(rows.map((r) => r.lenh_id))];
   const pinIds = [...new Set(rows.map((r) => r.phan_in_id))];
   const khoa = rows.map((r) => `${r.lenh_id}|${r.phan_in_id}`);
@@ -64,8 +87,11 @@ async function dsReleaseSx(tuNgay, denNgay) {
   //   tính lại bằng CHÍNH `dotStageCase` trên các đợt của ĐÚNG lệnh × phần in (lấy giai đoạn chậm nhất trong các đợt đó).
   const { dotStageCase, ORDER_SQL_ARRAY, STAGE_LABEL } = require('../../utils/stage');
   const L = require('../../utils/luongSanXuat');
-  const coVaiTem = await require('./production.repository').vaiHuyCoCotTem();
-  const [inTruoc, nvPin, inLenh, vai, ghi, ttLenh, pinLuong] = await Promise.all([
+  const prodRepo = require('./production.repository');
+  const [coVaiTem, coBsTem] = await Promise.all([prodRepo.vaiHuyCoCotTem(), prodRepo.temCoCotBoSung()]);
+  // Tem thuộc KỲ đang xem (ngày SX trong khoảng + ca đang lọc) — tham số $2 / $3 / $4 của các câu dưới.
+  const TRONG_KY = `${NGAY_TM} BETWEEN $2::date AND $3::date AND ${temThuocCaSql('tm', '$4')}`;
+  const [inTruoc, nvPin, inLenh, vai, ghi, ttLenh, pinLuong, relBs] = await Promise.all([
     // Theo cặp (lệnh × phần in): đã in TRƯỚC kỳ (tem gốc) + đã giao của phần in (mọi tem). `gd` = công đoạn của lệnh.
     query(
       `WITH p AS (SELECT DISTINCT dv.phan_in_id, ls.id AS lenh_id, COALESCE(ls.giai_doan, '${L.GD_IN}') AS gd
@@ -94,16 +120,24 @@ async function dsReleaseSx(tuNgay, denNgay) {
         GROUP BY 1, 2`.replace(/\s+/g, ' '),
       [pinIds]
     ),
+    // SL IN / bổ sung của tem trong KỲ (ngày + ca) · `sl_in_truoc` = tem của lệnh in trước ngày đầu kỳ + tem `HT-` tới hết kỳ
+    //   + tem cùng khoảng ngày nhưng KHÁC ca đang lọc (để CL vẫn là còn thiếu / dư của lệnh).
     query(
       `SELECT ps.lenh_san_xuat_id AS lenh_id,
-              COALESCE(SUM(tm.so_luong) FILTER (WHERE tm.ma_tem NOT LIKE 'HT-%'
-                        AND ${NGAY_TM} BETWEEN $2::date AND $3::date), 0)::int AS sl_in,
+              COALESCE(SUM(tm.so_luong) FILTER (WHERE tm.ma_tem NOT LIKE 'HT-%' AND ${TRONG_KY}), 0)::int AS sl_in,
+              ${coBsTem
+    ? `COALESCE(SUM(tm.sl_bo_sung_cty) FILTER (WHERE tm.ma_tem NOT LIKE 'HT-%' AND ${TRONG_KY}), 0)::int AS bs_cty,
+              COALESCE(SUM(tm.sl_bo_sung_khach) FILTER (WHERE tm.ma_tem NOT LIKE 'HT-%' AND ${TRONG_KY}), 0)::int AS bs_khach,`
+    : '0 AS bs_cty, 0 AS bs_khach,'}
               COALESCE(SUM(tm.so_luong) FILTER (WHERE ${NGAY_TM} < $2::date
-                        OR (tm.ma_tem LIKE 'HT-%' AND (tm.created_date ${VN})::date <= $3::date)), 0)::int AS sl_in_truoc
+                        OR (tm.ma_tem LIKE 'HT-%' AND (tm.created_date ${VN})::date <= $3::date)
+                        OR (tm.ma_tem NOT LIKE 'HT-%' AND ${NGAY_TM} BETWEEN $2::date AND $3::date
+                            AND cardinality($4::text[]) > 0 AND ${caTemSql('tm')} <> ALL($4::text[]))), 0)::int AS sl_in_truoc
          FROM phieu_san_xuat ps JOIN tem tm ON tm.phieu_san_xuat_id = ps.id AND tm.trang_thai <> 'HUY' AND tm.tem_goc_id IS NULL
         WHERE ps.lenh_san_xuat_id = ANY($1::uuid[]) GROUP BY 1`.replace(/\s+/g, ' '),
-      [lenhIds, ngay, den]
+      [lenhIds, ngay, den, dsCa]
     ),
+    // Vải hư / thiếu của kỳ. Lọc ca ⇒ chỉ dòng GẮN TEM thuộc ca đó (dòng không gắn tem không biết ca ⇒ bỏ).
     query(
       `SELECT COALESCE(vh.lenh_san_xuat_id, ps.lenh_san_xuat_id) AS lenh_id, vh.phan_in_id,
               COALESCE(SUM(vh.so_luong) FILTER (WHERE COALESCE(vh.loai, 'HUY') = 'HUY'), 0)::int AS hu,
@@ -113,8 +147,10 @@ async function dsReleaseSx(tuNgay, denNgay) {
         WHERE COALESCE(vh.lenh_san_xuat_id, ps.lenh_san_xuat_id) = ANY($1::uuid[])
           AND COALESCE(${coVaiTem ? ngaySxTemSql('tv') : 'NULL::date'},
                        ((vh.created_date ${VN}) - interval '6 hours')::date) BETWEEN $2::date AND $3::date
+          AND (cardinality($4::text[]) = 0
+               OR ${coVaiTem ? `(tv.id IS NOT NULL AND ${caTemSql('tv')} = ANY($4::text[]))` : 'false'})
         GROUP BY 1, 2`.replace(/\s+/g, ' '),
-      [lenhIds, ngay, den]
+      [lenhIds, ngay, den, dsCa]
     ),
     query(
       `SELECT DISTINCT ON (a.id_ban_ghi) a.id_ban_ghi, a.gia_tri_moi
@@ -133,7 +169,16 @@ async function dsReleaseSx(tuNgay, denNgay) {
       [lenhIds]
     ),
     query('SELECT id, luong_sx, tinh_chat_in FROM phan_in WHERE id = ANY($1::uuid[])', [pinIds]),
+    // Phần SL release thuộc đợt BỔ SUNG của từng (lệnh × phần in) — theo MÃ loại đợt, không so tên.
+    query(
+      `SELECT lsd.lenh_san_xuat_id AS lenh_id, dv.phan_in_id, COALESCE(SUM(lsd.so_luong), 0)::int AS sl_bs
+         FROM lenh_sx_dot_vai lsd JOIN dot_vai_ve dv ON dv.id = lsd.dot_vai_ve_id
+         JOIN loai_dot_vai ldv ON ldv.id = dv.loai_dot_vai_id AND ldv.ma_loai = 'BO_SUNG'
+        WHERE lsd.lenh_san_xuat_id = ANY($1::uuid[]) GROUP BY 1, 2`.replace(/\s+/g, ' '),
+      [lenhIds]
+    ),
   ]);
+  const relBsMap = new Map(relBs.rows.map((x) => [`${x.lenh_id}|${x.phan_in_id}`, x.sl_bs]));
   const ttMap = new Map(ttLenh.rows.map((x) => [`${x.lenh_id}|${x.phan_in_id}`, x.stage]));
   // ⚠⚠ THEO CÔNG ĐOẠN (19/11/2026, người dùng: "danh sách release của sản xuất tách dòng theo công đoạn, 2 công đoạn thì
   //   2 dòng"): mỗi công đoạn vốn là 1 LỆNH riêng ⇒ đã ra dòng riêng, nhưng trước đây không ghi công đoạn và SL ĐÃ IN /
@@ -205,13 +250,17 @@ async function dsReleaseSx(tuNgay, denNgay) {
       hai_cong_doan: haiCd(r.phan_in_id),
       sl_in: dau ? ((slInLenh.get(r.lenh_id) || {}).sl_in || 0) : null,
       sl_in_truoc_lenh: dau ? ((slInLenh.get(r.lenh_id) || {}).sl_in_truoc || 0) : null,
+      sl_in_bs_cty: dau ? ((slInLenh.get(r.lenh_id) || {}).bs_cty || 0) : null,
+      sl_in_bs_khach: dau ? ((slInLenh.get(r.lenh_id) || {}).bs_khach || 0) : null,
+      sl_release_bs: Math.min(relBsMap.get(`${r.lenh_id}|${r.phan_in_id}`) || 0,
+        Number(r.sl_release_phan ?? r.so_luong_release) || 0),
       vai_hu: [...vaiPin, ...vaiChung].reduce((a, v) => a + v.hu, 0),
       vai_thieu: [...vaiPin, ...vaiChung].reduce((a, v) => a + v.thieu, 0),
       dm_test: g.dm_test ?? null,
       ghi_chu_sx: g.ghi_chu ?? null,
     };
   });
-  return { ngay, den_ngay: den, items: out };
+  return { ngay, den_ngay: den, ca: dsCa, items: out };
 }
 
 // ─── NHẬT KÝ IN (26/10/2026, người dùng gửi mẫu ERP "DANH SÁCH NHẬT KÝ IN Từ ngày … đến ngày …") ─────────────────
@@ -224,7 +273,9 @@ async function dsReleaseSx(tuNgay, denNgay) {
 //     ở ô In tem (KT < BĐ ⇒ qua đêm).
 //   · Thời gian kiểm / Ngày XN kiểm / Số CT XN kiểm = lượt KCS (chưa hủy xác nhận) ĐẦU / CUỐI của tem + IDMES kiểm phẩm.
 //   · Thông tin phần in lấy phần in ĐẠI DIỆN của lệnh (tem không lưu đợt vải — lệnh gom set cũ chỉ mang phần in đầu).
-async function nhatKyIn(tuNgay, denNgay) {
+// Lọc ca (25/11/2026): `ca` như Danh sách release — chỉ tem có mã ca thuộc danh sách (rỗng = mọi ca).
+async function nhatKyIn(tuNgay, denNgay, { ca } = {}) {
+  const dsCa = chuanDsCa(ca);
   const repo = require('./production.repository');
   const { nhomCuaLoai, NHOM } = require('../../utils/baoCaoSanXuat');
   const { notCancelledQc } = require('../quality/quality.repository');
@@ -279,9 +330,9 @@ async function nhatKyIn(tuNgay, denNgay) {
       ) kk ON true
      WHERE t.tem_goc_id IS NULL AND t.trang_thai <> 'HUY' AND t.ma_tem NOT LIKE 'HT-%'
        AND COALESCE(lc.ma_loai, '') <> 'GIA_CONG'
-       AND ${temTrongKySql('t', '$1', '$2')}
+       AND ${temTrongKySql('t', '$1', '$2')} AND ${temThuocCaSql('t', '$3')}
      ORDER BY t.created_date, t.ma_tem`;
-  const { rows } = await query(sql.replace(/\s+/g, ' '), [tuNgay, denNgay || tuNgay]);
+  const { rows } = await query(sql.replace(/\s+/g, ' '), [tuNgay, denNgay || tuNgay, dsCa]);
   const nhanNhom = new Map(NHOM.map((n) => [n.key, n.label]));
   // KT < BĐ chỉ qua nửa đêm khi mã ca là ca ĐÊM (`C3`/`D2`) — cùng luật `Dengio` gửi ERP (`duLieuGhiInTem`); ca ngày giờ
   //   ngược (nhập sai) ⇒ để trống, không bịa.
@@ -303,7 +354,7 @@ async function nhatKyIn(tuNgay, denNgay) {
     ngay_ct: ngayCt(r.ngay_ct_erp) || r.ngay_ca || null,
     day_chuyen: nhanNhom.get(nhomCuaLoai(r.ma_loai_chuyen)) || 'Khác',
   }));
-  return { tu_ngay: tuNgay, den_ngay: denNgay || tuNgay, items };
+  return { tu_ngay: tuNgay, den_ngay: denNgay || tuNgay, ca: dsCa, items };
 }
 
 // Lưu DM+TEST / ghi chú của 1 dòng (lệnh × phần in). Chỉ trường có trong `d` bị đổi (giữ trường kia từ bản cũ).

@@ -19,4 +19,17 @@ const temTrongKySql = (a, pTu, pDen = pTu) => `(${a}.ngay_ca BETWEEN ${pTu}::dat
   OR (${a}.ngay_ca IS NULL AND ${a}.created_date >= ((${pTu}::date + time '06:00') ${VN})
       AND ${a}.created_date < ((${pDen}::date + 1 + time '06:00') ${VN})))`;
 
-module.exports = { ngaySxTemSql, temTrongKySql };
+// CA của tem = 2 ký tự cuối mã ngày ca người in nhập (HC · C1 · C2 · C3 · D1 · D2); tem cũ không mã ⇒ '' (không thuộc ca nào).
+//   Bộ lọc "Ca" của Danh sách release SX / Nhật ký in (25/11/2026) — cùng luật cột ca của Báo cáo sản xuất (`ca_hint`).
+const CA_TEM = ['HC', 'C1', 'C2', 'C3', 'D1', 'D2'];
+const caTemSql = (a = 't') => `upper(right(COALESCE(${a}.ma_ngay_ca, ''), 2))`;
+// Chuẩn hóa tham số ca từ query (`"D1,D2"` / mảng) ⇒ mảng mã hợp lệ, không trùng; rỗng = mọi ca.
+const chuanDsCa = (v) => {
+  const ds = (Array.isArray(v) ? v : String(v || '').split(','))
+    .map((x) => String(x || '').trim().toUpperCase()).filter((x) => CA_TEM.includes(x));
+  return [...new Set(ds)];
+};
+// Điều kiện "tem thuộc ca đang lọc" — `pCa` = tham số SQL text[] (rỗng ⇒ mọi ca, kể cả tem không mã ngày ca).
+const temThuocCaSql = (a, pCa) => `(cardinality(${pCa}::text[]) = 0 OR ${caTemSql(a)} = ANY(${pCa}::text[]))`;
+
+module.exports = { ngaySxTemSql, temTrongKySql, CA_TEM, caTemSql, chuanDsCa, temThuocCaSql };

@@ -380,6 +380,9 @@ function dungBaoCaoSanXuat({
       dsTem.push({
         ...goc(p, pin), ca, ma_tem: t.ma_tem || null, so_luong: sl, ma_ngay_ca: t.ma_ngay_ca || null,
         tg_in: t.tg_in || null, gio_sx_bd: t.gio_sx_bd || null, gio_sx_kt: t.gio_sx_kt || null, nguoi_in: t.nguoi_in || null,
+        // SL bổ sung do công ty / khách CỦA TEM (mig 135; null = tem không nhập) — 2 cột ở modal "Tem in thực tế".
+        sl_bs_cty: t.sl_bo_sung_cty == null ? null : Number(t.sl_bo_sung_cty),
+        sl_bs_khach: t.sl_bo_sung_khach == null ? null : Number(t.sl_bo_sung_khach),
       });
     }
   });

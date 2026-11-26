@@ -318,7 +318,53 @@ async function xoaPhieuTx(client, phieuId) {
   await client.query('DELETE FROM phan_loai_loi WHERE id = $1', [phieuId]);
 }
 
+// ─── MỞ LẠI PHÂN LOẠI LỖI ĐÃ HỦY (25/11/2026, trang Hệ thống › Hủy lệnh xác nhận) ──────────────────────────────────
+// Lần hủy = dòng `audit_log` tem · `HUY_PHAN_LOAI_LOI` (`gia_tri_cu` = ảnh chụp phiếu: ghi chú + dòng mã lỗi / biện pháp / SL).
+//   Mở lại được khi nó là SỰ KIỆN PHÂN LOẠI CUỐI của tem (sau nó chưa lưu / hủy / mở lại phân loại lần nào) và tem chưa có phiếu.
+const TEM_CUA_AUDIT = (a) => `CASE WHEN ${a}.id_ban_ghi ~ '^[0-9a-f-]{36}$' THEN (${a}.id_ban_ghi)::uuid END`;
+const MO_DUOC_SQL = (a) => `(NOT EXISTS (SELECT 1 FROM audit_log b WHERE b.ten_bang = 'tem' AND b.id_ban_ghi = ${a}.id_ban_ghi
+    AND b.hanh_dong IN ('PHAN_LOAI_LOI', 'HUY_PHAN_LOAI_LOI', 'MO_LAI_PHAN_LOAI_LOI') AND b.thoi_gian > ${a}.thoi_gian)
+  AND NOT EXISTS (SELECT 1 FROM phan_loai_loi p WHERE p.tem_id = ${TEM_CUA_AUDIT(a)}))`;
+
+// Danh sách lần hủy theo NGÀY HỦY (giờ VN) hoặc ô tìm (mã tem / code phần, mọi ngày). `mo_duoc` = còn mở lại được.
+async function listDaHuyPhanLoai({ ngay = null, search = '' } = {}) {
+  const s = String(search || '').trim();
+  const p = [];
+  let dk;
+  if (s) {
+    p.push(mauTim(timTem(s)));
+    dk = '(t.ma_tem ~* $1 OR info.ma_phan ~* $1)';
+  } else {
+    p.push(ngay);
+    dk = "(a.thoi_gian AT TIME ZONE 'Asia/Ho_Chi_Minh')::date = $1::date";
+  }
+  const sql = `
+    SELECT a.id AS huy_id, a.thoi_gian AS tg_huy, nh.ho_ten AS nguoi_huy, a.gia_tri_moi->>'ly_do' AS ly_do_huy,
+           a.gia_tri_cu AS anh_chup, t.id AS tem_id, t.ma_tem, t.trang_thai AS tem_trang_thai,
+           (t.sl_kcs_sua + t.sl_kcs_huy) AS sl_hu_nay, ${MO_DUOC_SQL('a')} AS mo_duoc,
+           EXISTS (SELECT 1 FROM phan_loai_loi p WHERE p.tem_id = t.id) AS da_phan_loai_lai,
+           info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan, info.mau_vai, info.kich_vai, info.kich_phim
+      FROM audit_log a
+      JOIN tem t ON t.id = ${TEM_CUA_AUDIT('a')}
+      LEFT JOIN nguoi_dung nh ON nh.id = a.nguoi_thuc_hien_id
+      ${INFO}
+     WHERE a.ten_bang = 'tem' AND a.hanh_dong = 'HUY_PHAN_LOAI_LOI' AND ${dk}
+     ORDER BY a.thoi_gian DESC LIMIT 300`;
+  const { rows } = await query(sql.replace(/\s+/g, ' ').trim(), p);
+  return rows;
+}
+
+// 1 lần hủy theo id dòng audit (+ còn mở lại được không). Không có ⇒ null.
+async function getHuyPhanLoai(huyId) {
+  const { rows } = await query(
+    `SELECT a.id, a.id_ban_ghi AS tem_id, a.thoi_gian, a.gia_tri_cu, a.gia_tri_moi, ${MO_DUOC_SQL('a')} AS mo_duoc
+       FROM audit_log a WHERE a.id = $1 AND a.ten_bang = 'tem' AND a.hanh_dong = 'HUY_PHAN_LOAI_LOI'`.replace(/\s+/g, ' '),
+    [huyId]);
+  return rows[0] || null;
+}
+
 module.exports = {
+  listDaHuyPhanLoai, getHuyPhanLoai,
   mocHuyGanNhat, chiaTruocPhanLoai, xoaPhieuTx,
   listTheoNgay, timTemDePhanLoai, getPhieuTheoTem,
   upsertPhieuTx, replaceChiTietTx, datChiaSuaHuyTx, chiTietGuiErp,

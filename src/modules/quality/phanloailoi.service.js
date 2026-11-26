@@ -235,6 +235,41 @@ async function huy(temId, lyDo, actorId) {
   return { tem_id: temId, ma_tem: sd.ma_tem || null, sl_hu: slHu, sl_kcs_sua: dich.sua, sl_kcs_huy: dich.huy };
 }
 
+// ─── MỞ LẠI PHÂN LOẠI LỖI ĐÃ HỦY (25/11/2026, người dùng: "kcs, phân loại lỗi, sửa khi hủy vẫn cho mở lại được") ─────────
+// Tab ở *Hệ thống › Hủy lệnh xác nhận*. Mở lại = LƯU LẠI ĐÚNG phiếu đã hủy từ ảnh chụp ở dòng `HUY_PHAN_LOAI_LOI` (ghi chú +
+//   các dòng mã lỗi / biện pháp / SL sửa / SL hủy) bằng CHÍNH `luu` ⇒ cùng mọi chốt chặn (Σ = SL hư hiện tại, không hạ dưới
+//   phần đã sửa / đã nhận sửa), ghi đè chia sửa / hủy, gửi ERP SU6 (IDMES cũ đã báo hủy ⇒ số mới). Chỉ lần hủy là sự kiện
+//   phân loại CUỐI của tem + tem chưa phân loại lại (`repo.MO_DUOC_SQL`). Lý do bắt buộc; vết `MO_LAI_PHAN_LOAI_LOI`.
+async function moLai(huyId, lyDo, actorId) {
+  const ly = String(lyDo || '').trim();
+  if (!ly) throw new AppError('Phải nhập lý do mở lại', { status: 422, errorCode: 'NO_LY_DO' });
+  const h = await repo.getHuyPhanLoai(huyId);
+  if (!h) throw new AppError('Không tìm thấy lần hủy phân loại lỗi này', { status: 404, errorCode: 'NOT_FOUND' });
+  if (!h.mo_duoc) {
+    throw new AppError('Tem đã được phân loại lại / mở lại sau lần hủy này — không mở lại được', { status: 409, errorCode: 'DA_PHAN_LOAI_LAI' });
+  }
+  const anh = h.gia_tri_cu || {};
+  const dong = (Array.isArray(anh.dong) ? anh.dong : []).map((d) => ({
+    loaiLoiId: d.loai_loi_id, bienPhapId: d.bien_phap_id || null,
+    soLuongSua: d.so_luong_sua, soLuongHuy: d.so_luong_huy, ghiChu: d.ghi_chu || null,
+  }));
+  if (!dong.length) {
+    throw new AppError('Phiếu đã hủy không có dòng mã lỗi nào — phân loại lại ở màn Phân loại lỗi', { status: 409, errorCode: 'KHONG_CO_DONG' });
+  }
+  const temId = h.tem_id;
+  const tem = await qualityRepo.getTemLedger(temId);
+  if (!tem) throw new AppError('Không tìm thấy tem', { status: 404, errorCode: 'NOT_FOUND' });
+  if (tem.trang_thai === 'HUY') throw new AppError(`Tem ${tem.ma_tem} đã bị hủy — không mở lại được`, { status: 409, errorCode: 'TEM_HUY' });
+  const kq = await luu(temId, { dong, ghiChu: anh.ghi_chu || '' }, actorId); // ném 422 LECH_TONG khi SL hư đã đổi
+  const { query } = require('../../config/db');
+  await query(
+    `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+     VALUES ('tem', $1, 'MO_LAI_PHAN_LOAI_LOI', $2::jsonb, $3, clock_timestamp(), $3)`.replace(/\s+/g, ' '),
+    [String(temId), JSON.stringify({ huy_audit_id: h.id, huy_luc: h.thoi_gian, ly_do: ly, ma_tem: tem.ma_tem, so_dong: dong.length }), actorId]);
+  return { ...kq, ma_tem: tem.ma_tem };
+}
+const listMoLai = (q) => repo.listDaHuyPhanLoai(q);
+
 async function taoBienPhap(d, actorId) {
   const ma = String(d.maBienPhap || '').trim().toUpperCase();
   if (!ma || !String(d.tenBienPhap || '').trim()) {
@@ -249,7 +284,7 @@ const suaBienPhap = (id, d, actorId) => repo.updateBienPhap(id, d, actorId);
 const doiTrangThaiBienPhap = (id, active, actorId) => repo.setBienPhapActive(id, active, actorId);
 
 module.exports = {
-  danhSach, traTem, chiTiet, luu, huy,
+  danhSach, traTem, chiTiet, luu, huy, moLai, listMoLai,
   dsBienPhap, taoBienPhap, suaBienPhap, doiTrangThaiBienPhap,
   guiErpPhanLoaiLoi, // export để kiểm thực payload + gửi lại bằng tay khi ERP lỗi
 };

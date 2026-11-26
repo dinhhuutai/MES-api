@@ -81,6 +81,8 @@ router.post('/huy-tem/:temId', rbac('PROD_RUN'), rbac.huyXacNhan(), c.cancelPrin
 // HỦY NGAY TẠI "Tem đã in" của màn Xác nhận chạy (14/10/2026, người dùng chốt): CHỈ cần quyền công đoạn
 // (không đòi `HUY_XAC_NHAN`), LÝ DO BẮT BUỘC. Cùng service với dòng trên ⇒ cùng chốt chặn + cùng báo ERP hủy.
 router.post('/huy-tem/:temId/lich-su', rbac('PROD_RUN'), c.cancelPrintTemLichSu);
+// HỦY LẠI ERP (26/11/2026): báo ERP hủy lại phiếu in tem SF0 của tem ĐÃ hủy (không đổi MES) — chỉ admin, controller kiểm.
+router.post('/huy-tem/:temId/huy-lai-erp', rbac('PROD_RUN'), c.huyLaiErpTem);
 // MỞ LẠI TEM IN ĐÃ HỦY (14/10/2026): chỉ tem hủy bằng "Hủy lệnh in tem" / nút Hủy ở "Tem đã in" (audit `HUY_IN_TEM`).
 //   Trang Hủy lệnh xác nhận đòi thêm `HUY_XAC_NHAN` (như nút hủy cùng trang); "Tem đã in" chỉ cần quyền công đoạn.
 router.get('/mo-lai-tem/candidates', rbac('PROD_RUN'), c.reopenableTem);

@@ -78,6 +78,9 @@ const HANH_DONG = {
   SUA_PHAN_CONG_TEM: ['SAN_XUAT', 'Sửa phân công của tem'],
   PHAN_LOAI_LOI: ['CHAT_LUONG', 'Phân loại lỗi'], HUY_PHAN_LOAI_LOI: ['CHAT_LUONG', 'Hủy phân loại lỗi', 'h'],
   HUY_TEM_SUA: ['CHAT_LUONG', 'Hủy tem sửa', 'h'], MO_TEM_SUA: ['CHAT_LUONG', 'Mở lại tem sửa'],
+  // Mở lại lượt đã hủy (25/11/2026): dấu hủy cũ đổi tên `HUY_XAC_NHAN_DA_MO` (vẫn hiện là 1 lần hủy) + `MO_LAI_XAC_NHAN`.
+  HUY_XAC_NHAN_DA_MO: ['CHAT_LUONG', 'Hủy xác nhận (sau đó đã mở lại)', 'h'], MO_LAI_XAC_NHAN: ['CHAT_LUONG', 'Mở lại xác nhận'],
+  MO_LAI_PHAN_LOAI_LOI: ['CHAT_LUONG', 'Mở lại phân loại lỗi'],
   TICH_GIAO: ['GIAO_HANG', 'Giao nhận tích tem'], BO_TICH_GIAO: ['GIAO_HANG', 'Bỏ tích tem giao', 'h'],
   OQC_TRA_VE_KCS: ['TRA_VE', 'OQC trả về — trừ lượt KCS', 't'], GUI_ERP_KHI_IN_TEM_17: ['ERP', 'Đã gửi SK6 khi in tem 17', 'a'],
   IN_KHONG_DAT: ['TEST_RUN', 'Test Run: in không đạt — owner cho in'],
@@ -242,9 +245,10 @@ async function lichSu(phanInId) {
     }
     const [nhom, nhan, co] = HANH_DONG[a.hanh_dong] || ['HE_THONG', a.hanh_dong.replace(/_/g, ' ').toLowerCase()];
     let tieuDe = nhan;
-    if (a.hanh_dong === 'HUY_XAC_NHAN') {
+    if (['HUY_XAC_NHAN', 'HUY_XAC_NHAN_DA_MO', 'MO_LAI_XAC_NHAN'].includes(a.hanh_dong)) {
       const bang = { kcs: 'KCS', sua: 'Sửa', oqc: 'OQC', ket_qua_checkpoint: 'READY' }[a.ten_bang] || a.ten_bang;
-      tieuDe = `Hủy xác nhận ${bang}`;
+      tieuDe = a.hanh_dong === 'MO_LAI_XAC_NHAN' ? `Mở lại xác nhận ${bang}`
+        : `Hủy xác nhận ${bang}${a.hanh_dong === 'HUY_XAC_NHAN_DA_MO' ? ' (sau đó đã mở lại)' : ''}`;
     }
     if (a.ten_bang === 'ket_qua_checkpoint' && a.gia_tri_moi && a.gia_tri_moi.ma) {
       tieuDe += ` — ${[].concat(a.gia_tri_moi.ma).join(', ')}`;

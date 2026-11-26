@@ -251,6 +251,13 @@ const datKhoaTem = asyncHandler(async (req, res) => {
   return ok(res, kq, `${kq.khoa ? 'Đã khóa' : 'Đã mở khóa'} ${kq.so_tem} tem`);
 });
 
+// HỦY LẠI ERP (26/11/2026) — báo ERP hủy lại phiếu SF0 của tem đã hủy. CHỈ ADMIN ('*'). Body { lyDo? }.
+const huyLaiErpTem = asyncHandler(async (req, res) => {
+  if (!laAdmin(req.user)) throw new AppError('Chỉ admin mới báo ERP hủy lại tem', { status: 403, errorCode: 'CHI_ADMIN' });
+  const kq = await service.huyLaiErpTem(req.params.temId, (req.body && req.body.lyDo) || '', req.user.id);
+  return ok(res, kq, `Đã báo ERP hủy ${kq.thanh_cong}/${kq.tong} phiếu in tem của tem ${kq.ma_tem}`);
+});
+
 // DANH SÁCH TEM ĐÃ IN (xem thông tin tem, không cần in). `laGiaCong` do ROUTE quyết, không nhận từ
 // query — xem ghi chú ở `service.listTemDaIn`.
 const dsTemDaIn = (laGiaCong) => asyncHandler(async (req, res) => {
@@ -343,11 +350,12 @@ const khoangNgayIn = (q) => {
   if ((Date.parse(den) - Date.parse(tu)) / 86400000 > 62) throw new AppError('Khoảng ngày tối đa 62 ngày', { status: 422, errorCode: 'VALIDATION' });
   return [tu, den];
 };
+// `ca` (25/11/2026) = mã ca của tem "HC,C1,…" (chuỗi ngăn dấu phẩy hoặc mảng) — mã lạ bị bỏ (`ngaySxTem.chuanDsCa`).
 const dsReleaseSx = asyncHandler(async (req, res) => {
-  ok(res, await dsRelease.dsReleaseSx(...khoangNgayIn(req.query)));
+  ok(res, await dsRelease.dsReleaseSx(...khoangNgayIn(req.query), { ca: req.query.ca }));
 });
 const nhatKyIn = asyncHandler(async (req, res) => {
-  ok(res, await dsRelease.nhatKyIn(...khoangNgayIn(req.query)));
+  ok(res, await dsRelease.nhatKyIn(...khoangNgayIn(req.query), { ca: req.query.ca }));
 });
 // DM+TEST = số nguyên ≥ 0 (trống = xóa); ghi chú ≤ 500 ký tự. Chỉ khóa có trong body bị đổi.
 const luuDongDsRelease = asyncHandler(async (req, res) => {
@@ -387,7 +395,7 @@ module.exports = {
   toInList, toInCreate, toInUpdate, toInToggle, baoCaoSanXuat, baoCaoDungChuyen, baoCaoKiemHang, baoCaoSuaHang,
   baoCaoPhanLoaiLoi,
   lyDoBoSungList, lyDoBoSungCreate, lyDoBoSungUpdate, lyDoBoSungToggle, luuLyDoBoSungDotVai,
-  cancelableTem, cancelPrintTem, cancelPrintTemLichSu, reopenableTem, reopenPrintTem, datKhoaTem,
+  cancelableTem, cancelPrintTem, cancelPrintTemLichSu, reopenableTem, reopenPrintTem, datKhoaTem, huyLaiErpTem,
   temDaInSX: dsTemDaIn(false), temDaInGiaCong: dsTemDaIn(true),
   closeCandidates, closeProduction,
   reopenCandidates, reopenProduction, pauseLenhChay, doiChuyen, lichSuHoanTat, moLaiTuLichSu,

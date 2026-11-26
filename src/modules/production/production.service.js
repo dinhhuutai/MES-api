@@ -4,7 +4,7 @@ const { withTransaction } = require('../../config/db');
 const { coCotChuyenTem } = require('../../utils/temChuyen');
 const repo = require('./production.repository');
 const AppError = require('../../utils/AppError');
-const erpHuy = require('../../utils/erpHuy');
+const erpChoHuy = require('../../utils/erpChoHuy');
 const { buildMeta } = require('../../utils/pagination');
 const sockets = require('../../sockets');
 const tracking = require('../workflow/tracking.service');
@@ -2076,12 +2076,25 @@ async function cancelPrintTem(temId, lyDo, actorId, { boQuaKhoa = false } = {}) 
   // Ảnh chụp để "Mở lại tem" trả đúng trạng thái + đúng phiên phơi (14/10/2026).
   await repo.logTemCancel(temId, tem.ma_tem, (lyDo || '').trim() || null, actorId,
     { trang_thai_cu: tem.trang_thai, xe_phoi_ids: (go && go.xe_phoi_ids) || [] });
-  // Báo ERP hủy phiếu in tem (SF0) theo IDMES của lượt in — chạy ngầm, không chặn (14/10/2026, `utils/erpHuy.js`).
-  erpHuy.baoHuyNgam('IN_TEM', temId, { lyDo, actorId, maHien: tem.ma_tem });
+  // Báo ERP hủy phiếu in tem (SF0) theo IDMES của lượt in — chạy ngầm, không chặn (14/10/2026).
+  // ⚠ 26/11/2026: qua HÀNG CHỜ HỦY (`utils/erpChoHuy.js`) — lượt SF0 còn đang chạy / lỗi rồi gửi lại sau thì báo hủy khi SF0
+  //   thành công (trước đây lúc hủy chưa có lượt thành công là bỏ qua luôn ⇒ ERP giữ phiếu của tem đã hủy).
+  //   Dòng HUY_IN_TEM (người hủy · lý do · giờ) phải ghi TRƯỚC — hàng chờ đọc từ đó.
+  erpChoHuy.xuLyNgam(temId);
   sockets.emit('production:updated', { lenhId: tem.lenh_san_xuat_id, action: 'huy-tem', temId });
   sockets.emit('drying:updated', { lenhId: tem.lenh_san_xuat_id, action: 'huy-tem' });
   sockets.emit('dashboard:refresh', {});
   return { id: temId, ma_tem: tem.ma_tem, ma_lenh_san_xuat: tem.ma_lenh_san_xuat, so_luong: tem.so_luong };
+}
+
+// ----- HỦY LẠI ERP (admin, Danh sách tem in — 26/11/2026): báo ERP hủy lại phiếu SF0 của tem ĐÃ hủy, khỏi Mở lại rồi Hủy.
+//   Không đổi gì ở MES — xem `utils/erpChoHuy.huyLai`. Controller kiểm admin.
+async function huyLaiErpTem(temId, lyDo, actorId) {
+  const ly = String(lyDo || '').trim();
+  if (ly.length > 300) throw new AppError('Lý do dài quá 300 ký tự', { status: 422, errorCode: 'LY_DO_QUA_DAI' });
+  const kq = await erpChoHuy.huyLai(temId, { actorId, lyDo: ly });
+  sockets.emit('production:updated', { action: 'huy-lai-erp', temId });
+  return kq;
 }
 
 // ----- MỞ LẠI TEM IN ĐÃ HỦY (14/10/2026, người dùng yêu cầu "mở lại tem in, nếu có hủy") -----
@@ -2430,7 +2443,7 @@ module.exports = {
   dsLyDoNgung, taoLyDoNgung, suaLyDoNgung, doiTrangThaiLyDoNgung,
   dsToIn, taoToIn, suaToIn, doiTrangThaiToIn,
   dsLyDoBoSung, taoLyDoBoSung, suaLyDoBoSung, doiTrangThaiLyDoBoSung, luuLyDoBoSungDotVai,
-  listCancelableTem, listTemDaIn, datKhoaTem, cancelPrintTem, listReopenableTem, reopenPrintTem,
+  listCancelableTem, listTemDaIn, datKhoaTem, cancelPrintTem, huyLaiErpTem, listReopenableTem, reopenPrintTem,
   listCloseCandidates, closeProduction,
   listReopenCandidates, reopenProduction, pauseLenhChay, doiChuyen, listLichSuHoanTat,
   listUndoStartCandidates, undoStartProduction,
