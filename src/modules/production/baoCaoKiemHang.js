@@ -12,8 +12,6 @@ const { query } = require('../../config/db');
 const { chuyenTemSql } = require('../../utils/temChuyen');
 const { nhoDoc } = require('../../utils/cacheDoc');
 const { dungBaoCaoKiemHang } = require('../../utils/baoCaoKiemHang');
-const { thoInPhieuSql } = require('../../utils/thoIn');
-const { coCotThoInKh } = require('../../utils/thoInKeHoach');
 
 const VN = "AT TIME ZONE 'Asia/Ho_Chi_Minh'";
 const W0 = `(($1::date + time '06:00') ${VN})`;
@@ -36,8 +34,9 @@ async function coPhanLoaiLoi() {
 }
 
 async function docLuot(tuNgay, denNgay) {
-  // 11/10/2026: thợ in của phiếu in ra tem (bảng "Theo thợ in" — luật ở `utils/thoIn.js`) + kích vải/kích phim.
-  const colThoKh = (await coCotThoInKh()) ? 'ls.tho_in_kh' : 'NULL::text';
+  // Thợ in / chuyền trưởng = phân công CỦA TEM (27/11/2026, người dùng chốt: lấy theo phân công lúc in tem, thợ kế hoạch
+  //   không liên quan) — `PCT_*` (chốt lúc in / Sửa tem; tem cũ chưa chốt ⇒ phiếu). Luật chọn người ở `utils/thoIn.js`.
+  const { PCT_LATERAL, PCT_CHUYEN_TRUONG, PCT_THO_IN } = require('./production.repository');
   const pllSql = (await coPhanLoaiLoi())
     ? `LEFT JOIN LATERAL (SELECT sum(c.so_luong_sua)::int AS pll_sua, sum(c.so_luong_huy)::int AS pll_huy
       FROM phan_loai_loi p JOIN phan_loai_loi_ct c ON c.phan_loai_loi_id = p.id WHERE p.tem_id = k.tem_id) pll ON true`
@@ -49,10 +48,11 @@ async function docLuot(tuNgay, denNgay) {
       t.ma_tem, ls.ma_lenh_san_xuat, cs.ma_chuyen, cs.ten_chuyen, lc.ma_loai AS ma_loai_chuyen,
       nd.ho_ten AS nguoi_kiem, pll.pll_sua, pll.pll_huy,
       pi.ma_phan, pi.khach, pi.po, pi.ma_hang, pi.mau_vai, pi.kich_vai, pi.kich_phim,
-      ps.chuyen_truong, ${thoInPhieuSql('ps.id')} AS tho_in, ${colThoKh} AS tho_in_kh
+      ${PCT_CHUYEN_TRUONG} AS chuyen_truong, ${PCT_THO_IN(', ')} AS tho_in, NULL::text AS tho_in_kh
     FROM kcs k JOIN tk ON tk.tem_id = k.tem_id
     JOIN tem t ON t.id = k.tem_id AND t.trang_thai <> 'HUY'
     LEFT JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+    ${PCT_LATERAL}
     LEFT JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
     LEFT JOIN chuyen_san_xuat cs ON cs.id = ${await chuyenTemSql()}
     LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id

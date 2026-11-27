@@ -67,11 +67,12 @@ const NGC_LENH = (lenhCol) => `(SELECT string_agg(DISTINCT dvg.nha_gia_cong, ', 
 // Phân công thật nằm ở PHIẾU (`phieu_san_xuat` ca trưởng / chuyền trưởng / tổ in + `phan_cong_san_xuat.tho_in`), mà 1
 // phiếu in qua nhiều ca (phân công đầu ca áp lại vào phiếu trước mỗi lần in) ⇒ sửa phiếu là đổi luôn người của các tem
 // ca khác. Sửa ở tem ⇒ GHI ĐÈ RIÊNG tem đó: `audit_log ten_bang='tem_phan_cong'`, `id_ban_ghi` = tem GỐC, hành động
-// `SUA_PHAN_CONG_TEM`, dòng MỚI NHẤT = giá trị (`gia_tri_moi {ca_truong_id, chuyen_truong, tho_in, to_in_id?}`). Không có
-// dòng ⇒ phân công của phiếu như cũ. Đọc ở nhãn tem (`getTemLabelData`) + ERP (`duLieuGhiInTem` — gửi lại phiếu in tem /
+// `SUA_PHAN_CONG_TEM`, dòng MỚI NHẤT = giá trị (`gia_tri_moi {ca_truong_id, chuyen_truong, tho_in, to_in_id?}`). ⚠ 27/11/2026:
+// lúc in tem ghi sẵn 1 dòng `CHOT_PHAN_CONG_LUC_IN` (ảnh chụp phân công phiếu lúc in — `chotPhanCongTemTx`) ⇒ tem in từ bản này
+// luôn có dòng; tem cũ thiếu dòng (chưa chạy `database/scripts/chot_phan_cong_tem_luc_in_2711.sql`) ⇒ phân công của phiếu như cũ. Đọc ở nhãn tem (`getTemLabelData`) + ERP (`duLieuGhiInTem` — gửi lại phiếu in tem /
 // kiểm phẩm / sửa đạt của tem). Tem 17 đọc phân công riêng của tem gốc. CHƯA áp: các báo cáo / Nhật ký in (theo phiếu).
 // Cần alias `t` (tem) và `ps` (phiếu) trong câu.
-const PCT_LATERAL = `LEFT JOIN LATERAL (SELECT a_pct.gia_tri_moi AS g FROM audit_log a_pct
+const PCT_LATERAL = `LEFT JOIN LATERAL (SELECT a_pct.gia_tri_moi AS g, a_pct.hanh_dong AS hd FROM audit_log a_pct
     WHERE a_pct.ten_bang = 'tem_phan_cong' AND a_pct.id_ban_ghi = COALESCE(t.tem_goc_id, t.id)::text
     ORDER BY a_pct.thoi_gian DESC LIMIT 1) pct ON true`.replace(/\s+/g, ' ');
 const PCT_CA_ID = "(CASE WHEN pct.g IS NOT NULL THEN NULLIF(pct.g->>'ca_truong_id', '')::uuid ELSE ps.ca_truong_id END)";
@@ -1373,6 +1374,33 @@ async function doiMaLoTheoNgayCaTx(client, { id, ma_tem: maTem, ma_lo: cu }, maN
   return { cu, moi };
 }
 
+// CHỐT PHÂN CÔNG LÚC IN (27/11/2026, người dùng chốt: "tem ở sản xuất lấy theo phân công thợ ở tem in"): ngay khi tạo tem
+//   (phân công đầu ca đã áp vào phiếu ở `kiemThoInPhanCong`) chụp ca trưởng · chuyền trưởng · thợ in · tổ in của PHIẾU lúc đó
+//   vào `tem_phan_cong` · `CHOT_PHAN_CONG_LUC_IN` ⇒ `PCT_LATERAL` đọc ảnh chụp này thay cho phân công HIỆN TẠI của phiếu (phân
+//   công đầu ca sau ghi đè phiếu đang chạy — ca thật 152608087214: in lúc ca Huỳnh Tấn Khá, sáng sau phiếu thành Chau Sao).
+//   Sửa tem (`SUA_PHAN_CONG_TEM`, mới hơn) vẫn thắng. KHÔNG phải "phân công riêng" (`phanCongSf0.rieng` chỉ xét SUA_…).
+//   Chỉ tem GỐC; bọc SAVEPOINT — lỗi ghi vết không được làm hỏng lượt in.
+async function chotPhanCongTemTx(client, temId, actorId) {
+  try {
+    await client.query('SAVEPOINT chot_pc_tem');
+    await client.query(
+      `INSERT INTO audit_log (ten_bang, id_ban_ghi, hanh_dong, gia_tri_moi, nguoi_thuc_hien_id, thoi_gian, created_by)
+       SELECT 'tem_phan_cong', t.id::text, 'CHOT_PHAN_CONG_LUC_IN',
+              jsonb_build_object('ca_truong_id', ps.ca_truong_id, 'chuyen_truong', ps.chuyen_truong,
+                'tho_in', (SELECT string_agg(DISTINCT pc.tho_in, ', ') FROM phan_cong_san_xuat pc
+                            WHERE pc.phieu_san_xuat_id = ps.id AND COALESCE(pc.tho_in, '') <> ''),
+                'to_in_id', to_jsonb(ps)->>'to_in_id', 'nguon', 'LUC_IN'),
+              $2, CURRENT_TIMESTAMP, $2
+         FROM tem t JOIN phieu_san_xuat ps ON ps.id = t.phieu_san_xuat_id
+        WHERE t.id = $1 AND t.tem_goc_id IS NULL`.replace(/\s+/g, ' '),
+      [temId, actorId || null]);
+    await client.query('RELEASE SAVEPOINT chot_pc_tem');
+  } catch (e) {
+    await client.query('ROLLBACK TO SAVEPOINT chot_pc_tem').catch(() => {});
+    console.error(`[chot-phan-cong-tem] ✗ Không chốt được phân công lúc in của tem ${temId}: ${e.message}`);
+  }
+}
+
 // Ghi PHÂN CÔNG RIÊNG của tem (gốc) — xem `PCT_LATERAL`. `pc` = { ca_truong_id, chuyen_truong, tho_in, to_in_id? }.
 async function ghiPhanCongTemTx(client, temId, pc, cu, actorId) {
   await client.query(
@@ -1709,7 +1737,7 @@ async function getTemLabelData(temId, dotVaiId = null) {
   const cotMaTo = coTo ? `(SELECT ti.ma_to FROM to_in ti WHERE ti.id = ${PCT_TO_ID})` : 'NULL::text';
   const { rows } = await query(
     `SELECT t.id, t.ma_tem, t.so_luong, t.trang_thai, t.created_date, ${cotMaLo} AS ma_lo, ${cotMaTo} AS ma_to,
-            ${PCT_CA_ID} AS ca_truong_id, ${coTo ? PCT_TO_ID : 'NULL::uuid'} AS to_in_id, (pct.g IS NOT NULL) AS phan_cong_rieng,
+            ${PCT_CA_ID} AS ca_truong_id, ${coTo ? PCT_TO_ID : 'NULL::uuid'} AS to_in_id, (pct.hd = 'SUA_PHAN_CONG_TEM') AS phan_cong_rieng,
             ls.ma_lenh_san_xuat, cs.id AS chuyen_id, cs.ma_chuyen, cs.ten_chuyen, ps.tg_bd AS tg_bd_in,
             info.ten_khach_hang, info.ma_don_hang, info.ma_hang, info.ma_phan,
             info.mau_vai, info.kich_vai, info.kich_phim, info.so_luong_don_hang,
@@ -1903,6 +1931,7 @@ async function createTem(client, { phieuId, maTem, soLuong, ngayCa, maNgayCa, gi
       [...base, ngayCa || null, gioBd || null, gioKt || null, !!btpTruoc, !!btpCuoi, ...val]
     );
     await chotChuyenTemTx(client, rows[0].id); // chuyền LÚC IN — đổi chuyền phiếu sau này không kéo tem (23/11/2026)
+    await chotPhanCongTemTx(client, rows[0].id, actorId); // người LÚC IN — phân công đầu ca sau không kéo tem (27/11/2026)
     return rows[0].id;
   }
   const { rows } = await client.query(
@@ -1911,6 +1940,7 @@ async function createTem(client, { phieuId, maTem, soLuong, ngayCa, maNgayCa, gi
     base
   );
   await chotChuyenTemTx(client, rows[0].id);
+  await chotPhanCongTemTx(client, rows[0].id, actorId);
   return rows[0].id;
 }
 
@@ -3066,6 +3096,8 @@ async function insertVuotHistory(client, h, actorId) {
 module.exports = {
   // Ngày chứng từ của tem (alias `t`) — Excel tồn KCS lọc theo ngày CT đọc CHUNG.
   NGAY_CT_TEM_SQL,
+  // Phân công CỦA TEM (chốt lúc in / sửa riêng, lùi phiếu) — báo cáo theo tem đọc chung (alias `t`, `ps`).
+  PCT_LATERAL, PCT_CHUYEN_TRUONG, PCT_THO_IN,
   lenhCongDoanKhac,
   // Luật "tem in đã hủy mở lại được" (alias t / ps / ls / h) — Quản trị phần in đọc CHUNG (19/10/2026).
   SU_KIEN_CUOI_LATERAL, MO_LAI_DUOC_SQL,

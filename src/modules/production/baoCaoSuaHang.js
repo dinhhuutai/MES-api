@@ -16,8 +16,6 @@ const { nhoDoc } = require('../../utils/cacheDoc');
 const { dungBaoCaoSuaHang } = require('../../utils/baoCaoSuaHang');
 const { MOC_VAO_TEM } = require('../../utils/siSoTram');
 const { coPhanLoaiLoi } = require('./baoCaoKiemHang');
-const { thoInPhieuSql } = require('../../utils/thoIn');
-const { coCotThoInKh } = require('../../utils/thoInKeHoach');
 const { coNhanSua, dangSuaSql } = require('../../utils/choSua');
 
 const VN = "AT TIME ZONE 'Asia/Ho_Chi_Minh'";
@@ -36,8 +34,9 @@ const HUY_DO_OQC_TRA_VE = `EXISTS (SELECT 1 FROM audit_log zo WHERE zo.ten_bang 
   AND zo.id_ban_ghi = k.id::text AND zo.gia_tri_moi->>'nguon' = 'OQC_TRA_VE_KCS')`;
 
 async function docTem(tuNgay, denNgay) {
-  // 11/10/2026: thợ in của phiếu in ra tem (bảng "Theo thợ in" — `utils/thoIn.js`) + kích vải/kích phim.
-  const colThoKh = (await coCotThoInKh()) ? 'ls.tho_in_kh' : 'NULL::text';
+  // Thợ in / chuyền trưởng = phân công CỦA TEM (27/11/2026 — chốt lúc in / Sửa tem; tem cũ chưa chốt ⇒ phiếu), thợ kế
+  //   hoạch không dùng. Luật chọn người ở `utils/thoIn.js`.
+  const { PCT_LATERAL, PCT_CHUYEN_TRUONG, PCT_THO_IN } = require('./production.repository');
   const pllSql = (await coPhanLoaiLoi())
     ? `LEFT JOIN LATERAL (SELECT sum(c.so_luong_sua)::int AS pll_sua, sum(c.so_luong_huy)::int AS pll_huy
       FROM phan_loai_loi p JOIN phan_loai_loi_ct c ON c.phan_loai_loi_id = p.id WHERE p.tem_id = t.id) pll ON true`
@@ -55,7 +54,7 @@ async function docTem(tuNgay, denNgay) {
     SELECT t.id AS tem_id, t.ma_tem, t.sl_kcs_sua, t.sl_sua_dat, t.sl_sua_huy, ${MOC_VAO_TEM.SUA('t')} AS tg_vao${nhanCols},
       ls.ma_lenh_san_xuat, cs.ma_chuyen, cs.ten_chuyen, lc.ma_loai AS ma_loai_chuyen,
       pi.phan_in_ids, pi.ma_phan, pi.khach, pi.po, pi.ma_hang, pi.mau_vai, pi.kich_vai, pi.kich_phim, pll.pll_sua, pll.pll_huy,
-      ps.chuyen_truong, ${thoInPhieuSql('ps.id')} AS tho_in, ${colThoKh} AS tho_in_kh,
+      ${PCT_CHUYEN_TRUONG} AS chuyen_truong, ${PCT_THO_IN(', ')} AS tho_in, NULL::text AS tho_in_kh,
       (SELECT json_agg(json_build_object('tg', k.created_date, 'hu', kx.hu) ORDER BY k.created_date)
         FROM kcs k CROSS JOIN LATERAL (SELECT COALESCE(k.so_luong_loi,0) + ${TRA_HU_KCS} AS hu) kx
         WHERE k.tem_id = t.id AND kx.hu > 0 AND (${chuaHuy('kcs', 'k')} OR ${HUY_DO_OQC_TRA_VE})) AS kcs,
@@ -73,6 +72,7 @@ async function docTem(tuNgay, denNgay) {
     LEFT JOIN lenh_san_xuat ls ON ls.id = ps.lenh_san_xuat_id
     LEFT JOIN chuyen_san_xuat cs ON cs.id = ${await chuyenTemSql()}
     LEFT JOIN loai_chuyen lc ON lc.id = cs.loai_chuyen_id
+    ${PCT_LATERAL}
     ${pllSql}
     LEFT JOIN LATERAL (SELECT array_agg(DISTINCT pin.id::text) AS phan_in_ids, string_agg(DISTINCT pin.ma_phan, ', ') AS ma_phan,
         string_agg(DISTINCT kh.ten_khach_hang, ', ') AS khach, string_agg(DISTINCT dh.ma_don_hang, ', ') AS po,

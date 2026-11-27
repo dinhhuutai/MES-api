@@ -76,7 +76,7 @@ const HANH_DONG = {
   SUA_TEM: ['SAN_XUAT', 'Sửa tem'], SUA_VAI_THEO_TEM: ['SAN_XUAT', 'Sửa vải hủy / thiếu của tem'],
   HUY_IN_TEM: ['SAN_XUAT', 'Hủy tem in', 'h'], MO_LAI_TEM_IN: ['SAN_XUAT', 'Mở lại tem in'],
   NGAY_CT_TEM: ['SAN_XUAT', 'Ngày chứng từ của tem'], XAC_NHAN_KHO: ['SAN_XUAT', 'Xác nhận khô (sớm)'],
-  SUA_PHAN_CONG_TEM: ['SAN_XUAT', 'Sửa phân công của tem'],
+  SUA_PHAN_CONG_TEM: ['SAN_XUAT', 'Sửa phân công của tem'], CHOT_PHAN_CONG_LUC_IN: ['SAN_XUAT', 'Chốt phân công lúc in tem'],
   PHAN_LOAI_LOI: ['CHAT_LUONG', 'Phân loại lỗi'], HUY_PHAN_LOAI_LOI: ['CHAT_LUONG', 'Hủy phân loại lỗi', 'h'],
   HUY_TEM_SUA: ['CHAT_LUONG', 'Hủy tem sửa', 'h'], MO_TEM_SUA: ['CHAT_LUONG', 'Mở lại tem sửa'],
   // Mở lại lượt đã hủy (25/11/2026): dấu hủy cũ đổi tên `HUY_XAC_NHAN_DA_MO` (vẫn hiện là 1 lần hủy) + `MO_LAI_XAC_NHAN`.
