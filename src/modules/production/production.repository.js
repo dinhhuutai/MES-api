@@ -602,7 +602,7 @@ async function listVaiHuyByLenh(lenhId) {
   const SEL = (loaiCol) => `
       SELECT vh.id, vh.so_luong, vh.ly_do, vh.created_date, ${loaiCol} AS loai,
              pin.ma_phan, pin.mau_vai, dv.ma_dot_vai, nd.ho_ten AS nguoi,
-             ${coTem ? 'tv.ma_tem' : 'NULL::text AS ma_tem'}
+             ${coTem ? 'tv.ma_tem, tv.trang_thai AS tt_tem' : 'NULL::text AS ma_tem, NULL::text AS tt_tem'}
        FROM vai_huy vh
        LEFT JOIN phan_in pin ON pin.id = vh.phan_in_id
        LEFT JOIN dot_vai_ve dv ON dv.id = vh.dot_vai_ve_id

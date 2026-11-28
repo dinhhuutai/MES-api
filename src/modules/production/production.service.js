@@ -97,7 +97,10 @@ async function getRun(lenhId) {
   });
   // Số vải hủy / thiếu CHỜ gắn vào tem in kế tiếp của phiếu (21/10/2026). Lỗi đọc ⇒ null (không chặn sidebar).
   const vaiCho = phieu ? await repo.docVaiChoTem(phieu.id).catch(() => null) : null;
-  return { lenh, phieu, tems, printed, printed_btp: printedBtp, ngung_list: ngungList, ngung_active: ngungActive,
+  // Vải HỦY đã ghi sổ của lệnh (28/11/2026, người dùng: "Chạy hoàn tất phải tính luôn SL hủy") — FE xét
+  //   đã in + hủy ≥ 50% SL release. Sổ có dòng chênh lệch âm ⇒ cộng thẳng; bỏ dòng gắn tem đã HỦY (như `printed`).
+  const printedHuy = Math.max(0, vaiHuy.reduce((s, v) => s + (v.loai === 'HUY' && v.tt_tem !== 'HUY' ? (Number(v.so_luong) || 0) : 0), 0));
+  return { lenh, phieu, tems, printed, printed_btp: printedBtp, printed_huy: printedHuy, ngung_list: ngungList, ngung_active: ngungActive,
            dot_vai: dotVai, vai_huy: vaiHuy, vai_cho_tem: vaiTrong(vaiCho) ? null : vaiCho,
            // Phân công đầu ca của chuyền CHỈ đè khi phiếu ĐANG CHẠY (lượt in kế tiếp sẽ áp nó). Phiếu đã xong ⇒ hiện đúng phân
            //   công THẬT của phiếu (đã dùng cho các tem đã in) — 24/11/2026.
