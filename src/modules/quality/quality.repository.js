@@ -931,6 +931,7 @@ async function suaHistoryByDate(lsIn) {
   const { rows } = await query(
     `SELECT x.id AS luot_id, t.id AS tem_id, x.created_date AS tg, nd.ho_ten AS nguoi,
             x.so_luong_sua, x.so_luong_sua_dat, x.so_luong_sua_huy, t.ma_tem,
+            ${await coCotSuaTemCon() ? '(SELECT tc.ma_tem FROM tem tc WHERE tc.id = x.tem_con_id)' : 'NULL::text'} AS ma_tem_17,
             ${LS.maPhanTemSql('t')} AS ma_phan
      FROM sua x JOIN tem t ON t.id = x.tem_id
      LEFT JOIN nguoi_dung nd ON nd.id = x.created_by

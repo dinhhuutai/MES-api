@@ -61,9 +61,12 @@ function maTemUngVien(code) {
 // đúng tem đang lưu `15…`. Bỏ 2 SỐ ĐẦU rồi để `ILIKE '%…%'` khớp phần còn lại ⇒ khớp mọi công đoạn
 // mà không phải thêm nhánh OR nào vào SQL (query giữ nguyên độ nặng — quan trọng vì IPS, xem §9).
 // Chuỗi khác (mã lệnh, code phần, mã cũ `TEM00123`…) trả nguyên vẹn.
+// ⚠ 27/11/2026 (người dùng: "bỏ số 1 đằng trước thì lọc không ra"): gõ mã tem THIẾU số đầu (11 số, vd `62608086585` của
+//   nhãn 16, `72608…` của tem 17) ⇒ cũng chỉ giữ 10 số đuôi — không thì chuỗi `6…`/`7…` không nằm trong `ma_tem` 15 đang lưu.
 const timTem = (search) => {
   const s = String(search == null ? '' : search).trim();
-  return laMaErp(s) ? s.slice(2) : s;
+  if (laMaErp(s)) return s.slice(2);
+  return /^\d{11}$/.test(s) ? s.slice(1) : s;
 };
 
 // Mã ĐÃ mang tiền tố riêng của chính nó — tem 17 (sửa đạt, mig 091) / tem 13 (gia công về, 06/09)

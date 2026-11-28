@@ -43,14 +43,14 @@ function kenh20(ma, them = {}) {
   const k = KENH_20[ma];
   return {
     nhan: k.nhan, url: k.url, timeoutMs: k.timeoutMs, retry: k.retry,
-    truong: [...THU_TU_TRUONG, ...(them.truong || [])],
+    truong: [...THU_TU_TRUONG.filter((x) => !(them.bo || []).includes(x)), ...(them.truong || [])],
     so: [...SO_20, ...(them.so || [])], ngay: ['Ngayct', 'Tugio', 'Dengio'], kieuNgay: k.kieuNgay || 'Z',
     dai: { ...DAI_TOI_DA, ...(them.dai || {}) },
-    khoa: ['IDMES'], guong: them.guong || {}, maTem: ['BarcodeIn'],
+    khoa: ['IDMES'], guong: them.guong || {}, maTem: them.maTem || ['BarcodeIn'],
     // Sửa `Ngayca` phải đúng dạng mã ngày ca như ô In tem (21/10/2026, `utils/ca.js maNgayCaHopLe`).
     kiemTruong: { Ngayca: (s) => (maNgayCaHopLe(s) ? '' : NGAY_CA_SAI), ...(them.kiemTruong || {}) },
-    batBuoc: ['IDMES', 'BarcodeIn'],
-    maHien: (b) => b.BarcodeIn,
+    batBuoc: them.batBuoc || ['IDMES', 'BarcodeIn'],
+    maHien: them.maHien || ((b) => b.BarcodeIn),
     ...(them.kiem ? { kiem: them.kiem } : {}),
     ...(them.macDinh ? { macDinh: them.macDinh } : {}),
   };
@@ -92,10 +92,14 @@ const KENH = {
   //   Thân cũ (trước 23/11) thiếu khóa ⇒ "Sửa & gửi" điền ''.
   ERP_GUI_KIEM_PHAM: kenh20('ERP_GUI_KIEM_PHAM', { truong: ['Barcode17'], dai: { Barcode17: 20 }, macDinh: { Barcode17: '' } }),
   ERP_GUI_TEM_GIA_CONG: kenh20('ERP_GUI_TEM_GIA_CONG'),
+  // 27/11/2026: thân SK6 không còn `BarcodeIn` / `BarcodeSua` (không phải tham số proc) — mã tem 17 ở `BarcodeSua17`.
+  //   Dòng cũ còn 2 khóa đó vẫn hiện (khóa sửa) và gửi kèm như trước — router bỏ qua.
   ERP_GUI_SUA_DAT: kenh20('ERP_GUI_SUA_DAT', {
-    truong: ['BarcodeSua16', 'BarcodeSua17', 'BarcodeSua'],
-    dai: { BarcodeSua16: 20 },
-    guong: { BarcodeSua17: 'BarcodeIn', BarcodeSua: 'BarcodeIn' },
+    bo: ['BarcodeIn'],
+    truong: ['BarcodeSua16', 'BarcodeSua17'],
+    dai: { BarcodeSua16: 20, BarcodeSua17: 20 },
+    maTem: ['BarcodeSua17'], batBuoc: ['IDMES', 'BarcodeSua17'],
+    maHien: (b) => b.BarcodeSua17 || b.BarcodeIn,
   }),
   ERP_GUI_OQC: kenh20('ERP_GUI_OQC', { truong: ['BarcodeSua'], guong: { BarcodeSua: 'BarcodeIn' } }),
   ERP_GUI_PHIEU_GIAO: {

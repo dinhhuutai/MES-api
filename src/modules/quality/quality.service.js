@@ -834,9 +834,9 @@ async function kcsHistory(date) {
       id: r.luot_id, tem_id: r.tem_id, // khóa của nút "Hủy" ở panel Lịch sử (14/10/2026)
       tg: r.tg, nguoi: r.nguoi || '—',
       hanh_dong: `KCS${r.ket_qua ? ' · ' + r.ket_qua : ''}`,
-      doi_tuong: r.ma_tem || '', ma_phan: r.ma_phan || '',
+      doi_tuong: r.ma_tem || '', ma_phan: r.ma_phan || '', tem_17: r.ma_tem_17 || '',
       chi_tiet: `Đạt ${q0(r.so_luong_dat)} · Hư ${q0(r.so_luong_loi)} · Hủy ${q0(r.so_luong_huy)}${chenh}`
-        + (r.ma_tem_17 ? ` · Đạt tách tem 17 ${r.ma_tem_17}` : ''),
+        + (r.ma_tem_17 ? ' · Đạt tách tem 17' : ''),
     };
   }));
 }
@@ -846,7 +846,8 @@ async function suaHistory(date) {
   return ganThongTinPhanIn(rows.map((r) => ({
     id: r.luot_id, tem_id: r.tem_id,
     tg: r.tg, nguoi: r.nguoi || '—', hanh_dong: 'Sửa',
-    doi_tuong: r.ma_tem || '', ma_phan: r.ma_phan || '',
+    // Màn Sửa làm trên NHÃN 16 (nhãn hàng lỗi) ⇒ đối tượng hiện mã 16; `tem_17` = tem 17 sửa đạt của lượt (27/11/2026).
+    doi_tuong: temCode(r.ma_tem || '', 16), ma_phan: r.ma_phan || '', tem_17: r.ma_tem_17 || '',
     chi_tiet: `Sửa ${q0(r.so_luong_sua)} · Đạt ${q0(r.so_luong_sua_dat)} · Hủy ${q0(r.so_luong_sua_huy)}`,
   })));
 }

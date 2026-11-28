@@ -201,16 +201,18 @@ const KENH = {
     // ⚠⚠ 14/10/2026 proc `MES_spr_MES2SK6` ĐỔI THAM SỐ (người dùng gửi bản ALTER): bỏ `@pBarcodeSua`, thay bằng
     //   `@pBarcodeSua16` = NHÃN HÀNG LỖI của tem GỐC (`16` + 10 số sau của mã tem 15 — nhãn hàng vào Sửa) ·
     //   `@pBarcodeSua17` = mã TEM 17 của lượt sửa. `BarcodeSua16` do `suaDatErp` gắn vào payload (`r` = payload
-    //   thô, trước `chuanHoa`). Vẫn gửi kèm `BarcodeSua` (= tem 17) cho router CŨ còn đọc khóa này.
+    //   thô, trước `chuanHoa`).
+    // ⚠ 27/11/2026 (người dùng: "SK6 đâu có tham số BarcodeIn / BarcodeSua"): KHÔNG gửi 2 khóa đó nữa (`boKhoa`) — router
+    //   đang chạy đọc `BarcodeSua17 || BarcodeSua || BarcodeIn` nên chỉ cần `BarcodeSua17`.
     them: (b, r = {}) => ({
-      BarcodeSua: b.BarcodeIn,
       BarcodeSua16: chuoi(r.BarcodeSua16, 20),
       BarcodeSua17: b.BarcodeIn,
     }),
+    boKhoa: ['BarcodeIn'],
   },
   // ⚠ NHẬN SỬA (26/11/2026) — proc `MES_spr_MES2JH0`: 18 tham số = bộ 20 của ghi-in-tem BỎ `@pBarcodeIn` · `@pSoluongloi` ·
   //   `@pSOLUONGTHIEU` · `@pGCMauvai`, THÊM `@pBarcodeSua16` (nhãn 16 của tem) + `@pBarcodeSua17` (lúc nhận chưa có tem 17 ⇒ '').
-  //   Router chỉ đọc khóa cần, các khóa thừa vô hại. `BarcodeIn` (tem 15) vẫn gửi để Lịch sử hiện mã + lưới mã ERP.
+  //   Thân gửi đi CHỈ có 18 khóa của proc (`boKhoa` bỏ 4 khóa thừa); mã tem 15 vẫn dùng nội bộ (lưới mã ERP, cột Mã ở Lịch sử).
   ERP_GUI_NHAN_SUA: {
     nhan: 'gui-nhan-sua',
     url: () => env.erp.guiNhanSuaUrl,
@@ -220,6 +222,7 @@ const KENH = {
       BarcodeSua16: chuoi(r.BarcodeSua16, 20),
       BarcodeSua17: chuoi(r.BarcodeSua17, 20),
     }),
+    boKhoa: ['BarcodeIn', 'Soluongloi', 'SOLUONGTHIEU', 'GCMauvai'],
   },
   ERP_GUI_KIEM_PHAM: {
     nhan: 'gui-kiem-pham',
@@ -317,7 +320,7 @@ async function goiMotLan(body, k = KENH.ERP_GHI_IN_TEM) {
   const url = k.url();
   // ⚠ LOG CẢ URL: bài học 2026-08-11 (gọi nhầm host LAN) mất rất lâu mới tìm ra vì thông điệp lỗi
   //   chỉ ghi "timeout" mà không nói đang gọi ĐI ĐÂU.
-  console.log(`[${k.nhan}] → POST ${url} (IDMES ${body.IDMES}, tem ${body.BarcodeIn})`);
+  console.log(`[${k.nhan}] → POST ${url} (IDMES ${body.IDMES}, tem ${body.BarcodeIn || body.BarcodeSua17 || body.BarcodeSua16 || '?'})`);
   const res = await axios.post(url, body, {
     timeout: k.timeoutMs(),
     headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...(env.erp.apiHeaders || {}) },
@@ -397,21 +400,27 @@ async function dungThanGui(row, maApi = 'ERP_GHI_IN_TEM') {
       + ` (tên gõ tay hoặc trùng họ tên) — gửi TÊN GỌI (tem ${body.BarcodeIn})`);
   }
   if (k.them) Object.assign(body, k.them(body, vao));
+  // Khóa KHÔNG phải tham số của proc kênh này (`boKhoa`, 27/11/2026) ⇒ bỏ khỏi thân gửi đi (mã tem vẫn nằm ở `row.BarcodeIn`).
+  (k.boKhoa || []).forEach((x) => { delete body[x]; });
   return body;
 }
+
+// Mã tem để LOG / kiểm "mã ERP cấp" — thân có thể đã bỏ `BarcodeIn` (`boKhoa`) ⇒ lấy từ bản ghi thô.
+const maCuaLuot = (row, body) => String((body && body.BarcodeIn) || (row && row.BarcodeIn) || '').trim();
 
 // Gửi 1 bản ghi. KHÔNG NÉM LỖI — luôn trả { ok, body, data? , error? }.
 // `maApi` = kênh trong `KENH` (mặc định `ERP_GHI_IN_TEM` ⇒ mọi call-site cũ không đổi).
 async function ghiInTem(row, { maApi = 'ERP_GHI_IN_TEM' } = {}) {
   const k = KENH[maApi] || KENH.ERP_GHI_IN_TEM;
   const body = await dungThanGui(row, maApi);
+  const ma = maCuaLuot(row, body);
   // Tắt ở Hệ thống > Cài đặt API (mig 083); chưa có dòng cấu hình thì lấy mặc định `.env`.
   if (!(await apiBat(maApi))) {
-    console.log(`[${k.nhan}] ⏸ ĐANG TẮT (Hệ thống > Cài đặt API) — bỏ qua tem ${body.BarcodeIn}`);
+    console.log(`[${k.nhan}] ⏸ ĐANG TẮT (Hệ thống > Cài đặt API) — bỏ qua tem ${ma}`);
     return { ok: false, bo_qua: true, body };
   }
   // Lưới an toàn: mã tem chưa phải mã ERP cấp ⇒ KHÔNG gọi ERP (xem `laMaTemErp`). Bên gọi tự ghi lịch sử lỗi.
-  const maChuaErp = [body.BarcodeIn, ...('BarcodeSua' in body ? [body.BarcodeSua] : [])].find((m) => !laMaTemErp(m));
+  const maChuaErp = [ma, ...('BarcodeSua' in body ? [body.BarcodeSua] : [])].find((m) => !laMaTemErp(m));
   if (maChuaErp !== undefined) {
     const error = `Chưa có mã tem do ERP cấp (đang là "${maChuaErp || 'trống'}") — CHƯA GỬI ERP`;
     console.warn(`[${k.nhan}] ⏸ ${error}`);
@@ -425,7 +434,7 @@ async function ghiInTem(row, { maApi = 'ERP_GHI_IN_TEM' } = {}) {
     try {
       // Xếp hàng theo URL kênh + chờ lâu sau timeout — xem `utils/erpThuLai.js` (lỗi ERP 2 dòng / 1 tem).
       const data = await xepHang(k.url(), () => goiMotLan(body, k));
-      console.log(`[${k.nhan}] ✓ Đã báo ERP (IDMES ${body.IDMES}, tem ${body.BarcodeIn}, lần ${i})`);
+      console.log(`[${k.nhan}] ✓ Đã báo ERP (IDMES ${body.IDMES}, tem ${ma}, lần ${i})`);
       return { ok: true, body, data, so_lan_thu: i, cac_lan_loi: cacLanLoi };
     } catch (e) {
       loiCuoi = e;
@@ -439,7 +448,7 @@ async function ghiInTem(row, { maApi = 'ERP_GHI_IN_TEM' } = {}) {
     }
   }
   const error = `${loiCuoi && loiCuoi.message} (${k.url()})`;
-  console.error(`[${k.nhan}] ✗ Không báo được ERP sau ${soLan} lần — tem ${body.BarcodeIn}: ${error}`);
+  console.error(`[${k.nhan}] ✗ Không báo được ERP sau ${soLan} lần — tem ${ma}: ${error}`);
   // ⚠ TRẢ CẢ `data` Ở NHÁNH LỖI: phản hồi nguyên văn của ERP (nếu có) được `goiMotLan` đính vào lỗi.
   //   Lỗi mạng/timeout thì không có gì để trả → `null`, đúng bản chất "chưa tới được ERP".
   return { ok: false, body, error, data: (loiCuoi && loiCuoi.phanHoi) || null, so_lan_thu: soLan, cac_lan_loi: cacLanLoi };

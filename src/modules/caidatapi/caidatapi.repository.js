@@ -266,12 +266,17 @@ async function hangDoiTuGuiLai({ dsMa, soNgay }) {
   return rows;
 }
 
-// IDMES đã từng được báo HỦY sang ERP (thành công hay lỗi) — bản ghi đã hủy ở MES, gửi lại là dựng lại phiếu ERP đã hủy.
+// IDMES đã từng được báo HỦY sang ERP (thành công hay lỗi) ⇒ Map IDMES → mốc báo hủy MUỘN NHẤT. Bản ghi đã hủy ở MES thì
+//   gửi lại là dựng lại phiếu ERP đã hủy — NHƯNG bản ghi được MỞ LẠI (Mở lại tem in · mở lại xác nhận KCS / Sửa) rồi gửi lại
+//   CÙNG IDMES thì lần gửi đó MỚI HƠN mốc hủy ⇒ hàng đợi phải gửi tiếp (bên gọi so mốc — `jobs/erpTuGuiLai`). Ca thật
+//   28/11/2026: tem 152608087439 hủy 27/11 18:44 (báo hủy SF0), mở lại 28/11 07:53, SF0 lỗi timeout ⇒ hàng đợi bỏ qua
+//   "DA_BAO_HUY", phải bấm gửi lại tay.
 async function idMesDaBaoHuy() {
   const { rows } = await query(
-    `SELECT DISTINCT gia_tri_moi->'gui'->>'IDMES' AS idm FROM audit_log
-      WHERE hanh_dong IN ('ERP_GUI_HUY_IDMES', 'ERP_GUI_HUY_IDMES_LOI') AND gia_tri_moi->'gui'->>'IDMES' IS NOT NULL`.replace(/\s+/g, ' '));
-  return new Set(rows.map((r) => String(r.idm)));
+    `SELECT gia_tri_moi->'gui'->>'IDMES' AS idm, max(thoi_gian) AS tg FROM audit_log
+      WHERE hanh_dong IN ('ERP_GUI_HUY_IDMES', 'ERP_GUI_HUY_IDMES_LOI') AND gia_tri_moi->'gui'->>'IDMES' IS NOT NULL
+      GROUP BY 1`.replace(/\s+/g, ' '));
+  return new Map(rows.map((r) => [String(r.idm), new Date(r.tg).getTime()]));
 }
 
 // Tem đã HỦY trong danh sách id (kênh có `id_ban_ghi` = tem: in tem · tem gia công · phân loại lỗi).

@@ -107,7 +107,11 @@ async function chayMotLuot() {
     const vet = { ma: r.ma, idm: r.idm, auditId: r.audit_id, lan };
     let boQua = null;
     if (guiDeHuy.has(String(r.audit_id))) kq.gui_de_huy += 1;
-    else if (daHuy.has(String(r.idm))) boQua = 'DA_BAO_HUY: IDMES đã được báo hủy sang ERP — bản ghi đã hủy ở MES';
+    // Báo hủy SAU (hoặc cùng lúc) lần gửi lỗi mới nhất ⇒ bản ghi đang hủy ⇒ bỏ qua. Lần gửi lỗi MỚI HƠN mốc hủy = bản ghi đã
+    //   được mở lại và gửi lại cùng IDMES ⇒ gửi tiếp (tem đang HUY vẫn bị chặn ở dòng dưới).
+    else if (daHuy.has(String(r.idm)) && daHuy.get(String(r.idm)) >= new Date(r.thoi_gian).getTime()) {
+      boQua = 'DA_BAO_HUY: IDMES đã được báo hủy sang ERP — bản ghi đã hủy ở MES';
+    }
     else if (KENH_GAN_TEM.has(r.ma) && temHuy.has(String(r.id_ban_ghi))) boQua = 'TEM_HUY: tem đã hủy ở MES';
     if (boQua) {
       kq.bo_qua_moi += 1;
